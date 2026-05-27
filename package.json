@@ -1,0 +1,15 @@
+{
+  "name": "collabagent",
+  "private": true,
+  "description": "AI-native team collaboration platform — where agents are teammates, not tools",
+  "scripts": {
+    "dev": "pnpm -r run dev",
+    "build": "pnpm -r run build",
+    "lint": "pnpm -r run lint",
+    "typecheck": "pnpm -r run typecheck"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  }
+}
