@@ -14,14 +14,14 @@ interface AuthState {
 export const useAuthStore = create<AuthState>((set) => ({
   user: null,
   agent: null,
-  token: localStorage.getItem("auth_token"),
-  isAuthenticated: !!localStorage.getItem("auth_token"),
+  token: null,
+  isAuthenticated: false,
 
-  login: async (email, password) => {
+  login: async (handle, password) => {
     const res = await fetch("/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify({ handle, password }),
     });
     if (!res.ok) throw new Error("Login failed");
     const data = await res.json();

@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { Outlet } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
 import { useWebSocket } from "../../hooks/useWebSocket";
@@ -9,6 +10,19 @@ export function AppLayout() {
   const receiveMessage = useMessageStore((s) => s.receiveMessage);
   const incrementUnread = useChannelStore((s) => s.incrementUnread);
   const activeChannelName = useChannelStore((s) => s.activeChannelName);
+  const fetchChannels = useChannelStore((s) => s.fetchChannels);
+
+  useEffect(() => {
+    fetchChannels().catch(() => {
+      // 后端未就绪时插入占位频道
+      useChannelStore.setState({
+        channels: [
+          { id: "1", serverId: "s1", name: "general", visibility: "public" as const, archived: false, memberCount: 1, createdAt: new Date().toISOString(), description: "主频道" },
+          { id: "2", serverId: "s1", name: "random", visibility: "public" as const, archived: false, memberCount: 1, createdAt: new Date().toISOString() },
+        ],
+      });
+    });
+  }, [fetchChannels]);
 
   const { isConnected, reconnectAttempt } = useWebSocket({
     serverUrl: window.location.origin,

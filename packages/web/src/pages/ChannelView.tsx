@@ -16,7 +16,8 @@ export function ChannelView() {
       setActiveChannel(channelName);
       fetchHistory(target);
     }
-  }, [channelName, target, fetchHistory, setActiveChannel]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [channelName]);
 
   const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();
