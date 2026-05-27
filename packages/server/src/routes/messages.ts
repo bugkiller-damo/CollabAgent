@@ -40,9 +40,9 @@ export async function messageRoutes(app: FastifyInstance) {
       const name = channel.slice(1).split(":")[0];
       const ch = await app.pg.query("SELECT id FROM channels WHERE name = $1", [name]);
       if (ch.rows.length === 0) return reply.status(404).send({ error: "channel not found" });
-      resolvedChannelId = ch.rows[0].id;
+      resolvedChannelId = (ch.rows[0] as any).id;
     } else {
-      resolvedChannelId = channel;
+      resolvedChannelId = channel as string;
     }
     let query = "SELECT * FROM messages WHERE channel_id = $1";
     const params: any[] = [resolvedChannelId];

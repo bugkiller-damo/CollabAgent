@@ -68,6 +68,7 @@ export interface Channel {
   name: string;              // "#general"
   description?: string;
   visibility: ChannelVisibility;
+  joined?: boolean;          // 当前用户/agent 是否已加入
   archived: boolean;
   memberCount: number;
   createdAt: ISO8601;

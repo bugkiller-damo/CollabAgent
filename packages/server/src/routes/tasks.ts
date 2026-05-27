@@ -30,7 +30,7 @@ export async function taskRoutes(app: FastifyInstance) {
       "SELECT COALESCE(MAX(task_number), 0) as n FROM messages WHERE channel_id = $1 AND task_number IS NOT NULL",
       [ch.rows[0].id]
     );
-    let next = maxNum.rows[0].n;
+    let next = Number((maxNum.rows[0] as any).n);
     const created: any[] = [];
     for (const t of tasks) {
       next++;

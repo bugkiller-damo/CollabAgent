@@ -14,10 +14,11 @@ export function AppLayout() {
     serverUrl: window.location.origin,
     token: token || "",
     onMessage: (msg: WsServerMessage) => {
-      if (msg.type === "agent:deliver") {
-        receiveMessage(msg.message);
-        if (msg.message.channelId !== activeChannelName) {
-          incrementUnread(msg.message.channelId);
+      if (msg.type === "agent:deliver" && msg.message) {
+        const message = msg.message;
+        receiveMessage(message);
+        if (activeChannelName && message.id !== activeChannelName) {
+          incrementUnread(message.id);
         }
       }
     },

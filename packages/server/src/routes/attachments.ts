@@ -2,13 +2,12 @@ import type { FastifyInstance } from "fastify";
 
 export async function attachmentRoutes(app: FastifyInstance) {
   app.post("/upload", { preHandler: [app.authenticate] }, async (req, reply) => {
-    const data = await req.file();
+    const data = await (req as any).file();
     if (!data) return reply.status(400).send({ error: "file required" });
     const buf = await data.toBuffer();
-    const storageKey = "attachments/" + crypto.randomUUID() + "/" + data.filename;
+    const storageKey = "attachments/" + crypto.randomUUID() + "/" + (data.filename || "file");
     const result = await app.pg.query(
-      `INSERT INTO attachments (uploader_id, uploader_type, filename, mime_type, size_bytes, storage_key, storage_url)
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+      "INSERT INTO attachments (uploader_id, uploader_type, filename, mime_type, size_bytes, storage_key, storage_url) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
       [(req as any).user.sub, "human", data.filename, data.mimetype, buf.length, storageKey, "/files/" + storageKey]
     );
     return { attachmentId: result.rows[0].id };
