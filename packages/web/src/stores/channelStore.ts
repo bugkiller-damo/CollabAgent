@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { apiGet, apiPost } from "../api/client";
 import type { Channel } from "@collabagent/shared";
 
 interface ChannelState {
@@ -6,7 +7,6 @@ interface ChannelState {
   joinedChannels: Set<string>;
   activeChannelName: string | null;
   unreadCounts: Record<string, number>;
-
   fetchChannels: () => Promise<void>;
   joinChannel: (name: string) => Promise<void>;
   leaveChannel: (name: string) => Promise<void>;
@@ -22,46 +22,29 @@ export const useChannelStore = create<ChannelState>((set, get) => ({
   unreadCounts: {},
 
   fetchChannels: async () => {
-    const res = await fetch("/api/server/info");
-    const data = await res.json();
-    set({
-      channels: data.channels,
-      joinedChannels: new Set(data.channels.filter((c: Channel) => c.joined).map((c: Channel) => c.name)),
-    });
+    try {
+      const data = await apiGet<{ channels: Channel[] }>("/api/server/info");
+      const chs = data.channels || [];
+      set({
+        channels: chs,
+        joinedChannels: new Set(chs.filter((c) => c.joined).map((c) => c.name)),
+      });
+    } catch {
+      // backend not ready
+    }
   },
 
   joinChannel: async (name) => {
-    await fetch(`/api/channels/${name}/join`, { method: "POST" });
-    set((s) => {
-      const next = new Set(s.joinedChannels);
-      next.add(name);
-      return { joinedChannels: next };
-    });
+    await apiPost(`/api/channels/${name}/join`);
+    set((s) => { const next = new Set(s.joinedChannels); next.add(name); return { joinedChannels: next }; });
   },
 
   leaveChannel: async (name) => {
-    await fetch(`/api/channels/${name}/leave`, { method: "POST" });
-    set((s) => {
-      const next = new Set(s.joinedChannels);
-      next.delete(name);
-      return { joinedChannels: next };
-    });
+    await apiPost(`/api/channels/${name}/leave`);
+    set((s) => { const next = new Set(s.joinedChannels); next.delete(name); return { joinedChannels: next }; });
   },
 
-  setActiveChannel: (name) => {
-    set({ activeChannelName: name });
-    get().clearUnread(name);
-  },
-
-  incrementUnread: (name) => {
-    set((s) => ({
-      unreadCounts: { ...s.unreadCounts, [name]: (s.unreadCounts[name] || 0) + 1 },
-    }));
-  },
-
-  clearUnread: (name) => {
-    set((s) => ({
-      unreadCounts: { ...s.unreadCounts, [name]: 0 },
-    }));
-  },
+  setActiveChannel: (name) => { set({ activeChannelName: name }); get().clearUnread(name); },
+  incrementUnread: (name) => set((s) => ({ unreadCounts: { ...s.unreadCounts, [name]: (s.unreadCounts[name] || 0) + 1 } })),
+  clearUnread: (name) => set((s) => ({ unreadCounts: { ...s.unreadCounts, [name]: 0 } })),
 }));

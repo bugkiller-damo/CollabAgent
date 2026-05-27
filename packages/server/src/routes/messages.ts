@@ -1,6 +1,21 @@
 import type { FastifyInstance } from "fastify";
 
 export async function messageRoutes(app: FastifyInstance) {
+
+  // Public: get messages by channel (dev mode)
+  app.get("/", async (req, reply) => {
+    const { channel, limit } = req.query as Record<string, string>;
+    if (!channel) return reply.status(400).send({ error: "channel required" });
+    const name = channel.startsWith("#") ? channel.slice(1).split(":")[0] : channel;
+    const ch = await app.pg.query("SELECT id FROM channels WHERE name = ", [name]);
+    if (ch.rows.length === 0) return reply.status(404).send({ error: "channel not found" });
+    const result = await app.pg.query(
+      "SELECT * FROM messages WHERE channel_id =  ORDER BY seq DESC LIMIT ",
+      [ch.rows[0].id as string, Number(limit) || 50]
+    );
+    return { messages: result.rows.reverse(), hasMore: false };
+  });
+
   app.post("/send", { preHandler: [app.authenticate] }, async (req, reply) => {
     const { channelId, content, target, threadId, attachmentIds } = req.body as any;
     if (!content || !target) {

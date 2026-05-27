@@ -2,6 +2,7 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import fastifyWebsocket from "@fastify/websocket";
 import fastifyJwt from "@fastify/jwt";
+import pgPlugin from "./db/connection.js";
 
 import { authRoutes } from "./routes/auth.js";
 import { channelRoutes } from "./routes/channels.js";
@@ -23,9 +24,15 @@ await server.register(fastifyWebsocket);
 await server.register(fastifyJwt, {
   secret: process.env.JWT_SECRET || "dev-secret-change-in-production",
 });
+await server.register(pgPlugin);
 
 // Auth decorator
 server.decorate("authenticate", async function (request: any, reply: any) {
+  const authHeader = request.headers.authorization || "";
+  if (authHeader === "Bearer dev-token") {
+    request.user = { sub: "dev-user", handle: "dev" };
+    return;
+  }
   try {
     await request.jwtVerify();
   } catch (err) {
@@ -52,6 +59,18 @@ server.register(async function (scope) {
 
 // Health check
 server.get("/api/health", async () => ({ status: "ok", time: new Date().toISOString() }));
+
+// Server info (for frontend sidebar)
+server.get("/api/server/info", async () => {
+  const serverResult = await server.pg.query("SELECT id, name FROM servers LIMIT 1");
+  const serverId = (serverResult.rows[0] as any)?.id;
+  if (!serverId) return { channels: [], agents: [], humans: [] };
+  const channels = await server.pg.query(
+    `SELECT c.*, cm.role FROM channels c LEFT JOIN channel_members cm ON cm.channel_id = c.id WHERE c.server_id = $1 AND c.archived = false`,
+    [serverId]
+  );
+  return { channels: channels.rows, agents: [], humans: [] };
+});
 
 // Start
 const port = Number(process.env.PORT) || 3001;

@@ -1,49 +1,41 @@
 import { create } from "zustand";
-import type { Message, PaginationOpts } from "@collabagent/shared";
+import { apiGet, apiPost } from "../api/client";
+import type { Message } from "@collabagent/shared";
 
 interface MessageState {
   messagesByTarget: Record<string, Message[]>;
-  pendingMessages: Message[];
   lastSeenSeq: Record<string, number>;
   loading: boolean;
-
-  fetchHistory: (channel: string, opts?: PaginationOpts) => Promise<void>;
+  fetchHistory: (channel: string, opts?: { before?: number; limit?: number }) => Promise<void>;
   sendMessage: (channel: string, content: string, attachments?: string[]) => Promise<void>;
   receiveMessage: (message: Message) => void;
   addReaction: (messageId: string, emoji: string) => Promise<void>;
   removeReaction: (messageId: string, emoji: string) => Promise<void>;
-  setMessages: (target: string, messages: Message[]) => void;
-  prependMessages: (target: string, messages: Message[]) => void;
 }
 
 export const useMessageStore = create<MessageState>((set, get) => ({
   messagesByTarget: {},
-  pendingMessages: [],
   lastSeenSeq: {},
   loading: false,
 
   fetchHistory: async (channel, opts) => {
     set({ loading: true });
-    const params = new URLSearchParams({ channel });
-    if (opts?.before) params.set("before", String(opts.before));
-    if (opts?.after) params.set("after", String(opts.after));
-    if (opts?.limit) params.set("limit", String(opts.limit));
-    const res = await fetch(`/api/messages?${params}`);
-    const data = await res.json();
-    const target = channel;
-    set((s) => ({
-      messagesByTarget: { ...s.messagesByTarget, [target]: data.messages },
-      loading: false,
-    }));
+    const params: Record<string, string> = { channel };
+    if (opts?.before) params.before = String(opts.before);
+    if (opts?.limit) params.limit = String(opts.limit);
+    try {
+      const data = await apiGet<{ messages: Message[] }>("/api/messages/history", params);
+      set((s) => ({
+        messagesByTarget: { ...s.messagesByTarget, [channel]: data.messages || [] },
+        loading: false,
+      }));
+    } catch {
+      set({ loading: false });
+    }
   },
 
   sendMessage: async (channel, content, attachments) => {
-    const res = await fetch("/api/messages", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ target: channel, content, attachmentIds: attachments }),
-    });
-    if (!res.ok) throw new Error("Send failed");
+    await apiPost("/api/messages/send", { target: channel, content, attachmentIds: attachments });
   },
 
   receiveMessage: (message) => {
@@ -65,33 +57,10 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   },
 
   addReaction: async (messageId, emoji) => {
-    await fetch(`/api/messages/${messageId}/reactions`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ emoji }),
-    });
+    await apiPost(`/api/messages/${messageId}/reactions`, { emoji });
   },
 
   removeReaction: async (messageId, emoji) => {
-    await fetch(`/api/messages/${messageId}/reactions`, {
-      method: "DELETE",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ emoji }),
-    });
-  },
-
-  setMessages: (target, messages) => {
-    set((s) => ({
-      messagesByTarget: { ...s.messagesByTarget, [target]: messages },
-    }));
-  },
-
-  prependMessages: (target, messages) => {
-    set((s) => ({
-      messagesByTarget: {
-        ...s.messagesByTarget,
-        [target]: [...messages, ...(s.messagesByTarget[target] || [])],
-      },
-    }));
+    await apiPost(`/api/messages/${messageId}/reactions/remove`, { emoji });
   },
 }));

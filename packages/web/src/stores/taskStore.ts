@@ -1,7 +1,8 @@
 import { create } from "zustand";
+import { apiGet, apiPost } from "../api/client";
 import type { Message, TaskStatus } from "@collabagent/shared";
 
-interface Task extends Message {
+export interface Task extends Message {
   taskNumber: number;
   taskStatus: TaskStatus;
   taskAssigneeId?: string;
@@ -11,7 +12,6 @@ interface Task extends Message {
 interface TaskState {
   tasksByChannel: Record<string, Task[]>;
   loading: boolean;
-
   fetchTasks: (channel: string, status?: TaskStatus) => Promise<void>;
   createTasks: (channel: string, titles: string[]) => Promise<void>;
   claimTasks: (channel: string, numbers: number[]) => Promise<void>;
@@ -26,66 +26,39 @@ export const useTaskStore = create<TaskState>((set, get) => ({
 
   fetchTasks: async (channel, status) => {
     set({ loading: true });
-    const params = new URLSearchParams({ channel });
-    if (status) params.set("status", status);
-    const res = await fetch(`/api/tasks?${params}`);
-    const data = await res.json();
-    set((s) => ({
-      tasksByChannel: { ...s.tasksByChannel, [channel]: data.tasks },
-      loading: false,
-    }));
+    const params: Record<string, string> = { channel };
+    if (status) params.status = status;
+    try {
+      const data = await apiGet<{ tasks: Task[] }>("/api/tasks", params);
+      set((s) => ({ tasksByChannel: { ...s.tasksByChannel, [channel]: data.tasks || [] }, loading: false }));
+    } catch { set({ loading: false }); }
   },
 
   createTasks: async (channel, titles) => {
-    const res = await fetch("/api/tasks", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ channel, tasks: titles.map((t) => ({ title: t })) }),
-    });
-    if (!res.ok) throw new Error("Create tasks failed");
+    await apiPost("/api/tasks", { channel, tasks: titles.map((t) => ({ title: t })) });
     await get().fetchTasks(channel);
   },
 
   claimTasks: async (channel, numbers) => {
-    const res = await fetch("/api/tasks/claim", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ channel, task_numbers: numbers }),
-    });
-    if (!res.ok) throw new Error("Claim failed");
+    await apiPost("/api/tasks/claim", { channel, task_numbers: numbers });
     await get().fetchTasks(channel);
   },
 
   unclaimTask: async (channel, number) => {
-    await fetch("/api/tasks/unclaim", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ channel, task_number: number }),
-    });
+    await apiPost("/api/tasks/unclaim", { channel, task_number: number });
     await get().fetchTasks(channel);
   },
 
   updateStatus: async (channel, number, status) => {
-    const res = await fetch(`/api/tasks/${number}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ channel, status }),
-    });
-    if (!res.ok) throw new Error("Update status failed");
+    await apiPost(`/api/tasks/${number}/status`, { channel, status });
     await get().fetchTasks(channel);
   },
 
-  // 乐观更新：拖拽时立即移动，异步确认
   moveTask: (channel, number, newStatus) => {
     set((s) => {
       const tasks = s.tasksByChannel[channel] || [];
-      const updated = tasks.map((t) =>
-        t.taskNumber === number ? { ...t, taskStatus: newStatus } : t
-      );
-      return { tasksByChannel: { ...s.tasksByChannel, [channel]: updated } };
+      return { tasksByChannel: { ...s.tasksByChannel, [channel]: tasks.map((t) => t.taskNumber === number ? { ...t, taskStatus: newStatus } : t) } };
     });
-    get().updateStatus(channel, number, newStatus).catch(() => {
-      get().fetchTasks(channel); // 失败回滚
-    });
+    get().updateStatus(channel, number, newStatus).catch(() => get().fetchTasks(channel));
   },
 }));

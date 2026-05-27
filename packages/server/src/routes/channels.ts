@@ -3,13 +3,14 @@ import type { FastifyInstance } from "fastify";
 export async function channelRoutes(app: FastifyInstance) {
   app.get("/", { preHandler: [app.authenticate] }, async (req) => {
     const { serverId } = req.query as any;
+    const resolvedServerId = serverId || (await app.pg.query("SELECT id FROM servers LIMIT 1")).rows[0]?.id;
     const result = await app.pg.query(
       `SELECT c.*, cm.role
        FROM channels c
        LEFT JOIN channel_members cm ON cm.channel_id = c.id AND cm.member_id = $1
        WHERE c.server_id = $2 AND c.archived = false
        ORDER BY c.created_at`,
-      [(req as any).user.sub, serverId]
+      [(req as any).user.sub, resolvedServerId]
     );
     return { channels: result.rows };
   });
