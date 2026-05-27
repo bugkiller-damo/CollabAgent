@@ -12,10 +12,25 @@ export async function messageRoutes(app: FastifyInstance) {
     );
     if (ch.rows.length === 0) return reply.status(404).send({ error: "channel not found" });
     const result = await app.pg.query(
-      "SELECT m.id, m.channel_id, m.server_id, m.sender_id, m.sender_type, COALESCE(u.display_name, u.handle, 'User') as \"senderName\", m.content, m.seq, m.thread_id, m.task_number, m.task_status, m.task_assignee, m.created_at as \"time\" FROM messages m LEFT JOIN users u ON m.sender_id = u.id WHERE m.channel_id = $1 ORDER BY m.seq DESC LIMIT $2",
+      "SELECT m.id, m.channel_id, m.server_id, m.sender_id, m.sender_type, COALESCE(u.display_name, u.handle, 'User') as \"senderName\", m.content, m.seq, m.thread_id, m.task_number, m.task_status, m.task_assignee, m.created_at as \"time\" FROM messages m LEFT JOIN users u ON m.sender_id = u.id WHERE m.channel_id = $1 AND m.thread_id IS NULL ORDER BY m.seq DESC LIMIT $2",
       [ch.rows[0].id, Number(limit) || 50]
     );
     return { messages: result.rows.reverse(), hasMore: false };
+  });
+
+  // Get thread replies
+  app.get("/thread/:messageId", async (req, reply) => {
+    const { messageId } = req.params as Record<string, string>;
+    const parent = await app.pg.query(
+      "SELECT id, channel_id, content, sender_id, sender_type as \"senderName\", created_at as \"time\" FROM messages WHERE id = $1",
+      [messageId]
+    );
+    if (parent.rows.length === 0) return reply.status(404).send({ error: "message not found" });
+    const replies = await app.pg.query(
+      "SELECT id, channel_id, sender_id, sender_type as \"senderName\", content, seq, created_at as \"time\" FROM messages WHERE thread_id = $1 ORDER BY seq ASC",
+      [messageId]
+    );
+    return { parent: parent.rows[0], replies: replies.rows };
   });
 
   app.post("/send", { preHandler: [app.authenticate] }, async (req, reply) => {
@@ -55,7 +70,7 @@ export async function messageRoutes(app: FastifyInstance) {
     } else {
       resolvedChannelId = channel;
     }
-    let query = "SELECT m.id, m.channel_id, m.server_id, m.sender_id, m.sender_type, COALESCE(u.display_name, u.handle, 'User') as \"senderName\", m.content, m.seq, m.thread_id, m.task_number, m.task_status, m.task_assignee, m.created_at as \"time\" FROM messages m LEFT JOIN users u ON m.sender_id = u.id WHERE m.channel_id = $1";
+    let query = "SELECT m.id, m.channel_id, m.server_id, m.sender_id, m.sender_type, COALESCE(u.display_name, u.handle, 'User') as \"senderName\", m.content, m.seq, m.thread_id, m.task_number, m.task_status, m.task_assignee, m.created_at as \"time\" FROM messages m LEFT JOIN users u ON m.sender_id = u.id WHERE m.channel_id = $1 AND m.thread_id IS NULL";
     if (threadId) { query += " AND m.thread_id = $" + p; p++; params.push(threadId); }
     const params: (string | number)[] = [resolvedChannelId];
     let p = 2;
