@@ -46,13 +46,13 @@ export function ChannelView() {
         {messages.map((msg) => (
           <div key={msg.id} className="group flex gap-3 hover:bg-gray-800/50 p-2 rounded">
             <div className="w-8 h-8 rounded bg-gray-600 shrink-0 flex items-center justify-center text-xs text-white">
-              {msg.senderName[0]}
+              {(msg.senderName || "?")[0]}
             </div>
             <div className="min-w-0">
               <div className="flex items-baseline gap-2">
-                <span className="font-semibold text-white text-sm">{msg.senderName}</span>
+                <span className="font-semibold text-white text-sm">{msg.senderName || msg.senderId || "Unknown"}</span>
                 <span className="text-gray-500 text-xs">
-                  {new Date(msg.time).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}
+                  {new Date(msg.time || msg.createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}
                 </span>
               </div>
               <p className="text-gray-300 text-sm whitespace-pre-wrap">{msg.content}</p>
