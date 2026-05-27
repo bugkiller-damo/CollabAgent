@@ -1,15 +1,9 @@
 import { useEffect } from "react";
 import { Outlet } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
-import { useWebSocket } from "../../hooks/useWebSocket";
-import { useAuthStore, useMessageStore, useChannelStore } from "../../stores";
-import type { WsServerMessage } from "@collabagent/shared";
+import { useChannelStore } from "../../stores";
 
 export function AppLayout() {
-  const { token } = useAuthStore();
-  const receiveMessage = useMessageStore((s) => s.receiveMessage);
-  const incrementUnread = useChannelStore((s) => s.incrementUnread);
-  const activeChannelName = useChannelStore((s) => s.activeChannelName);
   const fetchChannels = useChannelStore((s) => s.fetchChannels);
 
   useEffect(() => {
@@ -24,29 +18,14 @@ export function AppLayout() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const { isConnected, reconnectAttempt } = useWebSocket({
-    serverUrl: window.location.origin,
-    token: token || "",
-    onMessage: (msg: WsServerMessage) => {
-      if (msg.type === "agent:deliver" && msg.message) {
-        const message = msg.message;
-        receiveMessage(message);
-        if (activeChannelName && message.id !== activeChannelName) {
-          incrementUnread(message.id);
-        }
-      }
-    },
-  });
+  // WebSocket disabled during initial dev — re-enable when WS server is ready
+  const isConnected = true;
+  const reconnectAttempt = 0;
 
   return (
     <div className="flex h-screen bg-gray-900">
       <Sidebar />
       <main className="flex-1 flex flex-col min-w-0">
-        {!isConnected && (
-          <div className="bg-yellow-600 text-white text-center text-sm py-1">
-            连接中断，重连中...（第 {reconnectAttempt} 次）
-          </div>
-        )}
         <Outlet />
       </main>
     </div>

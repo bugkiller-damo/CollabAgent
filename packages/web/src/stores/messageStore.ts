@@ -24,7 +24,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     if (opts?.before) params.before = String(opts.before);
     if (opts?.limit) params.limit = String(opts.limit);
     try {
-      const data = await apiGet<{ messages: Message[] }>("/api/messages/history", params);
+      const data = await apiGet<{ messages: Message[] }>("/api/messages", params);
       set((s) => ({
         messagesByTarget: { ...s.messagesByTarget, [channel]: data.messages || [] },
         loading: false,

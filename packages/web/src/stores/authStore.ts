@@ -6,7 +6,7 @@ interface AuthState {
   agent: Agent | null;
   token: string | null;
   isAuthenticated: boolean;
-  login: (email: string, password: string) => Promise<void>;
+  login: (handle: string, password: string) => Promise<void>;
   loginWithToken: (token: string) => void;
   logout: () => void;
 }

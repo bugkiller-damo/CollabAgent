@@ -56,9 +56,9 @@ export function ChannelView() {
                 </span>
               </div>
               <p className="text-gray-300 text-sm whitespace-pre-wrap">{msg.content}</p>
-              {msg.taskNumber && (
+              {(msg.taskNumber || msg.task_number) && (
                 <span className="inline-block mt-1 text-xs bg-blue-900 text-blue-300 px-1.5 py-0.5 rounded">
-                  task #{msg.taskNumber} · {msg.taskStatus}
+                  task #{msg.taskNumber} · {(msg.taskStatus || msg.task_status)}
                 </span>
               )}
             </div>
