@@ -15,14 +15,7 @@ import { actionRoutes } from "./routes/actions.js";
 import { agentRoutes } from "./routes/agents.js";
 import { wsHandler } from "./ws/handler.js";
 
-const server = Fastify({
-  logger: {
-    transport: {
-      target: "pino-pretty",
-      options: { colorize: true },
-    },
-  },
-});
+const server = Fastify({ logger: true });
 
 // Plugins
 await server.register(cors, { origin: true, credentials: true });
