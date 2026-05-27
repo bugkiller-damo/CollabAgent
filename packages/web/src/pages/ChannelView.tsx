@@ -1,12 +1,13 @@
 import { useParams } from "react-router-dom";
 import { useEffect, useState, useRef } from "react";
 import { useMessageStore, useChannelStore } from "../stores";
-import type { Message } from "@collabagent/shared";
+
+const EMPTY_MSGS: never[] = [];
 
 export function ChannelView() {
   const { channelName } = useParams<{ channelName: string }>();
   const target = channelName ? `#${channelName}` : "";
-  const messages = useMessageStore((s) => (target ? s.messagesByTarget[target] : undefined) || []);
+  const messages = useMessageStore((s) => (target && s.messagesByTarget[target]) || EMPTY_MSGS);
   const fetchHistory = useMessageStore((s) => s.fetchHistory);
   const sendMessage = useMessageStore((s) => s.sendMessage);
   const setActiveChannel = useChannelStore((s) => s.setActiveChannel);
@@ -19,7 +20,8 @@ export function ChannelView() {
       setActiveChannel(channelName);
       fetchHistory(target).catch(() => {});
     }
-  }, [channelName, target, setActiveChannel, fetchHistory]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [channelName]);
 
   const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();
