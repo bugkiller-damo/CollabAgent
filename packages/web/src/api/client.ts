@@ -25,6 +25,10 @@ export function apiGet<T = unknown>(url: string, params?: Record<string, string>
   return apiClient<T>(url + qs, { method: "GET" });
 }
 
+export function apiPatch<T = unknown>(url: string, body?: unknown): Promise<T> {
+  return apiClient<T>(url, { method: "PATCH", body });
+}
+
 export function apiPost<T = unknown>(url: string, body?: unknown): Promise<T> {
   return apiClient<T>(url, { method: "POST", body });
 }

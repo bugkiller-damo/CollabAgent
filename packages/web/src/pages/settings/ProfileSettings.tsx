@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useAuthStore } from "../../stores";
-import { apiPost } from "../../api/client";
+import { apiPatch, apiPost } from "../../api/client";
 
 export function ProfileSettings() {
   const user = useAuthStore((s) => s.user);
@@ -14,7 +14,7 @@ export function ProfileSettings() {
 
   const handleSaveProfile = async () => {
     try {
-      await apiPost("/api/auth/me", { displayName, description });
+      await apiPatch("/api/auth/profile", { displayName, description });
       setMsg("已保存");
       useAuthStore.setState({ user: { ...user, displayName, description } as any });
     } catch {
@@ -25,7 +25,7 @@ export function ProfileSettings() {
   const handleChangePassword = async () => {
     if (newPw.length < 6) { setPwMsg("新密码至少 6 位"); return; }
     try {
-      await apiPost("/api/auth/me/password", { oldPassword: oldPw, newPassword: newPw });
+      await apiPost("/api/auth/change-password", { oldPassword: oldPw, newPassword: newPw });
       setPwMsg("密码已修改，其他设备需重新登录");
       setOldPw(""); setNewPw("");
     } catch (err: any) {

@@ -46,7 +46,10 @@ export async function authRoutes(app: FastifyInstance) {
 
   // Login (handle OR email)
   app.post("/login", async (req, reply) => {
-    const { login, password, rememberMe } = req.body as Record<string, unknown>;
+    const body = req.body as Record<string, unknown>;
+    const login = (body.login || body.handle) as string;
+    const password = body.password as string;
+    const remember = (body.remember || body.rememberMe) as boolean | undefined;
     if (!login || !password) {
       return reply.status(400).send({ code: "INVALID_ARG", error: "请输入用户名/邮箱和密码" });
     }
@@ -65,7 +68,7 @@ export async function authRoutes(app: FastifyInstance) {
       return reply.status(401).send({ code: "AUTH_FAILED", error: "密码错误" });
     }
 
-    const expiresIn = rememberMe ? "30d" : "1h";
+    const expiresIn = remember ? "30d" : "7d";
     const accessToken = app.jwt.sign({ sub: user.id, handle: user.handle, tv: user.token_version }, { expiresIn });
     const refreshToken = app.jwt.sign({ sub: user.id, type: "refresh" }, { expiresIn: "30d" }, REFRESH_SECRET);
 
@@ -97,6 +100,23 @@ export async function authRoutes(app: FastifyInstance) {
   });
 
   // Update profile
+  // Change password
+  app.post("/profile/password", { preHandler: [app.authenticate] }, async (req, reply) => {
+    const userId = (req as any).user.sub;
+    const { oldPassword, newPassword } = req.body as Record<string, unknown>;
+    if (typeof oldPassword !== "string" || typeof newPassword !== "string" || newPassword.length < 6) {
+      return reply.status(400).send({ error: "新密码至少 6 位" });
+    }
+    const r = await app.pg.query("SELECT password_hash FROM users WHERE id = $1", [userId]);
+    const u = r.rows[0] as Record<string, unknown> | undefined;
+    if (!u || !(await bcrypt.compare(oldPassword, u.password_hash as string))) {
+      return reply.status(401).send({ error: "当前密码不正确" });
+    }
+    const h = await bcrypt.hash(newPassword, 12);
+    await app.pg.query("UPDATE users SET password_hash = $1 WHERE id = $2", [h, userId]);
+    return { ok: true };
+  });
+
   app.patch("/profile", { preHandler: [app.authenticate] }, async (req, reply) => {
     const { displayName, description, avatarUrl } = req.body as Record<string, unknown>;
     const userId = (req as any).user.sub;
