@@ -1,52 +1,53 @@
-import { FastifyInstance } from "fastify";
-import { z } from "zod";
-import bcrypt from "bcryptjs";
-import jwt from "jsonwebtoken";
 
-const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change-me";
-
-const registerSchema = z.object({
-  email: z.string().email(),
-  handle: z.string().min(2).max(80),
-  displayName: z.string().min(1).max(80),
-  password: z.string().min(8),
-});
-
-const loginSchema = z.object({
-  email: z.string().email(),
-  password: z.string(),
-});
+import type { FastifyInstance } from 'fastify';
+import bcrypt from 'bcryptjs';
 
 export async function authRoutes(app: FastifyInstance) {
-  app.post("/register", async (req, reply) => {
-    const parsed = registerSchema.safeParse(req.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ ok: false, code: "INVALID_ARG", message: parsed.error.message });
+  app.post('/register', async (req, reply) => {
+    const { handle, password, displayName } = req.body as any;
+    if (!handle || !password) {
+      return reply.status(400).send({ error: 'handle and password required' });
     }
-    const { email, handle, displayName, password } = parsed.data;
-
-    // TODO: check duplicate, insert user
-    const passwordHash = await bcrypt.hash(password, 10);
-    // const user = await db.insert(users).values({ handle, displayName, passwordHash }).returning();
-
-    const token = jwt.sign({ userId: "placeholder", handle }, JWT_SECRET, { expiresIn: "7d" });
-    return { ok: true, data: { token, handle, displayName } };
+    const existing = await app.pg.query(
+      'SELECT id FROM users WHERE lower(handle) = $1', [handle.toLowerCase()]
+    );
+    if (existing.rows.length > 0) {
+      return reply.status(409).send({ error: 'handle already taken' });
+    }
+    const hash = await bcrypt.hash(password, 12);
+    const result = await app.pg.query(
+      'INSERT INTO users (handle, display_name, password_hash) VALUES ($1, $2, $3) RETURNING id, handle, display_name, created_at',
+      [handle, displayName || null, hash]
+    );
+    const user = result.rows[0];
+    const token = app.jwt.sign({ sub: user.id, handle: user.handle });
+    return { token, user };
   });
 
-  app.post("/login", async (req, reply) => {
-    const parsed = loginSchema.safeParse(req.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ ok: false, code: "INVALID_ARG", message: parsed.error.message });
+  app.post('/login', async (req, reply) => {
+    const { handle, password } = req.body as any;
+    const result = await app.pg.query(
+      'SELECT id, handle, display_name, password_hash FROM users WHERE lower(handle) = $1',
+      [handle.toLowerCase()]
+    );
+    const user = result.rows[0];
+    if (!user || !(await bcrypt.compare(password, user.password_hash))) {
+      return reply.status(401).send({ error: 'invalid credentials' });
     }
-    const { email, password } = parsed.data;
+    const token = app.jwt.sign({ sub: user.id, handle: user.handle });
+    return { token, user: { id: user.id, handle: user.handle, displayName: user.display_name } };
+  });
 
-    // TODO: find user, verify password
-    // const user = await db.query.users.findFirst({ where: eq(users.email, email) });
-    // if (!user || !await bcrypt.compare(password, user.passwordHash)) {
-    //   return reply.status(401).send({ ok: false, code: "AUTH_FAILED", message: "Invalid credentials" });
-    // }
-
-    const token = jwt.sign({ userId: "placeholder", handle: "demo" }, JWT_SECRET, { expiresIn: "7d" });
-    return { ok: true, data: { token } };
+  app.post('/machine-token', { preHandler: [app.authenticate] }, async (req, reply) => {
+    const { serverId, scope } = req.body as any;
+    const userId = (req as any).user.sub;
+    const prefix = 'sk_machine_';
+    const tokenValue = prefix + crypto.randomUUID().replace(/-/g, '');
+    const hash = await bcrypt.hash(tokenValue, 8);
+    const result = await app.pg.query(
+      'INSERT INTO machine_tokens (user_id, server_id, token_hash, token_prefix, scope) VALUES ($1, $2, $3, $4, $5) RETURNING id',
+      [userId, serverId, hash, prefix, JSON.stringify(scope || {})]
+    );
+    return { token: tokenValue, ...result.rows[0] };
   });
 }

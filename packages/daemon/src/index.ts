@@ -1,13 +1,36 @@
-import { Command } from "commander";
+#!/usr/bin/env node
+import { DaemonCore } from "./core.js";
 
-const program = new Command();
+function parseArgs(args: string[]): { serverUrl: string; apiKey: string } | null {
+  let serverUrl = "";
+  let apiKey = "";
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--server-url" && args[i + 1]) serverUrl = args[++i];
+    if (args[i] === "--api-key" && args[i + 1]) apiKey = args[++i];
+  }
+  if (!serverUrl || !apiKey) return null;
+  return { serverUrl, apiKey };
+}
 
-program
-  .name("collabagent-daemon")
-  .description("CollabAgent 本地守护进程")
-  .version("0.1.0")
-  .requiredOption("--server-url <url>", "服务器地址")
-  .requiredOption("--api-key <key>", "API 密钥");
+const parsed = parseArgs(process.argv.slice(2));
+if (!parsed) {
+  console.error("Usage: collabagent-daemon --server-url <url> --api-key <key>");
+  process.exit(1);
+}
 
-program.parse();
-console.log("CollabAgent daemon starting...");
+const daemon = new DaemonCore(parsed);
+
+try {
+  daemon.start();
+} catch (err) {
+  console.error(err instanceof Error ? err.message : err);
+  process.exit(1);
+}
+
+const shutdown = async () => {
+  await daemon.stop();
+  process.exit(0);
+};
+
+process.on("SIGTERM", () => void shutdown());
+process.on("SIGINT", () => void shutdown());

@@ -1,17 +1,37 @@
 import { Outlet } from "react-router-dom";
+import { Sidebar } from "./Sidebar";
+import { useWebSocket } from "../../hooks/useWebSocket";
+import { useAuthStore, useMessageStore, useChannelStore } from "../../stores";
+import type { WsServerMessage } from "@collabagent/shared";
 
 export function AppLayout() {
+  const { token } = useAuthStore();
+  const receiveMessage = useMessageStore((s) => s.receiveMessage);
+  const incrementUnread = useChannelStore((s) => s.incrementUnread);
+  const activeChannelName = useChannelStore((s) => s.activeChannelName);
+
+  const { isConnected, reconnectAttempt } = useWebSocket({
+    serverUrl: window.location.origin,
+    token: token || "",
+    onMessage: (msg: WsServerMessage) => {
+      if (msg.type === "agent:deliver") {
+        receiveMessage(msg.message);
+        if (msg.message.channelId !== activeChannelName) {
+          incrementUnread(msg.message.channelId);
+        }
+      }
+    },
+  });
+
   return (
     <div className="flex h-screen bg-gray-900">
-      <aside className="w-64 bg-gray-800 border-r border-gray-700 p-4">
-        <h1 className="text-white font-bold mb-4">CollabAgent</h1>
-        <nav className="space-y-1">
-          <a href="/channels/general" className="block text-gray-300 hover:text-white p-2 rounded hover:bg-gray-700">
-            # general
-          </a>
-        </nav>
-      </aside>
-      <main className="flex-1 flex flex-col">
+      <Sidebar />
+      <main className="flex-1 flex flex-col min-w-0">
+        {!isConnected && (
+          <div className="bg-yellow-600 text-white text-center text-sm py-1">
+            连接中断，重连中...（第 {reconnectAttempt} 次）
+          </div>
+        )}
         <Outlet />
       </main>
     </div>
