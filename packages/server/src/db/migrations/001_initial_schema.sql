@@ -10,11 +10,6 @@ CREATE TABLE IF NOT EXISTS users (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Column migrations for users table (safe to run repeatedly)
-ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(255);
-ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INTEGER DEFAULT 1;
-ALTER TABLE users ADD COLUMN IF NOT EXISTS nickname VARCHAR(80);
-
 CREATE TABLE IF NOT EXISTS servers (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name VARCHAR(100) NOT NULL,
@@ -106,14 +101,3 @@ CREATE TABLE IF NOT EXISTS reminders (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-
--- Incremental migrations (safe to re-run)
-ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(255);
-ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version VARCHAR(64) DEFAULT gen_random_uuid()::text;
-ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_code VARCHAR(10);
-ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_expires TIMESTAMPTZ;
-ALTER TABLE messages ADD COLUMN IF NOT EXISTS thread_id UUID REFERENCES messages(id);
-ALTER TABLE messages ADD COLUMN IF NOT EXISTS task_number INTEGER;
-ALTER TABLE messages ADD COLUMN IF NOT EXISTS task_status VARCHAR(20);
-ALTER TABLE messages ADD COLUMN IF NOT EXISTS task_assignee UUID;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users (lower(email)) WHERE email IS NOT NULL;

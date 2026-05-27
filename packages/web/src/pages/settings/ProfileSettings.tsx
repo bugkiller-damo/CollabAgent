@@ -15,7 +15,7 @@ export function ProfileSettings() {
 
   const handleSaveProfile = async () => {
     try {
-      await apiPatch("/api/profile", { displayName, description });
+      await apiPatch("/api/auth/profile", { displayName, description });
       setMsg("已保存");
       updateUser({ displayName, description });
     } catch {

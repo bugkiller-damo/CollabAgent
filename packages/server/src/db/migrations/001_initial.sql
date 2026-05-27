@@ -109,11 +109,14 @@ CREATE TABLE IF NOT EXISTS reminders (
 
 -- Incremental migrations (safe to re-run)
 ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(255);
-ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version VARCHAR(64) DEFAULT gen_random_uuid()::text;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INTEGER DEFAULT 0;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users (lower(email));
+
+-- Update existing users without email
+UPDATE users SET email = handle || '@demo.com' WHERE email IS NULL;
+
+-- Auto-migration: add missing columns (safe, uses IF NOT EXISTS)
+ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(255);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version VARCHAR(64);
 ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_code VARCHAR(10);
 ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_expires TIMESTAMPTZ;
-ALTER TABLE messages ADD COLUMN IF NOT EXISTS thread_id UUID REFERENCES messages(id);
-ALTER TABLE messages ADD COLUMN IF NOT EXISTS task_number INTEGER;
-ALTER TABLE messages ADD COLUMN IF NOT EXISTS task_status VARCHAR(20);
-ALTER TABLE messages ADD COLUMN IF NOT EXISTS task_assignee UUID;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users (lower(email)) WHERE email IS NOT NULL;

@@ -3,6 +3,8 @@ import cors from "@fastify/cors";
 import fastifyWebsocket from "@fastify/websocket";
 import fastifyJwt from "@fastify/jwt";
 import pgPlugin from "./db/connection.js";
+import { sql } from "./db/connection.js";
+import { runMigrations } from "./db/migrate.js";
 
 import { authRoutes } from "./routes/auth.js";
 import { channelRoutes } from "./routes/channels.js";
@@ -71,6 +73,20 @@ server.get("/api/server/info", async () => {
   );
   return { channels: channels.rows, agents: [], humans: [] };
 });
+
+// Auto-migrate on startup
+await runMigrations();
+console.log("[DB] Schema migrated");
+
+  // Auto-seed default data (first run only)
+  const serverCount = await sql`SELECT count(*)::int as c FROM servers`;
+  if (serverCount[0].c === 0) {
+    const [sv] = await sql`INSERT INTO servers (name, created_by) VALUES ('Default Server', '00000000-0000-0000-0000-000000000000') RETURNING id`;
+    for (const ch of ["general", "random", "engineering"]) {
+      await sql`INSERT INTO channels (server_id, name, description) VALUES (${sv.id}, ${ch}, ${ch === "general" ? "General discussion" : ch === "random" ? "Random topics" : "Engineering team"})`;
+    }
+    console.log("[DB] Seed data created: 1 server, 3 channels");
+  }
 
 // Start
 const port = Number(process.env.PORT) || 3001;
