@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { useChannelStore } from "../../stores";
 
 export function Sidebar() {
@@ -5,6 +6,14 @@ export function Sidebar() {
   const activeChannelName = useChannelStore((s) => s.activeChannelName);
   const setActiveChannel = useChannelStore((s) => s.setActiveChannel);
   const unreadCounts = useChannelStore((s) => s.unreadCounts);
+  const fetchChannels = useChannelStore((s) => s.fetchChannels);
+
+  useEffect(() => {
+    fetchChannels().catch(() => {
+      // Server not available — show empty state
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <aside className="w-60 bg-gray-800 border-r border-gray-700 flex flex-col shrink-0">
