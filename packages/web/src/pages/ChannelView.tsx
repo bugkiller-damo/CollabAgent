@@ -52,13 +52,13 @@ export function ChannelView() {
               <div className="flex items-baseline gap-2">
                 <span className="font-semibold text-white text-sm">{msg.senderName || msg.senderId || "Unknown"}</span>
                 <span className="text-gray-500 text-xs">
-                  {new Date(msg.time || msg.createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}
+                  {new Date(msg.time || (msg as any).createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}
                 </span>
               </div>
               <p className="text-gray-300 text-sm whitespace-pre-wrap">{msg.content}</p>
-              {(msg.taskNumber || msg.task_number) && (
+              {(msg.taskNumber || (msg as any).task_number) && (
                 <span className="inline-block mt-1 text-xs bg-blue-900 text-blue-300 px-1.5 py-0.5 rounded">
-                  task #{msg.taskNumber} · {(msg.taskStatus || msg.task_status)}
+                  task #{msg.taskNumber} · {(msg.taskStatus || (msg as any).task_status)}
                 </span>
               )}
             </div>

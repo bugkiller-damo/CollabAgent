@@ -35,7 +35,18 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   },
 
   sendMessage: async (channel, content, attachments) => {
-    await apiPost("/api/messages/send", { target: channel, content, attachmentIds: attachments });
+    const data = await apiPost<{ messageId: string; messageSeq: number }>("/api/messages/send", { target: channel, content, attachmentIds: attachments });
+    const newMsg = {
+      id: data.messageId,
+      channelId: channel,
+      seq: data.messageSeq,
+      senderId: "me",
+      senderName: "Me",
+      senderType: "human" as const,
+      content,
+      time: new Date().toISOString(),
+    } as Message;
+    get().receiveMessage(newMsg);
   },
 
   receiveMessage: (message) => {

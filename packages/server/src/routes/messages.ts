@@ -1,4 +1,6 @@
 import type { FastifyInstance } from "fastify";
+import { broadcast } from "../ws/handler.js";
+import { broadcast } from "../ws/handler.js";
 
 export async function messageRoutes(app: FastifyInstance) {
   // Public: get messages by channel (dev mode, no auth)
@@ -36,6 +38,9 @@ export async function messageRoutes(app: FastifyInstance) {
       [resolvedChannelId, serverResult.rows[0].server_id, userId, content, threadId || null]
     );
     const msg = result.rows[0];
+    const senderName = (req as any).user?.handle || "unknown";
+    const channelName = target.startsWith("#") ? target : "#" + target;
+    broadcast(resolvedChannelId, { type: "agent:deliver", seq: msg.seq, message: { id: msg.id, seq: msg.seq, channelId: channelName, senderId: userId, senderName, senderType: "human", content, time: msg.created_at }});
     return { state: "sent", messageId: msg.id, messageSeq: msg.seq };
   });
 

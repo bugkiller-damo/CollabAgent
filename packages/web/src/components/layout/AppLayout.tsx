@@ -1,26 +1,50 @@
 import { useEffect } from "react";
 import { Outlet } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
-import { useChannelStore } from "../../stores";
+import { useWebSocket } from "../../hooks/useWebSocket";
+import { useAuthStore, useMessageStore, useChannelStore } from "../../stores";
+import type { WsServerMessage } from "@collabagent/shared";
 
 export function AppLayout() {
   const fetchChannels = useChannelStore((s) => s.fetchChannels);
 
   useEffect(() => {
-    fetchChannels().catch(() => {
-      useChannelStore.setState({
-        channels: [
-          { id: "1", serverId: "s1", name: "general", visibility: "public" as const, archived: false, memberCount: 1, joined: true, createdAt: new Date().toISOString(), description: "主频道" },
-          { id: "2", serverId: "s1", name: "random", visibility: "public" as const, archived: false, memberCount: 1, joined: true, createdAt: new Date().toISOString() },
-        ],
-      });
-    });
+    let cancelled = false;
+    const load = async () => {
+      try { await fetchChannels(); } catch {}
+    };
+    load();
+    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // WebSocket disabled during initial dev — re-enable when WS server is ready
-  const isConnected = true;
-  const reconnectAttempt = 0;
+  const { token } = useAuthStore();
+  const receiveMessage = useMessageStore((s) => s.receiveMessage);
+  const incrementUnread = useChannelStore((s) => s.incrementUnread);
+  const activeChannelName = useChannelStore((s) => s.activeChannelName);
+
+  const { isConnected, reconnectAttempt } = useWebSocket({
+    serverUrl: window.location.origin,
+    token: token || "",
+    onMessage: (msg: WsServerMessage) => {
+      if (msg.type === "agent:deliver" && msg.message) {
+        const m = msg.message as any;
+        receiveMessage({
+          id: m.id,
+          seq: m.seq,
+          channelId: m.channelId,
+          senderId: m.senderId,
+          senderName: m.senderName || "unknown",
+          senderType: m.senderType || "human",
+          content: m.content,
+          time: m.time || new Date().toISOString(),
+        });
+        if (activeChannelName && m.channelId !== activeChannelName) {
+          incrementUnread(m.channelId);
+        }
+      }
+    },
+  });
 
   return (
     <div className="flex h-screen bg-gray-900">

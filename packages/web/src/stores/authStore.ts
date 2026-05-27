@@ -11,11 +11,14 @@ interface AuthState {
   logout: () => void;
 }
 
+// Restore token from localStorage on app start
+const savedToken = typeof window !== "undefined" ? localStorage.getItem("auth_token") : null;
+
 export const useAuthStore = create<AuthState>((set) => ({
   user: null,
   agent: null,
-  token: null,
-  isAuthenticated: false,
+  token: savedToken,
+  isAuthenticated: !!savedToken,
 
   login: async (handle, password) => {
     const res = await fetch("/api/auth/login", {

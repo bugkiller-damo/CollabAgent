@@ -66,7 +66,7 @@ server.get("/api/server/info", async () => {
   const serverId = (serverResult.rows[0] as any)?.id;
   if (!serverId) return { channels: [], agents: [], humans: [] };
   const channels = await server.pg.query(
-    `SELECT c.*, cm.role FROM channels c LEFT JOIN channel_members cm ON cm.channel_id = c.id WHERE c.server_id = $1 AND c.archived = false`,
+    "SELECT DISTINCT ON (c.id) c.* FROM channels c WHERE c.server_id = $1 AND c.archived = false",
     [serverId]
   );
   return { channels: channels.rows, agents: [], humans: [] };

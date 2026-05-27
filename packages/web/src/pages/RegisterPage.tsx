@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { apiPost } from "../api/client";
+import { useAuthStore } from "../stores/authStore";
 
 export function RegisterPage() {
   const [handle, setHandle] = useState("");
@@ -12,12 +13,13 @@ export function RegisterPage() {
     e.preventDefault();
     setError("");
     try {
-      const data = await apiPost<{ token: string }>("/api/auth/register", {
+      const data = await apiPost<{ token: string; user: { id: string; handle: string; displayName: string; createdAt: string } }>("/api/auth/register", {
         handle,
         password,
         displayName: handle,
       });
       localStorage.setItem("auth_token", data.token);
+      useAuthStore.setState({ token: data.token, user: data.user as any, isAuthenticated: true });
       navigate("/channels/general");
     } catch (err) {
       setError((err as Error).message || "注册失败");
