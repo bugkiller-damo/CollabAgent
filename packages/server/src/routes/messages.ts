@@ -22,12 +22,12 @@ export async function messageRoutes(app: FastifyInstance) {
   app.get("/thread/:messageId", async (req, reply) => {
     const { messageId } = req.params as Record<string, string>;
     const parent = await app.pg.query(
-      "SELECT id, channel_id, content, sender_id, sender_type as \"senderName\", created_at as \"time\" FROM messages WHERE id = $1",
+      "SELECT m.id, m.channel_id, m.content, m.sender_id, COALESCE(u.display_name, u.handle, 'User') as \"senderName\", m.created_at as \"time\" FROM messages m LEFT JOIN users u ON m.sender_id = u.id WHERE m.id = $1",
       [messageId]
     );
     if (parent.rows.length === 0) return reply.status(404).send({ error: "message not found" });
     const replies = await app.pg.query(
-      "SELECT id, channel_id, sender_id, sender_type as \"senderName\", content, seq, created_at as \"time\" FROM messages WHERE thread_id = $1 ORDER BY seq ASC",
+      "SELECT m.id, m.channel_id, m.sender_id, COALESCE(u.display_name, u.handle, 'User') as \"senderName\", m.content, m.seq, m.created_at as \"time\" FROM messages m LEFT JOIN users u ON m.sender_id = u.id WHERE m.thread_id = $1 ORDER BY m.seq ASC",
       [messageId]
     );
     return { parent: parent.rows[0], replies: replies.rows };
@@ -54,7 +54,7 @@ export async function messageRoutes(app: FastifyInstance) {
     const msg = result.rows[0];
     const senderName = (req as any).user?.handle || "unknown";
     const channelName = target.startsWith("#") ? target : "#" + target;
-    broadcast(resolvedChannelId, { type: "agent:deliver", seq: msg.seq, message: { id: msg.id, seq: msg.seq, channelId: channelName, senderId: userId, senderName, senderType: "human", content, time: msg.created_at }});
+    broadcast(resolvedChannelId, { type: "agent:deliver", seq: msg.seq, message: { id: msg.id, seq: msg.seq, channelId: channelName, senderId: userId, senderName, senderType: "human", content, time: msg.created_at, threadId: threadId || null }});
     return { state: "sent", messageId: msg.id, messageSeq: msg.seq };
   });
 

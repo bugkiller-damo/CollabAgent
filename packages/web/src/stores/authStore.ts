@@ -1,33 +1,34 @@
 import { create } from "zustand";
-import type { User, Agent } from "@collabagent/shared";
+
+interface User {
+  id: string;
+  handle: string;
+  displayName?: string;
+  email?: string;
+}
 
 interface AuthState {
   user: User | null;
-  agent: Agent | null;
   token: string | null;
   isAuthenticated: boolean;
-  login: (handle: string, password: string) => Promise<void>;
+  login: (handle: string, password: string, remember?: boolean) => Promise<void>;
   loginWithToken: (token: string) => void;
   logout: () => void;
 }
 
-// Restore token from localStorage on app start
-const savedToken = typeof window !== "undefined" ? localStorage.getItem("auth_token") : null;
-
 export const useAuthStore = create<AuthState>((set) => ({
   user: null,
-  agent: null,
-  token: savedToken,
-  isAuthenticated: !!savedToken,
+  token: localStorage.getItem("auth_token") || null,
+  isAuthenticated: !!localStorage.getItem("auth_token"),
 
-  login: async (handle, password) => {
+  login: async (handle, password, remember = false) => {
     const res = await fetch("/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ handle, password }),
+      body: JSON.stringify({ handle, password, remember }),
     });
-    if (!res.ok) throw new Error("Login failed");
     const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "登录失败");
     localStorage.setItem("auth_token", data.token);
     set({ user: data.user, token: data.token, isAuthenticated: true });
   },
@@ -39,6 +40,6 @@ export const useAuthStore = create<AuthState>((set) => ({
 
   logout: () => {
     localStorage.removeItem("auth_token");
-    set({ user: null, agent: null, token: null, isAuthenticated: false });
+    set({ user: null, token: null, isAuthenticated: false });
   },
 }));

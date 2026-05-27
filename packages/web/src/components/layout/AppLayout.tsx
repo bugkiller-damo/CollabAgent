@@ -29,6 +29,7 @@ export function AppLayout() {
     onMessage: (msg: WsServerMessage) => {
       if (msg.type === "agent:deliver" && msg.message) {
         const m = msg.message as any;
+        const hasThread = m.thread_id || m.threadId;
         // Resolve channelId to target string for store key
         const chs = useChannelStore.getState().channels;
         const ch = chs.find((c: any) => c.id === m.channelId);
@@ -43,6 +44,11 @@ export function AppLayout() {
           content: m.content,
           time: m.time || new Date().toISOString(),
         });
+        if (hasThread) {
+          // Also store under thread key so ThreadView can pick it up
+          const threadKey = targetKey + ':' + (m.thread_id || m.threadId || '').substring(0, 8);
+          receiveMessage({ ...m, id: m.id, seq: m.seq, channelId: threadKey, senderId: m.senderId, senderName: m.senderName || 'unknown', senderType: m.senderType || 'human', content: m.content, time: m.time || new Date().toISOString() });
+        }
         if (activeChannelName && ch?.name !== activeChannelName) {
           incrementUnread(targetKey);
         }

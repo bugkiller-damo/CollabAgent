@@ -1,11 +1,13 @@
 import { useNavigate } from "react-router-dom";
-import { useChannelStore } from "../../stores";
+import { useChannelStore, useAuthStore } from "../../stores";
 
 export function Sidebar() {
   const channels = useChannelStore((s) => s.channels);
   const activeChannelName = useChannelStore((s) => s.activeChannelName);
   const setActiveChannel = useChannelStore((s) => s.setActiveChannel);
   const unreadCounts = useChannelStore((s) => s.unreadCounts);
+  const user = useAuthStore((s) => s.user);
+  const logout = useAuthStore((s) => s.logout);
   const navigate = useNavigate();
 
   return (
@@ -17,7 +19,7 @@ export function Sidebar() {
         <div className="text-gray-500 text-xs font-semibold uppercase tracking-wider px-2 py-1">
           频道
         </div>
-        {channels.map((ch) => (
+        {channels.map((ch: any) => (
           <button
             key={ch.id}
             onClick={() => {
@@ -36,9 +38,17 @@ export function Sidebar() {
           </button>
         ))}
       </nav>
-      <div className="p-3 border-t border-gray-700">
-        <button onClick={() => navigate("/settings/profile")} className="text-gray-400 hover:text-white text-sm">
+      <div className="p-3 border-t border-gray-700 space-y-1">
+        {user && (
+          <div className="text-gray-400 text-xs px-1 mb-1">
+            已登录：{user.handle}
+          </div>
+        )}
+        <button onClick={() => navigate("/settings/profile")} className="block w-full text-left text-gray-400 hover:text-white text-sm">
           设置
+        </button>
+        <button onClick={() => { logout(); navigate("/login"); }} className="block w-full text-left text-gray-400 hover:text-red-400 text-sm">
+          退出登录
         </button>
       </div>
     </aside>

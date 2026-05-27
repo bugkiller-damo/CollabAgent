@@ -54,6 +54,8 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     set((s) => {
       const existing = s.messagesByTarget[target] || [];
       if (existing.find((m) => m.id === message.id)) return s;
+      // Don't add thread replies to main channel view — they belong in thread view only
+      if ((message as any).threadId) return s;
       return {
         messagesByTarget: {
           ...s.messagesByTarget,
