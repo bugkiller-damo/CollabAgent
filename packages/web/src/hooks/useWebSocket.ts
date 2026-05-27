@@ -76,7 +76,7 @@ export function useWebSocket({
     if (!shouldConnectRef.current) return;
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
 
-    const wsUrl = serverUrl.replace(/^http/, "ws") + `/ws`;
+    const wsUrl = serverUrl.replace(/^http/, "ws") + `/ws/chat`;
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 

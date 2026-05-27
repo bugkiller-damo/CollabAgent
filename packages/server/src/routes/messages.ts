@@ -1,6 +1,5 @@
 import type { FastifyInstance } from "fastify";
 import { broadcast } from "../ws/handler.js";
-import { broadcast } from "../ws/handler.js";
 
 export async function messageRoutes(app: FastifyInstance) {
   // Public: get messages by channel (dev mode, no auth)

@@ -29,18 +29,22 @@ export function AppLayout() {
     onMessage: (msg: WsServerMessage) => {
       if (msg.type === "agent:deliver" && msg.message) {
         const m = msg.message as any;
+        // Resolve channelId to target string for store key
+        const chs = useChannelStore.getState().channels;
+        const ch = chs.find((c: any) => c.id === m.channelId);
+        const targetKey = ch ? '#' + ch.name : m.channelId;
         receiveMessage({
           id: m.id,
           seq: m.seq,
-          channelId: m.channelId,
+          channelId: targetKey,
           senderId: m.senderId,
           senderName: m.senderName || "unknown",
           senderType: m.senderType || "human",
           content: m.content,
           time: m.time || new Date().toISOString(),
         });
-        if (activeChannelName && m.channelId !== activeChannelName) {
-          incrementUnread(m.channelId);
+        if (activeChannelName && ch?.name !== activeChannelName) {
+          incrementUnread(targetKey);
         }
       }
     },
