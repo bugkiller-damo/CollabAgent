@@ -4,6 +4,7 @@ import { apiPatch, apiPost } from "../../api/client";
 
 export function ProfileSettings() {
   const user = useAuthStore((s) => s.user);
+  const updateUser = useAuthStore((s) => s.updateUser);
   const [displayName, setDisplayName] = useState(user?.displayName || "");
   const [description, setDescription] = useState(user?.description || "");
   const [msg, setMsg] = useState("");
@@ -14,9 +15,9 @@ export function ProfileSettings() {
 
   const handleSaveProfile = async () => {
     try {
-      await apiPatch("/api/auth/profile", { displayName, description });
+      await apiPatch("/api/profile", { displayName, description });
       setMsg("已保存");
-      useAuthStore.setState({ user: { ...user, displayName, description } as any });
+      updateUser({ displayName, description });
     } catch {
       setMsg("保存失败");
     }

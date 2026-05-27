@@ -18,20 +18,22 @@ interface AuthState {
   updateUser: (u: Partial<User>) => void;
 }
 
+const store = typeof window !== "undefined" ? localStorage : null;
+const savedToken = store?.getItem("auth_token") || null;
 const savedUser = (() => {
-  try { return JSON.parse(localStorage.getItem("user") || "null"); } catch { return null; }
+  try { return JSON.parse(store?.getItem("user") || "null"); } catch { return null; }
 })();
 
 export const useAuthStore = create<AuthState>((set) => ({
   user: savedUser,
-  token: localStorage.getItem("auth_token") || null,
-  isAuthenticated: !!localStorage.getItem("auth_token"),
+  token: savedToken,
+  isAuthenticated: !!savedToken,
 
   login: async (login, password, rememberMe = false) => {
     const res = await fetch("/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ login, password, rememberMe }),
+      body: JSON.stringify({ handle: login, password, remember: rememberMe }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "登录失败");
@@ -43,6 +45,11 @@ export const useAuthStore = create<AuthState>((set) => ({
   loginWithToken: (token) => {
     localStorage.setItem("auth_token", token);
     set({ token, isAuthenticated: true });
+    // Fetch user profile if token present
+    fetch("/api/auth/me", { headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" } })
+      .then(r => r.ok ? r.json() : null)
+      .then(u => { if (u) { localStorage.setItem("user", JSON.stringify(u)); set({ user: u }); } })
+      .catch(() => {});
   },
 
   logout: () => {

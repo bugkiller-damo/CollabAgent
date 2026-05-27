@@ -41,7 +41,7 @@ export async function authRoutes(app: FastifyInstance) {
     const accessToken = app.jwt.sign({ sub: user.id, handle: user.handle, tv: 0 }, { expiresIn: "1h" });
     const refreshToken = app.jwt.sign({ sub: user.id, type: "refresh" }, { expiresIn: "30d" }, REFRESH_SECRET);
 
-    return { token: accessToken, refreshToken, user: { id: user.id, handle: user.handle, displayName: user.display_name, email: user.email } };
+    return { token: accessToken, refreshToken, user: { id: user.id, handle: user.handle, displayName: user.display_name, email: user.email, description: user.description || '', avatarUrl: user.avatar_url || '' } };
   });
 
   // Login (handle OR email)
@@ -55,7 +55,7 @@ export async function authRoutes(app: FastifyInstance) {
     }
 
     const result = await app.pg.query(
-      "SELECT id, handle, display_name, email, password_hash, token_version FROM users WHERE lower(handle) = $1 OR lower(email) = $1",
+      "SELECT id, handle, display_name, email, description, avatar_url, password_hash, token_version FROM users WHERE lower(handle) = $1 OR lower(email) = $1",
       [(login as string).toLowerCase()]
     );
 
