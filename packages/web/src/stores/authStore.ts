@@ -21,11 +21,11 @@ export const useAuthStore = create<AuthState>((set) => ({
   token: localStorage.getItem("auth_token") || null,
   isAuthenticated: !!localStorage.getItem("auth_token"),
 
-  login: async (handle, password, remember = false) => {
+  login: async (login, password, rememberMe = false) => {
     const res = await fetch("/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ handle, password, remember }),
+      body: JSON.stringify({ login, password, rememberMe }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "登录失败");

@@ -6,6 +6,7 @@ import { ThreadView } from "./pages/ThreadView";
 import { TaskBoard } from "./pages/TaskBoard";
 import { LoginPage } from "./pages/LoginPage";
 import { RegisterPage } from "./pages/RegisterPage";
+import { ForgotPasswordPage } from "./pages/ForgotPasswordPage";
 import { SettingsLayout } from "./pages/settings/SettingsLayout";
 import { ProfileSettings } from "./pages/settings/ProfileSettings";
 import { AdminPanel } from "./pages/admin/AdminPanel";
@@ -22,6 +23,7 @@ export function App() {
     <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route path="/register" element={<RegisterPage />} />
+      <Route path="/forgot-password" element={<ForgotPasswordPage />} />
       <Route element={<AuthGuard />}>
         <Route element={<AppLayout />}>
           <Route path="/channels" element={<Navigate to="/channels/general" />} />

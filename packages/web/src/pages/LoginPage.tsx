@@ -44,8 +44,9 @@ export function LoginPage() {
           登录
         </button>
         {error && <p className="text-red-400 text-sm text-center">{error}</p>}
-        <p className="text-gray-500 text-sm text-center">
-          没有账号？<Link to="/register" className="text-blue-400">注册</Link>
+        <p className="text-gray-500 text-sm text-center space-x-4">
+          <Link to="/forgot-password" className="text-blue-400 hover:underline">忘记密码</Link>
+          <Link to="/register" className="text-blue-400 hover:underline">注册</Link>
         </p>
         <button type="button" onClick={handleDevBypass}
           className="w-full p-2 rounded bg-gray-600 text-gray-300 hover:bg-gray-500 text-sm">
