@@ -1,0 +1,40 @@
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: collabagent
+      POSTGRES_PASSWORD: collabagent_dev
+      POSTGRES_DB: collabagent
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./packages/server/src/db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  server:
+    build:
+      context: .
+      dockerfile: packages/server/Dockerfile
+    ports:
+      - "3001:3001"
+    environment:
+      DATABASE_URL: postgresql://collabagent:collabagent_dev@postgres:5432/collabagent
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: dev-secret-change-in-production
+      PORT: 3001
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      - ./packages:/app/packages
+      - ./node_modules:/app/node_modules
+
+volumes:
+  pgdata:
