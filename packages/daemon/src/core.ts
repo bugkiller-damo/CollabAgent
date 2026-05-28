@@ -1,5 +1,6 @@
 import { WebSocket } from "ws";
-import { buildFetchDispatcher } from "./proxy.js";
+import { ApiClient } from "./client.js";
+import type { AgentContext } from "./auth.js";
 
 export interface DaemonConfig {
   serverUrl: string;
@@ -11,10 +12,25 @@ export class DaemonCore {
   private ws: WebSocket | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelay = 1000;
+  private client: ApiClient;
+  private agentId = "daemon-agent";
 
-  constructor(private config: DaemonConfig) {}
+  constructor(private config: DaemonConfig) {
+    // Create a minimal agent context for API calls
+    const ctx: AgentContext = {
+      agentId: this.agentId,
+      serverUrl: config.serverUrl,
+      serverId: null,
+      token: config.apiKey,
+      clientMode: "legacy-machine",
+      secretSource: "legacy-token-env",
+      activeCapabilities: null,
+    };
+    this.client = new ApiClient(ctx);
+  }
 
   start(): void {
+    console.log(`[Daemon] Starting with server ${this.config.serverUrl}`);
     this.connect();
   }
 
@@ -29,6 +45,14 @@ export class DaemonCore {
     this.ws.on("open", () => {
       console.log("[Daemon] Connected to server");
       this.reconnectDelay = 1000;
+      // Send ready message
+      this.ws?.send(JSON.stringify({
+        type: "ready",
+        capabilities: ["send", "read"],
+        runtimes: ["daemon-cli"],
+        hostname: process.env.COMPUTERNAME || "unknown",
+        daemonVersion: "0.1.0",
+      }));
     });
 
     this.ws.on("message", (data) => {
@@ -58,17 +82,38 @@ export class DaemonCore {
     }, this.reconnectDelay);
   }
 
-  private handleMessage(msg: Record<string, unknown>): void {
+  private async handleMessage(msg: Record<string, unknown>): Promise<void> {
     const type = msg.type as string | undefined;
     switch (type) {
+      case "agent:deliver": {
+        const m = (msg.message || msg) as Record<string, unknown>;
+        const content = m.content as string;
+        const channelName = (m.channelId as string) || "general";
+        const senderName = (m.senderName as string) || (m.senderId as string) || "unknown";
+        console.log(`[Daemon] Message from @${senderName} in #${channelName}: ${content?.slice(0, 50)}`);
+
+        // Auto-reply: only respond to messages not from this daemon
+        if (m.senderId !== this.agentId && content && typeof content === "string") {
+          const reply = `🤖 Daemon received: "${content.slice(0, 100)}" — from @${senderName}`;
+          try {
+            const res = await this.client.request("POST", `/internal/agent/${this.agentId}/send`, {
+              target: `#${channelName}`,
+              content: reply,
+            });
+            if (res.ok) {
+              console.log(`[Daemon] Auto-replied to #${channelName}`);
+            }
+          } catch (err) {
+            console.error("[Daemon] Failed to send reply:", (err as Error).message);
+          }
+        }
+        break;
+      }
       case "agent:start":
         console.log("[Daemon] Agent start requested", msg.config);
         break;
       case "agent:stop":
         console.log("[Daemon] Agent stop requested", msg.agentId);
-        break;
-      case "agent:deliver":
-        console.log("[Daemon] Message delivery", msg.seq);
         break;
       case "reminder.upsert":
         console.log("[Daemon] Reminder upsert", msg.reminder);
