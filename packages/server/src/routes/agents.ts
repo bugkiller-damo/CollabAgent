@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { broadcast } from "../ws/handler.js";
 
 export async function agentRoutes(app: FastifyInstance) {
   app.get("/:agentId/server", async (req) => {
@@ -11,16 +12,23 @@ export async function agentRoutes(app: FastifyInstance) {
 
   app.post("/:agentId/send", async (req) => {
     const { target, content } = req.body as any;
+    const { broadcast } = await import("../ws/handler.js");
+    const agentId = (req.params as any).agentId;
     const channelName = target.startsWith("#") ? target.slice(1).split(":")[0] : target;
     const ch = await app.pg.query("SELECT id, server_id FROM channels WHERE name = $1", [channelName]);
     if (ch.rows.length === 0) return { error: "channel not found" };
     const result = await app.pg.query(
       `INSERT INTO messages (channel_id, server_id, sender_id, sender_type, content)
        VALUES ($1, $2, $3, 'agent', $4) RETURNING id, seq, created_at`,
-      [ch.rows[0].id, ch.rows[0].server_id, (req.params as any).agentId, content]
+      [ch.rows[0].id, ch.rows[0].server_id, agentId, content]
     );
     const msg = result.rows[0];
+    broadcast(ch.rows[0].id, {
+      type: "agent:deliver", seq: msg.seq,
+      message: { id: msg.id, seq: msg.seq, channelId: target.startsWith("#") ? target : "#" + target, senderId: agentId, senderName: "Daemon", senderType: "agent", content, time: msg.created_at }
+    });
     return { state: "sent", messageId: msg.id, messageSeq: msg.seq };
+  });
   });
 
   app.get("/:agentId/history", async (req) => {

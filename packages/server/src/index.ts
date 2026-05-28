@@ -28,13 +28,35 @@ await server.register(fastifyJwt, {
 });
 await server.register(pgPlugin);
 
-// Auth decorator
+// Auth decorator — supports JWT, dev-token, and machine token
 server.decorate("authenticate", async function (request: any, reply: any) {
   const authHeader = request.headers.authorization || "";
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : authHeader;
+
   if (authHeader === "Bearer dev-token") {
     request.user = { sub: "dev-user", handle: "dev" };
     return;
   }
+
+  // Machine token (sk_machine_*)
+  if (token.startsWith("sk_machine_")) {
+    const bcrypt = (await import("bcryptjs")).default;
+    const result = await server.pg.query(
+      "SELECT user_id, server_id, scope FROM machine_tokens WHERE token_prefix = 'sk_machine_' AND revoked_at IS NULL"
+    );
+    for (const row of result.rows as any[]) {
+      if (await bcrypt.compare(token, row.token_hash)) {
+        const user = await server.pg.query("SELECT id, handle FROM users WHERE id = $1", [row.user_id]);
+        if (user.rows.length > 0) {
+          request.user = { sub: user.rows[0].id, handle: user.rows[0].handle, scope: row.scope };
+          return;
+        }
+      }
+    }
+    return reply.status(401).send({ error: "Invalid machine token" });
+  }
+
+  // JWT
   try {
     await request.jwtVerify();
   } catch (err) {
