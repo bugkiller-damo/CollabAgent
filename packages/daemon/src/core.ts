@@ -15,9 +15,12 @@ export class DaemonCore {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelay = 1000;
   private client: ApiClient;
+  private serverUrl: string;
   private agentId = "00000000-0000-0000-0000-000000000001";
 
   constructor(private config: DaemonConfig) {
+    this.serverUrl = config.serverUrl;
+    this.apiKey = config.apiKey;
     // Create a minimal agent context for API calls
     const ctx: AgentContext = {
       agentId: this.agentId,
@@ -98,8 +101,8 @@ export class DaemonCore {
         if (m.senderId !== this.agentId && content && typeof content === "string") {
           const reply = `🤖 Daemon received: "${content.slice(0, 100)}" — from @${senderName}`;
           try {
-            // Send reply directly to server (bypass client path rewriting)
-            const replyRes = await fetch(`${this.serverUrl}/api/messages/send`, {
+            // Send reply via agent route (machine token auth, no JWT needed)
+            const replyRes = await fetch(`${this.serverUrl}/internal/agent/${this.agentId}/send`, {
               method: "POST",
               headers: {
                 "Content-Type": "application/json",

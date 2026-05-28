@@ -17,10 +17,13 @@ export async function agentRoutes(app: FastifyInstance) {
     const channelName = target.startsWith("#") ? target.slice(1).split(":")[0] : target;
     const ch = await app.pg.query("SELECT id, server_id FROM channels WHERE name = $1", [channelName]);
     if (ch.rows.length === 0) return { error: "channel not found" };
+    // Use a fixed UUID if agentId is not a valid UUID (e.g. "daemon-agent")
+    const senderId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(agentId)
+      ? agentId : "00000000-0000-0000-0000-00000000da01";
     const result = await app.pg.query(
       `INSERT INTO messages (channel_id, server_id, sender_id, sender_type, content)
        VALUES ($1, $2, $3, 'agent', $4) RETURNING id, seq, created_at`,
-      [ch.rows[0].id, ch.rows[0].server_id, agentId, content]
+      [ch.rows[0].id, ch.rows[0].server_id, senderId, content]
     );
     const msg = result.rows[0];
     broadcast(ch.rows[0].id, {

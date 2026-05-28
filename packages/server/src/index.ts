@@ -42,7 +42,7 @@ server.decorate("authenticate", async function (request: any, reply: any) {
   if (token.startsWith("sk_machine_")) {
     const bcrypt = (await import("bcryptjs")).default;
     const result = await server.pg.query(
-      "SELECT user_id, server_id, scope FROM machine_tokens WHERE token_prefix = 'sk_machine_' AND revoked_at IS NULL"
+      "SELECT user_id, server_id, scope, token_hash FROM machine_tokens WHERE token_prefix = 'sk_machine_' AND revoked_at IS NULL"
     );
     for (const row of result.rows as any[]) {
       if (await bcrypt.compare(token, row.token_hash)) {
