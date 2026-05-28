@@ -29,7 +29,6 @@ export async function agentRoutes(app: FastifyInstance) {
     });
     return { state: "sent", messageId: msg.id, messageSeq: msg.seq };
   });
-  });
 
   app.get("/:agentId/history", async (req) => {
     const { channel, limit } = req.query as any;

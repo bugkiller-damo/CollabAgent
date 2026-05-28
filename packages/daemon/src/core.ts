@@ -10,10 +10,12 @@ export interface DaemonConfig {
 
 export class DaemonCore {
   private ws: WebSocket | null = null;
+  private serverUrl: string;
+  private apiKey: string;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelay = 1000;
   private client: ApiClient;
-  private agentId = "daemon-agent";
+  private agentId = "00000000-0000-0000-0000-000000000001";
 
   constructor(private config: DaemonConfig) {
     // Create a minimal agent context for API calls
@@ -96,10 +98,16 @@ export class DaemonCore {
         if (m.senderId !== this.agentId && content && typeof content === "string") {
           const reply = `🤖 Daemon received: "${content.slice(0, 100)}" — from @${senderName}`;
           try {
-            const res = await this.client.request("POST", `/internal/agent/${this.agentId}/send`, {
-              target: `#${channelName}`,
-              content: reply,
+            // Send reply directly to server (bypass client path rewriting)
+            const replyRes = await fetch(`${this.serverUrl}/api/messages/send`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${this.apiKey}`,
+              },
+              body: JSON.stringify({ target: `#${channelName}`, content: reply }),
             });
+            const res = { ok: replyRes.ok };
             if (res.ok) {
               console.log(`[Daemon] Auto-replied to #${channelName}`);
             }
