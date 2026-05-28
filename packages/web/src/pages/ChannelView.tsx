@@ -1,5 +1,5 @@
 import { useParams } from "react-router-dom";
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useLayoutEffect } from "react";
 import { useMessageStore, useChannelStore } from "../stores";
 import { apiClient } from "../api/client";
 
@@ -16,10 +16,13 @@ export function ChannelView() {
   const fetchHistory = useMessageStore((s) => s.fetchHistory);
   const setActiveChannel = useChannelStore((s) => s.setActiveChannel);
   const [draft, setDraft] = useState("");
+  const bottomRef = useRef<HTMLDivElement>(null);
   const fetchedRef = useRef<string | null>(null);
   const [openThreadId, setOpenThreadId] = useState<string | null>(null);
   const [threadReplies, setThreadReplies] = useState<ThreadReply[]>([]);
   const [threadReply, setThreadReply] = useState("");
+
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
   useEffect(() => {
     if (channelName && fetchedRef.current !== channelName) {
@@ -28,6 +31,7 @@ export function ChannelView() {
       fetchHistory(target).catch(() => {});
     }
   }, [channelName]);
+
 
   const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -88,7 +92,7 @@ export function ChannelView() {
       <div className="p-4 border-b border-gray-700">
         <h2 className="text-white font-bold">#{channelName}</h2>
       </div>
-      <div className="flex-1 p-4 overflow-y-auto space-y-3">
+      <div ref={scrollRef} className="flex-1 p-4 overflow-y-auto space-y-3">
         {messages.length === 0 && (
           <p className="text-gray-500 text-center mt-8">暂无消息，发送第一条消息开始对话</p>
         )}
@@ -144,6 +148,7 @@ export function ChannelView() {
             )}
           </div>
         ))}
+        <div ref={bottomRef} />
       </div>
       <form onSubmit={handleSend} className="p-4 border-t border-gray-700">
         <input

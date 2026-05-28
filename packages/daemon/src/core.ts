@@ -15,7 +15,6 @@ export class DaemonCore {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelay = 1000;
   private client: ApiClient;
-  private serverUrl: string;
   private agentId = "00000000-0000-0000-0000-000000000001";
 
   constructor(private config: DaemonConfig) {
