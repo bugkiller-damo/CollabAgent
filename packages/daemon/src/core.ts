@@ -86,6 +86,82 @@ export class DaemonCore {
     }, this.reconnectDelay);
   }
 
+  private async callAI(
+    userMessage: string,
+    senderName: string,
+    channelName: string
+  ): Promise<string | null> {
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) {
+      console.log("[Daemon] ANTHROPIC_API_KEY not set, using echo mode");
+      return `🤖 Echo: "${userMessage.slice(0, 100)}" — from @${senderName}`;
+    }
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-6",
+          max_tokens: 500,
+          system: `You are an AI agent in the #${channelName} channel. Keep replies short and helpful. Reply in the user's language.`,
+          messages: [{ role: "user", content: userMessage }],
+        }),
+      });
+      const data = await res.json() as any;
+      if (data.content?.[0]?.text) {
+        return data.content[0].text;
+      }
+      console.error("[Daemon] Unexpected AI response:", JSON.stringify(data).slice(0, 200));
+      return null;
+    } catch (err) {
+      console.error("[Daemon] AI API error:", (err as Error).message);
+      return `🤖 (AI unavailable) Echo: "${userMessage.slice(0, 50)}"`;
+    }
+  }
+
+  
+  private async getAiReply(content: string, senderName: string): Promise<string> {
+    const apiKey = process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      return '🤖 Echo: "' + content.slice(0, 100) + '" — from @' + senderName;
+    }
+
+    const isAnthropic = !!process.env.ANTHROPIC_API_KEY;
+    try {
+      if (isAnthropic) {
+        const res = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+          body: JSON.stringify({
+            model: process.env.CLAUDE_MODEL || 'claude-sonnet-4-6',
+            max_tokens: 500,
+            messages: [{ role: 'user', content: 'You are a helpful assistant in a chat channel. Reply concisely in Chinese (1-3 sentences). User @' + senderName + ' said: ' + content }]
+          })
+        });
+        const data = await res.json();
+        return data.content?.[0]?.text || data.error?.message || 'AI failed to respond';
+      } else {
+        const res = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey },
+          body: JSON.stringify({
+            model: 'gpt-4o-mini',
+            messages: [{ role: 'user', content: 'Reply concisely in Chinese (1-3 sentences) to @' + senderName + ': ' + content }]
+          })
+        });
+        const data = await res.json();
+        return data.choices?.[0]?.message?.content || data.error?.message || 'AI failed to respond';
+      }
+    } catch (err) {
+      console.error('[Daemon] AI API error:', (err as Error).message);
+      return '🤖 (AI unavailable) Echo: "' + content.slice(0, 80) + '"';
+    }
+  }
+
   private async handleMessage(msg: Record<string, unknown>): Promise<void> {
     const type = msg.type as string | undefined;
     switch (type) {
@@ -96,22 +172,20 @@ export class DaemonCore {
         const senderName = (m.senderName as string) || (m.senderId as string) || "unknown";
         console.log(`[Daemon] Message from @${senderName} in #${channelName}: ${content?.slice(0, 50)}`);
 
-        // Auto-reply: only respond to messages not from this daemon
+        // Auto-reply: call AI to generate response
         if (m.senderId !== this.agentId && content && typeof content === "string") {
-          const reply = `🤖 Daemon received: "${content.slice(0, 100)}" — from @${senderName}`;
           try {
-            // Send reply via agent route (machine token auth, no JWT needed)
-            const replyRes = await fetch(`${this.serverUrl}/internal/agent/${this.agentId}/send`, {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                "Authorization": `Bearer ${this.apiKey}`,
-              },
-              body: JSON.stringify({ target: `#${channelName}`, content: reply }),
-            });
-            const res = { ok: replyRes.ok };
-            if (res.ok) {
-              console.log(`[Daemon] Auto-replied to #${channelName}`);
+            const reply = await this.callAI(content, senderName, channelName);
+            if (reply) {
+              const replyRes = await fetch(`${this.serverUrl}/internal/agent/${this.agentId}/send`, {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  "Authorization": `Bearer ${this.apiKey}`,
+                },
+                body: JSON.stringify({ target: `#${channelName}`, content: reply }),
+              });
+              if (replyRes.ok) console.log(`[Daemon] AI replied to #${channelName}`);
             }
           } catch (err) {
             console.error("[Daemon] Failed to send reply:", (err as Error).message);
