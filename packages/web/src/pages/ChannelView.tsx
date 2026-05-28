@@ -92,7 +92,7 @@ export function ChannelView() {
       <div className="p-4 border-b border-gray-700">
         <h2 className="text-white font-bold">#{channelName}</h2>
       </div>
-      <div ref={scrollRef} className="flex-1 p-4 overflow-y-auto space-y-3">
+      <div ref={bottomRef} className="flex-1 p-4 overflow-y-auto space-y-3">
         {messages.length === 0 && (
           <p className="text-gray-500 text-center mt-8">暂无消息，发送第一条消息开始对话</p>
         )}
