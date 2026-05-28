@@ -125,14 +125,26 @@ export class DaemonCore {
 
   
   private async getAiReply(content: string, senderName: string): Promise<string> {
-    const apiKey = process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY;
+    const apiKey = process.env.DEEPSEEK_API_KEY || process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY;
     if (!apiKey) {
       return '🤖 Echo: "' + content.slice(0, 100) + '" — from @' + senderName;
     }
 
     const isAnthropic = !!process.env.ANTHROPIC_API_KEY;
+    const isDeepSeek = !!process.env.DEEPSEEK_API_KEY;
     try {
-      if (isAnthropic) {
+      if (isDeepSeek) {
+        const res = await fetch('https://api.deepseek.com/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey },
+          body: JSON.stringify({
+            model: 'deepseek-chat',
+            messages: [{ role: 'system', content: 'You are a helpful assistant in a chat channel. Reply concisely in Chinese (1-3 sentences).' }, { role: 'user', content: 'User @' + senderName + ' said: ' + content }]
+          })
+        });
+        const data = await res.json();
+        return data.choices?.[0]?.message?.content || data.error?.message || 'AI failed to respond';
+      } else if (isAnthropic) {
         const res = await fetch('https://api.anthropic.com/v1/messages', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
