@@ -160,4 +160,24 @@ export async function authRoutes(app: FastifyInstance) {
     );
     return { user: result.rows[0] };
   });
+
+  // Generate machine token for daemon authentication
+  app.post("/machine-token", { preHandler: [app.authenticate] }, async (req, reply) => {
+    const { serverId } = req.body as Record<string, unknown>;
+    const userId = (req as any).user.sub;
+    if (!serverId) return reply.status(400).send({ error: "serverId required" });
+
+    const prefix = "sk_machine_";
+    const randomPart = Array.from({ length: 32 }, () =>
+      "abcdefghijklmnopqrstuvwxyz0123456789"[Math.floor(Math.random() * 36)]
+    ).join("");
+    const tokenValue = prefix + randomPart;
+    const hash = await bcrypt.hash(tokenValue, 8);
+
+    await app.pg.query(
+      "INSERT INTO machine_tokens (user_id, server_id, token_hash, token_prefix, scope) VALUES ($1, $2, $3, $4, $5)",
+      [userId, serverId as string, hash, prefix, JSON.stringify({ send: true, read: true, tasks: true })]
+    );
+    return { token: tokenValue, prefix, message: "Save this token — it won't be shown again" };
+  });
 }

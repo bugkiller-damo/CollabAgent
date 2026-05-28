@@ -71,7 +71,7 @@ server.get("/api/server/info", async () => {
     "SELECT DISTINCT ON (c.id) c.* FROM channels c WHERE c.server_id = $1 AND c.archived = false",
     [serverId]
   );
-  return { channels: channels.rows, agents: [], humans: [] };
+  return { serverId, serverName: (serverResult.rows[0] as any)?.name, channels: channels.rows, agents: [], humans: [] };
 });
 
 // Auto-migrate on startup
