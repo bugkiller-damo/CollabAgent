@@ -88,7 +88,7 @@ export class DaemonCore {
       case "agent:deliver": {
         const m = (msg.message || msg) as Record<string, unknown>;
         const content = m.content as string;
-        const channelName = (m.channelId as string) || "general";
+        const rawChannel = (m.channelId as string) || "general"; const channelName = rawChannel.startsWith("#") ? rawChannel.slice(1) : rawChannel;
         const senderName = (m.senderName as string) || (m.senderId as string) || "unknown";
         console.log(`[Daemon] Message from @${senderName} in #${channelName}: ${content?.slice(0, 50)}`);
 
