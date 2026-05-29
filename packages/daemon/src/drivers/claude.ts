@@ -1,6 +1,7 @@
 import { spawn, ChildProcess } from "node:child_process";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { existsSync } from "node:fs";
 import { resolveCommandOnPath } from "./probe.js";
 
 export interface ClaudeEvent {
@@ -32,7 +33,20 @@ export class ClaudeDriver {
   }
 
   async start(prompt: string, sessionId?: string): Promise<void> {
-    const claudeCmd = resolveCommandOnPath("claude") || "claude";
+    const claudeCmd = (() => {
+    const found = resolveCommandOnPath("claude");
+    if (found) return found;
+    // Try common Windows npm global paths
+    const candidates = [
+      join(process.env.APPDATA || "", "npm", "claude.cmd"),
+      join(process.env.LOCALAPPDATA || "", "Programs", "claude", "claude.cmd"),
+      "claude.cmd",
+    ];
+    for (const c of candidates) {
+      if (existsSync(c)) return c;
+    }
+    return "claude.cmd";
+  })();
     const args = [
       "--output-format", "stream-json",
       "--input-format", "stream-json",
@@ -45,7 +59,6 @@ export class ClaudeDriver {
     if (this.opts.systemPrompt) args.push("--append-system-prompt", this.opts.systemPrompt);
     // MCP bridge configuration
     const mcpConfigPath = process.env.MCP_CONFIG_PATH || "dist/chat-bridge.js";
-    const { existsSync } = await import("node:fs");
     if (existsSync(mcpConfigPath)) args.push("--mcp-config", mcpConfigPath);
 
     const slockDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", ".slock");
@@ -53,8 +66,8 @@ export class ClaudeDriver {
     this.proc = spawn(claudeCmd, args, {
       cwd: this.opts.workingDirectory,
       stdio: ["pipe", "pipe", "pipe"],
-      env,
       shell: true,
+      env,
     });
 
     this.proc.stdout?.on("data", (chunk: Buffer) => {

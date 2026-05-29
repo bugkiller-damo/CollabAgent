@@ -2,10 +2,14 @@ import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 
 export function resolveCommandOnPath(command: string): string | null {
+  const appData = process.env.APPDATA || ("C:/Users/" + (process.env.USERNAME || "Default") + "/AppData/Roaming");
   const winPaths = [
+    appData + "/npm/" + command + ".cmd",
+    appData + "/npm/" + command,
     "C:/Program Files/Claude Code/" + command + ".cmd",
     "C:/Users/" + (process.env.USERNAME || "Default") + "/AppData/Local/Programs/claude/" + command + ".cmd",
     "C:/Users/" + (process.env.USERNAME || "Default") + "/AppData/Roaming/npm/" + command + ".cmd",
+    "C:/Users/" + (process.env.USERNAME || "Default") + "/AppData/Roaming/npm/" + command,
   ];
   for (const p of winPaths) {
     if (existsSync(p)) return p;
