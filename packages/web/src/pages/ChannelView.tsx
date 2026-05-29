@@ -16,7 +16,7 @@ export function ChannelView() {
   const [draft, setDraft] = useState("");
   const containerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const { filtered, selectedIdx, handleInput, handleKeyDown: mentionKD, insertMention } = useMentionSuggest(textareaRef);
+  const { filtered, selectedIdx, visible, handleInput, handleKeyDown: mentionKD, insertMention } = useMentionSuggest(textareaRef);
   const navigate = useNavigate();
   const fetchedRef = useRef<string | null>(null);
 
@@ -45,7 +45,7 @@ export function ChannelView() {
   };
   const handleSend = (e: React.FormEvent) => { e.preventDefault(); doSend(); };
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); doSend(); }
+    if (e.key === "Enter" && !e.shiftKey && !visible) { e.preventDefault(); doSend(); }
   };
 
   return (
@@ -84,7 +84,7 @@ export function ChannelView() {
         <textarea ref={textareaRef} value={draft}
           onChange={e => { setDraft(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px"; }}
           onInput={handleInput}
-          onKeyDown={e => { handleKeyDown(e); mentionKD(e); }}
+          onKeyDown={e => { mentionKD(e); if (!e.defaultPrevented) handleKeyDown(e); }}
           placeholder={`发送消息到 #${channelName}... (@ 提及)`}
           rows={1}
           className="w-full p-2 rounded bg-gray-700 text-white border border-gray-600 focus:outline-none focus:border-blue-500 resize-none text-sm"

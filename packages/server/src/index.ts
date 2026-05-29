@@ -84,6 +84,14 @@ server.register(async function (scope) {
 // Health check
 server.get("/api/health", async () => ({ status: "ok", time: new Date().toISOString() }));
 
+// Public user list (for @mention autocomplete)
+server.get("/api/users", async () => {
+  const users = await server.pg.query(
+    "SELECT id, handle, display_name, avatar_url FROM users ORDER BY handle"
+  );
+  return { users: users.rows };
+});
+
 // Public agent list (for management UI)
 server.get("/api/agents", async () => {
   const agents = await server.pg.query(
@@ -128,7 +136,10 @@ server.get("/api/server/info", async () => {
     "SELECT DISTINCT ON (c.id) c.* FROM channels c WHERE c.server_id = $1 AND c.archived = false",
     [serverId]
   );
-  return { serverId, serverName: (serverResult.rows[0] as any)?.name, channels: channels.rows, agents: [], humans: [] };
+  const humans = await server.pg.query(
+    "SELECT id, handle, display_name, avatar_url FROM users ORDER BY handle"
+  );
+  return { serverId, serverName: (serverResult.rows[0] as any)?.name, channels: channels.rows, agents: [], humans: humans.rows };
 });
 
 // Auto-migrate on startup

@@ -9,9 +9,9 @@ export function MentionPopover({ query, channelName, onSelect, onClose }: {
   const [members, setMembers] = useState<Member[]>([]);
   const [idx, setIdx] = useState(0);
   useEffect(() => {
-    apiGet<{ members: Member[] }>('/api/channels/server', { channel: channelName })
-      .then(d => setMembers(d.members || [])).catch(() => {});
-  }, [channelName]);
+    apiGet<{ users: Member[]; agents: Member[] }>('/api/server/info')
+      .then(d => setMembers([...(d.users || []), ...(d.agents || [])])).catch(() => {});
+  }, []);
   const list = query ? members.filter(m => m.handle.toLowerCase().includes(query.toLowerCase())) : members;
   
   const handleKey = useCallback((e: KeyboardEvent) => {
