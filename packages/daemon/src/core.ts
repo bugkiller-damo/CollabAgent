@@ -1,7 +1,9 @@
 import { WebSocket } from "ws";
 import { ClaudeDriver } from "./drivers/claude.js";
+import type { ClaudeEvent } from "./drivers/claude.js";
 import { ApiClient } from "./client.js";
 import type { AgentContext } from "./auth.js";
+import { generateSystemPrompt } from "./system-prompt.js";
 
 export interface DaemonConfig {
   serverUrl: string;

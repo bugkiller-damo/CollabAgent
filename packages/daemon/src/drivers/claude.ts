@@ -1,4 +1,6 @@
 import { spawn, ChildProcess } from "node:child_process";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { resolveCommandOnPath } from "./probe.js";
 
 export interface ClaudeEvent {
@@ -39,10 +41,16 @@ export class ClaudeDriver {
     ];
     if (sessionId) args.push("--resume", sessionId);
     if (this.opts.systemPrompt) args.push("--append-system-prompt", this.opts.systemPrompt);
+    // MCP bridge configuration
+    const mcpConfigPath = process.env.MCP_CONFIG_PATH || "dist/chat-bridge.js";
+    args.push("--mcp-config", mcpConfigPath);
 
+    const slockDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", ".slock");
+    const env = { ...process.env, PATH: slockDir + ";" + (process.env.PATH || "") };
     this.proc = spawn(claudeCmd, args, {
       cwd: this.opts.workingDirectory,
       stdio: ["pipe", "pipe", "pipe"],
+      env,
     });
 
     this.proc.stdout?.on("data", (chunk: Buffer) => {
