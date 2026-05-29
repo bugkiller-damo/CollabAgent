@@ -86,9 +86,8 @@ export function ChannelView() {
       <form onSubmit={handleSend} className="p-4 border-t border-gray-700 relative">
         <MentionPopup items={filtered} selectedIdx={selectedIdx} onSelect={insertMention} />
         <textarea ref={textareaRef} value={draft}
-          onChange={e => { setDraft(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px"; }}
-          onInput={handleInput}
-          onKeyDown={e => { mentionKD(e); } }
+          onChange={(e) => { setDraft(e.target.value); handleInput(); resize(); }}
+          onKeyDown={e => { mentionKD(e); if (!visible && e.key === "Enter" && !e.shiftKey) { e.preventDefault(); doSend(); } } }
           placeholder={`发送消息到 #${channelName}... (@ 提及)`}
           rows={1}
           className="w-full p-2 rounded bg-gray-700 text-white border border-gray-600 focus:outline-none focus:border-blue-500 resize-none text-sm"
