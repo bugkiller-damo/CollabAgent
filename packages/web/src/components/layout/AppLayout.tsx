@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { Outlet } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
 import { useWebSocket } from "../../hooks/useWebSocket";
-import { useAuthStore, useMessageStore, useChannelStore } from "../../stores";
+import { useAuthStore, useMessageStore, useChannelStore, useAgentStore } from "../../stores";
 import type { WsServerMessage } from '@collabagent/shared';
 import { ThinkingIndicator } from '../agent/ThinkingIndicator';
 
@@ -36,7 +36,7 @@ export function AppLayout() {
     token: token || "",
     onMessage: (msg: WsServerMessage) => {
         // Agent activity routing
-        if (msg.type === 'agent:status' || msg.type === 'agent:activity') {
+        if (msg.type === 'agent:status' || (msg.type as string) === 'agent:activity') {
           const a = msg as any;
           useAgentStore.getState().updateStatus(a.agentId || 'agent', msg.type === 'agent:status' ? (a.status || 'idle') : 'working', a.detail || '');
         }

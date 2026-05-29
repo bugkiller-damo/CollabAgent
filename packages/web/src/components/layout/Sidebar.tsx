@@ -1,5 +1,6 @@
 import { useNavigate } from "react-router-dom";
 import { useChannelStore, useAuthStore } from "../../stores";
+import { AgentStatusBar } from "./AgentStatusBar";
 
 export function Sidebar() {
   const channels = useChannelStore((s) => s.channels);

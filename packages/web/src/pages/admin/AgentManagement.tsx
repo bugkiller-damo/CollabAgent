@@ -93,7 +93,7 @@ export function AgentManagement() {
                 </span>
               </div>
               <p className="text-gray-400 text-sm truncate">{a.description || a.display_name}</p>
-              <p className="text-gray-500 text-xs">{(a.runtime_profile as any)?.runtime} / {(a.runtime_profile as any)?.model}</p>
+              <p className="text-gray-500 text-xs">{(a as any).runtime_profile?.runtime} / {(a as any).runtime_profile?.model}</p>
             </div>
           </div>
         ))}
