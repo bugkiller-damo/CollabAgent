@@ -38,6 +38,7 @@ export function Sidebar() {
           </button>
         ))}
       </nav>
+      <AgentStatusBar />
       <div className="p-3 border-t border-gray-700 space-y-1">
         {user && (
           <div className="text-gray-400 text-xs px-1 mb-1">

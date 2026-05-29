@@ -6,7 +6,7 @@ const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change-me";
 // Anonymous browser clients (keyed by userId)
 const browserClients = new Map<string, Set<WebSocket>>();
 // Daemon connections (keyed by userId — one per user machine)
-const daemonClients = new Map<string, WebSocket>();
+export const daemonClients = new Map<string, WebSocket>();
 
 function parseAuthToken(req: any): string | null {
   const auth = req.headers?.authorization || req.headers?.Authorization || "";

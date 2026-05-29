@@ -1,45 +1,58 @@
 import type { FastifyInstance } from "fastify";
-import { broadcast } from "../ws/handler.js";
+import { daemonClients } from "../ws/handler.js";
 
 export async function agentRoutes(app: FastifyInstance) {
-  app.get("/:agentId/server", async (req) => {
-    const result = await app.pg.query("SELECT * FROM servers LIMIT 1");
-    const server = result.rows[0];
-    const channels = await app.pg.query("SELECT c.* FROM channels c WHERE c.server_id = $1", [server.id]);
-    const agents = await app.pg.query("SELECT * FROM agents WHERE server_id = $1", [server.id]);
-    return { channels: channels.rows, agents: agents.rows, humans: [] };
+  // List all agents with online status
+  app.get("/", async () => {
+    const result = await app.pg.query(
+      "SELECT id, name, display_name, description, status, runtime, model, created_at FROM agents ORDER BY created_at DESC"
+    );
+    const agents = (result.rows as any[]).map((a) => ({
+      ...a,
+      isOnline: daemonClients.has(a.id),
+    }));
+    return { agents };
   });
 
-  app.post("/:agentId/send", async (req) => {
-    const { target, content } = req.body as any;
-    const { broadcast } = await import("../ws/handler.js");
-    const agentId = (req.params as any).agentId;
-    const channelName = target.startsWith("#") ? target.slice(1).split(":")[0] : target;
-    const ch = await app.pg.query("SELECT id, server_id FROM channels WHERE name = $1", [channelName]);
-    if (ch.rows.length === 0) return { error: "channel not found" };
-    // Use a fixed UUID if agentId is not a valid UUID (e.g. "daemon-agent")
-    const senderId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(agentId)
-      ? agentId : "00000000-0000-0000-0000-00000000da01";
+  // List agents in a channel
+  app.get("/channel/:channelId", async (req) => {
+    const { channelId } = req.params as Record<string, string>;
     const result = await app.pg.query(
-      `INSERT INTO messages (channel_id, server_id, sender_id, sender_type, content)
-       VALUES ($1, $2, $3, 'agent', $4) RETURNING id, seq, created_at`,
-      [ch.rows[0].id, ch.rows[0].server_id, senderId, content]
+      "SELECT a.id, a.name, a.display_name, a.description, a.status, a.runtime, a.model, cm.role FROM agents a JOIN channel_members cm ON cm.member_id = a.id AND cm.member_type = 'agent' WHERE cm.channel_id = $1",
+      [channelId]
     );
-    const msg = result.rows[0];
-    broadcast(ch.rows[0].id, {
-      type: "agent:deliver", seq: msg.seq,
-      message: { id: msg.id, seq: msg.seq, channelId: target.startsWith("#") ? target : "#" + target, senderId: agentId, senderName: "Daemon", senderType: "agent", content, time: msg.created_at }
-    });
-    return { state: "sent", messageId: msg.id, messageSeq: msg.seq };
+    const agents = (result.rows as any[]).map((a) => ({
+      ...a,
+      isOnline: daemonClients.has(a.id),
+    }));
+    return { agents };
   });
 
-  app.get("/:agentId/history", async (req) => {
-    const { channel, limit } = req.query as any;
-    const ch = await app.pg.query("SELECT id FROM channels WHERE name = $1", [channel]);
+  // Create agent (via action card approval)
+  app.post("/", { preHandler: [app.authenticate] }, async (req, reply) => {
+    const { name, displayName, description, runtime, model, serverId } = req.body as Record<string, unknown>;
+    if (!name || !serverId) return reply.status(400).send({ error: "name and serverId required" });
+    const userId = (req as any).user.sub;
     const result = await app.pg.query(
-      "SELECT * FROM messages WHERE channel_id = $1 ORDER BY seq DESC LIMIT $2",
-      [ch.rows[0]?.id, Number(limit) || 50]
+      "INSERT INTO agents (user_id, server_id, name, display_name, description, runtime, model) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *",
+      [userId, serverId as string, name as string, (displayName || name) as string, description || "", runtime || "claude", model || "sonnet"]
     );
-    return { messages: result.rows.reverse() };
+    return { agent: result.rows[0] };
+  });
+
+  // Update agent config
+  app.patch("/:agentId", { preHandler: [app.authenticate] }, async (req, reply) => {
+    const { agentId } = req.params as Record<string, string>;
+    const { status, runtime, model } = req.body as Record<string, unknown>;
+    const sets: string[] = [];
+    const params: unknown[] = [];
+    let p = 1;
+    if (status) { sets.push("status = $" + p++); params.push(status); }
+    if (runtime) { sets.push("runtime = $" + p++); params.push(runtime); }
+    if (model) { sets.push("model = $" + p++); params.push(model); }
+    if (sets.length === 0) return reply.status(400).send({ error: "no fields" });
+    params.push(agentId);
+    await app.pg.query("UPDATE agents SET " + sets.join(", ") + " WHERE id = $" + p, params);
+    return { ok: true };
   });
 }

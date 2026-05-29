@@ -10,6 +10,7 @@ import { ForgotPasswordPage } from "./pages/ForgotPasswordPage";
 import { SettingsLayout } from "./pages/settings/SettingsLayout";
 import { ProfileSettings } from "./pages/settings/ProfileSettings";
 import { AdminPanel } from "./pages/admin/AdminPanel";
+import { AgentManagement } from "./pages/admin/AgentManagement";
 import { useAuthStore } from "./stores/authStore";
 
 function AuthGuard() {
@@ -36,7 +37,9 @@ export function App() {
           <Route path="/settings" element={<SettingsLayout />}>
             <Route path="profile" element={<ProfileSettings />} />
           </Route>
-          <Route path="/admin" element={<AdminPanel />} />
+          <Route path="/admin" element={<AdminPanel />}>
+              <Route path="agents" element={<AgentManagement />} />
+            </Route>
           <Route path="/" element={<Navigate to="/channels/general" />} />
         </Route>
       </Route>

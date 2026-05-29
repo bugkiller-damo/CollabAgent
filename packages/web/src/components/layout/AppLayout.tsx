@@ -3,7 +3,15 @@ import { Outlet } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
 import { useWebSocket } from "../../hooks/useWebSocket";
 import { useAuthStore, useMessageStore, useChannelStore } from "../../stores";
-import type { WsServerMessage } from "@collabagent/shared";
+import type { WsServerMessage } from '@collabagent/shared';
+import { ThinkingIndicator } from '../agent/ThinkingIndicator';
+
+function AgentThinkingBanner() {
+  const agents = useAgentStore((s) => s.agents);
+  const thinking = Object.values(agents).find((a) => a.status === "thinking" || a.status === "working");
+  if (!thinking) return null;
+  return <ThinkingIndicator agentName={thinking.name} text={thinking.detail || "working..."} />;
+}
 
 export function AppLayout() {
   const fetchChannels = useChannelStore((s) => s.fetchChannels);
@@ -27,6 +35,12 @@ export function AppLayout() {
     serverUrl: window.location.origin,
     token: token || "",
     onMessage: (msg: WsServerMessage) => {
+        // Agent activity routing
+        if (msg.type === 'agent:status' || msg.type === 'agent:activity') {
+          const a = msg as any;
+          useAgentStore.getState().updateStatus(a.agentId || 'agent', msg.type === 'agent:status' ? (a.status || 'idle') : 'working', a.detail || '');
+        }
+
       if (msg.type === "agent:deliver" && msg.message) {
         const m = msg.message as any;
         const hasThread = m.thread_id || m.threadId;
@@ -60,6 +74,7 @@ export function AppLayout() {
     <div className="flex h-screen bg-gray-900">
       <Sidebar />
       <main className="flex-1 flex flex-col min-w-0">
+        <AgentThinkingBanner />
         <Outlet />
       </main>
     </div>

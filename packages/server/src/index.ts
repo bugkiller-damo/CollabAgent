@@ -84,6 +84,33 @@ server.register(async function (scope) {
 // Health check
 server.get("/api/health", async () => ({ status: "ok", time: new Date().toISOString() }));
 
+// Public agent list (for management UI)
+server.get("/api/agents", async () => {
+  const agents = await server.pg.query(
+    "SELECT id, name, display_name, description, status, runtime_profile, created_at FROM agents ORDER BY created_at DESC"
+  );
+  const { daemonClients } = await import("./ws/handler.js");
+  return {
+    agents: (agents.rows as any[]).map((a) => ({
+      ...a,
+      isOnline: Array.from(daemonClients.keys()).some((k) => {
+        // A daemon is online for agents created by the same user
+        return true; // Simplified: all connected daemons can serve any agent
+      }),
+    })),
+  };
+});
+
+server.post("/api/agents", { preHandler: [(server as any).authenticate] }, async (req: any, reply: any) => {
+  const { name, displayName, description, runtime, model, serverId } = req.body;
+  if (!name || !serverId) return reply.status(400).send({ error: "name and serverId required" });
+  const result = await server.pg.query(
+    "INSERT INTO agents (user_id, server_id, name, display_name, description, runtime_profile) VALUES ($1, $2, $3, $4, $5, $6::jsonb) RETURNING *",
+    [req.user.sub, serverId, name, displayName || name, description || "", JSON.stringify({ runtime: runtime || "claude", model: model || "sonnet" })]
+  );
+  return { agent: result.rows[0] };
+});
+
 // Server info (for frontend sidebar)
 server.get("/api/server/info", async () => {
   const serverResult = await server.pg.query("SELECT id, name FROM servers LIMIT 1");
