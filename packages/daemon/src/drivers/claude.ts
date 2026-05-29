@@ -47,7 +47,7 @@ export class ClaudeDriver {
     }
     return "claude.cmd";
   })();
-    const args = ["--print", "--output-format", "stream-json", "--verbose", "--model", this.opts.model || "sonnet", "--dangerously-skip-permissions"];
+    const args = ["--no-mcp", "--output-format", "stream-json", "--verbose", "--model", this.opts.model || "sonnet", "--dangerously-skip-permissions", "--no-mcp"];
     if (sessionId) args.push("--resume", sessionId);
     if (this.opts.systemPrompt) {
       // Write prompt to file — too long for command-line argument
@@ -57,10 +57,6 @@ export class ClaudeDriver {
       writeFileSync(promptFile, this.opts.systemPrompt);
       args.push("--append-system-prompt-file", promptFile);
     }
-    // MCP bridge configuration
-    const mcpConfigPath = process.env.MCP_CONFIG_PATH || "dist/chat-bridge.js";
-    if (existsSync(mcpConfigPath)) args.push("--mcp-config", mcpConfigPath);
-
     const slockDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", ".slock");
     const env = { ...process.env, PATH: slockDir + ";" + (process.env.PATH || "") };
     this.proc = spawn(claudeCmd, args, {

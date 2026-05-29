@@ -64,7 +64,7 @@ export class DaemonCore {
       `set SLOCK_SERVER_URL=${this.serverUrl}`,
       `set SLOCK_AGENT_TOKEN=${this.apiKey}`,
       `set SLOCK_AGENT_ACTIVE_CAPABILITIES=send,read,mentions,tasks,reactions,server,channels`,
-      `node "${path.resolve(process.cwd(), "packages/daemon/dist/cli/index.js")}" %*`,
+      `npx tsx "${path.resolve(process.cwd(), "packages/daemon/src/cli.ts")}" %*`
     ].join("\r\n");
     fs.writeFileSync(path.join(slockDir, "slock.bat"), batContent);
     console.log(`[Daemon] slock wrapper written to ${slockDir}/slock.bat`);
@@ -487,6 +487,7 @@ export class DaemonCore {
             const driver = this.agentDrivers.get(registeredAgent);
             if (driver?.isRunning) {
               console.log(`[Daemon] Routing to agent @${registeredAgent} in #${channelName}`);
+              this.lastCh.set(registeredAgent, channelName);
               driver.sendMessage(`[Channel #${channelName}] @${senderName} said: ${content}`);
             } else {
               // API fallback mode — use callAI
@@ -500,6 +501,7 @@ export class DaemonCore {
                 const driver = await this.spawnAgent(name, `Reply to @${senderName}: ${content}`);
                 if (driver.isRunning) {
                   console.log(`[Daemon] Spawned agent @${name} in #${channelName}`);
+                  this.lastCh.set(name, channelName);
                   driver.sendMessage(`[Channel #${channelName}] @${senderName} said: ${content}`);
                 }
               } catch {
