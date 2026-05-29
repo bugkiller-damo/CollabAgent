@@ -67,7 +67,7 @@ export function ChannelView() {
           <p className="text-gray-500 text-center mt-8">暂无消息，发送第一条消息开始对话</p>
         )}
         {messages.map((msg: any) => (
-          <div key={msg.id} className="group flex gap-3 hover:bg-gray-800/50 p-2 rounded">
+          <div key={msg.id} className="group flex gap-3 hover:bg-gray-800/50 p-2 rounded relative">
             <div className="w-8 h-8 rounded bg-gray-600 shrink-0 flex items-center justify-center text-xs text-white">
               {(msg.senderName || "?")[0]}
             </div>
@@ -79,6 +79,20 @@ export function ChannelView() {
                 </span>
               </div>
               <p className="text-gray-300 text-sm whitespace-pre-wrap">{msg.content}</p>
+            <div className="absolute right-2 top-2 hidden group-hover:flex gap-1 bg-gray-800 border border-gray-700 rounded shadow"><button onClick={() => navigator.clipboard.writeText(msg.content)} title="Copy" className="px-2 py-1 text-gray-400 hover:text-white hover:bg-gray-700 rounded text-xs">Copy</button><button onClick={() => navigate("/channels/" + channelName + "/" + (msg.id||"").substring(0,8))} title="Reply in thread" className="px-2 py-1 text-gray-400 hover:text-white hover:bg-gray-700 rounded text-xs">Reply</button></div>
+              {/* Hover action menu */}
+              <div className="hidden group-hover:flex items-center gap-1 mt-1">
+                <button onClick={() => navigator.clipboard.writeText(msg.content)}
+                  title="复制" className="text-gray-500 hover:text-white text-xs px-1.5 py-0.5 rounded hover:bg-gray-700">复制</button>
+                <button onClick={() => {
+                  const shortId = (msg.id || "").substring(0, 8);
+                  navigate("/channels/" + channelName + "/" + shortId);
+                }} title="回复" className="text-gray-500 hover:text-white text-xs px-1.5 py-0.5 rounded hover:bg-gray-700">回复</button>
+                <button onClick={async () => {
+                  try { await apiClient("/api/messages/" + msg.id + "/reactions", { method: "POST", body: { emoji: "👍" } }); }
+                  catch {}
+                }} title="👍" className="text-gray-500 hover:text-yellow-400 text-xs px-1.5 py-0.5 rounded hover:bg-gray-700">👍</button>
+              </div>
             </div>
           </div>
         ))}
@@ -86,7 +100,7 @@ export function ChannelView() {
       <form onSubmit={handleSend} className="p-4 border-t border-gray-700 relative">
         <MentionPopup items={filtered} selectedIdx={selectedIdx} onSelect={insertMention} />
         <textarea ref={textareaRef} value={draft}
-          onChange={(e) => { setDraft(e.target.value); handleInput(); resize(); }}
+          onChange={(e) => { setDraft(e.target.value); handleInput(); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px"; }}
           onKeyDown={e => { mentionKD(e); if (!visible && e.key === "Enter" && !e.shiftKey) { e.preventDefault(); doSend(); } } }
           placeholder={`发送消息到 #${channelName}... (@ 提及)`}
           rows={1}
