@@ -7,6 +7,7 @@ interface MentionCandidate {
 
 export function useMentionSuggest(textareaRef: React.RefObject<HTMLTextAreaElement | null>) {
   const [candidates, setCandidates] = useState<MentionCandidate[]>([]);
+  const skipNextInput = useRef(false);
   const [filtered, setFiltered] = useState<MentionCandidate[]>([]);
   const [visible, setVisible] = useState(false);
   const [selectedIdx, setSelectedIdx] = useState(0);
@@ -45,6 +46,7 @@ export function useMentionSuggest(textareaRef: React.RefObject<HTMLTextAreaEleme
 
   // Detect @ typing and filter
   const handleInput = useCallback(() => {
+    if (skipNextInput.current) { skipNextInput.current = false; return; }
     const el = textareaRef.current;
     if (!el) return;
     const cursorPos = el.selectionStart;
@@ -76,6 +78,7 @@ export function useMentionSuggest(textareaRef: React.RefObject<HTMLTextAreaEleme
   const insertMention = useCallback((handle: string) => {
     const el = textareaRef.current;
     if (!el) return;
+    skipNextInput.current = true;
     const cursorPos = el.selectionStart;
     const text = el.value;
     let atIdx = -1;
@@ -94,6 +97,8 @@ export function useMentionSuggest(textareaRef: React.RefObject<HTMLTextAreaEleme
       el.focus();
     }
     setVisible(false);
+    // Force close after React re-render
+    setTimeout(() => setVisible(false), 0);
   }, [textareaRef]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
