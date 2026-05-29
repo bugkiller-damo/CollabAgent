@@ -2,7 +2,6 @@ import { WebSocket } from "ws";
 import { ClaudeDriver } from "./drivers/claude.js";
 import { ApiClient } from "./client.js";
 import type { AgentContext } from "./auth.js";
-import { AgentProcessManager, type AgentStatus } from "./agent-manager.js";
 
 export interface DaemonConfig {
   serverUrl: string;
@@ -18,6 +17,8 @@ export class DaemonCore {
   private reconnectDelay = 1000;
   private client: ApiClient;
   private agentId = "00000000-0000-0000-0000-000000000001";
+  private agents = new Map<string, { name: string; driver: ClaudeDriver; process: any }>();
+  private driver: ClaudeDriver | null = null;
   private agentDrivers = new Map<string, ClaudeDriver>();
 
   constructor(private config: DaemonConfig) {
@@ -38,6 +39,32 @@ export class DaemonCore {
   start(): void {
     console.log(`[Daemon] Starting with server ${this.config.serverUrl}`);
     this.connect();
+    this.loadExistingAgents();
+  }
+
+  private async loadExistingAgents() {
+    try {
+      const res = await fetch(`${this.serverUrl}/api/agents`);
+      const data = await res.json() as any;
+      for (const agent of (data.agents || [])) {
+        const name = agent.name as string;
+        if (!this.agentDrivers.has(name)) {
+          console.log(`[Daemon] Auto-loading agent: @${name}`);
+          try {
+            const driver = await this.spawnAgent(name, `You are ${agent.display_name || name}. ${agent.description || ""}`);
+            if (driver.isRunning) {
+              this.agentDrivers.set(name, driver);
+              console.log(`[Daemon] Agent @${name} ready`);
+            }
+          } catch {
+            console.log(`[Daemon] Agent @${name} — using API fallback`);
+            this.agentDrivers.set(name, null as any); // mark as registered but using API
+          }
+        }
+      }
+    } catch (err: any) {
+      console.log("[Daemon] Could not load agents from server:", err.message);
+    }
   }
 
   private connect(): void {
@@ -64,6 +91,20 @@ export class DaemonCore {
       this.scheduleReconnect();
     });
     this.ws.on("error", (err) => console.error("[Daemon] WebSocket error:", err.message));
+  }
+
+  private findMentionedAgent(content: string): string | null {
+    const mentionMatch = content.match(/@([a-zA-Z0-9_-]+)/g);
+    if (!mentionMatch) return null;
+    for (const mention of mentionMatch) {
+      const name = mention.slice(1); // remove @
+      if (this.agentDrivers.has(name)) return name;
+      // Also check against any known agent names
+      for (const [agentId, driver] of this.agentDrivers) {
+        if (agentId.includes(name) || name === "agent") return agentId;
+      }
+    }
+    return null;
   }
 
   private scheduleReconnect(): void {
@@ -177,6 +218,18 @@ export class DaemonCore {
       }
       default:
         return `Unknown tool: ${name}`;
+    }
+  }
+
+  private async sendReply(channelName: string, content: string) {
+    try {
+      await fetch(`${this.serverUrl}/internal/agent/${this.agentId}/send`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${this.apiKey}` },
+        body: JSON.stringify({ target: "#" + channelName, content }),
+      });
+    } catch (err: any) {
+      console.error("[Daemon] sendReply error:", err.message);
     }
   }
 
@@ -322,28 +375,71 @@ export class DaemonCore {
   private async handleMessage(msg: Record<string, unknown>): Promise<void> {
     const type = msg.type as string | undefined;
     switch (type) {
+      case "agent:start": {
+        const agent = msg.agent as Record<string, unknown> | undefined;
+        const config = msg.config as Record<string, unknown> | undefined;
+        const agentId = (agent?.id as string) || (msg.agentId as string) || "unknown";
+        const agentName = (agent?.name as string) || "unknown";
+        const displayName = (agent?.displayName as string) || agentName;
+        console.log(`[Daemon] agent:start received for ${agentName} (${agentId.slice(0, 8)})`);
+        try {
+          const driver = await this.spawnAgent(agentId, `You are ${displayName}, an AI agent in the team.`);
+          if (driver) {
+            this.agentDrivers.set(agentId, driver);
+            this.agentDrivers.set(agentName, driver);
+            this.ws?.send(JSON.stringify({ type: "agent:status", agentId, status: "online", runtime: config?.runtime || "claude" }));
+          }
+        } catch (err) { console.error(`[Daemon] Failed to spawn agent ${agentName}:`, (err as Error).message); }
+        break;
+      }
       case "agent:deliver": {
         const m = (msg.message || msg) as Record<string, unknown>;
         const content = m.content as string;
+        // Check for @mentions — only reply if the daemon's agent is @mentioned
+        const mentionedAgent = this.findMentionedAgent(content || "");
+        if (!mentionedAgent && this.agentDrivers.size === 0) break; // No agent to respond to
         const rawChannel = (m.channelId as string) || "general";
         const channelName = rawChannel.startsWith("#") ? rawChannel.slice(1) : rawChannel;
         const senderName = (m.senderName as string) || (m.senderId as string) || "unknown";
         console.log(`[Daemon] Message from @${senderName} in #${channelName}: ${content?.slice(0, 50)}`);
 
-        if (m.senderId !== this.agentId && content && typeof content === "string") {
-          try {
-            const reply = await this.callAI(content, senderName, channelName);
-            if (reply) {
-              const replyRes = await fetch(`${this.serverUrl}/internal/agent/${this.agentId}/send`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json", "Authorization": `Bearer ${this.apiKey}` },
-                body: JSON.stringify({ target: "#" + channelName, content: reply }),
-              });
-              if (replyRes.ok) console.log(`[Daemon] AI replied to #${channelName}`);
+        if (m.senderId === this.agentId || !content || typeof content !== "string") break;
+
+        // Check if any registered agent is @-mentioned
+        const mentionMatch = content.match(/@([\w-]+)/g);
+        const mentionedAgents = mentionMatch?.map((m: string) => m.slice(1)) || [];
+        const registeredAgent = mentionedAgents.find((name: string) => this.agentDrivers.has(name));
+
+        try {
+          if (registeredAgent) {
+            // Route to specific agent via ClaudeDriver
+            const driver = this.agentDrivers.get(registeredAgent);
+            if (driver?.isRunning) {
+              console.log(`[Daemon] Routing to agent @${registeredAgent}`);
+              driver.sendMessage(`@${senderName} said: ${content}`);
+            } else {
+              await this.sendReply(channelName, `🤖 @${registeredAgent} is offline`);
             }
-          } catch (err: any) {
-            console.error("[Daemon] Failed to send reply:", err.message);
+          } else if (mentionedAgents.length > 0) {
+            // Unknown agent — try spawning it
+            for (const name of mentionedAgents) {
+              try {
+                const driver = await this.spawnAgent(name, `Reply to @${senderName}: ${content}`);
+                if (driver.isRunning) {
+                  console.log(`[Daemon] Spawned agent @${name}`);
+                  driver.sendMessage(`@${senderName} said in #${channelName}: ${content}`);
+                }
+              } catch {
+                await this.sendReply(channelName, `🤖 @${name} could not be started`);
+              }
+            }
+          } else {
+            // No @mention — let default AI handle it
+            const reply = await this.callAI(content, senderName, channelName);
+            if (reply) await this.sendReply(channelName, reply);
           }
+        } catch (err: any) {
+          console.error("[Daemon] Failed:", err.message);
         }
         break;
       }

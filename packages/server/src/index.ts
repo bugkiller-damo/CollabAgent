@@ -108,7 +108,15 @@ server.post("/api/agents", { preHandler: [(server as any).authenticate] }, async
     "INSERT INTO agents (user_id, server_id, name, display_name, description, runtime_profile) VALUES ($1, $2, $3, $4, $5, $6::jsonb) RETURNING *",
     [req.user.sub, serverId, name, displayName || name, description || "", JSON.stringify({ runtime: runtime || "claude", model: model || "sonnet" })]
   );
-  return { agent: result.rows[0] };
+  const agent = result.rows[0] as any;
+  // Auto-start: notify all connected daemons to spawn this agent
+  const { broadcastToDaemons } = await import("./ws/handler.js");
+  broadcastToDaemons({
+    type: "agent:start",
+    agent: { id: agent.id, name: agent.name, displayName: agent.display_name, runtime: runtime || "claude", model: model || "sonnet" },
+    config: { runtime_profile: agent.runtime_profile },
+  });
+  return { agent };
 });
 
 // Server info (for frontend sidebar)

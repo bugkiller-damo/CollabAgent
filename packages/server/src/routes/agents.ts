@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { daemonClients } from "../ws/handler.js";
+import { daemonClients, broadcastToDaemons } from "../ws/handler.js";
 
 export async function agentRoutes(app: FastifyInstance) {
   // List all agents with online status
@@ -37,7 +37,19 @@ export async function agentRoutes(app: FastifyInstance) {
       "INSERT INTO agents (user_id, server_id, name, display_name, description, runtime, model) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *",
       [userId, serverId as string, name as string, (displayName || name) as string, description || "", runtime || "claude", model || "sonnet"]
     );
-    return { agent: result.rows[0] };
+    const agent = result.rows[0];
+    // Notify all daemons to spawn this agent
+    broadcastToDaemons({
+      type: "agent:start",
+      agentId: agent.id,
+      config: {
+        name: agent.name,
+        displayName: agent.display_name,
+        runtime: agent.runtime,
+        model: agent.model,
+      },
+    });
+    return { agent };
   });
 
   // Update agent config

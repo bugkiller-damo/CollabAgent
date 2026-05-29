@@ -99,3 +99,14 @@ export function sendToDaemon(userId: string, event: any) {
     try { daemon.send(JSON.stringify(event)); } catch { /* ignore */ }
   }
 }
+
+/** Broadcast to all connected daemons */
+export function broadcastToDaemons(event: any) {
+  const payload = JSON.stringify(event);
+  for (const [, ws] of daemonClients) {
+    try { ws.send(payload); } catch { /* ignore */ }
+  }
+}
+
+/** Export daemon clients map for external access */
+export { daemonClients };
