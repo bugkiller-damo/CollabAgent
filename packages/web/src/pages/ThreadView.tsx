@@ -129,11 +129,12 @@ export function ThreadView() {
       </div>
 
       <form onSubmit={handleReply} className="p-4 border-t border-gray-700">
-        <input
-          type="text" value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          placeholder="回复线程..."
-          className="w-full p-2 rounded bg-gray-700 text-white border border-gray-600 focus:outline-none focus:border-blue-500"
+        <textarea
+          value={draft} rows={1}
+          onChange={e => { setDraft(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px"; }}
+          placeholder="回复线程... (Enter 发送, Shift+Enter 换行)"
+          className="w-full p-2 rounded bg-gray-700 text-white border border-gray-600 focus:outline-none focus:border-blue-500 resize-none"
+          onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); (e.target as any).form?.requestSubmit(); } }}
         />
       </form>
     </div>

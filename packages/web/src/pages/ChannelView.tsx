@@ -2,6 +2,8 @@ import { useParams, useNavigate } from "react-router-dom";
 import { useEffect, useState, useRef } from "react";
 import { useMessageStore, useChannelStore } from "../stores";
 import { apiClient } from "../api/client";
+import { useMentionSuggest } from "../hooks/useMentionSuggest";
+import { MentionPopup } from "../components/chat/MentionPopup";
 
 const EMPTY_MSGS: never[] = [];
 
@@ -13,6 +15,8 @@ export function ChannelView() {
   const setActiveChannel = useChannelStore((s) => s.setActiveChannel);
   const [draft, setDraft] = useState("");
   const containerRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const { filtered, selectedIdx, handleInput, handleKeyDown: mentionKD, insertMention } = useMentionSuggest(textareaRef);
   const navigate = useNavigate();
   const fetchedRef = useRef<string | null>(null);
 
@@ -31,14 +35,17 @@ export function ChannelView() {
     }
   }, [messages]);
 
-  const handleSend = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const doSend = async () => {
     if (!draft.trim()) return;
     try {
       await apiClient("/api/messages/send", { method: "POST", body: { target, content: draft } });
       setDraft("");
       fetchHistory(target).catch(() => {});
     } catch (err) { console.error("Send failed", err); }
+  };
+  const handleSend = (e: React.FormEvent) => { e.preventDefault(); doSend(); };
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); doSend(); }
   };
 
   return (
@@ -72,10 +79,20 @@ export function ChannelView() {
           </div>
         ))}
       </div>
-      <form onSubmit={handleSend} className="p-4 border-t border-gray-700">
-        <input type="text" value={draft} onChange={e => setDraft(e.target.value)}
-          placeholder={`发送消息到 #${channelName}...`}
-          className="w-full p-2 rounded bg-gray-700 text-white border border-gray-600 focus:outline-none focus:border-blue-500" />
+      <form onSubmit={handleSend} className="p-4 border-t border-gray-700 relative">
+        <MentionPopup items={filtered} selectedIdx={selectedIdx} onSelect={insertMention} />
+        <textarea ref={textareaRef} value={draft}
+          onChange={e => { setDraft(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px"; }}
+          onInput={handleInput}
+          onKeyDown={e => { handleKeyDown(e); mentionKD(e); }}
+          placeholder={`发送消息到 #${channelName}... (@ 提及)`}
+          rows={1}
+          className="w-full p-2 rounded bg-gray-700 text-white border border-gray-600 focus:outline-none focus:border-blue-500 resize-none text-sm"
+        />
+        <div className="flex justify-between mt-1 text-gray-600 text-xs">
+          <span>Enter 发送 · Shift+Enter 换行 · 输入 @ 提及</span>
+          {draft.length > 0 && <span>{draft.length}/4000</span>}
+        </div>
       </form>
     </div>
   );
