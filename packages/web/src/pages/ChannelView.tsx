@@ -25,6 +25,28 @@ export function ChannelView() {
   const fetchedRef = useRef<string | null>(null);
 
 
+  
+  // Load reply counts
+  useEffect(() => {
+    messages.forEach(async (msg: any) => {
+      if (msg._replyCount !== undefined) return;
+      try {
+        const d = await apiClient('/api/messages/thread/' + msg.id, { method: "GET" }) as any;
+        if (d && d.replies) {
+          const count = d.replies.length;
+          useMessageStore.setState(s => ({
+            messagesByTarget: {
+              ...s.messagesByTarget,
+              [target]: (s.messagesByTarget[target] || []).map((m: any) =>
+                m.id === msg.id ? { ...m, _replyCount: count } : m
+              )
+            }
+          }));
+        }
+      } catch {}
+    });
+  }, [messages]);
+
   useEffect(() => {
     if (channelName && fetchedRef.current !== channelName) {
       fetchedRef.current = channelName;
@@ -75,18 +97,18 @@ export function ChannelView() {
               <div className="flex items-baseline gap-2">
                 <span className="font-semibold text-white text-sm">{msg.senderName || msg.senderId || "Unknown"}</span>
                 <span className="text-gray-500 text-xs">
-                  {new Date(msg.time || msg.createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}
+                  {new Date(msg.time || msg.createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}{(msg.replyCount||0) > 0 ? "<span className=\"text-gray-500 hover:text-blue-400 text-xs ml-2 cursor-pointer\" onClick={() => navigate(\"/channels/\" + channelName + \"/\" + msg.id)}>💬 {msg.replyCount}</span>" : null}
                 </span>
               </div>
-              <p className="text-gray-300 text-sm whitespace-pre-wrap">{msg.content}</p><div className="flex items-center gap-3 mt-1"><button onClick={() => navigate("/channels/" + channelName + "/" + msg.id)} className="text-gray-600 hover:text-blue-400 text-xs">💬 回复</button></div>
-            <div className="absolute right-2 top-2 hidden group-hover:flex gap-1 bg-gray-800 border border-gray-700 rounded shadow"><button onClick={() => navigator.clipboard.writeText(msg.content)} title="Copy" className="px-2 py-1 text-gray-400 hover:text-white hover:bg-gray-700 rounded text-xs">Copy</button><button onClick={() => navigate("/channels/" + channelName + "/" + (msg.id||""))} title="Reply in thread" className="px-2 py-1 text-gray-400 hover:text-white hover:bg-gray-700 rounded text-xs">Reply</button></div>
+              <p className="text-gray-300 text-sm whitespace-pre-wrap">{msg.content}</p><div className="flex items-center gap-3 mt-1"><button onClick={() => navigate("/channels/" + channelName + "/" + msg.id)} className="text-gray-600 hover:text-blue-400 text-xs">💬 {msg.replyCount > 0 ? msg.replyCount + " 条回复" : "回复"}</button></div>
+            <div className="absolute right-2 top-2 hidden group-hover:flex gap-1 bg-gray-800 border border-gray-700 rounded shadow"><button onClick={() => navigator.clipboard.writeText(msg.content)} title="Copy" className="px-2 py-1 text-gray-400 hover:text-white hover:bg-gray-700 rounded text-xs">Copy</button><button onClick={() => navigate("/channels/" + channelName + "/" + (msg.id||""))} title="Reply in thread" className="px-2 py-1 text-gray-400 hover:text-white hover:bg-gray-700 rounded text-xs">{msg.reply_count > 0 ? msg.reply_count + " replies" : "Reply"}</button></div>
               {/* Hover action menu */}
               <div className="hidden group-hover:flex items-center gap-1 mt-1">
                 <button onClick={() => navigator.clipboard.writeText(msg.content)}
                   title="复制" className="text-gray-500 hover:text-white text-xs px-1.5 py-0.5 rounded hover:bg-gray-700">复制</button>
                 <button onClick={() => {
                   navigate("/channels/" + channelName + "/" + (msg.id || ""));
-                }} title="回复" className="text-gray-500 hover:text-white text-xs px-1.5 py-0.5 rounded hover:bg-gray-700">回复</button>
+                }} title="回复" className="text-gray-500 hover:text-white text-xs px-1.5 py-0.5 rounded hover:bg-gray-700">{((msg._replyCount||0)>0)?msg._replyCount+" 💬":"回复"}</button>
                 <button onClick={async () => {
                   try { await apiClient("/api/messages/" + msg.id + "/reactions", { method: "POST", body: { emoji: "👍" } }); }
                   catch {}
