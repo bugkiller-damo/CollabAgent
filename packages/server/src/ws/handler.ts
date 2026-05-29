@@ -109,4 +109,3 @@ export function broadcastToDaemons(event: any) {
 }
 
 /** Export daemon clients map for external access */
-export { daemonClients };
