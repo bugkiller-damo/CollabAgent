@@ -79,30 +79,21 @@ export class DaemonCore {
 
   private async loadExistingAgents() {
     try {
-      const res = await fetch(`${this.serverUrl}/api/agents`);
+      const res = await fetch(this.serverUrl + '/api/agents');
       const data = await res.json() as any;
       for (const agent of (data.agents || [])) {
         const name = agent.name as string;
         if (!this.agentDrivers.has(name)) {
-          console.log(`[Daemon] Auto-loading agent: @${name}`);
-          try {
-            const driver = await this.spawnAgent(name, `You are ${agent.display_name || name}. ${agent.description || ""}`);
-            if (driver.isRunning) {
-              this.agentDrivers.set(name, driver);
-              console.log(`[Daemon] Agent @${name} ready`);
-            }
-          } catch (err: any) {
-            console.log(`[Daemon] Agent @${name} — spawn failed: ${err.message}, using API fallback`);
-            this.agentDrivers.set(name, null as any);
-          }
+          console.log('[Daemon] Registered (lazy): @' + name);
+          this.agentDrivers.set(name, null as any);
         }
       }
     } catch (err: any) {
-      console.log("[Daemon] Could not load agents from server:", err.message);
+      console.log('[Daemon] Could not load agents:', err.message);
     }
   }
 
-  private connect(): void {
+private connect(): void {
     const url = new URL("/ws", this.config.serverUrl);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     this.ws = new WebSocket(url.toString(), {
