@@ -24,7 +24,9 @@ export class DaemonCore {
   private driver: ClaudeDriver | null = null;
   private agentDrivers = new Map<string, ClaudeDriver>();
   private agentSessions = new Map<string, string>();
+  private lastCh = new Map<string, string>();
   private agentHistory = new Map<string, Array<{role: string; content: string}>>();
+  private agentLastChannel = new Map<string, string>();
   private chatHistory = new Map<string, Array<{ role: string; content: string }>>();
 
   constructor(private config: DaemonConfig) {
@@ -289,12 +291,31 @@ export class DaemonCore {
       console.log("[Daemon] Using fallback system prompt");
     }
 
+    const replyBuf: string[] = [];
     const driver = new ClaudeDriver({
       workingDirectory: process.env.AGENT_WORKSPACE || process.cwd(),
       model: "sonnet",
       systemPrompt: sysPrompt,
       onEvent: (event) => {
-        console.log("[Agent " + agentId.slice(0, 8) + "] " + event.kind + (event.text ? ": " + event.text.slice(0, 80) : ""));
+                console.log("[Agent " + agentId.slice(0, 8) + "] " + event.kind + (event.text ? ": " + event.text.slice(0, 80) : ""));
+                // Collect text for reply
+                if (!(driver as any)._replyText) (driver as any)._replyText = "";
+                if (event.kind === "text" && event.text) {
+                  (driver as any)._replyText += event.text;
+                }
+                if (event.kind === "turn_end" && (driver as any)._replyText) {
+                  const reply = (driver as any)._replyText;
+                  (driver as any)._replyText = "";
+                  this.sendReply("general", reply).catch(() => {});
+                } if (event.kind === "text" && event.text) { const ch = this.agentLastChannel.get(agentId) || "general"; this.sendReply(ch, event.text); }
+        if (event.kind === "text" && event.text) {
+          replyBuf.push(event.text);
+        } else if (event.kind === "turn_end" && replyBuf.length > 0) {
+          const reply = replyBuf.join("").trim();
+          replyBuf.length = 0;
+          const ch = this.lastCh.get(agentId) || "general";
+          this.sendReply(ch, reply).catch(() => {});
+        }
       },
       onExit: (code) => {
         console.log("[Agent " + agentId.slice(0, 8) + "] exited with code " + code);

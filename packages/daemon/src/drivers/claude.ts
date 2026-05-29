@@ -47,12 +47,7 @@ export class ClaudeDriver {
     }
     return "claude.cmd";
   })();
-    const args = [
-      "--output-format", "stream-json",
-      "--verbose",
-      "--model", this.opts.model || "claude-sonnet-4-6",
-      "--dangerously-skip-permissions",
-    ];
+    const args = ["--print", "--output-format", "stream-json", "--verbose", "--model", this.opts.model || "sonnet", "--dangerously-skip-permissions"];
     if (sessionId) args.push("--resume", sessionId);
     if (this.opts.systemPrompt) {
       // Write prompt to file — too long for command-line argument
