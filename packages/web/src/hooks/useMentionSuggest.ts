@@ -76,9 +76,11 @@ export function useMentionSuggest(textareaRef: React.RefObject<HTMLTextAreaEleme
   }, [textareaRef, candidates]);
 
   const insertMention = useCallback((handle: string) => {
+    setVisible(false);
+    setFiltered([]);
+    setQuery("");
     const el = textareaRef.current;
     if (!el) return;
-    skipNextInput.current = true;
     const cursorPos = el.selectionStart;
     const text = el.value;
     let atIdx = -1;
@@ -90,17 +92,12 @@ export function useMentionSuggest(textareaRef: React.RefObject<HTMLTextAreaEleme
       const before = text.slice(0, atIdx);
       const after = text.slice(cursorPos);
       const newText = before + "@" + handle + " " + after;
-      // Trigger React state update via native input event
+      // Just update the DOM value — the wrapper in ChannelView syncs to React state
       const nativeSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
       nativeSetter?.call(el, newText);
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-      el.focus();
+      return newText;
     }
-    setVisible(false);
-    setFiltered([]);
-    // Prevent race with handleInput
-    skipNextInput.current = true;
-    setTimeout(() => { setVisible(false); setFiltered([]); }, 50);
+    return text;
   }, [textareaRef]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {

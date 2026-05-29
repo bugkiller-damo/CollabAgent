@@ -18,11 +18,8 @@ export function ChannelView() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const { filtered, selectedIdx, visible, handleInput, handleKeyDown: mentionKD, insertMention: rawInsert } = useMentionSuggest(textareaRef);
   const insertMention = (handle: string) => {
-    rawInsert(handle);
-    setTimeout(() => {
-      const el = textareaRef.current;
-      if (el) setDraft(el.value);
-    }, 0);
+    const newText = rawInsert(handle);
+    if (newText) setDraft(newText);
   };
   const navigate = useNavigate();
   const fetchedRef = useRef<string | null>(null);
@@ -91,7 +88,7 @@ export function ChannelView() {
         <textarea ref={textareaRef} value={draft}
           onChange={e => { setDraft(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px"; }}
           onInput={handleInput}
-          onKeyDown={e => { mentionKD(e); if (!e.defaultPrevented) handleKeyDown(e); }}
+          onKeyDown={e => { mentionKD(e); } }
           placeholder={`发送消息到 #${channelName}... (@ 提及)`}
           rows={1}
           className="w-full p-2 rounded bg-gray-700 text-white border border-gray-600 focus:outline-none focus:border-blue-500 resize-none text-sm"
