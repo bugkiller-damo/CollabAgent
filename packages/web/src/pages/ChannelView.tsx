@@ -78,15 +78,14 @@ export function ChannelView() {
                   {new Date(msg.time || msg.createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}
                 </span>
               </div>
-              <p className="text-gray-300 text-sm whitespace-pre-wrap">{msg.content}</p>
-            <div className="absolute right-2 top-2 hidden group-hover:flex gap-1 bg-gray-800 border border-gray-700 rounded shadow"><button onClick={() => navigator.clipboard.writeText(msg.content)} title="Copy" className="px-2 py-1 text-gray-400 hover:text-white hover:bg-gray-700 rounded text-xs">Copy</button><button onClick={() => navigate("/channels/" + channelName + "/" + (msg.id||"").substring(0,8))} title="Reply in thread" className="px-2 py-1 text-gray-400 hover:text-white hover:bg-gray-700 rounded text-xs">Reply</button></div>
+              <p className="text-gray-300 text-sm whitespace-pre-wrap">{msg.content}</p><div className="flex items-center gap-3 mt-1"><button onClick={() => navigate("/channels/" + channelName + "/" + msg.id)} className="text-gray-600 hover:text-blue-400 text-xs">💬 回复</button></div>
+            <div className="absolute right-2 top-2 hidden group-hover:flex gap-1 bg-gray-800 border border-gray-700 rounded shadow"><button onClick={() => navigator.clipboard.writeText(msg.content)} title="Copy" className="px-2 py-1 text-gray-400 hover:text-white hover:bg-gray-700 rounded text-xs">Copy</button><button onClick={() => navigate("/channels/" + channelName + "/" + (msg.id||""))} title="Reply in thread" className="px-2 py-1 text-gray-400 hover:text-white hover:bg-gray-700 rounded text-xs">Reply</button></div>
               {/* Hover action menu */}
               <div className="hidden group-hover:flex items-center gap-1 mt-1">
                 <button onClick={() => navigator.clipboard.writeText(msg.content)}
                   title="复制" className="text-gray-500 hover:text-white text-xs px-1.5 py-0.5 rounded hover:bg-gray-700">复制</button>
                 <button onClick={() => {
-                  const shortId = (msg.id || "").substring(0, 8);
-                  navigate("/channels/" + channelName + "/" + shortId);
+                  navigate("/channels/" + channelName + "/" + (msg.id || ""));
                 }} title="回复" className="text-gray-500 hover:text-white text-xs px-1.5 py-0.5 rounded hover:bg-gray-700">回复</button>
                 <button onClick={async () => {
                   try { await apiClient("/api/messages/" + msg.id + "/reactions", { method: "POST", body: { emoji: "👍" } }); }
