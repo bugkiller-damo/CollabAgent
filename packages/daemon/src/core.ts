@@ -48,7 +48,7 @@ export class DaemonCore {
     console.log(`[Daemon] Starting with server ${this.config.serverUrl}`);
     this.setupSlockWrapper();
     this.connect();
-    this.loadExistingAgents();
+    // Agents are spawned on-demand when @mentioned, not pre-loaded
   }
 
   private async setupSlockWrapper() {
@@ -85,16 +85,9 @@ export class DaemonCore {
         const name = agent.name as string;
         if (!this.agentDrivers.has(name)) {
           console.log(`[Daemon] Auto-loading agent: @${name}`);
-          try {
-            const driver = await this.spawnAgent(name, `You are ${agent.display_name || name}. ${agent.description || ""}`);
-            if (driver.isRunning) {
-              this.agentDrivers.set(name, driver);
-              console.log(`[Daemon] Agent @${name} ready`);
-            }
-          } catch (err: any) {
-            console.log(`[Daemon] Agent @${name} — spawn failed: ${err.message}, using API fallback`);
-            this.agentDrivers.set(name, null as any);
-          }
+          // Lazy init — only create driver when @mentioned
+          this.agentDrivers.set(name, null as any);
+          console.log(`[Daemon] Agent @${name} registered (lazy load)`);
         }
       }
     } catch (err: any) {
@@ -281,15 +274,7 @@ export class DaemonCore {
 
     // Load system prompt from file (28KB full prompt with all 29 command docs)
     let sysPrompt = "";
-    try {
-      const fs = await import("node:fs");
-      const promptPath = process.env.SYSTEM_PROMPT_PATH || "system-prompt.md";
-      sysPrompt = fs.readFileSync(promptPath, "utf-8");
-      console.log("[Daemon] Loaded system prompt (" + sysPrompt.length + " bytes)");
-    } catch {
-      sysPrompt = "You are an AI agent in the CollabAgent platform. Use available tools to communicate and help users.";
-      console.log("[Daemon] Using fallback system prompt");
-    }
+    sysPrompt = 'You are @' + agentId + ', an AI agent in CollabAgent. Be concise. Reply in 1-3 sentences.';
 
     const replyBuf: string[] = [];
     const driver = new ClaudeDriver({
