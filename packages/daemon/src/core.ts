@@ -4,6 +4,7 @@ import type { ClaudeEvent } from "./drivers/claude.js";
 import { ApiClient } from "./client.js";
 import type { AgentContext } from "./auth.js";
 import { generateSystemPrompt } from "./system-prompt.js";
+import { claudePrint } from "./claude-print.js";
 
 export interface DaemonConfig {
   serverUrl: string;
@@ -469,14 +470,25 @@ private connect(): void {
 
         try {
           if (registeredAgent) {
-            // Route to specific agent via ClaudeDriver or API fallback
-            const driver = this.agentDrivers.get(registeredAgent);
+            let driver = this.agentDrivers.get(registeredAgent);
+            if (!driver) {
+              console.log(`[Daemon] First @mention for ${registeredAgent} — spawning Claude`);
+              driver = await this.spawnAgent(registeredAgent, `You are @${registeredAgent}. Use slock CLI to communicate. Reply in the user's language.`);
+              if (driver.isRunning) this.agentDrivers.set(registeredAgent, driver);
+            }
             if (driver?.isRunning) {
               console.log(`[Daemon] Routing to agent @${registeredAgent} in #${channelName}`);
               this.lastCh.set(registeredAgent, channelName);
               driver.sendMessage(`[Channel #${channelName}] @${senderName} said: ${content}`);
             } else {
-              // API fallback mode — use callAI
+              // Try Claude --print first, fall back to API
+              try {
+                const claude = await claudePrint(`[#${channelName}] @${senderName}: ${content}`);
+                if (claude.reply) {
+                  await this.sendReply(channelName, claude.reply);
+                  return;
+                }
+              } catch {}
               const reply = await this.callAI(content, senderName, channelName, registeredAgent);
               if (reply) await this.sendReply(channelName, `🤖 @${registeredAgent}: ${reply}`);
             }
