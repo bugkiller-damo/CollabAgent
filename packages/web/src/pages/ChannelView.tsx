@@ -16,7 +16,14 @@ export function ChannelView() {
   const [draft, setDraft] = useState("");
   const containerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const { filtered, selectedIdx, visible, handleInput, handleKeyDown: mentionKD, insertMention } = useMentionSuggest(textareaRef);
+  const { filtered, selectedIdx, visible, handleInput, handleKeyDown: mentionKD, insertMention: rawInsert } = useMentionSuggest(textareaRef);
+  const insertMention = (handle: string) => {
+    rawInsert(handle);
+    setTimeout(() => {
+      const el = textareaRef.current;
+      if (el) setDraft(el.value);
+    }, 0);
+  };
   const navigate = useNavigate();
   const fetchedRef = useRef<string | null>(null);
 

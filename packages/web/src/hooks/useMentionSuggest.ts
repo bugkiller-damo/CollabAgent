@@ -97,8 +97,10 @@ export function useMentionSuggest(textareaRef: React.RefObject<HTMLTextAreaEleme
       el.focus();
     }
     setVisible(false);
-    // Force close after React re-render
-    setTimeout(() => setVisible(false), 0);
+    setFiltered([]);
+    // Prevent race with handleInput
+    skipNextInput.current = true;
+    setTimeout(() => { setVisible(false); setFiltered([]); }, 50);
   }, [textareaRef]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
