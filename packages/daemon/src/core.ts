@@ -235,14 +235,8 @@ export class DaemonCore {
     }
   }
 
-  private async sendStatus(target: string, status: string, detail?: string) {
-    try {
-      await fetch(`${this.serverUrl}/api/messages/send`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${this.apiKey}` },
-        body: JSON.stringify({ target, content: `🤖 ${status}${detail ? "\n> " + detail : ""}` }),
-      });
-    } catch { /* silent */ }
+  private logStatus(status: string, detail?: string) {
+    console.log(`[Daemon.Status] ${status}${detail ? " | " + detail.slice(0, 80) : ""}`);
   }
 
   
@@ -307,7 +301,7 @@ export class DaemonCore {
 
     if (dsKey) {
       try {
-        await this.sendStatus(target, "正在思考...");
+        // Status:"正在思考...");
         const messages: any[] = [
           { role: "system", content: "You are a helpful AI agent in the #" + channelName + " channel. You can read/write files, list directories, and execute commands. Reply concisely in Chinese." },
           { role: "user", content: "@" + senderName + " said: " + userMessage },
@@ -332,9 +326,9 @@ export class DaemonCore {
           for (const tc of assistantMsg.tool_calls) {
             const toolName = tc.function.name;
             const toolArgs = JSON.parse(tc.function.arguments);
-            await this.sendStatus(target, `调用工具: ${toolName}`, JSON.stringify(toolArgs).slice(0, 200));
+            // Status:`调用工具: ${toolName}`, JSON.stringify(toolArgs).slice(0, 200));
             const result = await this.executeTool(toolName, toolArgs);
-            await this.sendStatus(target, `工具 ${toolName} 完成`, result.slice(0, 300));
+            // Status:`工具 ${toolName} 完成`, result.slice(0, 300));
             messages.push(assistantMsg);
             messages.push({ role: "tool", tool_call_id: tc.id, content: result });
           }
@@ -399,7 +393,7 @@ export class DaemonCore {
         const content = m.content as string;
         // Check for @mentions — only reply if the daemon's agent is @mentioned
         const mentionedAgent = this.findMentionedAgent(content || "");
-        if (!mentionedAgent && this.agentDrivers.size === 0) break; // No agent to respond to
+        if (!mentionedAgent) break; // Only respond when @mentioned
         const rawChannel = (m.channelId as string) || "general";
         const channelName = rawChannel.startsWith("#") ? rawChannel.slice(1) : rawChannel;
         const senderName = (m.senderName as string) || (m.senderId as string) || "unknown";

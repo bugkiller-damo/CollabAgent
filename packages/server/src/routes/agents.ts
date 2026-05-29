@@ -52,6 +52,35 @@ export async function agentRoutes(app: FastifyInstance) {
     return { agent };
   });
 
+  // Agent send message (machine token or JWT auth)
+  app.post("/:agentId/send", async (req) => {
+    const { target, content, threadId } = req.body as Record<string, unknown>;
+    const agentId = (req.params as any).agentId;
+    const channelName = (target as string)?.startsWith("#") ? (target as string).slice(1).split(":")[0] : target;
+    const ch = await app.pg.query("SELECT id, server_id FROM channels WHERE name = $1", [channelName]);
+    if (ch.rows.length === 0) return { error: "channel not found" };
+    const result = await app.pg.query(
+      "INSERT INTO messages (channel_id, server_id, sender_id, sender_type, content, thread_id) VALUES ($1, $2, $3, 'agent', $4, $5) RETURNING id, seq, created_at",
+      [ch.rows[0].id, ch.rows[0].server_id, agentId, content as string, (threadId as string) || null]
+    );
+    const msg = result.rows[0];
+    const { broadcast } = await import("../ws/handler.js");
+    broadcast(ch.rows[0].id, {
+      type: "agent:deliver",
+      seq: msg.seq,
+      message: {
+        id: msg.id, seq: msg.seq,
+        channelId: target, senderId: agentId,
+        senderName: "Agent",
+        senderType: "agent",
+        content: content as string,
+        time: msg.created_at,
+        threadId: threadId || null,
+      },
+    });
+    return { state: "sent", messageId: msg.id, messageSeq: msg.seq };
+  });
+
   // Update agent config
   app.patch("/:agentId", { preHandler: [app.authenticate] }, async (req, reply) => {
     const { agentId } = req.params as Record<string, string>;

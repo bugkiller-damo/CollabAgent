@@ -19,6 +19,10 @@ function AuthGuard() {
   return <Outlet />;
 }
 
+function SettingsPlaceholder({ title }: { title: string }) {
+  return <div className="p-6 text-gray-400"><h2 className="text-white text-xl font-bold mb-2">{title}</h2><p>即将推出</p></div>;
+}
+
 export function App() {
   return (
     <Routes>
@@ -36,6 +40,8 @@ export function App() {
           <Route path="/tasks/:channelName" element={<TaskBoard />} />
           <Route path="/settings" element={<SettingsLayout />}>
             <Route path="profile" element={<ProfileSettings />} />
+              <Route path="integrations" element={<SettingsPlaceholder title="集成" />} />
+              <Route path="notifications" element={<SettingsPlaceholder title="通知" />} />
           </Route>
           <Route path="/admin" element={<AdminPanel />}>
               <Route path="agents" element={<AgentManagement />} />

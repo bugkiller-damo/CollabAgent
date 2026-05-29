@@ -1,4 +1,4 @@
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 import { useChannelStore, useAuthStore } from "../../stores";
 import { AgentStatusBar } from "./AgentStatusBar";
 
@@ -10,6 +10,9 @@ export function Sidebar() {
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
   const navigate = useNavigate();
+  const location = useLocation();
+
+  const isActive = (path: string) => location.pathname.startsWith(path);
 
   return (
     <aside className="w-60 bg-gray-800 border-r border-gray-700 flex flex-col shrink-0">
@@ -23,12 +26,9 @@ export function Sidebar() {
         {channels.map((ch: any) => (
           <button
             key={ch.id}
-            onClick={() => {
-              setActiveChannel(ch.name);
-              navigate(`/channels/${ch.name}`);
-            }}
-            className={`w-full text-left flex items-center justify-between p-2 rounded text-sm
-              ${ch.name === activeChannelName ? "bg-gray-700 text-white" : "text-gray-400 hover:text-white hover:bg-gray-700"}`}
+            onClick={() => { setActiveChannel(ch.name); navigate("/channels/" + ch.name); }}
+            className={"w-full text-left flex items-center justify-between p-2 rounded text-sm " +
+              (ch.name === activeChannelName ? "bg-gray-700 text-white" : "text-gray-400 hover:text-white hover:bg-gray-700")}
           >
             <span># {ch.name}</span>
             {(unreadCounts[ch.name] || 0) > 0 && (
@@ -38,18 +38,33 @@ export function Sidebar() {
             )}
           </button>
         ))}
+
+        <div className="text-gray-500 text-xs font-semibold uppercase tracking-wider px-2 py-1 mt-4">
+          功能
+        </div>
+        <button onClick={() => navigate("/tasks")}
+          className={"w-full text-left p-2 rounded text-sm " +
+            (isActive("/tasks") ? "bg-gray-700 text-white" : "text-gray-400 hover:text-white hover:bg-gray-700")}>
+          📋 任务看板
+        </button>
       </nav>
       <AgentStatusBar />
       <div className="p-3 border-t border-gray-700 space-y-1">
         {user && (
-          <div className="text-gray-400 text-xs px-1 mb-1">
-            已登录：{user.handle}
-          </div>
+          <div className="text-gray-400 text-xs px-1 mb-1">已登录：{user.handle}</div>
         )}
-        <button onClick={() => navigate("/settings/profile")} className="block w-full text-left text-gray-400 hover:text-white text-sm">
-          设置
+        <button onClick={() => navigate("/admin/agents")}
+          className={"block w-full text-left text-sm p-1 rounded " +
+            (isActive("/admin/agents") ? "text-white bg-gray-700" : "text-gray-400 hover:text-white")}>
+          🤖 Agent 管理
         </button>
-        <button onClick={() => { logout(); navigate("/login"); }} className="block w-full text-left text-gray-400 hover:text-red-400 text-sm">
+        <button onClick={() => navigate("/settings/profile")}
+          className={"block w-full text-left text-sm p-1 rounded " +
+            (isActive("/settings/profile") ? "text-white bg-gray-700" : "text-gray-400 hover:text-white")}>
+          ⚙️ 设置
+        </button>
+        <button onClick={() => { logout(); navigate("/login"); }}
+          className="block w-full text-left text-gray-400 hover:text-red-400 text-sm p-1 rounded">
           退出登录
         </button>
       </div>

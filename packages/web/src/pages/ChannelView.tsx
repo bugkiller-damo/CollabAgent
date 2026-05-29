@@ -1,4 +1,4 @@
-import { useParams } from "react-router-dom";
+import { useParams, useNavigate } from "react-router-dom";
 import { useEffect, useState, useRef } from "react";
 import { useMessageStore, useChannelStore } from "../stores";
 import { apiClient } from "../api/client";
@@ -13,6 +13,7 @@ export function ChannelView() {
   const setActiveChannel = useChannelStore((s) => s.setActiveChannel);
   const [draft, setDraft] = useState("");
   const containerRef = useRef<HTMLDivElement>(null);
+  const navigate = useNavigate();
   const fetchedRef = useRef<string | null>(null);
 
 
@@ -43,7 +44,12 @@ export function ChannelView() {
   return (
     <div className="flex flex-col h-full">
       <div className="p-4 border-b border-gray-700">
+        <div className="flex items-center gap-3">
         <h2 className="text-white font-bold">#{channelName}</h2>
+        <button onClick={()=>navigate("/tasks/"+channelName)} className="text-gray-500 hover:text-blue-400 text-xs">
+          看板
+        </button>
+      </div>
       </div>
       <div ref={containerRef} className="flex-1 p-4 overflow-y-auto space-y-3">
         {messages.length === 0 && (
