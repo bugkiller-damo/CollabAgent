@@ -27,7 +27,7 @@ export function MentionPopup({ items, selectedIdx, onSelect }: Props) {
           key={item.handle}
           className={"w-full text-left px-3 py-1.5 text-sm flex items-center gap-2 " +
             (i === selectedIdx ? "bg-blue-600 text-white" : "text-gray-300 hover:bg-gray-700")}
-          type="button" onMouseDown={(e: MouseEvent) => { e.preventDefault(); e.stopPropagation(); onSelect(item.handle); }}
+          type="button" onClick={() => onSelect(item.handle)}
         >
           <span className="w-5 h-5 rounded-full bg-gray-600 flex items-center justify-center text-[10px] shrink-0">
             {(item.displayName || item.handle)[0]}
