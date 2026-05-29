@@ -45,7 +45,8 @@ export class ClaudeDriver {
     if (this.opts.systemPrompt) args.push("--append-system-prompt", this.opts.systemPrompt);
     // MCP bridge configuration
     const mcpConfigPath = process.env.MCP_CONFIG_PATH || "dist/chat-bridge.js";
-    args.push("--mcp-config", mcpConfigPath);
+    const { existsSync } = await import("node:fs");
+    if (existsSync(mcpConfigPath)) args.push("--mcp-config", mcpConfigPath);
 
     const slockDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", ".slock");
     const env = { ...process.env, PATH: slockDir + ";" + (process.env.PATH || "") };
@@ -53,6 +54,7 @@ export class ClaudeDriver {
       cwd: this.opts.workingDirectory,
       stdio: ["pipe", "pipe", "pipe"],
       env,
+      shell: true,
     });
 
     this.proc.stdout?.on("data", (chunk: Buffer) => {

@@ -15,6 +15,7 @@ export class DaemonCore {
   private ws: WebSocket | null = null;
   private serverUrl: string;
   private apiKey: string;
+  private slockDir: string | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelay = 1000;
   private client: ApiClient;
@@ -23,6 +24,8 @@ export class DaemonCore {
   private driver: ClaudeDriver | null = null;
   private agentDrivers = new Map<string, ClaudeDriver>();
   private agentSessions = new Map<string, string>();
+  private agentHistory = new Map<string, Array<{role: string; content: string}>>();
+  private chatHistory = new Map<string, Array<{ role: string; content: string }>>();
 
   constructor(private config: DaemonConfig) {
     this.serverUrl = config.serverUrl;
@@ -41,8 +44,35 @@ export class DaemonCore {
 
   start(): void {
     console.log(`[Daemon] Starting with server ${this.config.serverUrl}`);
+    this.setupSlockWrapper();
     this.connect();
     this.loadExistingAgents();
+  }
+
+  private async setupSlockWrapper() {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const slockDir = path.join(process.cwd(), ".slock");
+    fs.mkdirSync(slockDir, { recursive: true });
+
+    // slock.bat — Windows wrapper that injects auth
+    const batContent = [
+      `@echo off`,
+      `set SLOCK_AGENT_ID=${this.agentId}`,
+      `set SLOCK_SERVER_URL=${this.serverUrl}`,
+      `set SLOCK_AGENT_TOKEN=${this.apiKey}`,
+      `set SLOCK_AGENT_ACTIVE_CAPABILITIES=send,read,mentions,tasks,reactions,server,channels`,
+      `node "${path.resolve(process.cwd(), "packages/daemon/dist/cli/index.js")}" %*`,
+    ].join("\r\n");
+    fs.writeFileSync(path.join(slockDir, "slock.bat"), batContent);
+    console.log(`[Daemon] slock wrapper written to ${slockDir}/slock.bat`);
+
+    // Add .slock to PATH for spawned processes
+    const currentPath = process.env.PATH || "";
+    if (!currentPath.includes(slockDir)) {
+      process.env.PATH = `${slockDir};${currentPath}`;
+    }
+    this.slockDir = slockDir;
   }
 
   private async loadExistingAgents() {
@@ -300,9 +330,9 @@ export class DaemonCore {
   private async callAI(
     userMessage: string,
     senderName: string,
-    channelName: string
+    channelName: string,
+    agentName?: string
   ): Promise<string | null> {
-    const target = "#" + channelName;
     const dsKey = process.env.DEEPSEEK_API_KEY;
 
     // No AI key — echo mode
@@ -310,14 +340,17 @@ export class DaemonCore {
       return "🤖 Echo: \"" + userMessage.slice(0, 100) + "\" — from @" + senderName;
     }
 
+    // Build conversation history for context
+    const historyKey = agentName || "default";
+    let history = this.chatHistory.get(historyKey) || [];
+    const messages = [
+      { role: "system", content: "You are an AI agent in the #" + channelName + " channel. Reply concisely in 1-3 sentences. You CAN see previous messages in this conversation. Reference them when relevant." },
+      ...history.slice(-10), // Last 10 messages for context
+      { role: "user", content: "@" + senderName + " said: " + userMessage },
+    ];
+
     if (dsKey) {
       try {
-        // Status:"正在思考...");
-        const messages: any[] = [
-          { role: "system", content: "You are a helpful AI agent in the #" + channelName + " channel. You can read/write files, list directories, and execute commands. Reply concisely in Chinese." },
-          { role: "user", content: "@" + senderName + " said: " + userMessage },
-        ];
-
         const res = await fetch("https://api.deepseek.com/v1/chat/completions", {
           method: "POST",
           headers: { "Content-Type": "application/json", "Authorization": "Bearer " + dsKey },
@@ -332,6 +365,14 @@ export class DaemonCore {
         const choice = data.choices?.[0];
         const assistantMsg = choice?.message;
 
+        // Save to history
+        history.push({ role: "user", content: userMessage });
+        if (assistantMsg?.content) {
+          history.push({ role: "assistant", content: assistantMsg.content });
+        }
+        if (history.length > 20) history = history.slice(-20);
+        this.chatHistory.set(historyKey, history);
+
         // Handle tool calls
         if (assistantMsg?.tool_calls?.length) {
           for (const tc of assistantMsg.tool_calls) {
@@ -341,7 +382,7 @@ export class DaemonCore {
             const result = await this.executeTool(toolName, toolArgs);
             // Status:`工具 ${toolName} 完成`, result.slice(0, 300));
             messages.push(assistantMsg);
-            messages.push({ role: "tool", tool_call_id: tc.id, content: result });
+            messages.push({ role: "tool", tool_call_id: tc.id, content: result } as any);
           }
           // Get final response after tool calls
           const finalRes = await fetch("https://api.deepseek.com/v1/chat/completions", {
@@ -428,7 +469,7 @@ export class DaemonCore {
               driver.sendMessage(`[Channel #${channelName}] @${senderName} said: ${content}`);
             } else {
               // API fallback mode — use callAI
-              const reply = await this.callAI(content, senderName, channelName);
+              const reply = await this.callAI(content, senderName, channelName, registeredAgent);
               if (reply) await this.sendReply(channelName, `🤖 @${registeredAgent}: ${reply}`);
             }
           } else if (mentionedAgents.length > 0) {
@@ -442,13 +483,13 @@ export class DaemonCore {
                 }
               } catch {
                 console.log(`[Daemon] Spawning failed for @${name}, using API fallback`);
-                                const aiReply = await this.callAI(`@${senderName}: ${content}`, senderName, channelName);
+                                const aiReply = await this.callAI(content, senderName, channelName, name);
                                 if (aiReply) await this.sendReply(channelName, `🤖 @${name}: ${aiReply}`);
               }
             }
           } else {
             // No @mention — let default AI handle it
-            const reply = await this.callAI(content, senderName, channelName);
+            const reply = await this.callAI(content, senderName, channelName, registeredAgent);
             if (reply) await this.sendReply(channelName, reply);
           }
         } catch (err: any) {
