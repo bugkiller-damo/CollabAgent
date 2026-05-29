@@ -223,7 +223,7 @@ export class DaemonCore {
 
   private async sendReply(channelName: string, content: string) {
     try {
-      await fetch(`${this.serverUrl}/internal/agent/${this.agentId}/send`, {
+      await fetch(`${this.serverUrl}/api/messages/send`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "Authorization": `Bearer ${this.apiKey}` },
         body: JSON.stringify({ target: "#" + channelName, content }),
@@ -235,7 +235,7 @@ export class DaemonCore {
 
   private async sendStatus(target: string, status: string, detail?: string) {
     try {
-      await fetch(`${this.serverUrl}/internal/agent/${this.agentId}/send`, {
+      await fetch(`${this.serverUrl}/api/messages/send`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "Authorization": `Bearer ${this.apiKey}` },
         body: JSON.stringify({ target, content: `🤖 ${status}${detail ? "\n> " + detail : ""}` }),
@@ -412,13 +412,15 @@ export class DaemonCore {
 
         try {
           if (registeredAgent) {
-            // Route to specific agent via ClaudeDriver
+            // Route to specific agent via ClaudeDriver or API fallback
             const driver = this.agentDrivers.get(registeredAgent);
             if (driver?.isRunning) {
               console.log(`[Daemon] Routing to agent @${registeredAgent}`);
               driver.sendMessage(`@${senderName} said: ${content}`);
             } else {
-              await this.sendReply(channelName, `🤖 @${registeredAgent} is offline`);
+              // API fallback mode — use callAI
+              const reply = await this.callAI(content, senderName, channelName);
+              if (reply) await this.sendReply(channelName, `🤖 @${registeredAgent}: ${reply}`);
             }
           } else if (mentionedAgents.length > 0) {
             // Unknown agent — try spawning it
@@ -430,7 +432,9 @@ export class DaemonCore {
                   driver.sendMessage(`@${senderName} said in #${channelName}: ${content}`);
                 }
               } catch {
-                await this.sendReply(channelName, `🤖 @${name} could not be started`);
+                console.log(`[Daemon] Spawning failed for @${name}, using API fallback`);
+                                const aiReply = await this.callAI(`@${senderName}: ${content}`, senderName, channelName);
+                                if (aiReply) await this.sendReply(channelName, `🤖 @${name}: ${aiReply}`);
               }
             }
           } else {
