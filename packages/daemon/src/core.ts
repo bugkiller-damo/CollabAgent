@@ -452,12 +452,7 @@ export class DaemonCore {
         const displayName = (agent?.displayName as string) || agentName;
         console.log(`[Daemon] agent:start received for ${agentName} (${agentId.slice(0, 8)})`);
         try {
-          const driver = await this.spawnAgent(agentId, `You are ${displayName}, an AI agent in the team.`);
-          if (driver) {
-            this.agentDrivers.set(agentId, driver);
-            this.agentDrivers.set(agentName, driver);
-            this.ws?.send(JSON.stringify({ type: "agent:status", agentId, status: "online", runtime: config?.runtime || "claude" }));
-          }
+          console.log(`[Daemon] Agent @${agentName} registered (lazy — spawns on @mention)`);
         } catch (err) { console.error(`[Daemon] Failed to spawn agent ${agentName}:`, (err as Error).message); }
         break;
       }
