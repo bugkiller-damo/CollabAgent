@@ -49,14 +49,19 @@ export class ClaudeDriver {
   })();
     const args = [
       "--output-format", "stream-json",
-      "--input-format", "stream-json",
       "--verbose",
-      "--model", this.opts.model || "sonnet",
-      "--permission-mode", "bypassPermissions",
+      "--model", this.opts.model || "claude-sonnet-4-6",
       "--dangerously-skip-permissions",
     ];
     if (sessionId) args.push("--resume", sessionId);
-    if (this.opts.systemPrompt) args.push("--append-system-prompt", this.opts.systemPrompt);
+    if (this.opts.systemPrompt) {
+      // Write prompt to file — too long for command-line argument
+      const promptFile = join(this.opts.workingDirectory, ".slock", "system-prompt.md");
+      const { mkdirSync, writeFileSync } = await import("node:fs");
+      mkdirSync(join(this.opts.workingDirectory, ".slock"), { recursive: true });
+      writeFileSync(promptFile, this.opts.systemPrompt);
+      args.push("--append-system-prompt-file", promptFile);
+    }
     // MCP bridge configuration
     const mcpConfigPath = process.env.MCP_CONFIG_PATH || "dist/chat-bridge.js";
     if (existsSync(mcpConfigPath)) args.push("--mcp-config", mcpConfigPath);
