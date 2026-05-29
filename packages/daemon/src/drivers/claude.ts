@@ -47,7 +47,7 @@ export class ClaudeDriver {
     }
     return "claude.cmd";
   })();
-    const args = ["--output-format", "stream-json", "--input-format", "stream-json", "--verbose"];
+    const args = ["--print", "--output-format", "stream-json", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions", "--model", "sonnet"];
     if (sessionId) args.push("--resume", sessionId);
     if (this.opts.systemPrompt) {
       // Write prompt to file — too long for command-line argument
@@ -59,6 +59,7 @@ export class ClaudeDriver {
     }
     const slockDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", ".slock");
     const env = { ...process.env, PATH: slockDir + ";" + (process.env.PATH || "") };
+    args.push(prompt);
     this.proc = spawn(claudeCmd, args, {
       cwd: this.opts.workingDirectory,
       stdio: ["pipe", "pipe", "pipe"],
