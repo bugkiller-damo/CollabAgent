@@ -17,6 +17,7 @@ export interface ClaudeDriverOptions {
   model?: string;
   systemPrompt?: string;
   onEvent: (event: ClaudeEvent) => void;
+  onSessionInit?: (sessionId: string) => void;
   onExit?: (code: number | null) => void;
 }
 
@@ -24,6 +25,7 @@ export class ClaudeDriver {
   private proc: ChildProcess | null = null;
   private opts: ClaudeDriverOptions;
   private buffer = "";
+  public onSessionInit: ((sessionId: string) => void) | undefined;
 
   constructor(opts: ClaudeDriverOptions) {
     this.opts = opts;
@@ -127,7 +129,9 @@ export class ClaudeDriver {
     switch (event.type) {
       case "system": {
         if (event.subtype === "init" && event.session_id) {
-          this.opts.onEvent({ kind: "session_init", sessionId: event.session_id as string });
+          const sid = event.session_id as string;
+          this.opts.onEvent({ kind: "session_init", sessionId: sid });
+          this.opts.onSessionInit?.(sid);
         }
         break;
       }

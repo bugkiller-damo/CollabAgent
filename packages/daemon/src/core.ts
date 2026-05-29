@@ -22,6 +22,7 @@ export class DaemonCore {
   private agents = new Map<string, { name: string; driver: ClaudeDriver; process: any }>();
   private driver: ClaudeDriver | null = null;
   private agentDrivers = new Map<string, ClaudeDriver>();
+  private agentSessions = new Map<string, string>();
 
   constructor(private config: DaemonConfig) {
     this.serverUrl = config.serverUrl;
@@ -58,9 +59,9 @@ export class DaemonCore {
               this.agentDrivers.set(name, driver);
               console.log(`[Daemon] Agent @${name} ready`);
             }
-          } catch {
-            console.log(`[Daemon] Agent @${name} — using API fallback`);
-            this.agentDrivers.set(name, null as any); // mark as registered but using API
+          } catch (err: any) {
+            console.log(`[Daemon] Agent @${name} — spawn failed: ${err.message}, using API fallback`);
+            this.agentDrivers.set(name, null as any);
           }
         }
       }
@@ -246,16 +247,17 @@ export class DaemonCore {
     const existing = this.agentDrivers.get(agentId);
     if (existing?.isRunning) return existing;
 
-    const sysPrompt = [
-      "You are an AI agent in the CollabAgent platform — an AI-native team collaboration system.",
-      "You can read/write files, run commands, and communicate via the slock CLI.",
-      "Available tools:",
-      "- slock message send --target <target>: Send a message to a channel or DM",
-      "- slock message read --channel <target>: Read message history",
-      "- slock task claim/update: Manage tasks",
-      "- slock server info: List channels and agents",
-      "Read and write files using standard tools. Be helpful and proactive.",
-    ].join("\n");
+    // Load system prompt from file (28KB full prompt with all 29 command docs)
+    let sysPrompt = "";
+    try {
+      const fs = await import("node:fs");
+      const promptPath = process.env.SYSTEM_PROMPT_PATH || "system-prompt.md";
+      sysPrompt = fs.readFileSync(promptPath, "utf-8");
+      console.log("[Daemon] Loaded system prompt (" + sysPrompt.length + " bytes)");
+    } catch {
+      sysPrompt = "You are an AI agent in the CollabAgent platform. Use available tools to communicate and help users.";
+      console.log("[Daemon] Using fallback system prompt");
+    }
 
     const driver = new ClaudeDriver({
       workingDirectory: process.env.AGENT_WORKSPACE || process.cwd(),
@@ -270,8 +272,15 @@ export class DaemonCore {
       },
     });
 
-    await driver.start(prompt);
+    const sessionId = this.agentSessions.get(agentId);
+    await driver.start(prompt, sessionId || undefined);
     this.agentDrivers.set(agentId, driver);
+    if (!driver.onSessionInit) {
+      (driver as any).onSessionInit = (sid: string) => {
+        this.agentSessions.set(agentId, sid);
+        console.log(`[Agent ${agentId.slice(0, 8)}] session: ${sid.slice(0, 8)}`);
+      };
+    }
     return driver;
   }
 
@@ -415,8 +424,8 @@ export class DaemonCore {
             // Route to specific agent via ClaudeDriver or API fallback
             const driver = this.agentDrivers.get(registeredAgent);
             if (driver?.isRunning) {
-              console.log(`[Daemon] Routing to agent @${registeredAgent}`);
-              driver.sendMessage(`@${senderName} said: ${content}`);
+              console.log(`[Daemon] Routing to agent @${registeredAgent} in #${channelName}`);
+              driver.sendMessage(`[Channel #${channelName}] @${senderName} said: ${content}`);
             } else {
               // API fallback mode — use callAI
               const reply = await this.callAI(content, senderName, channelName);
@@ -428,8 +437,8 @@ export class DaemonCore {
               try {
                 const driver = await this.spawnAgent(name, `Reply to @${senderName}: ${content}`);
                 if (driver.isRunning) {
-                  console.log(`[Daemon] Spawned agent @${name}`);
-                  driver.sendMessage(`@${senderName} said in #${channelName}: ${content}`);
+                  console.log(`[Daemon] Spawned agent @${name} in #${channelName}`);
+                  driver.sendMessage(`[Channel #${channelName}] @${senderName} said: ${content}`);
                 }
               } catch {
                 console.log(`[Daemon] Spawning failed for @${name}, using API fallback`);

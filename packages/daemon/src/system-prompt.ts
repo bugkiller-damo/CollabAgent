@@ -49,6 +49,6 @@ export function generateSystemPrompt(agentName: string, channelName?: string): s
     `4. Complete ALL work before stopping. New messages arrive automatically.`,
     `5. Use Bash/Read/Write tools for local file operations.`,
     `6. Be helpful, proactive, and reply in the user's language.`,
-    channelName ? `\nYou are in the #${channelName} channel.` : ``,
+    `7. The channel you're in will be prefixed in each message like "[Channel #name]". Use that channel for replies.`,
   ].join("\n");
 }
