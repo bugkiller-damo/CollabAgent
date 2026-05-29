@@ -223,11 +223,13 @@ export class DaemonCore {
 
   private async sendReply(channelName: string, content: string) {
     try {
-      await fetch(`${this.serverUrl}/api/messages/send`, {
+      const res = await fetch(`${this.serverUrl}/internal/agent/${this.agentId}/send`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "Authorization": `Bearer ${this.apiKey}` },
         body: JSON.stringify({ target: "#" + channelName, content }),
       });
+      if (res.ok) console.log(`[Daemon] Replied to #${channelName}`);
+      else console.error(`[Daemon] Reply failed: HTTP ${res.status}`);
     } catch (err: any) {
       console.error("[Daemon] sendReply error:", err.message);
     }
@@ -404,6 +406,8 @@ export class DaemonCore {
         console.log(`[Daemon] Message from @${senderName} in #${channelName}: ${content?.slice(0, 50)}`);
 
         if (m.senderId === this.agentId || !content || typeof content !== "string") break;
+        // Skip our own status messages to avoid infinite loop
+        if (content.startsWith("🤖 ")) break;
 
         // Check if any registered agent is @-mentioned
         const mentionMatch = content.match(/@([\w-]+)/g);
