@@ -15,15 +15,32 @@ export function useMentionSuggest(textareaRef: React.RefObject<HTMLTextAreaEleme
 
   // Load candidates from API
   useEffect(() => {
-    Promise.all([
-      apiGet<{ agents: any[] }>("/api/agents").catch(() => ({ agents: [] })),
-    ]).then(([agentData]) => {
+    const loadUsers = async () => {
       const list: MentionCandidate[] = [];
-      for (const a of (agentData.agents || [])) {
-        list.push({ handle: a.name, displayName: a.display_name, type: "agent", id: a.id });
+      // Fetch agents
+      try {
+        const agentData = await apiGet<{ agents: any[] }>("/api/agents");
+        for (const a of (agentData.agents || [])) {
+          list.push({ handle: a.name, displayName: a.display_name, type: "agent", id: a.id });
+        }
+      } catch {}
+      // Fetch server info (has humans + agents)
+      try {
+        const res = await fetch("/api/server/info");
+        const data = await res.json() as any;
+        for (const h of (data.humans || [])) {
+          list.push({ handle: h.handle, displayName: h.displayName || h.handle, type: "user", id: h.id });
+        }
+      } catch {}
+      // Fallback if nothing loaded
+      if (list.length === 0) {
+        list.push({ handle: "alice", displayName: "Alice", type: "user", id: "fallback-1" });
+        list.push({ handle: "demo", displayName: "Demo", type: "user", id: "fallback-2" });
+        list.push({ handle: "local-agent-test", displayName: "Local Test", type: "agent", id: "fallback-3" });
       }
       setCandidates(list);
-    });
+    };
+    loadUsers();
   }, []);
 
   // Detect @ typing and filter
