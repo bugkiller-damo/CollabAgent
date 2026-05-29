@@ -36,37 +36,37 @@ export function ProfileSettings() {
 
   return (
     <div className="space-y-6">
-      <h2 className="text-white text-xl font-bold">个人资料</h2>
+      <h2 className="text-gray-900 dark:text-white text-xl font-bold">个人资料</h2>
 
-      <div className="bg-gray-800 rounded-lg p-6 max-w-lg space-y-4">
+      <div className="bg-gray-100 dark:bg-gray-800 rounded-lg p-6 max-w-lg space-y-4">
         <div>
-          <label className="text-gray-400 text-sm block mb-1">用户名 (不可修改)</label>
+          <label className="text-gray-600 dark:text-gray-400 text-sm block mb-1">用户名 (不可修改)</label>
           <input type="text" value={user?.handle || ""} disabled
-            className="w-full p-2 rounded bg-gray-700 text-gray-500 border border-gray-600 cursor-not-allowed" />
+            className="w-full p-2 rounded bg-gray-200 dark:bg-gray-700 text-gray-500 border border-gray-300 dark:border-gray-600 cursor-not-allowed" />
         </div>
         <div>
-          <label className="text-gray-400 text-sm block mb-1">显示名</label>
+          <label className="text-gray-600 dark:text-gray-400 text-sm block mb-1">显示名</label>
           <input type="text" value={displayName} onChange={e => setDisplayName(e.target.value)}
-            className="w-full p-2 rounded bg-gray-700 text-white border border-gray-600" />
+            className="w-full p-2 rounded bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600" />
         </div>
         <div>
-          <label className="text-gray-400 text-sm block mb-1">简介</label>
+          <label className="text-gray-600 dark:text-gray-400 text-sm block mb-1">简介</label>
           <textarea value={description} onChange={e => setDescription(e.target.value)} rows={3}
-            className="w-full p-2 rounded bg-gray-700 text-white border border-gray-600" />
+            className="w-full p-2 rounded bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600" />
         </div>
         <button onClick={handleSaveProfile}
-          className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">保存</button>
+          className="bg-blue-600 text-gray-900 dark:text-white px-4 py-2 rounded hover:bg-blue-700">保存</button>
         {msg && <p className="text-green-400 text-sm">{msg}</p>}
       </div>
 
-      <div className="bg-gray-800 rounded-lg p-6 max-w-lg space-y-4">
-        <h3 className="text-white font-semibold">修改密码</h3>
+      <div className="bg-gray-100 dark:bg-gray-800 rounded-lg p-6 max-w-lg space-y-4">
+        <h3 className="text-gray-900 dark:text-white font-semibold">修改密码</h3>
         <input type="password" value={oldPw} onChange={e => setOldPw(e.target.value)}
-          placeholder="当前密码" className="w-full p-2 rounded bg-gray-700 text-white border border-gray-600" />
+          placeholder="当前密码" className="w-full p-2 rounded bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600" />
         <input type="password" value={newPw} onChange={e => setNewPw(e.target.value)}
-          placeholder="新密码 (至少 6 位)" className="w-full p-2 rounded bg-gray-700 text-white border border-gray-600" />
+          placeholder="新密码 (至少 6 位)" className="w-full p-2 rounded bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600" />
         <button onClick={handleChangePassword}
-          className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">修改密码</button>
+          className="bg-blue-600 text-gray-900 dark:text-white px-4 py-2 rounded hover:bg-blue-700">修改密码</button>
         {pwMsg && <p className="text-sm text-green-400">{pwMsg}</p>}
       </div>
     </div>

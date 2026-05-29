@@ -42,31 +42,31 @@ export function RegisterPage() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-900">
-      <form onSubmit={handleRegister} className="bg-gray-800 p-8 rounded-lg w-96 space-y-4">
-        <h1 className="text-white text-2xl font-bold text-center">注册</h1>
+    <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900">
+      <form onSubmit={handleRegister} className="bg-gray-100 dark:bg-gray-800 p-8 rounded-lg w-96 space-y-4">
+        <h1 className="text-gray-900 dark:text-white text-2xl font-bold text-center">注册</h1>
         <input
           type="text" placeholder="用户名" value={handle}
           onChange={(e) => setHandle(e.target.value)}
           required minLength={2} maxLength={20}
-          className="w-full p-2 rounded bg-gray-700 text-white border border-gray-600 focus:outline-none focus:border-blue-500"
+          className="w-full p-2 rounded bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 focus:outline-none focus:border-blue-500"
         />
         <input
           type="email" placeholder="邮箱（用于找回密码）" value={email}
           onChange={(e) => setEmail(e.target.value)}
-          className="w-full p-2 rounded bg-gray-700 text-white border border-gray-600 focus:outline-none focus:border-blue-500"
+          className="w-full p-2 rounded bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 focus:outline-none focus:border-blue-500"
         />
         <input
           type="password" placeholder="密码（至少6位，含字母和数字）" value={password}
           onChange={(e) => setPassword(e.target.value)}
-          className="w-full p-2 rounded bg-gray-700 text-white border border-gray-600 focus:outline-none focus:border-blue-500"
+          className="w-full p-2 rounded bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 focus:outline-none focus:border-blue-500"
         />
         <input
           type="password" placeholder="确认密码" value={confirmPwd}
           onChange={(e) => setConfirmPwd(e.target.value)}
-          className="w-full p-2 rounded bg-gray-700 text-white border border-gray-600 focus:outline-none focus:border-blue-500"
+          className="w-full p-2 rounded bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 focus:outline-none focus:border-blue-500"
         />
-        <button type="submit" className="w-full p-2 rounded bg-blue-600 text-white hover:bg-blue-500">
+        <button type="submit" className="w-full p-2 rounded bg-blue-600 text-gray-900 dark:text-white hover:bg-blue-500">
           注册
         </button>
         {error && <p className="text-red-400 text-sm text-center">{error}</p>}

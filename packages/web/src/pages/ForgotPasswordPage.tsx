@@ -31,17 +31,17 @@ export function ForgotPasswordPage() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-900">
-      <div className="bg-gray-800 p-8 rounded-lg w-96 space-y-4">
-        <h1 className="text-white text-2xl font-bold text-center">找回密码</h1>
+    <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900">
+      <div className="bg-gray-100 dark:bg-gray-800 p-8 rounded-lg w-96 space-y-4">
+        <h1 className="text-gray-900 dark:text-white text-2xl font-bold text-center">找回密码</h1>
 
         {step === "email" ? (
           <>
             <input type="email" placeholder="注册邮箱" value={email}
               onChange={e => setEmail(e.target.value)}
-              className="w-full p-2 rounded bg-gray-700 text-white border border-gray-600" />
+              className="w-full p-2 rounded bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600" />
             <button onClick={handleSendCode}
-              className="w-full p-2 rounded bg-blue-600 text-white hover:bg-blue-500">
+              className="w-full p-2 rounded bg-blue-600 text-gray-900 dark:text-white hover:bg-blue-500">
               发送验证码
             </button>
           </>
@@ -49,12 +49,12 @@ export function ForgotPasswordPage() {
           <>
             <input type="text" placeholder="6 位验证码" value={code}
               onChange={e => setCode(e.target.value)}
-              maxLength={6} className="w-full p-2 rounded bg-gray-700 text-white border border-gray-600" />
+              maxLength={6} className="w-full p-2 rounded bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600" />
             <input type="password" placeholder="新密码（至少6位）" value={newPw}
               onChange={e => setNewPw(e.target.value)}
-              className="w-full p-2 rounded bg-gray-700 text-white border border-gray-600" />
+              className="w-full p-2 rounded bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600" />
             <button onClick={handleReset}
-              className="w-full p-2 rounded bg-green-600 text-white hover:bg-green-500">
+              className="w-full p-2 rounded bg-green-600 text-gray-900 dark:text-white hover:bg-green-500">
               重置密码
             </button>
           </>

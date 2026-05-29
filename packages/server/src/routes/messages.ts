@@ -12,7 +12,7 @@ export async function messageRoutes(app: FastifyInstance) {
     );
     if (ch.rows.length === 0) return reply.status(404).send({ error: "channel not found" });
     const result = await app.pg.query(
-      "SELECT m.id, m.channel_id, m.server_id, m.sender_id, m.sender_type, COALESCE(u.display_name, u.handle, 'User') as \"senderName\", m.content, m.seq, m.thread_id, m.task_number, m.task_status, m.task_assignee, m.created_at as \"time\", (SELECT COUNT(*) FROM messages WHERE thread_id = m.id)::int as reply_count FROM messages m LEFT JOIN users u ON m.sender_id = u.id WHERE m.channel_id = $1 AND m.thread_id IS NULL ORDER BY m.seq DESC LIMIT $2",
+      "SELECT m.id, m.channel_id, m.server_id, m.sender_id, m.sender_type, COALESCE(u.display_name, u.handle, 'User') as \"senderName\", m.content, m.seq, m.thread_id, m.task_number, m.task_status, m.task_assignee, m.created_at as \"time\", (SELECT COUNT(*) FROM messages WHERE thread_id = m.id)::int as \"replyCount\" FROM messages m LEFT JOIN users u ON m.sender_id = u.id WHERE m.channel_id = $1 AND m.thread_id IS NULL ORDER BY m.seq DESC LIMIT $2",
       [ch.rows[0].id, Number(limit) || 50]
     );
     return { messages: result.rows.reverse(), hasMore: false };
@@ -70,7 +70,7 @@ export async function messageRoutes(app: FastifyInstance) {
     } else {
       resolvedChannelId = channel;
     }
-    let query = "SELECT m.id, m.channel_id, m.server_id, m.sender_id, m.sender_type, COALESCE(u.display_name, u.handle, 'User') as \"senderName\", m.content, m.seq, m.thread_id, m.task_number, m.task_status, m.task_assignee, m.created_at as \"time\", (SELECT COUNT(*) FROM messages WHERE thread_id = m.id)::int as reply_count FROM messages m LEFT JOIN users u ON m.sender_id = u.id WHERE m.channel_id = $1 AND m.thread_id IS NULL";
+    let query = "SELECT m.id, m.channel_id, m.server_id, m.sender_id, m.sender_type, COALESCE(u.display_name, u.handle, 'User') as \"senderName\", m.content, m.seq, m.thread_id, m.task_number, m.task_status, m.task_assignee, m.created_at as \"time\", (SELECT COUNT(*) FROM messages WHERE thread_id = m.id)::int as \"replyCount\" FROM messages m LEFT JOIN users u ON m.sender_id = u.id WHERE m.channel_id = $1 AND m.thread_id IS NULL";
     if (threadId) { query += " AND m.thread_id = $" + p; p++; params.push(threadId); }
     const params: (string | number)[] = [resolvedChannelId];
     let p = 2;

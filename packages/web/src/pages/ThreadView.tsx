@@ -61,7 +61,7 @@ export function ThreadView() {
 
   if (error && !parent) {
     return (
-      <div className="flex flex-col h-full items-center justify-center text-gray-400">
+      <div className="flex flex-col h-full items-center justify-center text-gray-600 dark:text-gray-400">
         <p>{error}</p>
         <Link to={`/channels/${channelName}`} className="text-blue-400 mt-2 hover:underline">
           返回 #{channelName}
@@ -72,9 +72,9 @@ export function ThreadView() {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="p-4 border-b border-gray-700">
+      <div className="p-4 border-b border-gray-200 dark:border-gray-700">
         <div className="flex items-center gap-2">
-          <h2 className="text-white font-bold">Thread</h2>
+          <h2 className="text-gray-900 dark:text-white font-bold">Thread</h2>
           <span className="text-gray-500 text-sm">in</span>
           <Link to={`/channels/${channelName}`} className="text-blue-400 hover:underline text-sm">
             #{channelName}
@@ -84,41 +84,41 @@ export function ThreadView() {
 
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {parent && (
-          <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+          <div className="bg-gray-100 dark:bg-gray-800 rounded-lg p-4 border border-gray-200 dark:border-gray-700">
             <div className="flex items-center gap-2 mb-2">
-              <div className="w-7 h-7 rounded bg-gray-600 flex items-center justify-center text-xs text-white">
+              <div className="w-7 h-7 rounded bg-gray-600 flex items-center justify-center text-xs text-gray-900 dark:text-white">
                 {(parent.senderName || parent.sender_id || "?")[0]}
               </div>
-              <span className="font-semibold text-white text-sm">{parent.senderName || parent.sender_id}</span>
+              <span className="font-semibold text-gray-900 dark:text-white text-sm">{parent.senderName || parent.sender_id}</span>
               <span className="text-gray-500 text-xs">
                 {new Date(parent.time).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}
               </span>
             </div>
-            <p className="text-gray-300 text-sm whitespace-pre-wrap">{parent.content}</p>
+            <p className="text-gray-700 dark:text-gray-300 text-sm whitespace-pre-wrap">{parent.content}</p>
           </div>
         )}
 
         {replies.length > 0 && (
           <div className="flex items-center gap-2">
-            <div className="flex-1 border-t border-gray-700" />
+            <div className="flex-1 border-t border-gray-200 dark:border-gray-700" />
             <span className="text-gray-500 text-xs">{replies.length} 条回复</span>
-            <div className="flex-1 border-t border-gray-700" />
+            <div className="flex-1 border-t border-gray-200 dark:border-gray-700" />
           </div>
         )}
 
         {replies.map((msg) => (
-          <div key={msg.id} className="group flex gap-3 hover:bg-gray-800/50 p-2 rounded">
-            <div className="w-7 h-7 rounded bg-gray-600 shrink-0 flex items-center justify-center text-xs text-white">
+          <div key={msg.id} className="group flex gap-3 hover:bg-gray-100 dark:bg-gray-800/50 p-2 rounded">
+            <div className="w-7 h-7 rounded bg-gray-600 shrink-0 flex items-center justify-center text-xs text-gray-900 dark:text-white">
               {(msg.senderName || msg.sender_id || "?")[0]}
             </div>
             <div className="min-w-0">
               <div className="flex items-baseline gap-2">
-                <span className="font-semibold text-white text-sm">{msg.senderName || msg.sender_id}</span>
+                <span className="font-semibold text-gray-900 dark:text-white text-sm">{msg.senderName || msg.sender_id}</span>
                 <span className="text-gray-500 text-xs">
                   {new Date(msg.time).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}
                 </span>
               </div>
-              <p className="text-gray-300 text-sm whitespace-pre-wrap">{msg.content}</p>
+              <p className="text-gray-700 dark:text-gray-300 text-sm whitespace-pre-wrap">{msg.content}</p>
             </div>
           </div>
         ))}
@@ -128,12 +128,12 @@ export function ThreadView() {
         )}
       </div>
 
-      <form onSubmit={handleReply} className="p-4 border-t border-gray-700">
+      <form onSubmit={handleReply} className="p-4 border-t border-gray-200 dark:border-gray-700">
         <textarea
           value={draft} rows={1}
           onChange={e => { setDraft(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px"; }}
           placeholder="回复线程... (Enter 发送, Shift+Enter 换行)"
-          className="w-full p-2 rounded bg-gray-700 text-white border border-gray-600 focus:outline-none focus:border-blue-500 resize-none"
+          className="w-full p-2 rounded bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 focus:outline-none focus:border-blue-500 resize-none"
           onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); (e.target as any).form?.requestSubmit(); } }}
         />
       </form>
