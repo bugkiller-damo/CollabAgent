@@ -45,12 +45,11 @@ export function useMentionSuggest(textareaRef: React.RefObject<HTMLTextAreaEleme
   }, []);
 
   // Detect @ typing and filter
-  const handleInput = useCallback(() => {
-    if (skipNextInput.current) { skipNextInput.current = false; return; }
+  const handleInput = useCallback((e?: React.FormEvent<HTMLTextAreaElement>) => {
     const el = textareaRef.current;
     if (!el) return;
     const cursorPos = el.selectionStart;
-    const text = el.value;
+    const text = (e && 'target' in e) ? (e.target as HTMLTextAreaElement).value : el.value;
     // Find the @ before cursor
     let atIdx = -1;
     for (let i = cursorPos - 1; i >= 0; i--) {
@@ -100,15 +99,19 @@ export function useMentionSuggest(textareaRef: React.RefObject<HTMLTextAreaEleme
     return text;
   }, [textareaRef]);
 
+  const visibleRef = useRef(visible); visibleRef.current = visible;
+  const filteredRef = useRef(filtered); filteredRef.current = filtered;
+
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (!visible) return;
-    if (e.key === "ArrowDown") { e.preventDefault(); setSelectedIdx(i => Math.min(i + 1, filtered.length - 1)); }
+    if (!visibleRef.current) return;
+    if (e.key === "ArrowDown") { e.preventDefault(); setSelectedIdx(i => Math.min(i + 1, filteredRef.current.length - 1)); }
     else if (e.key === "ArrowUp") { e.preventDefault(); setSelectedIdx(i => Math.max(i - 1, 0)); }
     else if (e.key === "Enter" || e.key === "Tab") {
       e.preventDefault();
-      if (filtered[selectedIdx]) insertMention(filtered[selectedIdx].handle);
+      const sel = filteredRef.current[selectedIdx];
+      if (sel) insertMention(sel.handle);
     } else if (e.key === "Escape") { setVisible(false); }
-  }, [visible, filtered, selectedIdx, insertMention]);
+  }, [selectedIdx, insertMention]);
 
   return { visible, filtered, selectedIdx, position, handleInput, handleKeyDown, insertMention, setVisible };
 }
