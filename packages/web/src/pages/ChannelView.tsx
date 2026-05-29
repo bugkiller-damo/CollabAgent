@@ -56,8 +56,10 @@ export function ChannelView() {
   }, [channelName]);
 
   useEffect(() => {
-    if (containerRef.current) {
-      containerRef.current.scrollTop = containerRef.current.scrollHeight;
+    const el = containerRef.current;
+    if (el) {
+      const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
+      if (isNearBottom) el.scrollTop = el.scrollHeight;
     }
   }, [messages]);
 
