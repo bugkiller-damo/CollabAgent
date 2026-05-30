@@ -457,13 +457,15 @@ function registerReminderSchedule(parent: Command) {
     .option("--fire-at <iso>", "Absolute fire time (ISO 8601)")
     .option("--in <duration>", "Relative fire time (e.g. 30m, 2h, 1d)")
     .option("--cadence <rule>", "Recurrence rule (e.g. every:15m, daily@09:00)")
-    .action(async (opts: { title: string; fireAt?: string; in?: string; cadence?: string }) => {
+    .option("--channel <ch>", "Anchor channel for the follow-up (e.g. #general)")
+    .action(async (opts: { title: string; fireAt?: string; in?: string; cadence?: string; channel?: string }) => {
       const ctx = loadAgentContext();
       const client = new ApiClient(ctx);
       const body: Record<string, unknown> = { title: opts.title };
       if (opts.fireAt) body.fireAt = opts.fireAt;
       if (opts.in) body.delaySeconds = parseDuration(opts.in);
       if (opts.cadence) body.repeat = opts.cadence;
+      if (opts.channel) body.channel = opts.channel;
       const res = await client.request("POST", `/internal/agent/${encodeURIComponent(ctx.agentId)}/reminders`, body);
       if (!res.ok) fail("REMINDER_SCHEDULE_FAILED", res.error ?? `HTTP ${res.status}`);
       process.stdout.write(JSON.stringify(res.data, null, 2) + "\n");

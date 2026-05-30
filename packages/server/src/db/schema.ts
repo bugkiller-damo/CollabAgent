@@ -34,6 +34,7 @@ export const agents = pgTable("agents", {
   runtimeProfile: jsonb("runtime_profile"),
   status: varchar("status", { length: 20 }).default("active").notNull(),
   capabilities: jsonb("capabilities"),
+  lastSeenSeq: bigint("last_seen_seq", { mode: "number" }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (t) => [
@@ -46,7 +47,7 @@ export const channels = pgTable("channels", {
   serverId: uuid("server_id").references(() => servers.id).notNull(),
   name: varchar("name", { length: 100 }).notNull(),
   description: text("description"),
-  visibility: varchar("visibility", { length: 20 }).default("public").notNull(),
+  type: varchar("type", { length: 20 }).default("public").notNull(),
   archived: boolean("archived").default(false).notNull(),
   createdBy: uuid("created_by").references(() => users.id),
   createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -79,6 +80,7 @@ export const messages = pgTable("messages", {
   taskNumber: integer("task_number"),
   taskStatus: varchar("task_status", { length: 20 }),
   taskAssignee: uuid("task_assignee"),
+  editedAt: timestamp("edited_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (t) => [
@@ -91,7 +93,8 @@ export const messages = pgTable("messages", {
 // ---- reactions ----
 export const messageReactions = pgTable("message_reactions", {
   messageId: uuid("message_id").references(() => messages.id).notNull(),
-  userId: uuid("user_id").references(() => users.id).notNull(),
+  // 不加 users 外键：reactor 可能是 human 也可能是 agent（id 在 agents 表）
+  userId: uuid("user_id").notNull(),
   emoji: varchar("emoji", { length: 16 }).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (t) => [
@@ -101,13 +104,16 @@ export const messageReactions = pgTable("message_reactions", {
 // ---- reminders ----
 export const reminders = pgTable("reminders", {
   id: uuid("id").defaultRandom().primaryKey(),
-  ownerId: uuid("owner_id").references(() => users.id).notNull(),
+  // owner 可能是 human 也可能是 agent（id 在 agents 表），故不加 users 外键
+  ownerId: uuid("owner_id").notNull(),
   title: varchar("title", { length: 500 }).notNull(),
   fireAt: timestamp("fire_at").notNull(),
   repeatRule: varchar("repeat_rule", { length: 200 }),
   channelRef: varchar("channel_ref", { length: 200 }),
   anchorMsgId: uuid("anchor_msg_id"),
   status: varchar("status", { length: 20 }).default("scheduled").notNull(),
+  fireCount: integer("fire_count").default(0).notNull(),
+  lastFiredAt: timestamp("last_fired_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (t) => [

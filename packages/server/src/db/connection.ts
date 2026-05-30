@@ -12,8 +12,8 @@ export default fp(async function pgPlugin(app: FastifyInstance) {
   app.decorate("pg", {
     query: async <T = Record<string, unknown>>(text: string, params?: unknown[]) => {
       const result = await sql.unsafe(text, params as any[]);
-      if (Array.isArray(result)) return { rows: result as T[] };
-      return { rows: [result] as T[] };
+      if (Array.isArray(result)) return { rows: result as unknown as T[] };
+      return { rows: [result] as unknown as T[] };
     },
   });
 });

@@ -7,6 +7,7 @@ export default defineConfig({
     port: 5173,
     proxy: {
       "/api": { target: "http://localhost:3001" },
+      "/files": { target: "http://localhost:3001" },
       "/ws/chat": { target: "ws://localhost:3001", ws: true, rewrite: () => "/ws" },
     },
   },

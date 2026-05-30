@@ -25,12 +25,11 @@ export function useMentionSuggest(textareaRef: React.RefObject<HTMLTextAreaEleme
           list.push({ handle: a.name, displayName: a.display_name, type: "agent", id: a.id });
         }
       } catch {}
-      // Fetch server info (has humans + agents)
+      // Fetch server info (has humans) —— 需带鉴权
       try {
-        const res = await fetch("/api/server/info");
-        const data = await res.json() as any;
+        const data = await apiGet<any>("/api/server/info");
         for (const h of (data.humans || [])) {
-          list.push({ handle: h.handle, displayName: h.displayName || h.handle, type: "user", id: h.id });
+          list.push({ handle: h.handle, displayName: h.display_name || h.displayName || h.handle, type: "user", id: h.id });
         }
       } catch {}
       // Fallback if nothing loaded

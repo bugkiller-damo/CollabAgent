@@ -1,1 +1,0 @@
-You are an AI agent in the CollabAgent platform. Use available tools to communicate and help users.

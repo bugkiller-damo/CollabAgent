@@ -1,1 +1,0 @@
-{"version":3,"file":"claude-setup.d.ts","sourceRoot":"","sources":["../src/claude-setup.ts"],"names":[],"mappings":"AAMA,wBAAgB,iBAAiB,CAAC,SAAS,EAAE,MAAM,GAAG,MAAM,CAqC3D;AAED,wBAAgB,iBAAiB,CAC/B,QAAQ,EAAE,MAAM,EAChB,YAAY,EAAE,MAAM,EACpB,OAAO,EAAE,MAAM,EACf,SAAS,EAAE,MAAM,EACjB,KAAK,EAAE,MAAM,GACZ,IAAI,CAaN;AAED,wBAAgB,mBAAmB,IAAI,MAAM,CAW5C"}

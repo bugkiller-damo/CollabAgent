@@ -1,6 +1,6 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { sql } from "./connection.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -42,4 +42,11 @@ export async function runMigrations() {
   } else {
     console.log(`[DB] ${count} migration(s) applied`);
   }
+}
+
+// 作为脚本直接运行时（pnpm db:migrate / CI）：执行迁移后退出
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  runMigrations()
+    .then(async () => { await sql.end(); console.log("[DB] migrate done"); process.exit(0); })
+    .catch(async (e) => { console.error("[DB] migrate failed:", e); try { await sql.end(); } catch { /* ignore */ } process.exit(1); });
 }

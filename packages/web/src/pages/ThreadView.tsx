@@ -2,6 +2,9 @@ import { useParams, Link } from "react-router-dom";
 import { useEffect, useState, useRef } from "react";
 import { apiClient } from "../api/client";
 import { useAuthStore } from "../stores/authStore";
+import { MarkdownContent } from "../components/chat/MarkdownContent";
+import { useMentionSuggest } from "../hooks/useMentionSuggest";
+import { MentionPopup } from "../components/chat/MentionPopup";
 
 interface ThreadMsg {
   id: string;
@@ -20,6 +23,9 @@ export function ThreadView() {
   const [draft, setDraft] = useState("");
   const [error, setError] = useState("");
   const fetchedRef = useRef<string | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const { filtered, selectedIdx, visible, handleInput, handleKeyDown: mentionKD, insertMention: rawInsert } = useMentionSuggest(textareaRef);
+  const insertMention = (handle: string) => { const t = rawInsert(handle); if (t) setDraft(t); };
 
   const loadThread = async () => {
     try {
@@ -94,7 +100,7 @@ export function ThreadView() {
                 {new Date(parent.time).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}
               </span>
             </div>
-            <p className="text-gray-700 dark:text-gray-300 text-sm whitespace-pre-wrap">{parent.content}</p>
+            <MarkdownContent content={parent.content} />
           </div>
         )}
 
@@ -118,7 +124,7 @@ export function ThreadView() {
                   {new Date(msg.time).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}
                 </span>
               </div>
-              <p className="text-gray-700 dark:text-gray-300 text-sm whitespace-pre-wrap">{msg.content}</p>
+              <MarkdownContent content={msg.content} />
             </div>
           </div>
         ))}
@@ -128,13 +134,15 @@ export function ThreadView() {
         )}
       </div>
 
-      <form onSubmit={handleReply} className="p-4 border-t border-gray-200 dark:border-gray-700">
+      <form onSubmit={handleReply} className="p-4 border-t border-gray-200 dark:border-gray-700 relative">
+        <MentionPopup items={filtered} selectedIdx={selectedIdx} onSelect={insertMention} />
         <textarea
+          ref={textareaRef}
           value={draft} rows={1}
-          onChange={e => { setDraft(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px"; }}
-          placeholder="回复线程... (Enter 发送, Shift+Enter 换行)"
+          onChange={e => { setDraft(e.target.value); handleInput(); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px"; }}
+          placeholder="回复线程... (Enter 发送, Shift+Enter 换行, @ 提及)"
           className="w-full p-2 rounded bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 focus:outline-none focus:border-blue-500 resize-none"
-          onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); (e.target as any).form?.requestSubmit(); } }}
+          onKeyDown={e => { mentionKD(e); if (!visible && e.key === "Enter" && !e.shiftKey) { e.preventDefault(); (e.target as any).form?.requestSubmit(); } }}
         />
       </form>
     </div>

@@ -2,10 +2,17 @@ import { create } from "zustand";
 
 type Theme = "dark" | "light" | "system";
 
+export type WsStatus = "connecting" | "connected" | "reconnecting" | "disconnected";
+
 interface UiState {
   theme: Theme;
   toggleTheme: () => void;
   setTheme: (t: Theme) => void;
+  wsStatus: WsStatus;
+  wsReconnectAttempt: number;
+  setWsStatus: (status: WsStatus, reconnectAttempt?: number) => void;
+  online: boolean;
+  setOnline: (online: boolean) => void;
 }
 
 const getInitialTheme = (): Theme => {
@@ -16,6 +23,12 @@ const getInitialTheme = (): Theme => {
 
 export const useUiStore = create<UiState>((set) => ({
   theme: getInitialTheme(),
+  wsStatus: "connecting",
+  wsReconnectAttempt: 0,
+  setWsStatus: (status, reconnectAttempt) =>
+    set((s) => ({ wsStatus: status, wsReconnectAttempt: reconnectAttempt ?? s.wsReconnectAttempt })),
+  online: typeof navigator !== "undefined" ? navigator.onLine : true,
+  setOnline: (online) => set({ online }),
 
   toggleTheme: () => {
     set((s) => {

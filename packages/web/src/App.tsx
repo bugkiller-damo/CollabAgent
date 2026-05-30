@@ -9,6 +9,7 @@ import { RegisterPage } from "./pages/RegisterPage";
 import { ForgotPasswordPage } from "./pages/ForgotPasswordPage";
 import { SettingsLayout } from "./pages/settings/SettingsLayout";
 import { ProfileSettings } from "./pages/settings/ProfileSettings";
+import { SecuritySettings } from "./pages/settings/SecuritySettings";
 import { AdminPanel } from "./pages/admin/AdminPanel";
 import { AgentManagement } from "./pages/admin/AgentManagement";
 import { useAuthStore } from "./stores/authStore";
@@ -40,6 +41,7 @@ export function App() {
           <Route path="/tasks/:channelName" element={<TaskBoard />} />
           <Route path="/settings" element={<SettingsLayout />}>
             <Route path="profile" element={<ProfileSettings />} />
+              <Route path="security" element={<SecuritySettings />} />
               <Route path="integrations" element={<SettingsPlaceholder title="集成" />} />
               <Route path="notifications" element={<SettingsPlaceholder title="通知" />} />
           </Route>

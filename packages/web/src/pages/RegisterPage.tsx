@@ -2,12 +2,14 @@ import { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { apiPost } from "../api/client";
 import { useAuthStore } from "../stores/authStore";
+import { PasswordStrength } from "../components/PasswordStrength";
 
 export function RegisterPage() {
   const [handle, setHandle] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPwd, setConfirmPwd] = useState("");
+  const [showPwd, setShowPwd] = useState(false);
   const [error, setError] = useState("");
   const navigate = useNavigate();
 
@@ -19,8 +21,8 @@ export function RegisterPage() {
       setError("两次密码不一致");
       return;
     }
-    if (password.length < 6) {
-      setError("密码至少 6 位");
+    if (password.length < 8) {
+      setError("密码至少 8 位");
       return;
     }
     if (!/[a-zA-Z]/.test(password) || !/[0-9]/.test(password)) {
@@ -56,13 +58,22 @@ export function RegisterPage() {
           onChange={(e) => setEmail(e.target.value)}
           className="w-full p-2 rounded bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 focus:outline-none focus:border-blue-500"
         />
+        <div>
+          <div className="relative">
+            <input
+              type={showPwd ? "text" : "password"} placeholder="密码（至少8位，含字母和数字）" value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="w-full p-2 pr-10 rounded bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 focus:outline-none focus:border-blue-500"
+            />
+            <button type="button" onClick={() => setShowPwd((v) => !v)}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200">
+              {showPwd ? "🙈" : "👁"}
+            </button>
+          </div>
+          <PasswordStrength password={password} />
+        </div>
         <input
-          type="password" placeholder="密码（至少6位，含字母和数字）" value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          className="w-full p-2 rounded bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 focus:outline-none focus:border-blue-500"
-        />
-        <input
-          type="password" placeholder="确认密码" value={confirmPwd}
+          type={showPwd ? "text" : "password"} placeholder="确认密码" value={confirmPwd}
           onChange={(e) => setConfirmPwd(e.target.value)}
           className="w-full p-2 rounded bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 focus:outline-none focus:border-blue-500"
         />

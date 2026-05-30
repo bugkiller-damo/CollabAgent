@@ -6,7 +6,9 @@
     "collabagent-daemon": "./dist/index.js"
   },
   "scripts": {
-    "dev": "tsx src/index.ts",
+    "dev": "tsx src/supervisor.ts",
+    "dev:once": "tsx src/index.ts",
+    "serve": "tsx src/supervisor.ts",
     "build": "tsc",
     "typecheck": "tsc --noEmit"
   },
@@ -21,6 +23,7 @@
   },
   "devDependencies": {
     "@types/ws": "^8.5.0",
+    "esbuild": "^0.28.0",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"
   }

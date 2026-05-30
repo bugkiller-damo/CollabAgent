@@ -5,6 +5,7 @@ import { useWebSocket } from "../../hooks/useWebSocket";
 import { useAuthStore, useMessageStore, useChannelStore, useAgentStore, useUiStore } from "../../stores";
 import type { WsServerMessage } from '@collabagent/shared';
 import { ThinkingIndicator } from '../agent/ThinkingIndicator';
+import { ErrorBoundary } from '../ErrorBoundary';
 
 function AgentThinkingBanner() {
   const agents = useAgentStore((s) => s.agents);
@@ -16,6 +17,20 @@ function AgentThinkingBanner() {
 export function AppLayout() {
   const fetchChannels = useChannelStore((s) => s.fetchChannels);
   const theme = useUiStore((s) => s.theme);
+  const online = useUiStore((s) => s.online);
+  const setOnline = useUiStore((s) => s.setOnline);
+
+  // Track browser online/offline state
+  useEffect(() => {
+    const goOnline = () => setOnline(true);
+    const goOffline = () => setOnline(false);
+    window.addEventListener("online", goOnline);
+    window.addEventListener("offline", goOffline);
+    return () => {
+      window.removeEventListener("online", goOnline);
+      window.removeEventListener("offline", goOffline);
+    };
+  }, [setOnline]);
 
   // Apply theme to <html>
   useEffect(() => {
@@ -39,6 +54,7 @@ export function AppLayout() {
   const incrementUnread = useChannelStore((s) => s.incrementUnread);
   const activeChannelName = useChannelStore((s) => s.activeChannelName);
 
+  const setWsStatus = useUiStore((s) => s.setWsStatus);
   const { isConnected, reconnectAttempt } = useWebSocket({
     serverUrl: window.location.origin,
     token: token || "",
@@ -47,6 +63,12 @@ export function AppLayout() {
         if (msg.type === 'agent:status' || (msg.type as string) === 'agent:activity') {
           const a = msg as any;
           useAgentStore.getState().updateStatus(a.agentId || 'agent', msg.type === 'agent:status' ? (a.status || 'idle') : 'working', a.detail || '');
+        }
+
+        // Message edited
+        if ((msg.type as string) === "message:update" && (msg as any).message) {
+          const u = (msg as any).message;
+          useMessageStore.getState().applyMessageUpdate(u.id, u.content, u.editedAt);
         }
 
       if (msg.type === "agent:deliver" && msg.message) {
@@ -65,7 +87,8 @@ export function AppLayout() {
           senderType: m.senderType || "human",
           content: m.content,
           time: m.time || new Date().toISOString(),
-        });
+          attachments: m.attachments || [],
+        } as any);
         if (hasThread) {
           // Also store under thread key so ThreadView can pick it up
           const threadKey = targetKey + ':' + (m.thread_id || m.threadId || '').substring(0, 8);
@@ -78,12 +101,25 @@ export function AppLayout() {
     },
   });
 
+  useEffect(() => {
+    if (isConnected) setWsStatus("connected", 0);
+    else if (reconnectAttempt > 0) setWsStatus("reconnecting", reconnectAttempt);
+    else setWsStatus("connecting", 0);
+  }, [isConnected, reconnectAttempt, setWsStatus]);
+
   return (
     <div className="flex h-screen bg-gray-50 dark:bg-gray-900">
       <Sidebar />
       <main className="flex-1 flex flex-col min-w-0">
+        {!online && (
+          <div className="bg-amber-500 text-white text-sm text-center py-1.5 px-4">
+            ⚠️ 你当前处于离线状态，新消息可能无法收发
+          </div>
+        )}
         <AgentThinkingBanner />
-        <Outlet />
+        <ErrorBoundary>
+          <Outlet />
+        </ErrorBoundary>
       </main>
     </div>
   );

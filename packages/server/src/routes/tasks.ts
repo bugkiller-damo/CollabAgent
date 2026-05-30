@@ -3,19 +3,30 @@ import type { FastifyInstance } from "fastify";
 const STATUSES = ["todo", "in_progress", "in_review", "done", "closed"];
 
 export async function taskRoutes(app: FastifyInstance) {
+  // 归一化频道名：去掉前导 # 和线程后缀
+  const chName = (c: string) => (c?.startsWith("#") ? c.slice(1).split(":")[0] : c);
+
   app.get("/", { preHandler: [app.authenticate] }, async (req, reply) => {
     const { channel, status } = req.query as any;
     if (!channel) return reply.status(400).send({ error: "channel required" });
     const name = channel.startsWith("#") ? channel.slice(1) : channel;
     const ch = await app.pg.query("SELECT id FROM channels WHERE name = $1", [name]);
     if (ch.rows.length === 0) return reply.status(404).send({ error: "channel not found" });
-    let query = "SELECT * FROM messages WHERE channel_id = $1 AND task_number IS NOT NULL";
+    let query = `SELECT m.id, m.content, m.task_number, m.task_status, m.task_assignee, m.created_at,
+                        COALESCE(au.handle, aa.name) as assignee_handle,
+                        COALESCE(su.display_name, su.handle, sa.display_name, sa.name, 'User') as creator_name
+                 FROM messages m
+                 LEFT JOIN users au ON m.task_assignee = au.id
+                 LEFT JOIN agents aa ON m.task_assignee = aa.id
+                 LEFT JOIN users su ON m.sender_id = su.id
+                 LEFT JOIN agents sa ON m.sender_id = sa.id
+                 WHERE m.channel_id = $1 AND m.task_number IS NOT NULL`;
     const params: any[] = [ch.rows[0].id];
     if (status && status !== "all") {
       params.push(status);
-      query += ` AND task_status = $${params.length}`;
+      query += ` AND m.task_status = $${params.length}`;
     }
-    query += " ORDER BY task_number ASC";
+    query += " ORDER BY m.task_number ASC";
     const result = await app.pg.query(query, params);
     return { tasks: result.rows };
   });
@@ -23,7 +34,7 @@ export async function taskRoutes(app: FastifyInstance) {
   app.post("/", { preHandler: [app.authenticate] }, async (req, reply) => {
     const { channel, tasks } = req.body as any;
     if (!channel || !tasks?.length) return reply.status(400).send({ error: "channel and tasks required" });
-    const ch = await app.pg.query("SELECT id, server_id FROM channels WHERE name = $1", [channel]);
+    const ch = await app.pg.query("SELECT id, server_id FROM channels WHERE name = $1", [chName(channel)]);
     if (ch.rows.length === 0) return reply.status(404).send({ error: "channel not found" });
     const userId = (req as any).user.sub;
     const maxNum = await app.pg.query(
@@ -47,7 +58,7 @@ export async function taskRoutes(app: FastifyInstance) {
   app.post("/claim", { preHandler: [app.authenticate] }, async (req, reply) => {
     const { channel, task_numbers, message_ids } = req.body as any;
     if (!channel) return reply.status(400).send({ error: "channel required" });
-    const ch = await app.pg.query("SELECT id FROM channels WHERE name = $1", [channel]);
+    const ch = await app.pg.query("SELECT id FROM channels WHERE name = $1", [chName(channel)]);
     if (ch.rows.length === 0) return reply.status(404).send({ error: "channel not found" });
     const userId = (req as any).user.sub;
     const results: any[] = [];
@@ -79,7 +90,7 @@ export async function taskRoutes(app: FastifyInstance) {
 
   app.post("/unclaim", { preHandler: [app.authenticate] }, async (req, reply) => {
     const { channel, task_number } = req.body as any;
-    const ch = await app.pg.query("SELECT id FROM channels WHERE name = $1", [channel]);
+    const ch = await app.pg.query("SELECT id FROM channels WHERE name = $1", [chName(channel)]);
     if (ch.rows.length === 0) return reply.status(404).send({ error: "channel not found" });
     await app.pg.query(
       "UPDATE messages SET task_assignee = NULL, task_status = 'todo', updated_at = now() WHERE channel_id = $1 AND task_number = $2",
@@ -91,7 +102,7 @@ export async function taskRoutes(app: FastifyInstance) {
   app.post("/update-status", { preHandler: [app.authenticate] }, async (req, reply) => {
     const { channel, number, status } = req.body as any;
     if (!STATUSES.includes(status)) return reply.status(400).send({ error: `invalid status: ${status}` });
-    const ch = await app.pg.query("SELECT id FROM channels WHERE name = $1", [channel]);
+    const ch = await app.pg.query("SELECT id FROM channels WHERE name = $1", [chName(channel)]);
     if (ch.rows.length === 0) return reply.status(404).send({ error: "channel not found" });
     const result = await app.pg.query(
       "UPDATE messages SET task_status = $1, updated_at = now() WHERE channel_id = $2 AND task_number = $3 RETURNING *",
