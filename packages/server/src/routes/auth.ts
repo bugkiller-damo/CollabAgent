@@ -85,6 +85,27 @@ export async function authRoutes(app: FastifyInstance) {
       [email, handle, displayName || handle, hash]
     );
     const user = result.rows[0] as Record<string, unknown>;
+
+    // 带邀请 token 注册：校验有效后加入对应工作区，并累加使用次数
+    const inviteToken = (req.body as Record<string, unknown>).invite;
+    if (typeof inviteToken === "string" && inviteToken) {
+      const inv = await app.pg.query(
+        "SELECT server_id, role, max_uses, uses, expires_at, revoked_at FROM invites WHERE token = $1",
+        [inviteToken]
+      );
+      const row = inv.rows[0] as any;
+      const valid = row && !row.revoked_at
+        && (!row.expires_at || new Date(row.expires_at) >= new Date())
+        && (row.max_uses == null || row.uses < row.max_uses);
+      if (valid) {
+        await app.pg.query(
+          "INSERT INTO server_members (server_id, user_id, role) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+          [row.server_id, user.id, row.role]
+        );
+        await app.pg.query("UPDATE invites SET uses = uses + 1 WHERE token = $1", [inviteToken]);
+      }
+    }
+
     const sid = await recordSession(app, req, String(user.id));
     const accessToken = app.jwt.sign({ sub: user.id, handle: user.handle, tv: user.token_version, sid }, { expiresIn: "7d" });
     const refreshToken = signRefresh({ sub: user.id, type: "refresh", sid });
@@ -330,7 +351,18 @@ export async function authRoutes(app: FastifyInstance) {
   app.post("/machine-token", { preHandler: [app.authenticate] }, async (req, reply) => {
     const { serverId } = req.body as Record<string, unknown>;
     const userId = (req as any).user.sub;
-    if (!serverId) return reply.status(400).send({ error: "serverId required" });
+
+    // serverId 缺省 → 落到用户个人组织（与 /api/agents 默认行为一致），向导可直接调用；
+    // 若指定 serverId，必须是调用者所属的组织。
+    const { getOrCreatePersonalOrg, getUserOrgIds } = await import("../lib/orgs.js");
+    let orgId: string;
+    if (serverId) {
+      const myOrgs = await getUserOrgIds(app, userId);
+      if (!myOrgs.includes(String(serverId))) return reply.status(403).send({ error: "not a member of that org" });
+      orgId = String(serverId);
+    } else {
+      orgId = await getOrCreatePersonalOrg(app, userId, (req as any).user.handle);
+    }
 
     const prefix = "sk_machine_";
     const randomPart = Array.from({ length: 32 }, () =>
@@ -341,8 +373,8 @@ export async function authRoutes(app: FastifyInstance) {
 
     await app.pg.query(
       "INSERT INTO machine_tokens (user_id, server_id, token_hash, token_prefix, scope) VALUES ($1, $2, $3, $4, $5)",
-      [userId, serverId as string, hash, prefix, JSON.stringify({ send: true, read: true, tasks: true })]
+      [userId, orgId, hash, prefix, JSON.stringify({ send: true, read: true, tasks: true })]
     );
-    return { token: tokenValue, prefix, message: "Save this token — it won't be shown again" };
+    return { token: tokenValue, prefix, serverId: orgId, message: "Save this token — it won't be shown again" };
   });
 }

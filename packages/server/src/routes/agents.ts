@@ -27,11 +27,11 @@ export async function agentRoutes(app: FastifyInstance) {
   // List all agents with online status
   app.get("/", async () => {
     const result = await app.pg.query(
-      "SELECT id, name, display_name, description, status, runtime, model, created_at FROM agents ORDER BY created_at DESC"
+      "SELECT id, user_id, name, display_name, description, status, runtime, model, created_at FROM agents ORDER BY created_at DESC"
     );
     const agents = (result.rows as any[]).map((a) => ({
       ...a,
-      isOnline: daemonClients.has(a.id),
+      isOnline: daemonClients.has(String(a.user_id)),
     }));
     return { agents };
   });
@@ -40,12 +40,12 @@ export async function agentRoutes(app: FastifyInstance) {
   app.get("/channel/:channelId", async (req) => {
     const { channelId } = req.params as Record<string, string>;
     const result = await app.pg.query(
-      "SELECT a.id, a.name, a.display_name, a.description, a.status, a.runtime, a.model, cm.role FROM agents a JOIN channel_members cm ON cm.member_id = a.id AND cm.member_type = 'agent' WHERE cm.channel_id = $1",
+      "SELECT a.id, a.user_id, a.name, a.display_name, a.description, a.status, a.runtime, a.model, cm.role FROM agents a JOIN channel_members cm ON cm.member_id = a.id AND cm.member_type = 'agent' WHERE cm.channel_id = $1",
       [channelId]
     );
     const agents = (result.rows as any[]).map((a) => ({
       ...a,
-      isOnline: daemonClients.has(a.id),
+      isOnline: daemonClients.has(String(a.user_id)),
     }));
     return { agents };
   });

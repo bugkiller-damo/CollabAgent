@@ -3,6 +3,7 @@ import { ApiClient } from "./client.js";
 import type { AgentContext } from "./auth.js";
 import { claudePrint } from "./claude-print.js";
 import { PersistentClaude } from "./drivers/persistent-claude.js";
+import { probeClaude } from "./drivers/probe.js";
 import { generateRelaySystemPrompt, generateSystemPrompt } from "./system-prompt.js";
 
 export interface DaemonConfig {
@@ -18,12 +19,12 @@ export class DaemonCore {
   private slockDir: string | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelay = 1000;
+  private authFailed = false;
   private client: ApiClient;
   private agentId = "00000000-0000-0000-0000-000000000001";
   // 已知 agent 名注册表（值未使用，仅作存在性判断）
   private agentDrivers = new Map<string, boolean>();
   private agentSessions = new Map<string, string>();
-  private lastCh = new Map<string, string>();
   private agentNameToId = new Map<string, string>();
   private agentInfo = new Map<string, { displayName?: string; description?: string }>();
   private persistentSessions = new Map<string, PersistentClaude>();
@@ -46,9 +47,35 @@ export class DaemonCore {
 
   start(): void {
     console.log(`[Daemon] Starting with server ${this.config.serverUrl}`);
+    this.checkClaude();
     this.setupSlockWrapper();
     this.connect();
     this.loadExistingAgents();
+  }
+
+  // 启动预检：本机 claude CLI 是否可用。缺失/未登录不阻断启动（daemon 仍连服务器），
+  // 但打印清晰指引，避免用户在 agent 被 @ 时才遇到静默失败。
+  private checkClaude(): void {
+    const { available, version } = probeClaude();
+    if (available) {
+      console.log(`[Daemon] ✅ 已检测到本机 Claude CLI（${version}），Agent 可正常运行`);
+      return;
+    }
+    console.warn(
+      [
+        "",
+        "──────────────────────────────────────────────",
+        "[Daemon] ⚠️  未检测到本机 Claude CLI",
+        "  daemon 会照常连上服务器，但 Agent 被 @ 时无法响应。",
+        "  请先安装并登录 Claude Code：",
+        "    1. 安装： npm install -g @anthropic-ai/claude-code",
+        "    2. 登录： claude  （首次运行按提示完成登录）",
+        "    3. 验证： claude --version",
+        "  完成后重启本 daemon 即可。",
+        "──────────────────────────────────────────────",
+        "",
+      ].join("\n")
+    );
   }
 
   private async setupSlockWrapper() {
@@ -142,7 +169,26 @@ private connect(): void {
     this.ws.on("message", (data) => {
       try { this.handleMessage(JSON.parse(data.toString())); } catch {}
     });
-    this.ws.on("close", () => {
+    this.ws.on("close", (code, reason) => {
+      // 4001 = 服务端鉴权拒绝（机器令牌无效/被吊销）。无限重连无意义，直接退出并提示。
+      if (code === 4001) {
+        console.error(
+          [
+            "",
+            "──────────────────────────────────────────────",
+            "[Daemon] ❌ 鉴权失败：机器令牌无效或已被吊销。",
+            `  服务端关闭原因：${reason?.toString() || "unauthorized"}`,
+            "  daemon 不会重连。请在网页端重新生成机器令牌，",
+            "  用新的 --api-key 重启 daemon。",
+            "──────────────────────────────────────────────",
+            "",
+          ].join("\n")
+        );
+        this.authFailed = true;
+        void this.stop();
+        process.exitCode = 1;
+        return;
+      }
       console.log("[Daemon] Disconnected, reconnecting...");
       this.scheduleReconnect();
     });
@@ -165,6 +211,7 @@ private connect(): void {
   }
 
   private scheduleReconnect(): void {
+    if (this.authFailed) return; // 鉴权失败后不再重连
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectDelay = Math.min(this.reconnectDelay * 2, 30000);
@@ -172,13 +219,12 @@ private connect(): void {
     }, this.reconnectDelay);
   }
 
-  // 解析 agent 名 → 真实 agentId；未知则回退到任意已知 agent
+  // 解析 agent 名 → 真实 agentId；未知则返回 null（不再回退到任意 agent，避免冒用错误身份）
   private resolveAgentId(agentName: string): string | null {
     if (this.agentNameToId.has(agentName)) return this.agentNameToId.get(agentName)!;
     // agentName 可能本身就是 UUID
     if (/^[0-9a-f-]{36}$/i.test(agentName)) return agentName;
-    const first = this.agentNameToId.values().next().value;
-    return first || null;
+    return null;
   }
 
   // 每个 agent 的持久工作区目录；首次创建时种入 MEMORY.md 模板
@@ -326,7 +372,6 @@ private connect(): void {
           for (const name of recipients) {
             if (!this.agentDrivers.has(name)) continue; // 仅唤醒本机注册的 agent
             console.log(`[Daemon] DM -> @${name} (reply ${replyTarget})`);
-            this.lastCh.set(name, replyTarget);
             try { await this.runAgentDm(name, replyTarget, senderHandle, content); }
             catch (err: any) { console.error("[Daemon] DM dispatch failed:", err?.message); }
           }
@@ -355,7 +400,6 @@ private connect(): void {
           const target = mentionedAgents[0];
           if (target) {
             console.log(`[Daemon] Routing to agent @${target} -> ${replyTarget}`);
-            this.lastCh.set(target, channelName);
             await this.runAgent(target, channelName, replyTarget, senderName, content);
           }
         } catch (err: any) {

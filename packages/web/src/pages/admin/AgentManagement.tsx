@@ -29,7 +29,12 @@ export function AgentManagement() {
     } catch { setLoading(false); }
   };
 
-  useEffect(() => { loadAgents(); }, []);
+  useEffect(() => {
+    loadAgents();
+    // 轮询刷新在线状态：daemon 连上/断开后无需手动刷新页面即可看到圆点变化
+    const t = setInterval(loadAgents, 5000);
+    return () => clearInterval(t);
+  }, []);
 
   const resetForm = () => {
     setShowForm(false); setEditId(null);

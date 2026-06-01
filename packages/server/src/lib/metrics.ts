@@ -26,6 +26,7 @@ export function metricsSnapshot(extra?: Record<string, unknown>) {
     memory: {
       rssMb: Math.round(mem.rss / 1048576),
       heapUsedMb: Math.round(mem.heapUsed / 1048576),
+      heapTotalMb: Math.round(mem.heapTotal / 1048576),
     },
     ...extra,
   };

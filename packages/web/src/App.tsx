@@ -12,6 +12,10 @@ import { ProfileSettings } from "./pages/settings/ProfileSettings";
 import { SecuritySettings } from "./pages/settings/SecuritySettings";
 import { AdminPanel } from "./pages/admin/AdminPanel";
 import { AgentManagement } from "./pages/admin/AgentManagement";
+import { ChannelManagement } from "./pages/admin/ChannelManagement";
+import { WorkspaceMembers } from "./pages/admin/WorkspaceMembers";
+import { MetricsDashboard } from "./pages/admin/MetricsDashboard";
+import { ConnectWizard } from "./pages/ConnectWizard";
 import { useAuthStore } from "./stores/authStore";
 
 function AuthGuard() {
@@ -39,6 +43,7 @@ export function App() {
           <Route path="/dm/:peerName/:threadId" element={<ThreadView />} />
           <Route path="/tasks" element={<TaskBoard />} />
           <Route path="/tasks/:channelName" element={<TaskBoard />} />
+          <Route path="/connect" element={<ConnectWizard />} />
           <Route path="/settings" element={<SettingsLayout />}>
             <Route path="profile" element={<ProfileSettings />} />
               <Route path="security" element={<SecuritySettings />} />
@@ -47,6 +52,9 @@ export function App() {
           </Route>
           <Route path="/admin" element={<AdminPanel />}>
               <Route path="agents" element={<AgentManagement />} />
+              <Route path="channels" element={<ChannelManagement />} />
+              <Route path="members" element={<WorkspaceMembers />} />
+              <Route path="metrics" element={<MetricsDashboard />} />
             </Route>
           <Route path="/" element={<Navigate to="/channels/general" />} />
         </Route>

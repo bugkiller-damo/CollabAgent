@@ -129,10 +129,15 @@ export function Sidebar() {
         {user && (
           <div className="text-gray-600 dark:text-gray-400 text-xs px-1 mb-1">已登录：{user.handle}</div>
         )}
-        <button onClick={() => navigate("/admin/agents")}
+        <button onClick={() => navigate("/connect")}
           className={"block w-full text-left text-sm p-1 rounded " +
-            (isActive("/admin/agents") ? "text-gray-900 dark:text-white bg-gray-200 dark:bg-gray-700" : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:text-white")}>
-          🤖 Agent 管理
+            (isActive("/connect") ? "text-gray-900 dark:text-white bg-gray-200 dark:bg-gray-700" : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:text-white")}>
+          🔌 接入 Agent
+        </button>
+        <button onClick={() => navigate("/admin")}
+          className={"block w-full text-left text-sm p-1 rounded " +
+            (isActive("/admin") ? "text-gray-900 dark:text-white bg-gray-200 dark:bg-gray-700" : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:text-white")}>
+          🛠️ 管理后台
         </button>
         <button onClick={() => (theme === "dark" ? setTheme("light") : setTheme("dark"))}
         className="block w-full text-left text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:text-white text-sm mb-1">

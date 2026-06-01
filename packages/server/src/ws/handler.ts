@@ -8,6 +8,9 @@ const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change-in-production";
 const browserClients = new Map<string, Set<WebSocket>>();
 // Daemon connections (keyed by userId — one per user machine)
 export const daemonClients = new Map<string, WebSocket>();
+// Daemon 元数据（握手 ready 上报）：用于运维仪表盘展示逐个 daemon 明细
+export interface DaemonMeta { userId: string; hostname: string; daemonVersion: string; runtimes: string[]; connectedAt: number; }
+export const daemonMeta = new Map<string, DaemonMeta>();
 
 function parseAuthToken(req: any): string | null {
   const auth = req.headers?.authorization || req.headers?.Authorization || "";
@@ -27,31 +30,73 @@ function parseAuthToken(req: any): string | null {
 
 export function wsHandler(connection: WebSocket, req: any) {
   const token = parseAuthToken(req);
-  let userId = "anon";
+  // daemon 用机器令牌（sk_machine_）握手，需 bcrypt 比对解析出真实 userId；
+  // 浏览器用 JWT。两者都要按 userId 登记，daemon 才能与 agent 的 user_id 对上（驱动 isOnline）。
+  const isDaemon = !!token && token.startsWith("sk_machine_");
 
-  if (token) {
-    try {
-      const decoded = jwt.verify(token, JWT_SECRET) as { sub: string; handle?: string };
-      userId = decoded.sub;
-    } catch {
-      // Invalid token — treat as anonymous browser client
+  // resolveUserId 是异步的（daemon 要 bcrypt 比对令牌），但客户端在 open 后立刻发 ready。
+  // 先缓冲早到的消息，注册完成后回放，避免 ready 元数据丢失。
+  const earlyBuffer: Buffer[] = [];
+  const bufferEarly = (raw: Buffer) => { earlyBuffer.push(raw); };
+  connection.on("message", bufferEarly);
+
+  void resolveUserId(token, isDaemon).then((userId) => {
+    connection.off("message", bufferEarly);
+    // daemon 令牌无效/被吊销 → resolveUserId 返回 "anon"。明确用 4001 关闭，
+    // 而不是把它当匿名 daemon 登记，否则 daemon 会误以为已连上并无限重连。
+    if (isDaemon && userId === "anon") {
+      console.warn("[WS] Daemon auth failed (invalid/revoked machine token); closing with 4001");
+      try { connection.close(4001, "unauthorized"); } catch { /* ignore */ }
+      return;
     }
+    registerConnection(connection, userId, isDaemon);
+    for (const raw of earlyBuffer) connection.emit("message", raw);
+  });
+}
+
+async function resolveUserId(token: string | null, isDaemon: boolean): Promise<string> {
+  if (!token) return "anon";
+  if (isDaemon) {
+    if (!wsPg) return "anon";
+    try {
+      const bcrypt = (await import("bcryptjs")).default;
+      const result = await wsPg.query(
+        "SELECT user_id, token_hash FROM machine_tokens WHERE token_prefix = 'sk_machine_' AND revoked_at IS NULL"
+      );
+      for (const row of result.rows as any[]) {
+        if (await bcrypt.compare(token, row.token_hash)) return String(row.user_id);
+      }
+    } catch { /* fall through to anon */ }
+    return "anon";
   }
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET) as { sub: string; handle?: string };
+    return decoded.sub;
+  } catch {
+    return "anon"; // Invalid token — treat as anonymous browser client
+  }
+}
 
-  // Check if this is a daemon connection (has api key auth)
-  const isDaemon = token && token.startsWith("sk_machine_");
-
+function registerConnection(connection: WebSocket, userId: string, isDaemon: boolean) {
   if (isDaemon) {
     daemonClients.set(userId, connection);
+    daemonMeta.set(userId, { userId, hostname: "unknown", daemonVersion: "?", runtimes: [], connectedAt: Date.now() });
     console.log(`[WS] Daemon connected: user=${userId}`);
 
     connection.on("message", (raw) => {
       try {
         const msg = JSON.parse(raw.toString());
         switch (msg.type) {
-          case "ready":
+          case "ready": {
             console.log(`[WS] Daemon ready: runtimes=${msg.runtimes}`);
+            const meta = daemonMeta.get(userId);
+            if (meta) {
+              if (msg.hostname) meta.hostname = String(msg.hostname);
+              if (msg.daemonVersion) meta.daemonVersion = String(msg.daemonVersion);
+              if (Array.isArray(msg.runtimes)) meta.runtimes = msg.runtimes.map(String);
+            }
             break;
+          }
           case "agent:status":
             console.log(`[WS] Agent status: ${msg.status}`);
             break;
@@ -66,6 +111,7 @@ export function wsHandler(connection: WebSocket, req: any) {
 
     connection.on("close", () => {
       daemonClients.delete(userId);
+      daemonMeta.delete(userId);
       console.log(`[WS] Daemon disconnected: user=${userId}`);
     });
 

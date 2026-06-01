@@ -31,7 +31,12 @@ export function probeClaude(): { available: boolean; version?: string } {
   const cmd = resolveCommandOnPath("claude");
   if (!cmd) return { available: false };
   try {
-    const version = execFileSync(cmd, ["--version"], { encoding: "utf-8" }).trim();
+    // Windows 的 .cmd/.bat 包装器无法用 execFileSync 直接 spawn（Node 18+ 抛 EINVAL），
+    // 必须经 shell；命令路径用引号包裹以兼容含空格的安装目录。
+    const isWrapper = /\.(cmd|bat)$/i.test(cmd);
+    const version = isWrapper
+      ? execFileSync(`"${cmd}"`, ["--version"], { encoding: "utf-8", shell: true }).trim()
+      : execFileSync(cmd, ["--version"], { encoding: "utf-8" }).trim();
     return { available: true, version: version || "unknown" };
   } catch {
     return { available: false };

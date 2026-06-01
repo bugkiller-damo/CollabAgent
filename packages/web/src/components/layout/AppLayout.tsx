@@ -6,6 +6,7 @@ import { useAuthStore, useMessageStore, useChannelStore, useAgentStore, useUiSto
 import type { WsServerMessage } from '@collabagent/shared';
 import { ThinkingIndicator } from '../agent/ThinkingIndicator';
 import { ErrorBoundary } from '../ErrorBoundary';
+import { OnboardingChecklist } from '../OnboardingChecklist';
 
 function AgentThinkingBanner() {
   const agents = useAgentStore((s) => s.agents);
@@ -121,6 +122,7 @@ export function AppLayout() {
           <Outlet />
         </ErrorBoundary>
       </main>
+      <OnboardingChecklist />
     </div>
   );
 }

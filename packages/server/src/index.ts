@@ -136,13 +136,29 @@ server.register(async function (scope) {
 // Health check
 server.get("/api/health", async () => ({ status: "ok", time: new Date().toISOString() }));
 
+// 当前用户的 daemon 是否已连上（接入向导第 1 步轮询用）
+server.get("/api/daemon/status", { preHandler: [(server as any).authenticate] }, async (req: any) => {
+  const { daemonClients } = await import("./ws/handler.js");
+  return { connected: daemonClients.has(String(req.user.sub)) };
+});
+
 // 运维指标：进程计数器 + 实时网关（在线 daemon / agent 数）
 server.get("/api/metrics", async () => {
   const { metricsSnapshot } = await import("./lib/metrics.js");
-  const { daemonClients } = await import("./ws/handler.js");
-  let agentCount = 0;
-  try { agentCount = Number((await server.pg.query("SELECT count(*)::int as c FROM agents")).rows[0]?.c || 0); } catch { /* ignore */ }
-  return metricsSnapshot({ online: { daemons: daemonClients.size, agents: agentCount } });
+  const { daemonClients, daemonMeta } = await import("./ws/handler.js");
+  let agentTotal = 0, agentsOnline = 0;
+  try {
+    const r = await server.pg.query("SELECT user_id FROM agents");
+    agentTotal = r.rows.length;
+    agentsOnline = (r.rows as any[]).filter((a) => daemonClients.has(String(a.user_id))).length;
+  } catch { /* ignore */ }
+  const daemons = Array.from(daemonMeta.values()).map((d) => ({
+    hostname: d.hostname, daemonVersion: d.daemonVersion, runtimes: d.runtimes, connectedAt: d.connectedAt,
+  }));
+  return metricsSnapshot({
+    online: { daemons: daemonClients.size, agents: agentTotal, agentsOnline },
+    daemons,
+  });
 });
 
 // Public user list (for @mention autocomplete)
@@ -159,15 +175,15 @@ server.get("/api/agents", { preHandler: [(server as any).authenticate] }, async 
   const orgIds = await getUserOrgIds(server as any, req.user.sub);
   if (orgIds.length === 0) return { agents: [] };
   const agents = await server.pg.query(
-    "SELECT id, name, display_name, description, status, runtime_profile, server_id, created_at FROM agents WHERE server_id::text = ANY($1) ORDER BY created_at DESC",
+    "SELECT id, user_id, name, display_name, description, status, runtime_profile, server_id, created_at FROM agents WHERE server_id::text = ANY($1) ORDER BY created_at DESC",
     [orgIds]
   );
   const { daemonClients } = await import("./ws/handler.js");
-  const anyDaemon = daemonClients.size > 0;
+  // daemon 按 userId 注册（一台用户机器一个 daemon）；agent 在线 = 其拥有者的 daemon 在线
   return {
     agents: (agents.rows as any[]).map((a) => {
       const rp = parseRuntimeProfile(a.runtime_profile);
-      return { ...a, runtime_profile: rp, runtime: rp.runtime || "claude", model: rp.model || "sonnet", isOnline: anyDaemon };
+      return { ...a, runtime_profile: rp, runtime: rp.runtime || "claude", model: rp.model || "sonnet", isOnline: daemonClients.has(String(a.user_id)) };
     }),
   };
 });
@@ -315,6 +331,70 @@ server.delete("/api/orgs/:serverId/members/:userId", { preHandler: [(server as a
   if (!(await isOrgOwner(serverId, req.user.sub))) return reply.status(403).send({ error: "only org owner can remove" });
   await server.pg.query("DELETE FROM server_members WHERE server_id = $1 AND user_id = $2 AND role <> 'owner'", [serverId, userId]);
   return { ok: true };
+});
+
+// 改成员角色（仅 owner；不能改 owner 自己）
+server.patch("/api/orgs/:serverId/members/:userId", { preHandler: [(server as any).authenticate] }, async (req: any, reply: any) => {
+  const { serverId, userId } = req.params;
+  const { role } = req.body || {};
+  if (!["member", "admin"].includes(role)) return reply.status(400).send({ error: "role must be member or admin" });
+  if (!(await isOrgOwner(serverId, req.user.sub))) return reply.status(403).send({ error: "only org owner can change roles" });
+  await server.pg.query("UPDATE server_members SET role = $3 WHERE server_id = $1 AND user_id = $2 AND role <> 'owner'", [serverId, userId, role]);
+  return { ok: true };
+});
+
+// --- 工作区邀请链接 ---
+
+// 列出邀请链接（仅 owner）
+server.get("/api/orgs/:serverId/invites", { preHandler: [(server as any).authenticate] }, async (req: any, reply: any) => {
+  const { serverId } = req.params;
+  if (!(await isOrgOwner(serverId, req.user.sub))) return reply.status(403).send({ error: "only org owner can manage invites" });
+  const r = await server.pg.query(
+    `SELECT token, role, max_uses, uses, expires_at, revoked_at, created_at
+       FROM invites WHERE server_id = $1 ORDER BY created_at DESC`,
+    [serverId]
+  );
+  return { invites: r.rows };
+});
+
+// 生成邀请链接（仅 owner）
+server.post("/api/orgs/:serverId/invites", { preHandler: [(server as any).authenticate] }, async (req: any, reply: any) => {
+  const { serverId } = req.params;
+  if (!(await isOrgOwner(serverId, req.user.sub))) return reply.status(403).send({ error: "only org owner can invite" });
+  const { maxUses, expiresInDays } = req.body || {};
+  const { randomBytes } = await import("node:crypto");
+  const token = randomBytes(24).toString("base64url");
+  const expiresAt = expiresInDays ? new Date(Date.now() + Number(expiresInDays) * 86400000).toISOString() : null;
+  await server.pg.query(
+    `INSERT INTO invites (token, server_id, created_by, role, max_uses, expires_at)
+     VALUES ($1, $2, $3, 'member', $4, $5)`,
+    [token, serverId, req.user.sub, maxUses ? Number(maxUses) : null, expiresAt]
+  );
+  return { token };
+});
+
+// 吊销邀请链接（仅 owner）
+server.delete("/api/orgs/:serverId/invites/:token", { preHandler: [(server as any).authenticate] }, async (req: any, reply: any) => {
+  const { serverId, token } = req.params;
+  if (!(await isOrgOwner(serverId, req.user.sub))) return reply.status(403).send({ error: "only org owner can revoke" });
+  await server.pg.query("UPDATE invites SET revoked_at = now() WHERE server_id = $1 AND token = $2", [serverId, token]);
+  return { ok: true };
+});
+
+// 公开校验邀请 token（注册页展示用，不需要登录）
+server.get("/api/invites/:token", async (req: any, reply: any) => {
+  const { token } = req.params;
+  const r = await server.pg.query(
+    `SELECT i.server_id, i.role, i.max_uses, i.uses, i.expires_at, i.revoked_at, s.name AS server_name
+       FROM invites i JOIN servers s ON s.id = i.server_id WHERE i.token = $1`,
+    [token]
+  );
+  if (r.rows.length === 0) return reply.status(404).send({ error: "邀请链接无效" });
+  const inv = r.rows[0] as any;
+  if (inv.revoked_at) return reply.status(410).send({ error: "邀请链接已失效" });
+  if (inv.expires_at && new Date(inv.expires_at) < new Date()) return reply.status(410).send({ error: "邀请链接已过期" });
+  if (inv.max_uses != null && inv.uses >= inv.max_uses) return reply.status(410).send({ error: "邀请链接使用次数已达上限" });
+  return { valid: true, serverName: inv.server_name };
 });
 
 // Server info (for frontend sidebar)

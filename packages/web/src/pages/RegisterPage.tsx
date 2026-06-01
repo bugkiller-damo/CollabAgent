@@ -1,6 +1,6 @@
-import { useState } from "react";
-import { useNavigate, Link } from "react-router-dom";
-import { apiPost } from "../api/client";
+import { useState, useEffect } from "react";
+import { useNavigate, Link, useSearchParams } from "react-router-dom";
+import { apiGet, apiPost } from "../api/client";
 import { useAuthStore } from "../stores/authStore";
 import { PasswordStrength } from "../components/PasswordStrength";
 
@@ -12,6 +12,16 @@ export function RegisterPage() {
   const [showPwd, setShowPwd] = useState(false);
   const [error, setError] = useState("");
   const navigate = useNavigate();
+  const [params] = useSearchParams();
+  const invite = params.get("invite") || "";
+  const [inviteInfo, setInviteInfo] = useState<{ serverName?: string; error?: string } | null>(null);
+
+  useEffect(() => {
+    if (!invite) return;
+    apiGet<{ valid: boolean; serverName: string }>(`/api/invites/${invite}`)
+      .then((d) => setInviteInfo({ serverName: d.serverName }))
+      .catch((e) => setInviteInfo({ error: e?.message || "邀请链接无效" }));
+  }, [invite]);
 
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -33,7 +43,7 @@ export function RegisterPage() {
     try {
       const data = await apiPost<{ token: string; user: { id: string; handle: string; displayName: string } }>(
         "/api/auth/register",
-        { handle, password, email, displayName: handle }
+        { handle, password, email, displayName: handle, invite: invite || undefined }
       );
       localStorage.setItem("auth_token", data.token);
       useAuthStore.setState({ token: data.token, user: data.user as any, isAuthenticated: true });
@@ -47,6 +57,16 @@ export function RegisterPage() {
     <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900">
       <form onSubmit={handleRegister} className="bg-gray-100 dark:bg-gray-800 p-8 rounded-lg w-96 space-y-4">
         <h1 className="text-gray-900 dark:text-white text-2xl font-bold text-center">注册</h1>
+        {invite && inviteInfo?.serverName && (
+          <div className="bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-300 text-sm rounded p-3 text-center">
+            你受邀加入工作区「{inviteInfo.serverName}」，注册后自动入组。
+          </div>
+        )}
+        {invite && inviteInfo?.error && (
+          <div className="bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 text-sm rounded p-3 text-center">
+            {inviteInfo.error}（仍可正常注册，但不会自动入组）
+          </div>
+        )}
         <input
           type="text" placeholder="用户名" value={handle}
           onChange={(e) => setHandle(e.target.value)}
