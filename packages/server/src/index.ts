@@ -21,6 +21,7 @@ import { actionRoutes } from "./routes/actions.js";
 import { agentRoutes } from "./routes/agents.js";
 import { previewRoutes } from "./routes/preview.js";
 import { wsHandler } from "./ws/handler.js";
+import { v1Routes } from "./routes/v1/index.js";
 
 const server = Fastify({
   logger: true,
@@ -128,6 +129,9 @@ await server.register(integrationRoutes, { prefix: "/api/integrations" });
 await server.register(actionRoutes, { prefix: "/api/actions" });
 await server.register(agentRoutes, { prefix: "/internal/agent" });
 
+// Phase 2: 版本化 API（安全渗透业务）
+await server.register(v1Routes, { prefix: "/api/v1" });
+
 // WebSocket
 server.register(async function (scope) {
   scope.get("/ws", { websocket: true }, wsHandler);
@@ -146,11 +150,13 @@ server.get("/api/daemon/status", { preHandler: [(server as any).authenticate] },
 server.get("/api/metrics", async () => {
   const { metricsSnapshot } = await import("./lib/metrics.js");
   const { daemonClients, daemonMeta } = await import("./ws/handler.js");
+  const { onlineOrgIds } = await import("./lib/presence.js");
   let agentTotal = 0, agentsOnline = 0;
   try {
-    const r = await server.pg.query("SELECT user_id FROM agents");
+    const online = await onlineOrgIds(server.pg);
+    const r = await server.pg.query("SELECT server_id FROM agents");
     agentTotal = r.rows.length;
-    agentsOnline = (r.rows as any[]).filter((a) => daemonClients.has(String(a.user_id))).length;
+    agentsOnline = (r.rows as any[]).filter((a) => online.has(String(a.server_id))).length;
   } catch { /* ignore */ }
   const daemons = Array.from(daemonMeta.values()).map((d) => ({
     hostname: d.hostname, daemonVersion: d.daemonVersion, runtimes: d.runtimes, connectedAt: d.connectedAt,
@@ -178,12 +184,13 @@ server.get("/api/agents", { preHandler: [(server as any).authenticate] }, async 
     "SELECT id, user_id, name, display_name, description, status, runtime_profile, server_id, created_at FROM agents WHERE server_id::text = ANY($1) ORDER BY created_at DESC",
     [orgIds]
   );
-  const { daemonClients } = await import("./ws/handler.js");
-  // daemon 按 userId 注册（一台用户机器一个 daemon）；agent 在线 = 其拥有者的 daemon 在线
+  const { onlineOrgIds } = await import("./lib/presence.js");
+  // agent 在线 = 其所属组织内有 daemon 连着（一个 daemon 驱动整个组织的 agent）
+  const online = await onlineOrgIds(server.pg);
   return {
     agents: (agents.rows as any[]).map((a) => {
       const rp = parseRuntimeProfile(a.runtime_profile);
-      return { ...a, runtime_profile: rp, runtime: rp.runtime || "claude", model: rp.model || "sonnet", isOnline: daemonClients.has(String(a.user_id)) };
+      return { ...a, runtime_profile: rp, runtime: rp.runtime || "claude", model: rp.model || "sonnet", isOnline: online.has(String(a.server_id)) };
     }),
   };
 });
@@ -444,6 +451,8 @@ try {
   const { startReminderScheduler } = await import("./lib/reminder-scheduler.js");
   startReminderScheduler(server as any);
   console.log("[Reminder] scheduler started");
+  const { AlertEngine } = await import("./lib/alert-engine.js");
+  new AlertEngine(server as any).start();
 } catch (err) {
   server.log.error(err);
   process.exit(1);

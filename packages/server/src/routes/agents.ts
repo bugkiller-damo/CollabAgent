@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { randomUUID } from "node:crypto";
-import { daemonClients, broadcastToDaemons } from "../ws/handler.js";
+import { broadcastToDaemons } from "../ws/handler.js";
 import { initialFireAt, parseDurationToMs, reminderToDto } from "../lib/reminders.js";
 import { getStorage } from "../lib/storage.js";
 import { isDmTarget, resolveDmTarget, dmOtherMembers, dmPeerHandleFor, type Party } from "../lib/dm.js";
@@ -26,12 +26,14 @@ export async function agentRoutes(app: FastifyInstance) {
   }
   // List all agents with online status
   app.get("/", async () => {
+    const { onlineOrgIds } = await import("../lib/presence.js");
+    const online = await onlineOrgIds(app.pg);
     const result = await app.pg.query(
-      "SELECT id, user_id, name, display_name, description, status, runtime, model, created_at FROM agents ORDER BY created_at DESC"
+      "SELECT id, user_id, server_id, name, display_name, description, status, runtime, model, created_at FROM agents ORDER BY created_at DESC"
     );
     const agents = (result.rows as any[]).map((a) => ({
       ...a,
-      isOnline: daemonClients.has(String(a.user_id)),
+      isOnline: online.has(String(a.server_id)),
     }));
     return { agents };
   });
@@ -39,13 +41,15 @@ export async function agentRoutes(app: FastifyInstance) {
   // List agents in a channel
   app.get("/channel/:channelId", async (req) => {
     const { channelId } = req.params as Record<string, string>;
+    const { onlineOrgIds } = await import("../lib/presence.js");
+    const online = await onlineOrgIds(app.pg);
     const result = await app.pg.query(
-      "SELECT a.id, a.user_id, a.name, a.display_name, a.description, a.status, a.runtime, a.model, cm.role FROM agents a JOIN channel_members cm ON cm.member_id = a.id AND cm.member_type = 'agent' WHERE cm.channel_id = $1",
+      "SELECT a.id, a.user_id, a.server_id, a.name, a.display_name, a.description, a.status, a.runtime, a.model, cm.role FROM agents a JOIN channel_members cm ON cm.member_id = a.id AND cm.member_type = 'agent' WHERE cm.channel_id = $1",
       [channelId]
     );
     const agents = (result.rows as any[]).map((a) => ({
       ...a,
-      isOnline: daemonClients.has(String(a.user_id)),
+      isOnline: online.has(String(a.server_id)),
     }));
     return { agents };
   });
