@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { resolveUserContext } from "../../lib/orgs.js";
 
 export async function taskRoutes(app: FastifyInstance) {
   // ---- 创建任务 ----
@@ -12,11 +13,11 @@ export async function taskRoutes(app: FastifyInstance) {
       if (existing.rows.length > 0) return { task: existing.rows[0], duplicated: true };
     }
 
-    const userId = req.user.sub === "dev-user" ? "00000000-0000-0000-0000-000000000001" : req.user.sub;
+    const { userId, subsidiaryId } = await resolveUserContext(app, req.user.sub, req.user.handle);
     const result = await app.pg.query(
       `INSERT INTO penetration_tasks (subsidiary_id, task_type, task_name, status, priority, scan_profile, targets, max_concurrency, timeout_seconds, allowed_operations, restricted_operations, callback_url, idempotency_key, created_by, total_targets)
        VALUES ($1, $2, $3, 'pending', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING *`,
-      ["a319db9b-6f52-43e6-b6e2-563e75860636", taskType, taskName, priority || "MEDIUM", scanProfile || "standard",
+      [subsidiaryId, taskType, taskName, priority || "MEDIUM", scanProfile || "standard",
        JSON.stringify(targets), maxConcurrency || 10, timeout || 3600, allowedOperations || [], restrictedOperations || [],
        callbackUrl || null, idempotencyKey || null, userId, targets.length]
     );
@@ -130,7 +131,7 @@ export async function taskRoutes(app: FastifyInstance) {
 
   // ---- 批量 ----
   app.post("/batch", { preHandler: [(app as any).authenticate] }, async (req: any, reply: any) => {
-    const batchUserId = req.user.sub === "dev-user" ? "00000000-0000-0000-0000-000000000001" : req.user.sub;
+    const { userId: batchUserId, subsidiaryId: batchSubsidiaryId } = await resolveUserContext(app, req.user.sub, req.user.handle);
     const { operations } = req.body as any;
     if (!Array.isArray(operations) || operations.length > 50) return reply.status(400).send({ error: "operations[] required, max 50" });
     const results: any[] = [];
@@ -140,7 +141,7 @@ export async function taskRoutes(app: FastifyInstance) {
         if (op.action === "create") {
           const t = op.task;
           const r = await app.pg.query(`INSERT INTO penetration_tasks (subsidiary_id, task_type, task_name, status, priority, targets, created_by, total_targets) VALUES ($1,$2,$3,'pending',$4,$5,$6,$7) RETURNING id`,
-            ["a319db9b-6f52-43e6-b6e2-563e75860636", t.taskType, t.taskName, t.priority || "MEDIUM", JSON.stringify(t.targets), batchUserId, t.targets?.length || 0]);
+            [batchSubsidiaryId, t.taskType, t.taskName, t.priority || "MEDIUM", JSON.stringify(t.targets), batchUserId, t.targets?.length || 0]);
           results.push({ index: i, status: "accepted", taskId: r.rows[0].id });
         } else if (op.action === "control" && op.taskId) {
           await app.pg.query("UPDATE penetration_tasks SET status = $1, updated_at = now() WHERE id = $2", [op.control === "pause" ? "paused" : "terminated", op.taskId]);
