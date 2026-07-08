@@ -453,6 +453,9 @@ try {
   console.log("[Reminder] scheduler started");
   const { AlertEngine } = await import("./lib/alert-engine.js");
   new AlertEngine(server as any).start();
+  const { startOrchestrator } = await import("./lib/orchestrator.js");
+  startOrchestrator(server as any);
+  console.log("[Orchestrator] started");
 } catch (err) {
   server.log.error(err);
   process.exit(1);
