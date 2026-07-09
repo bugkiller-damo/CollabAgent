@@ -33,12 +33,12 @@ export function AssetManagement() {
       {showCreate && (
         <div className="bg-gray-50 dark:bg-gray-800 p-4 rounded border space-y-2">
           <div className="grid grid-cols-2 gap-2">
-            <input placeholder="IP *" value={ip} onChange={(e) => setIp(e.target.value)} className="px-2 py-1 border rounded text-sm" />
-            <input placeholder="主机名" value={hostname} onChange={(e) => setHostname(e.target.value)} className="px-2 py-1 border rounded text-sm" />
-            <input placeholder="OS" value={os} onChange={(e) => setOs(e.target.value)} className="px-2 py-1 border rounded text-sm" />
-            <input placeholder="端口 (80,443)" value={ports} onChange={(e) => setPorts(e.target.value)} className="px-2 py-1 border rounded text-sm" />
-            <input placeholder="标签" value={tags} onChange={(e) => setTags(e.target.value)} className="px-2 py-1 border rounded text-sm" />
-            <select value={level} onChange={(e) => setLevel(e.target.value)} className="px-2 py-1 border rounded text-sm">
+            <input placeholder="IP *" value={ip} onChange={(e) => setIp(e.target.value)} className="px-2 py-1 border rounded text-sm bg-white dark:bg-gray-800 text-gray-900 dark:text-white" />
+            <input placeholder="主机名" value={hostname} onChange={(e) => setHostname(e.target.value)} className="px-2 py-1 border rounded text-sm bg-white dark:bg-gray-800 text-gray-900 dark:text-white" />
+            <input placeholder="OS" value={os} onChange={(e) => setOs(e.target.value)} className="px-2 py-1 border rounded text-sm bg-white dark:bg-gray-800 text-gray-900 dark:text-white" />
+            <input placeholder="端口 (80,443)" value={ports} onChange={(e) => setPorts(e.target.value)} className="px-2 py-1 border rounded text-sm bg-white dark:bg-gray-800 text-gray-900 dark:text-white" />
+            <input placeholder="标签" value={tags} onChange={(e) => setTags(e.target.value)} className="px-2 py-1 border rounded text-sm bg-white dark:bg-gray-800 text-gray-900 dark:text-white" />
+            <select value={level} onChange={(e) => setLevel(e.target.value)} className="px-2 py-1 border rounded text-sm bg-white dark:bg-gray-800 text-gray-900 dark:text-white">
               <option value="general">一般</option><option value="important">重要</option><option value="core">核心</option>
             </select>
           </div>

@@ -100,7 +100,7 @@ export async function dispatchPenetrationTask(
              VALUES ($1, 'pending_review', $2, $3, $4, $5, $6, $7, $8, $9, $10, '[]')`,
             [task.subsidiaryId, `[自动] ${v.title}`, v.cveId || null, v.cvssScore, v.severity, v.vulnType,
              String(ap.entryPoint || v.target || ""),
-             typeof ap === "object" && "chain" in ap ? JSON.stringify(ap.chain) : String(ap.summary || ""),
+             typeof ap === "object" && "chain" in ap ? JSON.stringify((ap as any).chain) : String((ap as any).summary || ""),
              String(ap.finalImpact || "需分析"),
              v.remediation?.immediate || "见安全建议"]
           );

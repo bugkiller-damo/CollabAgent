@@ -26,8 +26,8 @@ export function CaseManagement() {
     <div className="p-4 space-y-4">
       <h1 className="text-gray-900 dark:text-white text-lg font-bold">病例库</h1>
       <div className="flex gap-2">
-        <input value={search} onChange={(e) => setSearch(e.target.value)} onKeyDown={(e) => e.key === "Enter" && doSearch()} placeholder="搜索漏洞 / CVE..." className="flex-1 px-3 py-1.5 border rounded text-sm" />
-        <select value={sevFilter} onChange={(e) => { setSevFilter(e.target.value); setTimeout(doSearch, 0); }} className="px-2 py-1.5 border rounded text-sm">
+        <input value={search} onChange={(e) => setSearch(e.target.value)} onKeyDown={(e) => e.key === "Enter" && doSearch()} placeholder="搜索漏洞 / CVE..." className="flex-1 px-3 py-1.5 border rounded text-sm bg-white dark:bg-gray-800 text-gray-900 dark:text-white" />
+        <select value={sevFilter} onChange={(e) => { setSevFilter(e.target.value); setTimeout(doSearch, 0); }} className="px-2 py-1.5 border rounded text-sm bg-white dark:bg-gray-800 text-gray-900 dark:text-white">
           <option value="">全部</option><option value="CRITICAL">CRITICAL</option><option value="HIGH">HIGH</option><option value="MEDIUM">MEDIUM</option><option value="LOW">LOW</option>
         </select>
       </div>
