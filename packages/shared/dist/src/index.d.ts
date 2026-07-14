@@ -1,6 +1,5 @@
-export type UUID = string;
-export type ISO8601 = string;
-export type Email = string;
+import type { UUID, ISO8601, AttachmentRef, Reaction } from "./base.js";
+export type { UUID, ISO8601, Email, PaginationOpts, AttachmentRef, Reaction } from "./base.js";
 export type MessageType = "human" | "agent" | "system";
 export type TargetKind = "channel" | "dm" | "thread";
 export interface MessageTarget {
@@ -27,17 +26,6 @@ export interface Message {
     reactions?: Reaction[];
     traceparent?: string;
 }
-export interface Reaction {
-    emoji: string;
-    userId: UUID;
-    createdAt: ISO8601;
-}
-export interface AttachmentRef {
-    id: UUID;
-    name: string;
-    mimeType: string;
-    sizeBytes: number;
-}
 export type ChannelVisibility = "public" | "private";
 export interface Channel {
     id: UUID;
@@ -45,8 +33,8 @@ export interface Channel {
     name: string;
     description?: string;
     visibility: ChannelVisibility;
-    archived: boolean;
     joined?: boolean;
+    archived: boolean;
     memberCount: number;
     createdAt: ISO8601;
 }
@@ -195,10 +183,7 @@ export interface ApiOk<T = unknown> {
     data: T;
 }
 export type ApiResponse<T = unknown> = ApiOk<T> | ApiError;
-export interface PaginationOpts {
-    before?: number;
-    after?: number;
-    around?: UUID;
-    limit?: number;
-}
+export * from "./platform.js";
+export * from "./penetration.js";
+export * from "./adapter.js";
 //# sourceMappingURL=index.d.ts.map

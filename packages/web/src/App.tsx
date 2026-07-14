@@ -16,11 +16,6 @@ import { ChannelManagement } from "./pages/admin/ChannelManagement";
 import { WorkspaceMembers } from "./pages/admin/WorkspaceMembers";
 import { MetricsDashboard } from "./pages/admin/MetricsDashboard";
 import { ConnectWizard } from "./pages/ConnectWizard";
-import { SecurityLayout } from "./pages/security/SecurityLayout";
-import { AssetManagement } from "./pages/security/AssetManagement";
-import { TaskManagement } from "./pages/security/TaskManagement";
-import { CaseManagement } from "./pages/security/CaseManagement";
-import { AlertDashboard } from "./pages/security/AlertDashboard";
 import { useAuthStore } from "./stores/authStore";
 
 function AuthGuard() {
@@ -60,12 +55,6 @@ export function App() {
               <Route path="channels" element={<ChannelManagement />} />
               <Route path="members" element={<WorkspaceMembers />} />
               <Route path="metrics" element={<MetricsDashboard />} />
-            </Route>
-          <Route path="/security" element={<SecurityLayout />}>
-              <Route path="assets" element={<AssetManagement />} />
-              <Route path="tasks" element={<TaskManagement />} />
-              <Route path="cases" element={<CaseManagement />} />
-              <Route path="alerts" element={<AlertDashboard />} />
             </Route>
           <Route path="/" element={<Navigate to="/channels/general" />} />
         </Route>

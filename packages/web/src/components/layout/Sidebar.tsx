@@ -139,11 +139,6 @@ export function Sidebar() {
             (isActive("/admin") ? "text-gray-900 dark:text-white bg-gray-200 dark:bg-gray-700" : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:text-white")}>
           🛠️ 管理后台
         </button>
-        <button onClick={() => navigate("/security")}
-          className={"block w-full text-left text-sm p-1 rounded " +
-            (isActive("/security") ? "text-gray-900 dark:text-white bg-gray-200 dark:bg-gray-700" : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:text-white")}>
-          🔒 安全业务
-        </button>
         <button onClick={() => (theme === "dark" ? setTheme("light") : setTheme("dark"))}
         className="block w-full text-left text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:text-white text-sm mb-1">
         {theme === "dark" ? "☀️ 浅色模式" : "🌙 深色模式"}
