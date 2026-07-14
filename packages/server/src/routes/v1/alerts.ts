@@ -1,5 +1,4 @@
 import type { FastifyInstance } from "fastify";
-import { resolveUserContext } from "../../lib/orgs.js";
 
 export async function alertRoutes(app: FastifyInstance) {
   // ==================== 告警规则 CRUD ====================
@@ -82,7 +81,7 @@ export async function alertRoutes(app: FastifyInstance) {
   });
 
   app.post("/:alertId/acknowledge", { preHandler: [(app as any).authenticate] }, async (req: any, reply: any) => {
-    const { userId } = await resolveUserContext(app, req.user.sub, req.user.handle);
+    const userId = req.user.sub === "dev-user" ? "00000000-0000-0000-0000-000000000001" : req.user.sub;
     const r = await app.pg.query(
       `UPDATE alerts SET status = 'acknowledged', acknowledged_at = now(), acknowledged_by = $1 WHERE id = $2 AND status = 'unacknowledged' RETURNING *`,
       [userId, req.params.alertId]
