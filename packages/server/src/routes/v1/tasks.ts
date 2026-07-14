@@ -1,6 +1,5 @@
 import type { FastifyInstance } from "fastify";
 import { resolveUserContext } from "../../lib/orgs.js";
-import { dispatchPenetrationTask } from "../../lib/orchestrator.js";
 
 export async function taskRoutes(app: FastifyInstance) {
   // ---- 创建任务 ----
@@ -22,11 +21,6 @@ export async function taskRoutes(app: FastifyInstance) {
        JSON.stringify(targets), maxConcurrency || 10, timeout || 3600, allowedOperations || [], restrictedOperations || [],
        callbackUrl || null, idempotencyKey || null, userId, targets.length]
     );
-
-    // 触发编排器（仅渗透类任务，quick_scan/vuln_scan/full_penetration）
-    if (["full_penetration", "vulnerability_scan", "quick_scan"].includes(taskType)) {
-      void dispatchPenetrationTask(app, { id: String(result.rows[0].id), subsidiaryId, targets });
-    }
 
     return { task: result.rows[0] };
   });

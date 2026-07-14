@@ -8,16 +8,6 @@ importers:
 
   .: {}
 
-  packages/adapter-layer:
-    dependencies:
-      '@collabagent/shared':
-        specifier: workspace:*
-        version: link:../shared
-    devDependencies:
-      typescript:
-        specifier: ^5.7.0
-        version: 5.9.3
-
   packages/daemon:
     dependencies:
       '@anthropic-ai/sdk':
@@ -57,9 +47,6 @@ importers:
 
   packages/server:
     dependencies:
-      '@collabagent/adapter-layer':
-        specifier: workspace:*
-        version: link:../adapter-layer
       '@collabagent/shared':
         specifier: workspace:*
         version: link:../shared

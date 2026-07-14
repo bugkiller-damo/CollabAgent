@@ -112,19 +112,13 @@ describe("v1 /tasks", () => {
   it("GET /tasks/:id/status", async () => {
     const r = await api(`/api/v1/tasks/${taskId}/status`, { token: "dev-token" });
     expect(r.status).toBe(200);
-    // 编排器可能已经把状态推到 running/completed
-    expect(["pending", "queued", "running", "completed"]).toContain(r.data.status);
+    expect(r.data.status).toBe("pending");
     expect(r.data.progress).toHaveProperty("percent");
   });
 
-  it("POST /tasks/:id/control 状态机校验", async () => {
+  it("POST /tasks/:id/control pending→pause 409", async () => {
     const r = await api(`/api/v1/tasks/${taskId}/control`, { method: "POST", token: "dev-token", body: { action: "pause" } });
-    // 状态可能已推进，验证 200（非 pending 接受 pause）或 409（pending 拒绝）
-    if (r.status === 200) {
-      expect(["queued", "running", "paused", "completed", "terminated"]).toContain(r.data.newStatus);
-    } else {
-      expect(r.status).toBe(409);
-    }
+    expect(r.status).toBe(409);                                    // pending 不能 pause
   });
 
   it("GET /tasks/:id/results 空结果", async () => {
