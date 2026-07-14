@@ -1,82 +1,56 @@
-// ============================================================
-// WebSocket 连接管理 — 双重连接 + ACK + 在线状态 + 离线缓存
-// 向后兼容：保持所有导出接口不变
-// ============================================================
-
 import type { WebSocket } from "ws";
 import jwt from "jsonwebtoken";
-import { PresenceManager } from "./presence.js";
-import { OfflineQueue } from "./offline-queue.js";
-import type { AgentMessage } from "@collabagent/shared";
 
+// 必须与 fastify-jwt 注册时的默认一致，否则浏览器 token 验不过 → 都变 "anon"
 const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change-in-production";
 
-// ======== 连接管理（保持现有导出接口） ========
-
+// Anonymous browser clients (keyed by userId)
 const browserClients = new Map<string, Set<WebSocket>>();
+// Daemon connections (keyed by userId — one per user machine)
 export const daemonClients = new Map<string, WebSocket>();
-
-export interface DaemonMeta {
-  userId: string; hostname: string; daemonVersion: string; runtimes: string[]; connectedAt: number;
-}
+// Daemon 元数据（握手 ready 上报）：用于运维仪表盘展示逐个 daemon 明细
+export interface DaemonMeta { userId: string; hostname: string; daemonVersion: string; runtimes: string[]; connectedAt: number; }
 export const daemonMeta = new Map<string, DaemonMeta>();
-
-// ======== Phase 1 新增：在线状态 + 离线队列 ========
-
-export const presenceManager = new PresenceManager({
-  onStatusChange: (agentId: string, oldStatus: string, newStatus: string) => {
-    broadcastToDaemons({
-      type: "status_change", agentId, oldStatus, newStatus,
-      timestamp: new Date().toISOString(),
-    });
-  },
-});
-
-export const offlineQueue = new OfflineQueue({
-  onDeliver: (agentId, message) => {
-    const ws = daemonClients.get(agentId);
-    if (ws?.readyState === 1) { try { ws.send(JSON.stringify(message)); } catch { /* ignore */ } }
-  },
-});
-
-// ======== token 解析（不变） ========
 
 function parseAuthToken(req: any): string | null {
   const auth = req.headers?.authorization || req.headers?.Authorization || "";
   const match = /^Bearer\s+(.+)$/i.exec(auth);
   if (match) return match[1];
+  // 浏览器 WS 握手带不了 Authorization 头，但会自动带 cookie —— 从 httpOnly cookie 取 access_token
   const cookieHeader: string = req.headers?.cookie || "";
   for (const part of cookieHeader.split(";")) {
     const i = part.indexOf("=");
     if (i < 0) continue;
-    if (part.slice(0, i).trim() === "access_token") return decodeURIComponent(part.slice(i + 1).trim());
+    if (part.slice(0, i).trim() === "access_token") {
+      return decodeURIComponent(part.slice(i + 1).trim());
+    }
   }
   return null;
 }
 
-// ======== WS 入口（签名不变） ========
-
 export function wsHandler(connection: WebSocket, req: any) {
   const token = parseAuthToken(req);
+  // daemon 用机器令牌（sk_machine_）握手，需 bcrypt 比对解析出真实 userId；
+  // 浏览器用 JWT。两者都要按 userId 登记，daemon 才能与 agent 的 user_id 对上（驱动 isOnline）。
   const isDaemon = !!token && token.startsWith("sk_machine_");
+
+  // resolveUserId 是异步的（daemon 要 bcrypt 比对令牌），但客户端在 open 后立刻发 ready。
+  // 先缓冲早到的消息，注册完成后回放，避免 ready 元数据丢失。
   const earlyBuffer: Buffer[] = [];
   const bufferEarly = (raw: Buffer) => { earlyBuffer.push(raw); };
   connection.on("message", bufferEarly);
 
   void resolveUserId(token, isDaemon).then((userId) => {
     connection.off("message", bufferEarly);
+    // daemon 令牌无效/被吊销 → resolveUserId 返回 "anon"。明确用 4001 关闭，
+    // 而不是把它当匿名 daemon 登记，否则 daemon 会误以为已连上并无限重连。
     if (isDaemon && userId === "anon") {
-      console.warn("[WS] Daemon auth failed; closing with 4001");
+      console.warn("[WS] Daemon auth failed (invalid/revoked machine token); closing with 4001");
       try { connection.close(4001, "unauthorized"); } catch { /* ignore */ }
       return;
     }
     registerConnection(connection, userId, isDaemon);
     for (const raw of earlyBuffer) connection.emit("message", raw);
-    // 上线推送离线消息
-    if (isDaemon) {
-      const pending = offlineQueue.flush(userId);
-      for (const msg of pending) { try { connection.send(JSON.stringify(msg)); } catch { /* ignore */ } }
-    }
   });
 }
 
@@ -92,18 +66,21 @@ async function resolveUserId(token: string | null, isDaemon: boolean): Promise<s
       for (const row of result.rows as any[]) {
         if (await bcrypt.compare(token, row.token_hash)) return String(row.user_id);
       }
-    } catch { /* fall through */ }
+    } catch { /* fall through to anon */ }
     return "anon";
   }
-  try { return (jwt.verify(token, JWT_SECRET) as { sub: string }).sub; }
-  catch { return "anon"; }
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET) as { sub: string; handle?: string };
+    return decoded.sub;
+  } catch {
+    return "anon"; // Invalid token — treat as anonymous browser client
+  }
 }
 
 function registerConnection(connection: WebSocket, userId: string, isDaemon: boolean) {
   if (isDaemon) {
     daemonClients.set(userId, connection);
     daemonMeta.set(userId, { userId, hostname: "unknown", daemonVersion: "?", runtimes: [], connectedAt: Date.now() });
-    presenceManager.register(userId, connection, { agentId: userId });
     console.log(`[WS] Daemon connected: user=${userId}`);
 
     connection.on("message", (raw) => {
@@ -118,28 +95,16 @@ function registerConnection(connection: WebSocket, userId: string, isDaemon: boo
               if (msg.daemonVersion) meta.daemonVersion = String(msg.daemonVersion);
               if (Array.isArray(msg.runtimes)) meta.runtimes = msg.runtimes.map(String);
             }
-            presenceManager.register(userId, connection, {
-              agentId: userId, hostname: msg.hostname, daemonVersion: msg.daemonVersion, runtimes: msg.runtimes,
-            });
             break;
           }
-          case "agent:status": console.log(`[WS] Agent status: ${msg.status}`); break;
-          case "agent:activity": console.log(`[WS] Agent activity: ${msg.activity}`); break;
-          // Phase 1: 心跳
-          case "heartbeat":
-            presenceManager.heartbeat(userId);
-            try { connection.send(JSON.stringify({ type: "heartbeat_ack", timestamp: new Date().toISOString() })); } catch { /* ignore */ }
+          case "agent:status":
+            console.log(`[WS] Agent status: ${msg.status}`);
+            break;
+          case "agent:activity":
+            console.log(`[WS] Agent activity: ${msg.activity}`);
             break;
           case "pong":
-            presenceManager.heartbeat(userId);
             break;
-          // Phase 1: ACK
-          case "ack": {
-            const ack = msg.content || {};
-            if (ack.ack_message_id) offlineQueue.acknowledge(userId, ack.ack_message_id);
-            break;
-          }
-          default: break;
         }
       } catch { /* ignore */ }
     });
@@ -147,68 +112,83 @@ function registerConnection(connection: WebSocket, userId: string, isDaemon: boo
     connection.on("close", () => {
       daemonClients.delete(userId);
       daemonMeta.delete(userId);
-      presenceManager.unregister(userId);
       console.log(`[WS] Daemon disconnected: user=${userId}`);
     });
 
     connection.send(JSON.stringify({ type: "connected", serverTime: new Date().toISOString() }));
   } else {
+    // Browser client
     if (!browserClients.has(userId)) browserClients.set(userId, new Set());
     browserClients.get(userId)!.add(connection);
-    connection.on("message", (raw) => { try { const msg = JSON.parse(raw.toString()); if (msg.type === "pong") return; } catch { /* ignore */ } });
-    connection.on("close", () => { browserClients.get(userId)?.delete(connection); });
+
+    connection.on("message", (raw) => {
+      try {
+        const msg = JSON.parse(raw.toString());
+        if (msg.type === "pong") return;
+      } catch { /* ignore */ }
+    });
+
+    connection.on("close", () => {
+      browserClients.get(userId)?.delete(connection);
+    });
+
     connection.send(JSON.stringify({ type: "connected", time: new Date().toISOString() }));
   }
 }
 
-// ======== pg 引用 ========
-
+// pg 引用，用于按频道成员定向投递（在 index.ts 启动时注入）
 let wsPg: { query: (text: string, params?: unknown[]) => Promise<{ rows: any[] }> } | null = null;
 export function setWsPg(pg: typeof wsPg) { wsPg = pg; }
 
-// ======== 广播（保持现有签名） ========
-
+/**
+ * 按频道定向广播：
+ * - 公开频道：投递给所有浏览器连接 + 所有 daemon。
+ * - 私有频道：浏览器端只投递给该频道的人类成员；daemon 端仍全发（agent 是否响应由其按成员/@提及自行判断）。
+ * channelId 传频道 UUID。解析失败则退回全发（避免漏发）。
+ */
 export async function broadcast(channelId: string, event: any) {
   const payload = JSON.stringify(event);
-  let allowedHumanIds: Set<string> | null = null;
+  let allowedHumanIds: Set<string> | null = null; // null = 不限制（公开）
   try {
     if (wsPg && channelId) {
       const ch = await wsPg.query("SELECT type FROM channels WHERE id = $1", [channelId]);
       const t = (ch.rows[0] as any)?.type;
+      // 私有频道与 DM 都按成员定向：仅其人类成员的浏览器收到
       if (t === "private" || t === "dm") {
         const m = await wsPg.query(
-          "SELECT member_id FROM channel_members WHERE channel_id = $1 AND member_type = 'human'", [channelId]
+          "SELECT member_id FROM channel_members WHERE channel_id = $1 AND member_type = 'human'",
+          [channelId]
         );
         allowedHumanIds = new Set((m.rows as any[]).map((r) => String(r.member_id)));
       }
     }
-  } catch { /* fall through */ }
+  } catch { /* 解析失败：allowedHumanIds 保持 null，退回全发 */ }
+
   for (const [userId, sockets] of browserClients) {
-    if (allowedHumanIds && !allowedHumanIds.has(userId)) continue;
-    for (const ws of sockets) { try { ws.send(payload); } catch { /* ignore */ } }
+    if (allowedHumanIds && !allowedHumanIds.has(userId)) continue; // 私有频道：非成员浏览器不投递
+    for (const ws of sockets) {
+      try { ws.send(payload); } catch { /* ignore */ }
+    }
   }
-  for (const [, ws] of daemonClients) { try { ws.send(payload); } catch { /* ignore */ } }
+  for (const [, ws] of daemonClients) {
+    try { ws.send(payload); } catch { /* ignore */ }
+  }
 }
 
+/** Send a message to a specific daemon */
 export function sendToDaemon(userId: string, event: any) {
   const daemon = daemonClients.get(userId);
-  if (daemon) { try { daemon.send(JSON.stringify(event)); } catch { /* ignore */ } }
+  if (daemon) {
+    try { daemon.send(JSON.stringify(event)); } catch { /* ignore */ }
+  }
 }
 
+/** Broadcast to all connected daemons */
 export function broadcastToDaemons(event: any) {
   const payload = JSON.stringify(event);
-  for (const [, ws] of daemonClients) { try { ws.send(payload); } catch { /* ignore */ } }
-}
-
-// ======== Phase 1 新增：带 ACK 的精准投递 ========
-
-export function sendWithAck(userId: string, message: AgentMessage): boolean {
-  const ws = daemonClients.get(userId);
-  const isHigh = message.priority === "HIGH" || message.priority === "CRITICAL";
-  if (ws?.readyState === 1) {
-    try { ws.send(JSON.stringify(message)); if (isHigh) offlineQueue.enqueue(userId, message); return true; }
-    catch { /* fall through */ }
+  for (const [, ws] of daemonClients) {
+    try { ws.send(payload); } catch { /* ignore */ }
   }
-  offlineQueue.enqueue(userId, message);
-  return false;
 }
+
+/** Export daemon clients map for external access */

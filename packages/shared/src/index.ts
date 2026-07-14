@@ -3,11 +3,11 @@
 // 基于 Slock 数据模型逆向分析
 // ============================================================
 
-// ---- 基础类型（从 base.ts 导出，避免循环引用） ----
+// ---- 基础类型 ----
 
-import type { UUID, ISO8601, Email, PaginationOpts, AttachmentRef, Reaction } from "./base.js";
-
-export type { UUID, ISO8601, Email, PaginationOpts, AttachmentRef, Reaction } from "./base.js";
+export type UUID = string;
+export type ISO8601 = string;
+export type Email = string;
 
 // ---- 消息 ----
 
@@ -43,6 +43,19 @@ export interface Message {
   reactions?: Reaction[];
   // Trace
   traceparent?: string;
+}
+
+export interface Reaction {
+  emoji: string;
+  userId: UUID;
+  createdAt: ISO8601;
+}
+
+export interface AttachmentRef {
+  id: UUID;
+  name: string;
+  mimeType: string;
+  sizeBytes: number;
 }
 
 // ---- 频道 ----
@@ -269,12 +282,9 @@ export type ApiResponse<T = unknown> = ApiOk<T> | ApiError;
 
 // ---- 分页 ----
 
-// 分页类型定义移至 base.ts
-
-// ============================================================
-// 安全渗透测试平台 — 扩展类型（Phase 0）
-// ============================================================
-
-export * from "./platform.js";
-export * from "./penetration.js";
-export * from "./adapter.js";
+export interface PaginationOpts {
+  before?: number;           // seq
+  after?: number;
+  around?: UUID;             // message UUID
+  limit?: number;            // 默认 50
+}
