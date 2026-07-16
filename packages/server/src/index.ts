@@ -4,10 +4,14 @@ import fastifyWebsocket from "@fastify/websocket";
 import fastifyJwt from "@fastify/jwt";
 import fastifyMultipart from "@fastify/multipart";
 import fastifyStatic from "@fastify/static";
-import pgPlugin from "./db/connection.js";
+import pgPlugin, { closeDb } from "./db/connection.js";
 import { sql } from "./db/connection.js";
 import { runMigrations } from "./db/migrate.js";
 import { UPLOAD_DIR } from "./lib/storage.js";
+import { config, validateConfig } from "./lib/config.js";
+import { rateLimitHook } from "./lib/rate-limit.js";
+
+validateConfig();
 
 import { authRoutes } from "./routes/auth.js";
 import { channelRoutes } from "./routes/channels.js";
@@ -18,9 +22,18 @@ import { profileRoutes } from "./routes/profile.js";
 import { attachmentRoutes } from "./routes/attachments.js";
 import { integrationRoutes } from "./routes/integrations.js";
 import { actionRoutes } from "./routes/actions.js";
+import { notificationRoutes } from "./routes/notifications.js";
 import { agentRoutes } from "./routes/agents.js";
+import { agentMessageRoutes } from "./routes/agents-messages.js";
+import { agentTaskRoutes } from "./routes/agents-tasks.js";
+import { agentReminderRoutes } from "./routes/agents-reminders.js";
 import { previewRoutes } from "./routes/preview.js";
+import { orgRoutes } from "./routes/orgs.js";
+import { metricsRoutes } from "./routes/metrics.js";
 import { wsHandler } from "./ws/handler.js";
+import { agentPublicRoutes } from "./routes/agents-public.js";
+import swagger from "@fastify/swagger";
+import swaggerUi from "@fastify/swagger-ui";
 
 const server = Fastify({
   logger: true,
@@ -39,18 +52,33 @@ server.setErrorHandler(async (err: any, request: any, reply: any) => {
 });
 
 // Plugins
-await server.register(cors, { origin: true, credentials: true });
+const CORS_ORIGINS = process.env.CORS_ORIGINS?.split(",") || [
+  "http://localhost:5173",
+  "http://localhost:4173",
+  "http://localhost:3001",
+];
+await server.register(cors, { origin: CORS_ORIGINS, credentials: true });
+
+// OpenAPI / Swagger
+await server.register(swagger, {
+  openapi: {
+    info: { title: "CollabAgent API", version: "0.1.0", description: "Collaborative Agent Platform API" },
+    servers: [{ url: `http://localhost:${config.PORT}` }],
+  },
+});
+await server.register(swaggerUi, { routePrefix: "/docs" });
+
 await server.register(fastifyWebsocket);
 await server.register(fastifyJwt, {
-  secret: process.env.JWT_SECRET || "dev-secret-change-in-production",
+  secret: config.JWT_SECRET,
 });
 await server.register(pgPlugin);
 // 注入 pg 给 WS 层，用于按频道成员定向投递（关闭私有频道泄露面）
 {
   const { setWsPg } = await import("./ws/handler.js");
-  setWsPg((server as any).pg);
+  setWsPg(server.pg);
 }
-await server.register(fastifyMultipart, { limits: { fileSize: 10 * 1024 * 1024 } });
+await server.register(fastifyMultipart, { limits: { fileSize: config.MAX_UPLOAD_SIZE } });
 await server.register(fastifyStatic, { root: UPLOAD_DIR, prefix: "/files/", decorateReply: false });
 
 // Auth decorator — supports JWT (Bearer 或 httpOnly cookie), dev-token, and machine token
@@ -60,6 +88,9 @@ server.decorate("authenticate", async function (request: any, reply: any) {
   const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : authHeader;
 
   if (authHeader === "Bearer dev-token") {
+    if (process.env.NODE_ENV === "production") {
+      return reply.status(401).send({ error: "Unauthorized" });
+    }
     request.user = { sub: "dev-user", handle: "dev" };
     return;
   }
@@ -67,10 +98,10 @@ server.decorate("authenticate", async function (request: any, reply: any) {
   // Machine token (sk_machine_*)
   if (token.startsWith("sk_machine_")) {
     const bcrypt = (await import("bcryptjs")).default;
-    const result = await server.pg.query(
+    const result = await server.pg.query<{ user_id: string; server_id: string; scope: string; token_hash: string }>(
       "SELECT user_id, server_id, scope, token_hash FROM machine_tokens WHERE token_prefix = 'sk_machine_' AND revoked_at IS NULL"
     );
-    for (const row of result.rows as any[]) {
+    for (const row of result.rows) {
       if (await bcrypt.compare(token, row.token_hash)) {
         const user = await server.pg.query("SELECT id, handle FROM users WHERE id = $1", [row.user_id]);
         if (user.rows.length > 0) {
@@ -82,13 +113,7 @@ server.decorate("authenticate", async function (request: any, reply: any) {
     return reply.status(401).send({ error: "Invalid machine token" });
   }
 
-  // JWT via Bearer
-  if (token) {
-    try { request.user = server.jwt.verify(token); return; }
-    catch { return reply.status(401).send({ error: "Unauthorized" }); }
-  }
-
-  // JWT via httpOnly cookie（浏览器走这条）
+  // 纯 httpOnly Cookie 鉴权（Bearer JWT 路径已废弃 —— 强制从 cookie 取 JWT，避免 XSS 窃 token）
   const cookieTok = parseCookies(request.headers.cookie)[ACCESS_COOKIE];
   if (cookieTok) {
     try { request.user = server.jwt.verify(cookieTok); return; }
@@ -97,6 +122,9 @@ server.decorate("authenticate", async function (request: any, reply: any) {
 
   return reply.status(401).send({ error: "Unauthorized" });
 });
+
+// 全局限流（onRequest 早于 CSRF 校验，先拦截异常流量）
+server.addHook("onRequest", rateLimitHook);
 
 // CSRF（double-submit）：仅对「cookie 鉴权 + 改写型方法」生效；Bearer/机器令牌与登录引导路径豁免。
 server.addHook("onRequest", async (request: any, reply: any) => {
@@ -127,38 +155,33 @@ await server.register(previewRoutes, { prefix: "/api/preview" });
 await server.register(integrationRoutes, { prefix: "/api/integrations" });
 await server.register(actionRoutes, { prefix: "/api/actions" });
 await server.register(agentRoutes, { prefix: "/internal/agent" });
+await server.register(agentMessageRoutes, { prefix: "/internal/agent" });
+await server.register(agentTaskRoutes, { prefix: "/internal/agent" });
+await server.register(agentReminderRoutes, { prefix: "/internal/agent" });
+await server.register(notificationRoutes);
+await server.register(orgRoutes, { prefix: "/api" });
+await server.register(agentPublicRoutes, { prefix: "/api" });
+await server.register(metricsRoutes, { prefix: "/api" });
 
 // WebSocket
 server.register(async function (scope) {
   scope.get("/ws", { websocket: true }, wsHandler);
 });
 
-// Health check
-server.get("/api/health", async () => ({ status: "ok", time: new Date().toISOString() }));
-
-// 当前用户的 daemon 是否已连上（接入向导第 1 步轮询用）
-server.get("/api/daemon/status", { preHandler: [(server as any).authenticate] }, async (req: any) => {
-  const { daemonClients } = await import("./ws/handler.js");
-  return { connected: daemonClients.has(String(req.user.sub)) };
+// Health check（含 DB 连通性）
+server.get("/api/health", async () => {
+  let dbOk = false;
+  try {
+    await server.pg.query("SELECT 1");
+    dbOk = true;
+  } catch { /* DB degraded */ }
+  return { status: dbOk ? "ok" : "degraded", db: dbOk, time: new Date().toISOString() };
 });
 
-// 运维指标：进程计数器 + 实时网关（在线 daemon / agent 数）
-server.get("/api/metrics", async () => {
-  const { metricsSnapshot } = await import("./lib/metrics.js");
-  const { daemonClients, daemonMeta } = await import("./ws/handler.js");
-  let agentTotal = 0, agentsOnline = 0;
-  try {
-    const r = await server.pg.query("SELECT user_id FROM agents");
-    agentTotal = r.rows.length;
-    agentsOnline = (r.rows as any[]).filter((a) => daemonClients.has(String(a.user_id))).length;
-  } catch { /* ignore */ }
-  const daemons = Array.from(daemonMeta.values()).map((d) => ({
-    hostname: d.hostname, daemonVersion: d.daemonVersion, runtimes: d.runtimes, connectedAt: d.connectedAt,
-  }));
-  return metricsSnapshot({
-    online: { daemons: daemonClients.size, agents: agentTotal, agentsOnline },
-    daemons,
-  });
+// 当前用户的 daemon 是否已连上（接入向导第 1 步轮询用）
+server.get("/api/daemon/status", { preHandler: [server.authenticate] }, async (req: any) => {
+  const { daemonClients } = await import("./ws/handler.js");
+  return { connected: daemonClients.has(String(req.user.sub)) };
 });
 
 // Public user list (for @mention autocomplete)
@@ -169,259 +192,9 @@ server.get("/api/users", async () => {
   return { users: users.rows };
 });
 
-// Agent 列表（按调用者所属组织过滤可见性）
-server.get("/api/agents", { preHandler: [(server as any).authenticate] }, async (req: any) => {
-  const { getUserOrgIds } = await import("./lib/orgs.js");
-  const orgIds = await getUserOrgIds(server as any, req.user.sub);
-  if (orgIds.length === 0) return { agents: [] };
-  const agents = await server.pg.query(
-    "SELECT id, user_id, name, display_name, description, status, runtime_profile, server_id, created_at FROM agents WHERE server_id::text = ANY($1) ORDER BY created_at DESC",
-    [orgIds]
-  );
-  const { daemonClients } = await import("./ws/handler.js");
-  // daemon 按 userId 注册（一台用户机器一个 daemon）；agent 在线 = 其拥有者的 daemon 在线
-  return {
-    agents: (agents.rows as any[]).map((a) => {
-      const rp = parseRuntimeProfile(a.runtime_profile);
-      return { ...a, runtime_profile: rp, runtime: rp.runtime || "claude", model: rp.model || "sonnet", isOnline: daemonClients.has(String(a.user_id)) };
-    }),
-  };
-});
-
-// runtime_profile 可能是正确的 jsonb 对象，也可能是历史遗留的「双重编码字符串」，统一解析
-function parseRuntimeProfile(v: any): { runtime?: string; model?: string } {
-  if (!v) return {};
-  if (typeof v === "string") { try { return JSON.parse(v); } catch { return {}; } }
-  return v;
-}
-
-server.post("/api/agents", { preHandler: [(server as any).authenticate] }, async (req: any, reply: any) => {
-  const { name, displayName, description, runtime, model, serverId } = req.body;
-  if (!name) return reply.status(400).send({ error: "name required" });
-  const { getOrCreatePersonalOrg, getUserOrgIds } = await import("./lib/orgs.js");
-  // serverId 省略 → 落到创建者的个人组织（仅本人可见，可后续把别人加进来共享）；
-  // 若指定 serverId，必须是创建者所属的组织。
-  let orgId: string;
-  if (serverId) {
-    const myOrgs = await getUserOrgIds(server as any, req.user.sub);
-    if (!myOrgs.includes(String(serverId))) return reply.status(403).send({ error: "not a member of that org" });
-    orgId = String(serverId);
-  } else {
-    orgId = await getOrCreatePersonalOrg(server as any, req.user.sub, req.user.handle);
-  }
-  const result = await server.pg.query(
-    "INSERT INTO agents (user_id, server_id, name, display_name, description, runtime_profile) VALUES ($1, $2, $3, $4, $5, $6::jsonb) RETURNING *",
-    [req.user.sub, orgId, name, displayName || name, description || "", sql.json({ runtime: runtime || "claude", model: model || "sonnet" })]
-  );
-  const agent = result.rows[0] as any;
-  // Auto-start: notify all connected daemons to spawn this agent
-  const { broadcastToDaemons } = await import("./ws/handler.js");
-  broadcastToDaemons({
-    type: "agent:start",
-    agent: { id: agent.id, name: agent.name, displayName: agent.display_name, runtime: runtime || "claude", model: model || "sonnet" },
-    config: { runtime_profile: agent.runtime_profile },
-  });
-  return { agent };
-});
-
-// Edit agent（资料 + 运行时）
-server.patch("/api/agents/:agentId", { preHandler: [(server as any).authenticate] }, async (req: any, reply: any) => {
-  const { agentId } = req.params;
-  const { name, displayName, description, runtime, model } = req.body || {};
-  const sets: string[] = [];
-  const params: any[] = [];
-  let p = 1;
-  if (name !== undefined) { sets.push(`name = $${p++}`); params.push(name); }
-  if (displayName !== undefined) { sets.push(`display_name = $${p++}`); params.push(displayName); }
-  if (description !== undefined) { sets.push(`description = $${p++}`); params.push(description); }
-  if (runtime !== undefined || model !== undefined) {
-    sets.push(`runtime_profile = $${p++}::jsonb`);
-    params.push(sql.json({ runtime: runtime || "claude", model: model || "sonnet" }));
-  }
-  if (sets.length === 0) return reply.status(400).send({ error: "no fields" });
-  params.push(agentId);
-  const r = await server.pg.query(
-    `UPDATE agents SET ${sets.join(", ")} WHERE id = $${p} RETURNING *`,
-    params
-  );
-  if (r.rows.length === 0) return reply.status(404).send({ error: "agent not found" });
-  const agent = r.rows[0] as any;
-  const rp = parseRuntimeProfile(agent.runtime_profile);
-  const { broadcastToDaemons } = await import("./ws/handler.js");
-  broadcastToDaemons({
-    type: "agent:start",
-    agentId: agent.id,
-    config: { name: agent.name, displayName: agent.display_name, description: agent.description, runtime: rp.runtime, model: rp.model },
-  });
-  return { agent: { ...agent, runtime_profile: rp, runtime: rp.runtime, model: rp.model } };
-});
-
-// Delete agent（连带频道成员关系；保留历史消息）
-server.delete("/api/agents/:agentId", { preHandler: [(server as any).authenticate] }, async (req: any, reply: any) => {
-  const { agentId } = req.params;
-  const exists = await server.pg.query("SELECT id FROM agents WHERE id = $1", [agentId]);
-  if (exists.rows.length === 0) return reply.status(404).send({ error: "agent not found" });
-  await server.pg.query("DELETE FROM channel_members WHERE member_id = $1 AND member_type = 'agent'", [agentId]);
-  await server.pg.query("DELETE FROM agents WHERE id = $1", [agentId]);
-  const { broadcastToDaemons } = await import("./ws/handler.js");
-  broadcastToDaemons({ type: "agent:stop", agentId });
-  return { ok: true };
-});
-
-// --- 组织（协作组）成员管理 ---
-
-// 我所属的组织列表
-server.get("/api/orgs", { preHandler: [(server as any).authenticate] }, async (req: any) => {
-  // 确保用户至少有一个个人组织（懒创建），这样协作面板始终可用
-  const { getOrCreatePersonalOrg } = await import("./lib/orgs.js");
-  try { await getOrCreatePersonalOrg(server as any, req.user.sub, req.user.handle); } catch { /* ignore */ }
-  const r = await server.pg.query(
-    `SELECT s.id, s.name, s.personal, s.owner_id, sm.role,
-            (SELECT count(*)::int FROM server_members WHERE server_id = s.id) as "memberCount",
-            (SELECT count(*)::int FROM agents WHERE server_id = s.id) as "agentCount"
-       FROM server_members sm JOIN servers s ON s.id = sm.server_id
-      WHERE sm.user_id::text = $1
-      ORDER BY s.personal DESC, s.created_at ASC`,
-    [req.user.sub]
-  );
-  return { orgs: r.rows };
-});
-
-async function isOrgOwner(serverId: string, userId: string): Promise<boolean> {
-  const r = await server.pg.query(
-    "SELECT 1 FROM server_members WHERE server_id = $1 AND user_id::text = $2 AND role = 'owner'", [serverId, userId]
-  );
-  if (r.rows.length > 0) return true;
-  const s = await server.pg.query("SELECT 1 FROM servers WHERE id = $1 AND owner_id::text = $2", [serverId, userId]);
-  return s.rows.length > 0;
-}
-
-// 组织成员列表（需为成员）
-server.get("/api/orgs/:serverId/members", { preHandler: [(server as any).authenticate] }, async (req: any, reply: any) => {
-  const { serverId } = req.params;
-  const me = await server.pg.query("SELECT 1 FROM server_members WHERE server_id = $1 AND user_id::text = $2", [serverId, req.user.sub]);
-  if (me.rows.length === 0) return reply.status(403).send({ error: "not a member" });
-  const r = await server.pg.query(
-    `SELECT sm.user_id, sm.role, u.handle, u.display_name
-       FROM server_members sm JOIN users u ON u.id = sm.user_id
-      WHERE sm.server_id = $1 ORDER BY sm.role DESC, u.handle`,
-    [serverId]
-  );
-  return { members: r.rows };
-});
-
-// 邀请成员（仅 owner）
-server.post("/api/orgs/:serverId/members", { preHandler: [(server as any).authenticate] }, async (req: any, reply: any) => {
-  const { serverId } = req.params;
-  const { handle } = req.body || {};
-  if (!handle) return reply.status(400).send({ error: "handle required" });
-  if (!(await isOrgOwner(serverId, req.user.sub))) return reply.status(403).send({ error: "only org owner can invite" });
-  const u = await server.pg.query("SELECT id FROM users WHERE handle = $1", [String(handle).replace(/^@/, "")]);
-  if (u.rows.length === 0) return reply.status(404).send({ error: "user not found" });
-  await server.pg.query(
-    "INSERT INTO server_members (server_id, user_id, role) VALUES ($1, $2, 'member') ON CONFLICT DO NOTHING",
-    [serverId, (u.rows[0] as any).id]
-  );
-  return { ok: true };
-});
-
-// 移除成员（仅 owner；不能移除 owner 自己）
-server.delete("/api/orgs/:serverId/members/:userId", { preHandler: [(server as any).authenticate] }, async (req: any, reply: any) => {
-  const { serverId, userId } = req.params;
-  if (!(await isOrgOwner(serverId, req.user.sub))) return reply.status(403).send({ error: "only org owner can remove" });
-  await server.pg.query("DELETE FROM server_members WHERE server_id = $1 AND user_id = $2 AND role <> 'owner'", [serverId, userId]);
-  return { ok: true };
-});
-
-// 改成员角色（仅 owner；不能改 owner 自己）
-server.patch("/api/orgs/:serverId/members/:userId", { preHandler: [(server as any).authenticate] }, async (req: any, reply: any) => {
-  const { serverId, userId } = req.params;
-  const { role } = req.body || {};
-  if (!["member", "admin"].includes(role)) return reply.status(400).send({ error: "role must be member or admin" });
-  if (!(await isOrgOwner(serverId, req.user.sub))) return reply.status(403).send({ error: "only org owner can change roles" });
-  await server.pg.query("UPDATE server_members SET role = $3 WHERE server_id = $1 AND user_id = $2 AND role <> 'owner'", [serverId, userId, role]);
-  return { ok: true };
-});
-
-// --- 工作区邀请链接 ---
-
-// 列出邀请链接（仅 owner）
-server.get("/api/orgs/:serverId/invites", { preHandler: [(server as any).authenticate] }, async (req: any, reply: any) => {
-  const { serverId } = req.params;
-  if (!(await isOrgOwner(serverId, req.user.sub))) return reply.status(403).send({ error: "only org owner can manage invites" });
-  const r = await server.pg.query(
-    `SELECT token, role, max_uses, uses, expires_at, revoked_at, created_at
-       FROM invites WHERE server_id = $1 ORDER BY created_at DESC`,
-    [serverId]
-  );
-  return { invites: r.rows };
-});
-
-// 生成邀请链接（仅 owner）
-server.post("/api/orgs/:serverId/invites", { preHandler: [(server as any).authenticate] }, async (req: any, reply: any) => {
-  const { serverId } = req.params;
-  if (!(await isOrgOwner(serverId, req.user.sub))) return reply.status(403).send({ error: "only org owner can invite" });
-  const { maxUses, expiresInDays } = req.body || {};
-  const { randomBytes } = await import("node:crypto");
-  const token = randomBytes(24).toString("base64url");
-  const expiresAt = expiresInDays ? new Date(Date.now() + Number(expiresInDays) * 86400000).toISOString() : null;
-  await server.pg.query(
-    `INSERT INTO invites (token, server_id, created_by, role, max_uses, expires_at)
-     VALUES ($1, $2, $3, 'member', $4, $5)`,
-    [token, serverId, req.user.sub, maxUses ? Number(maxUses) : null, expiresAt]
-  );
-  return { token };
-});
-
-// 吊销邀请链接（仅 owner）
-server.delete("/api/orgs/:serverId/invites/:token", { preHandler: [(server as any).authenticate] }, async (req: any, reply: any) => {
-  const { serverId, token } = req.params;
-  if (!(await isOrgOwner(serverId, req.user.sub))) return reply.status(403).send({ error: "only org owner can revoke" });
-  await server.pg.query("UPDATE invites SET revoked_at = now() WHERE server_id = $1 AND token = $2", [serverId, token]);
-  return { ok: true };
-});
-
-// 公开校验邀请 token（注册页展示用，不需要登录）
-server.get("/api/invites/:token", async (req: any, reply: any) => {
-  const { token } = req.params;
-  const r = await server.pg.query(
-    `SELECT i.server_id, i.role, i.max_uses, i.uses, i.expires_at, i.revoked_at, s.name AS server_name
-       FROM invites i JOIN servers s ON s.id = i.server_id WHERE i.token = $1`,
-    [token]
-  );
-  if (r.rows.length === 0) return reply.status(404).send({ error: "邀请链接无效" });
-  const inv = r.rows[0] as any;
-  if (inv.revoked_at) return reply.status(410).send({ error: "邀请链接已失效" });
-  if (inv.expires_at && new Date(inv.expires_at) < new Date()) return reply.status(410).send({ error: "邀请链接已过期" });
-  if (inv.max_uses != null && inv.uses >= inv.max_uses) return reply.status(410).send({ error: "邀请链接使用次数已达上限" });
-  return { valid: true, serverName: inv.server_name };
-});
-
-// Server info (for frontend sidebar)
-server.get("/api/server/info", { preHandler: [(server as any).authenticate] }, async (req: any) => {
-  const { getDefaultServerId } = await import("./lib/server.js");
-  const serverId = await getDefaultServerId(server as any);
-  if (!serverId) return { channels: [], agents: [], humans: [] };
-  const serverResult = await server.pg.query("SELECT id, name FROM servers WHERE id = $1", [serverId]);
-  const userId = req.user?.sub;
-  // 公开频道对所有登录用户可见；私有频道仅成员可见
-  const channels = await server.pg.query(
-    `SELECT DISTINCT ON (c.id) c.*, cm.role
-       FROM channels c
-       LEFT JOIN channel_members cm ON cm.channel_id = c.id AND cm.member_id::text = $2 AND cm.member_type = 'human'
-      WHERE c.server_id = $1 AND c.archived = false AND c.type <> 'dm'
-        AND (c.type <> 'private' OR cm.role IS NOT NULL)`,
-    [serverId, userId]
-  );
-  const humans = await server.pg.query(
-    "SELECT id, handle, display_name, avatar_url FROM users ORDER BY handle"
-  );
-  return { serverId, serverName: (serverResult.rows[0] as any)?.name, channels: channels.rows, agents: [], humans: humans.rows };
-});
-
 // Auto-migrate on startup
 await runMigrations();
-console.log("[DB] Schema migrated");
+server.log.info("[DB] Schema migrated");
 
   // Auto-seed default data (first run only)
   const serverCount = await sql`SELECT count(*)::int as c FROM servers`;
@@ -431,22 +204,42 @@ console.log("[DB] Schema migrated");
     for (const ch of ["general", "random", "engineering"]) {
       await sql`INSERT INTO channels (server_id, name, description) VALUES (${sv.id}, ${ch}, ${ch === "general" ? "General discussion" : ch === "random" ? "Random topics" : "Engineering team"})`;
     }
-    console.log("[DB] Seed data created: 1 server, 3 channels");
+    server.log.info("[DB] Seed data created: 1 server, 3 channels");
   }
 
 // Start
-const port = Number(process.env.PORT) || 3001;
-const host = process.env.HOST || "0.0.0.0";
+const port = config.PORT;
+const host = config.HOST;
 
 try {
   await server.listen({ port, host });
-  console.log(`CollabAgent server running at http://${host}:${port}`);
+  server.log.info(`CollabAgent server running at http://${host}:${port}`);
   const { startReminderScheduler } = await import("./lib/reminder-scheduler.js");
-  startReminderScheduler(server as any);
-  console.log("[Reminder] scheduler started");
+  startReminderScheduler(server);
+  server.log.info("[Reminder] scheduler started");
+  const { startMetricsPersistence } = await import("./lib/metrics-persist.js");
+  startMetricsPersistence(server);
+  const { restoreCounters } = await import("./lib/metrics.js");
+  await restoreCounters(server.pg);
+  server.log.info("[Metrics] persistence started (60s interval)");
 } catch (err) {
   server.log.error(err);
   process.exit(1);
 }
+
+// 优雅关闭
+async function shutdown(signal: string) {
+  server.log.info(`[Server] Received ${signal}, shutting down gracefully...`);
+  const { daemonClients, browserClients } = await import("./ws/handler.js");
+  for (const [, ws] of daemonClients) { try { ws.close(1001, "server shutdown"); } catch { /* ignore */ } }
+  for (const [, sockets] of browserClients) {
+    for (const ws of sockets) { try { ws.close(1001, "server shutdown"); } catch { /* ignore */ } }
+  }
+  await closeDb();
+  server.log.info("[Server] Goodbye");
+  process.exit(0);
+}
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
 
 export type { server as App };

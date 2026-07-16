@@ -1,7 +1,8 @@
 import postgres from "postgres";
 import bcrypt from "bcryptjs";
+import { config } from "../lib/config.js";
 
-const sql = postgres(process.env.DATABASE_URL || "postgresql://postgres:P@ssw0rd@localhost:5432/collabagent");
+const sql = postgres(config.DATABASE_URL);
 
 console.log("Seeding database...");
 

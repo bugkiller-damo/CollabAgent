@@ -17,6 +17,7 @@ export interface PersistentClaudeOpts {
   env: Record<string, string>;
   label?: string;        // 日志用
   turnTimeoutMs?: number; // 单回合卡死保护
+  startupDelayMs?: number; // 启动后等待时间（默认 1s）
 }
 
 // 常驻的交互式 Claude 进程（--input-format stream-json）。
@@ -24,6 +25,7 @@ export interface PersistentClaudeOpts {
 export class PersistentClaude {
   private proc: ChildProcess | null = null;
   private busy = false;
+  private starting = false;
   private queue: string[] = [];
   private buf = "";
   private turnTimer: ReturnType<typeof setTimeout> | null = null;
@@ -76,6 +78,7 @@ export class PersistentClaude {
     this.proc = null;
     this.alive = false;
     this.busy = false;
+    this.starting = false;
   }
 
   // 入队一条用户消息（线程安全的串行执行）
@@ -85,28 +88,42 @@ export class PersistentClaude {
   }
 
   private pump(): void {
-    if (this.busy) return;
+    if (this.busy || this.starting) return;
     const next = this.queue.shift();
     if (next === undefined) return;
     if (!this.proc || !this.alive) {
       if (!this.spawnProc()) { console.error(`[Persistent${this.opts.label ? " " + this.opts.label : ""}] cannot spawn, dropping turn`); return; }
+      this.starting = true;
+      this.queue.unshift(next); // 放回队列，启动就绪后重试
+      setTimeout(() => {
+        this.starting = false;
+        this.pump();
+      }, this.opts.startupDelayMs ?? 1000);
+      return;
     }
     const stdin = this.proc?.stdin;
     if (!stdin) { console.error(`[Persistent${this.opts.label ? " " + this.opts.label : ""}] no stdin`); return; }
     this.busy = true;
     const payload = JSON.stringify({ type: "user", message: { role: "user", content: next } }) + "\n";
     stdin.write(payload);
-    // 卡死保护：超时则结束本回合，继续后续
-    const timeout = this.opts.turnTimeoutMs ?? 180000;
+    // 卡死保护：超时则 kill 子进程，让 cleanup 触发重新 spawn
+    const timeout = this.opts.turnTimeoutMs ?? 60000;
     this.turnTimer = setTimeout(() => {
-      console.warn(`[Persistent${this.opts.label ? " " + this.opts.label : ""}] turn timeout, moving on`);
-      this.busy = false;
+      console.warn(`[Persistent${this.opts.label ? " " + this.opts.label : ""}] turn timeout, killing process`);
+      try { this.proc?.kill(); } catch { /* ignore */ }
+      this.cleanup();
       this.pump();
     }, timeout);
   }
 
   private onStdout(chunk: string): void {
     this.buf += chunk;
+    // 防无换行异常输出无限增长，最多保留尾部 1MB
+    const MAX_BUF = 1024 * 1024;
+    if (this.buf.length > MAX_BUF) {
+      console.warn(`[Persistent${this.opts.label ? " " + this.opts.label : ""}] stdout buffer >1MB, truncating`);
+      this.buf = this.buf.slice(-MAX_BUF);
+    }
     let idx: number;
     while ((idx = this.buf.indexOf("\n")) >= 0) {
       const line = this.buf.slice(0, idx).trim();

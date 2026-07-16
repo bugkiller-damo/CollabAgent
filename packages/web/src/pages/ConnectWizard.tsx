@@ -6,6 +6,7 @@ interface Agent {
   name: string;
   display_name?: string;
   isOnline: boolean;
+  avatar_url?: string;
 }
 
 type Step = 1 | 2 | 3;
@@ -39,7 +40,7 @@ export function ConnectWizard() {
     setGenerating(true);
     setError("");
     try {
-      const r = await apiPost<{ token: string }>("/api/auth/machine-token", {});
+      const r = await apiPost<{ token: string }>("/api/profile/machine-token", {});
       setToken(r.token);
     } catch (err: any) {
       setError(err?.message || "生成令牌失败");

@@ -1,4 +1,5 @@
 import "fastify";
+import "@fastify/jwt";
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -6,20 +7,15 @@ declare module "fastify" {
     pg: {
       query: <T = Record<string, unknown>>(sql: string, params?: unknown[]) => Promise<{ rows: T[] }>;
     };
-    jwt: {
-      sign: (payload: Record<string, unknown>) => string;
-    };
   }
 
   interface FastifyRequest {
-    file?: () => Promise<{
-      filename: string;
-      mimetype: string;
-      toBuffer: () => Promise<Buffer>;
-    }>;
-    user?: {
-      sub: string;
-      handle: string;
-    };
+    file?: () => Promise<{ filename: string; mimetype: string; toBuffer: () => Promise<Buffer>; file?: { truncated: boolean } }>;
+  }
+}
+
+declare module "@fastify/jwt" {
+  interface FastifyJWT {
+    user: { sub: string; handle?: string; sid?: string; display_name?: string; scope?: any };
   }
 }

@@ -1,11 +1,12 @@
 import type { WebSocket } from "ws";
 import jwt from "jsonwebtoken";
+import { config } from "../lib/config.js";
 
 // 必须与 fastify-jwt 注册时的默认一致，否则浏览器 token 验不过 → 都变 "anon"
-const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change-in-production";
+const JWT_SECRET = config.JWT_SECRET;
 
 // Anonymous browser clients (keyed by userId)
-const browserClients = new Map<string, Set<WebSocket>>();
+export const browserClients = new Map<string, Set<WebSocket>>();
 // Daemon connections (keyed by userId — one per user machine)
 export const daemonClients = new Map<string, WebSocket>();
 // Daemon 元数据（握手 ready 上报）：用于运维仪表盘展示逐个 daemon 明细
@@ -60,10 +61,10 @@ async function resolveUserId(token: string | null, isDaemon: boolean): Promise<s
     if (!wsPg) return "anon";
     try {
       const bcrypt = (await import("bcryptjs")).default;
-      const result = await wsPg.query(
+      const result = await wsPg.query<{ user_id: string; token_hash: string }>(
         "SELECT user_id, token_hash FROM machine_tokens WHERE token_prefix = 'sk_machine_' AND revoked_at IS NULL"
       );
-      for (const row of result.rows as any[]) {
+      for (const row of result.rows) {
         if (await bcrypt.compare(token, row.token_hash)) return String(row.user_id);
       }
     } catch { /* fall through to anon */ }
@@ -115,6 +116,7 @@ function registerConnection(connection: WebSocket, userId: string, isDaemon: boo
       console.log(`[WS] Daemon disconnected: user=${userId}`);
     });
 
+    attachHeartbeat(connection);
     connection.send(JSON.stringify({ type: "connected", serverTime: new Date().toISOString() }));
   } else {
     // Browser client
@@ -132,12 +134,13 @@ function registerConnection(connection: WebSocket, userId: string, isDaemon: boo
       browserClients.get(userId)?.delete(connection);
     });
 
+    attachHeartbeat(connection);
     connection.send(JSON.stringify({ type: "connected", time: new Date().toISOString() }));
   }
 }
 
 // pg 引用，用于按频道成员定向投递（在 index.ts 启动时注入）
-let wsPg: { query: (text: string, params?: unknown[]) => Promise<{ rows: any[] }> } | null = null;
+let wsPg: { query: <T = any>(text: string, params?: unknown[]) => Promise<{ rows: T[] }> } | null = null;
 export function setWsPg(pg: typeof wsPg) { wsPg = pg; }
 
 /**
@@ -151,15 +154,15 @@ export async function broadcast(channelId: string, event: any) {
   let allowedHumanIds: Set<string> | null = null; // null = 不限制（公开）
   try {
     if (wsPg && channelId) {
-      const ch = await wsPg.query("SELECT type FROM channels WHERE id = $1", [channelId]);
-      const t = (ch.rows[0] as any)?.type;
+      const ch = await wsPg.query<{ type: string }>("SELECT type FROM channels WHERE id = $1", [channelId]);
+      const t = ch.rows[0]?.type;
       // 私有频道与 DM 都按成员定向：仅其人类成员的浏览器收到
       if (t === "private" || t === "dm") {
-        const m = await wsPg.query(
+        const m = await wsPg.query<{ member_id: string }>(
           "SELECT member_id FROM channel_members WHERE channel_id = $1 AND member_type = 'human'",
           [channelId]
         );
-        allowedHumanIds = new Set((m.rows as any[]).map((r) => String(r.member_id)));
+        allowedHumanIds = new Set(m.rows.map((r) => String(r.member_id)));
       }
     }
   } catch { /* 解析失败：allowedHumanIds 保持 null，退回全发 */ }
@@ -191,4 +194,59 @@ export function broadcastToDaemons(event: any) {
   }
 }
 
+/** Send a message to a specific user's browser clients */
+export function sendToUser(userId: string, event: any) {
+  const sockets = browserClients.get(userId);
+  if (!sockets) return;
+  const payload = JSON.stringify(event);
+  for (const ws of sockets) {
+    try { ws.send(payload); } catch { /* ignore */ }
+  }
+}
+
 /** Export daemon clients map for external access */
+
+// ---- 心跳检测（周期性 ping，清理死连接）----
+const HEARTBEAT_INTERVAL = 30_000; // 30s
+const HEARTBEAT_TIMEOUT = 10_000;  // 10s 无 pong 视为断开
+
+interface ConnMeta { alive: boolean; pingTimer?: NodeJS.Timeout }
+
+const connMeta = new WeakMap<WebSocket, ConnMeta>();
+
+function heartbeatPing(ws: WebSocket) {
+  const meta = connMeta.get(ws) || { alive: true };
+  if (!meta.alive) {
+    // 上次 ping 没回 pong → 断开
+    try { ws.close(1001, "heartbeat timeout"); } catch { /* ignore */ }
+    return;
+  }
+  meta.alive = false;
+  meta.pingTimer = setTimeout(() => heartbeatPing(ws), HEARTBEAT_TIMEOUT);
+  connMeta.set(ws, meta);
+  try { ws.ping(); } catch { /* ignore */ }
+}
+
+function heartbeatPong(ws: WebSocket) {
+  const meta = connMeta.get(ws);
+  if (meta) {
+    meta.alive = true;
+    if (meta.pingTimer) clearTimeout(meta.pingTimer);
+  }
+}
+
+// 全局心跳脉冲
+setInterval(() => {
+  for (const [, ws] of daemonClients) heartbeatPing(ws);
+  for (const [, sockets] of browserClients) {
+    for (const ws of sockets) heartbeatPing(ws);
+  }
+}, HEARTBEAT_INTERVAL);
+
+// 在 registerConnection 中 hook pong 响应
+// 在 connection.on("message") 外层添加 on("pong")
+// 通过 monkey-patch registerConnection 太复杂，简单方案：修改 open 事件注册
+// 下面 export 可供外部在 connection 上绑定 pong
+export function attachHeartbeat(ws: WebSocket) {
+  ws.on("pong", () => heartbeatPong(ws));
+}

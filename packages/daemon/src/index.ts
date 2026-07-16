@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { DaemonCore } from "./core.js";
+import { DaemonCore } from "./daemon-core.js";
 
 function parseArgs(args: string[]): { serverUrl: string; apiKey: string } | null {
   let serverUrl = "";
@@ -20,12 +20,15 @@ if (!parsed) {
 
 const daemon = new DaemonCore(parsed);
 
-try {
-  daemon.start();
-} catch (err) {
-  console.error(err instanceof Error ? err.message : err);
-  process.exit(1);
-}
+const main = async () => {
+  try {
+    await daemon.start();
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : err);
+    process.exit(1);
+  }
+};
+void main();
 
 const shutdown = async () => {
   await daemon.stop();

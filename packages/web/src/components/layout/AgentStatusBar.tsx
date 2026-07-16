@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { apiGet } from "../../api/client";
 
 interface Agent {
-  id: string; name: string; display_name: string; isOnline: boolean;
+  id: string; name: string; display_name: string; isOnline: boolean; avatar_url?: string;
 }
 
 export function AgentStatusBar() {

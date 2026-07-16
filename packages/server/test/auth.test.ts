@@ -19,12 +19,12 @@ describe("auth: register / login / cookie / csrf / sessions / deactivate", () =>
     expect(joined).toMatch(/csrf_token=/);
   });
 
-  it("login works and /me returns the user (Bearer)", async () => {
+  it("login works and /me returns the user (cookie)", async () => {
     const u = await registerUser();
     const login = await api("/api/auth/login", { method: "POST", body: { handle: u.handle, password: "Test1234" } });
     expect(login.status).toBe(200);
     expect(login.data.token).toBeTruthy();
-    const me = await api("/api/auth/me", { token: login.data.token });
+    const me = await api("/api/profile/me", { cookie: login.cookieHeader });
     expect(me.status).toBe(200);
     expect(me.data.user.handle).toBe(u.handle);
   });
@@ -38,7 +38,7 @@ describe("auth: register / login / cookie / csrf / sessions / deactivate", () =>
   it("cookie-auth mutating request without CSRF header is 403, with header is allowed", async () => {
     const u = await registerUser();
     // 无 csrf 头 → 403
-    const noCsrf = await api("/api/auth/logout", { method: "POST", cookie: u.cookie });
+    const noCsrf = await api("/api/auth/logout", { method: "POST", cookie: u.cookie, csrf: false as any });
     expect(noCsrf.status).toBe(403);
     // 带正确 csrf 头 → 200
     const withCsrf = await api("/api/auth/logout", { method: "POST", cookie: u.cookie, csrf: u.csrf });
@@ -47,7 +47,7 @@ describe("auth: register / login / cookie / csrf / sessions / deactivate", () =>
 
   it("sessions list shows current session; logout-all then refresh-via-session is revoked", async () => {
     const u = await registerUser();
-    const list = await api("/api/auth/sessions", { token: u.token });
+    const list = await api("/api/auth/sessions", { cookie: u.cookie });
     expect(list.status).toBe(200);
     expect(Array.isArray(list.data.sessions)).toBe(true);
     expect(list.data.sessions.length).toBeGreaterThanOrEqual(1);
@@ -55,9 +55,9 @@ describe("auth: register / login / cookie / csrf / sessions / deactivate", () =>
 
   it("deactivate requires correct password, then blocks login", async () => {
     const u = await registerUser();
-    const wrong = await api("/api/auth/deactivate", { method: "POST", cookie: u.cookie, csrf: u.csrf, body: { password: "nope" } });
+    const wrong = await api("/api/profile/deactivate", { method: "POST", cookie: u.cookie, csrf: u.csrf, body: { password: "nope" } });
     expect(wrong.status).toBe(401);
-    const ok = await api("/api/auth/deactivate", { method: "POST", cookie: u.cookie, csrf: u.csrf, body: { password: "Test1234" } });
+    const ok = await api("/api/profile/deactivate", { method: "POST", cookie: u.cookie, csrf: u.csrf, body: { password: "Test1234" } });
     expect(ok.status).toBe(200);
     const relog = await api("/api/auth/login", { method: "POST", body: { handle: u.handle, password: "Test1234" } });
     expect(relog.status).toBe(403);
@@ -65,7 +65,7 @@ describe("auth: register / login / cookie / csrf / sessions / deactivate", () =>
 
   it("data export returns the caller's profile", async () => {
     const u = await registerUser();
-    const exp = await api("/api/auth/export", { token: u.token });
+    const exp = await api("/api/profile/export", { cookie: u.cookie });
     expect(exp.status).toBe(200);
     expect(exp.data.profile.handle).toBe(u.handle);
     expect(exp.data).toHaveProperty("messages");

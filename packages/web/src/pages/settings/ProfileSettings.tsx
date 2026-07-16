@@ -25,7 +25,7 @@ export function ProfileSettings() {
     setMsg("");
     try {
       const up = await uploadAttachment(file);
-      await apiPatch("/api/auth/profile", { avatarUrl: up.url });
+      await apiPatch("/api/profile", { avatarUrl: up.url });
       setAvatarUrl(up.url);
       updateUser({ avatarUrl: up.url } as any);
       setMsg("头像已更新");
@@ -38,7 +38,7 @@ export function ProfileSettings() {
 
   const handleSaveProfile = async () => {
     try {
-      await apiPatch("/api/auth/profile", { displayName, description });
+      await apiPatch("/api/profile", { displayName, description });
       setMsg("已保存");
       updateUser({ displayName, description });
     } catch {
@@ -49,7 +49,7 @@ export function ProfileSettings() {
   const handleChangePassword = async () => {
     if (newPw.length < 8) { setPwMsg("新密码至少 8 位"); return; }
     try {
-      await apiPost("/api/auth/change-password", { oldPassword: oldPw, newPassword: newPw });
+      await apiPost("/api/profile/change-password", { oldPassword: oldPw, newPassword: newPw });
       setPwMsg("密码已修改，其他设备需重新登录");
       setOldPw(""); setNewPw("");
     } catch (err: any) {

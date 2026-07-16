@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { apiClient, apiGet } from "../../api/client";
 import { useAuthStore } from "../../stores";
+import { toast } from "../../stores/toastStore";
 
 interface Member {
   member_id: string;
@@ -50,14 +51,14 @@ export function ChannelMembersPanel({ channelId, onClose }: { channelId: string;
     try {
       await apiClient(`/api/channels/${channelId}/members/${m.member_id}`, { method: "DELETE" });
       load();
-    } catch (err: any) { alert(err?.message || "移除失败"); }
+    } catch (err: any) { toast.error(err?.message || "移除失败"); }
   };
 
   const handleRole = async (m: Member, role: string) => {
     try {
       await apiClient(`/api/channels/${channelId}/members/${m.member_id}`, { method: "PATCH", body: { role } });
       load();
-    } catch (err: any) { alert(err?.message || "修改失败"); }
+    } catch (err: any) { toast.error(err?.message || "修改失败"); }
   };
 
   const humans = members.filter((m) => m.member_type === "human");

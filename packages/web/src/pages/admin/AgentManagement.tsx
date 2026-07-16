@@ -4,10 +4,11 @@ import { AgentCardSkeleton } from "../../components/Skeleton";
 import { EmptyState } from "../../components/EmptyState";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { OrgMembersPanel } from "../../components/admin/OrgMembersPanel";
+import { toast } from "../../stores/toastStore";
 
 interface Agent {
   id: string; name: string; display_name: string; description: string;
-  status: string; runtime: string; model: string; isOnline: boolean;
+  status: string; runtime: string; model: string; isOnline: boolean; avatar_url?: string;
 }
 
 export function AgentManagement() {
@@ -18,6 +19,7 @@ export function AgentManagement() {
   const [name, setName] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [description, setDescription] = useState("");
+  const [avatarUrl, setAvatarUrl] = useState("");
   const [runtime, setRuntime] = useState("claude");
   const [model, setModel] = useState("sonnet");
   const [confirmDelete, setConfirmDelete] = useState<Agent | null>(null);
@@ -38,18 +40,19 @@ export function AgentManagement() {
 
   const resetForm = () => {
     setShowForm(false); setEditId(null);
-    setName(""); setDisplayName(""); setDescription("");
+    setName(""); setDisplayName(""); setDescription(""); setAvatarUrl("");
     setRuntime("claude"); setModel("sonnet");
   };
 
   const openCreate = () => {
-    setEditId(null); setName(""); setDisplayName(""); setDescription("");
+    setEditId(null); setName(""); setDisplayName(""); setDescription(""); setAvatarUrl("");
     setRuntime("claude"); setModel("sonnet"); setShowForm(true);
   };
 
   const openEdit = (a: Agent) => {
     setEditId(a.id); setName(a.name); setDisplayName(a.display_name || "");
-    setDescription(a.description || ""); setRuntime(a.runtime || "claude");
+    setDescription(a.description || ""); setAvatarUrl(a.avatar_url || "");
+    setRuntime(a.runtime || "claude");
     setModel(a.model || "sonnet"); setShowForm(true);
   };
 
@@ -57,14 +60,14 @@ export function AgentManagement() {
     if (!name.trim()) return;
     try {
       if (editId) {
-        await apiPatch(`/api/agents/${editId}`, { name, displayName, description, runtime, model });
+        await apiPatch(`/api/agents/${editId}`, { name, displayName, description, avatarUrl, runtime, model });
       } else {
         // 不传 serverId → 落到你的私有空间（仅你可见，直到把别人加进协作组织）
-        await apiPost("/api/agents", { name, displayName, description, runtime, model });
+        await apiPost("/api/agents", { name, displayName, description, avatarUrl, runtime, model });
       }
       resetForm();
       loadAgents();
-    } catch (err: any) { alert(err?.message || "保存失败"); }
+    } catch (err: any) { toast.error(err?.message || "保存失败"); }
   };
 
   const handleDelete = async (a: Agent) => {
@@ -72,7 +75,7 @@ export function AgentManagement() {
     try {
       await apiClient(`/api/agents/${a.id}`, { method: "DELETE" });
       loadAgents();
-    } catch (err: any) { alert(err?.message || "删除失败"); }
+    } catch (err: any) { toast.error(err?.message || "删除失败"); }
   };
 
   return (
@@ -99,12 +102,13 @@ export function AgentManagement() {
           <input type="text" placeholder="描述（也作为它的角色设定）" value={description}
             onChange={e => setDescription(e.target.value)}
             className="w-full p-2 rounded bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600" />
+          <input type="text" placeholder="头像 URL（可选）" value={avatarUrl}
+            onChange={e => setAvatarUrl(e.target.value)}
+            className="w-full p-2 rounded bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600" />
           <div className="flex gap-2">
             <select value={runtime} onChange={e => setRuntime(e.target.value)}
               className="p-2 rounded bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600">
               <option value="claude">Claude</option>
-              <option value="codex">Codex</option>
-              <option value="deepseek">DeepSeek</option>
             </select>
             <select value={model} onChange={e => setModel(e.target.value)}
               className="p-2 rounded bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600">
@@ -124,9 +128,13 @@ export function AgentManagement() {
         {agents.map((a) => (
           <div key={a.id} className="group bg-gray-100 dark:bg-gray-800 rounded-lg p-4 flex items-center gap-4">
             <div className="relative">
-              <div className="w-10 h-10 rounded-full bg-gray-500 dark:bg-gray-600 flex items-center justify-center text-white font-bold text-sm">
-                {a.name[0]?.toUpperCase() || "?"}
-              </div>
+              {a.avatar_url ? (
+                <img src={a.avatar_url} alt={a.name} className="w-10 h-10 rounded-full object-cover" />
+              ) : (
+                <div className="w-10 h-10 rounded-full bg-gray-500 dark:bg-gray-600 flex items-center justify-center text-white font-bold text-sm">
+                  {a.name[0]?.toUpperCase() || "?"}
+                </div>
+              )}
               <div className={"absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-gray-100 dark:border-gray-800 " + (a.isOnline ? "bg-green-500" : "bg-gray-400")} />
             </div>
             <div className="flex-1 min-w-0">

@@ -2,6 +2,7 @@ import { useParams, Link } from "react-router-dom";
 import { useEffect, useState, useRef } from "react";
 import { apiClient } from "../api/client";
 import { useAuthStore } from "../stores/authStore";
+import { useMessageStore } from "../stores";
 import { MarkdownContent } from "../components/chat/MarkdownContent";
 import { useMentionSuggest } from "../hooks/useMentionSuggest";
 import { MentionPopup } from "../components/chat/MentionPopup";
@@ -18,6 +19,10 @@ interface ThreadMsg {
 
 export function ThreadView() {
   const { channelName, threadId } = useParams<{ channelName: string; threadId: string }>();
+  // 用 messageStore 作为实时数据源：WS handler 收到带 thread_id 的消息会以
+  // `channelName:threadIdPrefix` 为 key 写入 store。手动刷新也走 store 拿初值。
+  const threadKey = channelName && threadId ? `${channelName}:${threadId.substring(0, 8)}` : "";
+  const liveReplies = useMessageStore((s) => (threadKey ? s.messagesByTarget[threadKey] : undefined)) || [];
   const [parent, setParent] = useState<ThreadMsg | null>(null);
   const [replies, setReplies] = useState<ThreadMsg[]>([]);
   const [draft, setDraft] = useState("");
@@ -46,6 +51,26 @@ export function ThreadView() {
     }
   }, [threadId]);
 
+  // 实时：合并 store 中 thread key 的新消息（来自 WS 推送），去重后追加
+  useEffect(() => {
+    if (liveReplies.length === 0) return;
+    setReplies((prev) => {
+      const known = new Set(prev.map((r) => r.id));
+      const live = liveReplies
+        .filter((m: any) => !known.has(m.id))
+        .map((m: any) => ({
+          id: m.id,
+          channel_id: m.channelId,
+          sender_id: m.senderId,
+          senderName: m.senderName,
+          content: m.content,
+          seq: m.seq,
+          time: m.time,
+        } as ThreadMsg));
+      return live.length > 0 ? [...prev, ...live] : prev;
+    });
+  }, [liveReplies]);
+
   const handleReply = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!draft.trim() || !channelName) return;
@@ -59,6 +84,7 @@ export function ThreadView() {
         },
       });
       setDraft("");
+      // 重新拉取父消息的最新回复列表（也包含本条）
       await loadThread();
     } catch {
       setError("回复失败");
@@ -96,8 +122,8 @@ export function ThreadView() {
                 {(parent.senderName || parent.sender_id || "?")[0]}
               </div>
               <span className="font-semibold text-gray-900 dark:text-white text-sm">{parent.senderName || parent.sender_id}</span>
-              <span className="text-gray-500 text-xs">
-                {new Date(parent.time).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}
+              <span className="text-gray-500 text-xs" title={new Date(parent.time).toLocaleString()}>
+                {formatTime(parent.time)}
               </span>
             </div>
             <MarkdownContent content={parent.content} />
@@ -113,15 +139,15 @@ export function ThreadView() {
         )}
 
         {replies.map((msg) => (
-          <div key={msg.id} className="group flex gap-3 hover:bg-gray-100 dark:bg-gray-800/50 p-2 rounded">
+          <div key={msg.id} className="group flex gap-3 hover:bg-gray-100 dark:hover:bg-gray-800/50 p-2 rounded">
             <div className="w-7 h-7 rounded bg-gray-600 shrink-0 flex items-center justify-center text-xs text-gray-900 dark:text-white">
               {(msg.senderName || msg.sender_id || "?")[0]}
             </div>
             <div className="min-w-0">
               <div className="flex items-baseline gap-2">
                 <span className="font-semibold text-gray-900 dark:text-white text-sm">{msg.senderName || msg.sender_id}</span>
-                <span className="text-gray-500 text-xs">
-                  {new Date(msg.time).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}
+                <span className="text-gray-500 text-xs" title={new Date(msg.time).toLocaleString()}>
+                  {formatTime(msg.time)}
                 </span>
               </div>
               <MarkdownContent content={msg.content} />

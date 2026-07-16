@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Outlet } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
 import { useWebSocket } from "../../hooks/useWebSocket";
@@ -7,6 +7,10 @@ import type { WsServerMessage } from '@collabagent/shared';
 import { ThinkingIndicator } from '../agent/ThinkingIndicator';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { OnboardingChecklist } from '../OnboardingChecklist';
+import { NotificationBell } from '../notifications/NotificationBell';
+import { SearchBar } from '../chat/SearchBar';
+import { ToastContainer } from '../Toast';
+import { useNotificationStore } from '../../stores/notificationStore';
 
 function AgentThinkingBanner() {
   const agents = useAgentStore((s) => s.agents);
@@ -16,6 +20,7 @@ function AgentThinkingBanner() {
 }
 
 export function AppLayout() {
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const fetchChannels = useChannelStore((s) => s.fetchChannels);
   const theme = useUiStore((s) => s.theme);
   const online = useUiStore((s) => s.online);
@@ -50,7 +55,7 @@ export function AppLayout() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const { token } = useAuthStore();
+  const { isAuthenticated } = useAuthStore();
   const receiveMessage = useMessageStore((s) => s.receiveMessage);
   const incrementUnread = useChannelStore((s) => s.incrementUnread);
   const activeChannelName = useChannelStore((s) => s.activeChannelName);
@@ -58,8 +63,13 @@ export function AppLayout() {
   const setWsStatus = useUiStore((s) => s.setWsStatus);
   const { isConnected, reconnectAttempt } = useWebSocket({
     serverUrl: window.location.origin,
-    token: token || "",
+    token: "",  // 不再需要 Bearer：浏览器自动带 cookie，daemon 用机器令牌独立认证
     onMessage: (msg: WsServerMessage) => {
+        // Real-time notification push
+        if ((msg.type as string) === 'notification.new') {
+          useNotificationStore.getState().prependNotification((msg as any).notification);
+        }
+
         // Agent activity routing
         if (msg.type === 'agent:status' || (msg.type as string) === 'agent:activity') {
           const a = msg as any;
@@ -70,6 +80,11 @@ export function AppLayout() {
         if ((msg.type as string) === "message:update" && (msg as any).message) {
           const u = (msg as any).message;
           useMessageStore.getState().applyMessageUpdate(u.id, u.content, u.editedAt);
+        }
+
+        // Message deleted (soft: content empty + deleted flag)
+        if ((msg.type as string) === "message:delete" && (msg as any).message) {
+          useMessageStore.getState().applyMessageDelete((msg as any).message.id);
         }
 
       if (msg.type === "agent:deliver" && msg.message) {
@@ -110,8 +125,20 @@ export function AppLayout() {
 
   return (
     <div className="flex h-screen bg-gray-50 dark:bg-gray-900">
-      <Sidebar />
+      {/* 移动端遮罩 */}
+      {sidebarOpen && (
+        <div className="fixed inset-0 bg-black/40 z-30 lg:hidden" onClick={() => setSidebarOpen(false)} />
+      )}
+      {/* 侧边栏：桌面常开，移动端滑动式 */}
+      <div className={`fixed lg:static inset-y-0 left-0 z-40 w-60 transform transition-transform duration-200 ease-in-out ${sidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"}`}>
+        <Sidebar />
+      </div>
       <main className="flex-1 flex flex-col min-w-0">
+        <header className="h-12 flex items-center gap-3 px-4 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800">
+          <button onClick={() => setSidebarOpen(true)} className="lg:hidden text-gray-500 dark:text-gray-400 p-1 text-xl" aria-label="打开菜单">☰</button>
+          <SearchBar />
+          <NotificationBell />
+        </header>
         {!online && (
           <div className="bg-amber-500 text-white text-sm text-center py-1.5 px-4">
             ⚠️ 你当前处于离线状态，新消息可能无法收发
@@ -123,6 +150,7 @@ export function AppLayout() {
         </ErrorBoundary>
       </main>
       <OnboardingChecklist />
+      <ToastContainer />
     </div>
   );
 }

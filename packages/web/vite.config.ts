@@ -14,4 +14,13 @@ export default defineConfig({
       "/ws": { target: "ws://localhost:3001", ws: true },
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vendor: ["react", "react-dom", "react-router-dom"],
+        },
+      },
+    },
+  },
 });

@@ -12,15 +12,15 @@ export interface Party {
 export async function resolvePeer(app: FastifyInstance, rawHandle: string): Promise<Party | null> {
   const clean = String(rawHandle).replace(/^@/, "");
   if (!clean) return null;
-  const u = await app.pg.query("SELECT id, handle, display_name FROM users WHERE handle = $1", [clean]);
+  const u = await app.pg.query<{ id: number; handle: string; display_name: string | null }>("SELECT id, handle, display_name FROM users WHERE handle = $1", [clean]);
   if (u.rows.length) {
-    const r = u.rows[0] as any;
-    return { id: String(r.id), type: "human", handle: r.handle, displayName: r.display_name };
+    const r = u.rows[0];
+    return { id: String(r.id), type: "human", handle: r.handle, displayName: r.display_name ?? undefined };
   }
-  const a = await app.pg.query("SELECT id, name, display_name FROM agents WHERE name = $1", [clean]);
+  const a = await app.pg.query<{ id: number; name: string; display_name: string | null }>("SELECT id, name, display_name FROM agents WHERE name = $1", [clean]);
   if (a.rows.length) {
-    const r = a.rows[0] as any;
-    return { id: String(r.id), type: "agent", handle: r.name, displayName: r.display_name };
+    const r = a.rows[0];
+    return { id: String(r.id), type: "agent", handle: r.name, displayName: r.display_name ?? undefined };
   }
   return null;
 }
@@ -33,17 +33,17 @@ export function dmChannelName(idA: string, idB: string): string {
 // 找到或创建两个实体之间的 DM 频道，返回频道 id（并确保双方都是成员）
 export async function getOrCreateDmChannel(app: FastifyInstance, me: Party, peer: Party): Promise<string> {
   const name = dmChannelName(me.id, peer.id);
-  const existing = await app.pg.query("SELECT id FROM channels WHERE name = $1", [name]);
+  const existing = await app.pg.query<{ id: number }>("SELECT id FROM channels WHERE name = $1", [name]);
   let channelId: string;
   if (existing.rows.length) {
-    channelId = String((existing.rows[0] as any).id);
+    channelId = String(existing.rows[0].id);
   } else {
     // server_id：优先取 agent 一方所属组织，否则退回默认服务器
     let serverId: string | null = null;
     const agentParty = me.type === "agent" ? me : peer.type === "agent" ? peer : null;
     if (agentParty) {
-      const r = await app.pg.query("SELECT server_id FROM agents WHERE id = $1", [agentParty.id]);
-      serverId = (r.rows[0] as any)?.server_id ?? null;
+      const r = await app.pg.query<{ server_id: number }>("SELECT server_id FROM agents WHERE id = $1", [agentParty.id]);
+      if (r.rows[0]) serverId = String(r.rows[0].server_id);
     }
     if (!serverId) {
       serverId = await getDefaultServerId(app);
@@ -51,15 +51,15 @@ export async function getOrCreateDmChannel(app: FastifyInstance, me: Party, peer
     // created_by 外键指向 users：仅当存在人类一方时填，agent↔agent 留空
     const createdBy = me.type === "human" ? me.id : peer.type === "human" ? peer.id : null;
     try {
-      const ins = await app.pg.query(
+      const ins = await app.pg.query<{ id: number }>(
         "INSERT INTO channels (server_id, name, description, type, created_by) VALUES ($1, $2, '', 'dm', $3) RETURNING id",
         [serverId, name, createdBy]
       );
-      channelId = String((ins.rows[0] as any).id);
+      channelId = String(ins.rows[0].id);
     } catch {
       // 并发竞态：他人已建 —— 重新查
-      const again = await app.pg.query("SELECT id FROM channels WHERE name = $1", [name]);
-      channelId = String((again.rows[0] as any).id);
+      const again = await app.pg.query<{ id: number }>("SELECT id FROM channels WHERE name = $1", [name]);
+      channelId = String(again.rows[0].id);
     }
   }
   for (const m of [me, peer]) {
@@ -108,7 +108,7 @@ export async function dmOtherMembers(
   channelId: string,
   senderId: string
 ): Promise<{ agents: Party[]; humans: Party[] }> {
-  const r = await app.pg.query(
+  const r = await app.pg.query<{ member_id: string; member_type: string; handle: string; display_name: string | null }>(
     `SELECT cm.member_id, cm.member_type,
             COALESCE(u.handle, a.name) as handle,
             COALESCE(u.display_name, a.display_name) as display_name
@@ -120,8 +120,8 @@ export async function dmOtherMembers(
   );
   const agents: Party[] = [];
   const humans: Party[] = [];
-  for (const row of r.rows as any[]) {
-    const p: Party = { id: String(row.member_id), type: row.member_type, handle: row.handle, displayName: row.display_name };
+  for (const row of r.rows) {
+    const p: Party = { id: String(row.member_id), type: row.member_type as "human" | "agent", handle: row.handle, displayName: row.display_name ?? undefined };
     if (row.member_type === "agent") agents.push(p);
     else humans.push(p);
   }
@@ -134,7 +134,7 @@ export async function dmPeerHandleFor(
   channelId: string,
   selfId: string
 ): Promise<string | null> {
-  const r = await app.pg.query(
+  const r = await app.pg.query<{ handle: string }>(
     `SELECT COALESCE(u.handle, a.name) as handle
        FROM channel_members cm
        LEFT JOIN users u ON cm.member_type = 'human' AND cm.member_id = u.id
@@ -143,5 +143,5 @@ export async function dmPeerHandleFor(
       LIMIT 1`,
     [channelId, String(selfId)]
   );
-  return (r.rows[0] as any)?.handle ?? null;
+  return r.rows[0]?.handle ?? null;
 }

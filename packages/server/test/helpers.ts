@@ -35,9 +35,19 @@ function toCookieHeader(setCookie: string[]): string {
 export async function api<T = any>(path: string, opts: ApiOpts = {}): Promise<ApiResult<T>> {
   const headers: Record<string, string> = {};
   if (opts.body !== undefined) headers["content-type"] = "application/json";
-  if (opts.token) headers["authorization"] = "Bearer " + opts.token;
   if (opts.cookie) headers["cookie"] = opts.cookie;
-  if (opts.csrf) headers["x-csrf-token"] = opts.csrf;
+  // 纯 Cookie 鉴权：CSRF token 从 cookie 中自动提取（明确传 false/null 表跳过）
+  if (opts.csrf !== false && opts.csrf !== null && !opts.csrf && opts.cookie) {
+    for (const part of opts.cookie.split(";")) {
+      const i = part.indexOf("=");
+      if (i < 0) continue;
+      if (part.slice(0, i).trim() === "csrf_token") {
+        opts.csrf = decodeURIComponent(part.slice(i + 1).trim());
+        break;
+      }
+    }
+  }
+  if (opts.csrf && opts.csrf !== false && opts.csrf !== null) headers["x-csrf-token"] = opts.csrf;
   const res = await fetch(BASE + path, {
     method: opts.method || "GET",
     headers,
@@ -93,7 +103,11 @@ export async function cleanupTestData(): Promise<void> {
   await sql`DELETE FROM reminders WHERE owner_id::text = ANY(${uids})`;
   await sql`DELETE FROM machine_tokens WHERE user_id::text = ANY(${uids})`;
   await sql`DELETE FROM user_sessions WHERE user_id::text = ANY(${uids})`;
+  await sql`DELETE FROM agent_credentials WHERE agent_id IN (SELECT id FROM agents WHERE user_id::text = ANY(${uids}))`;
+  await sql`DELETE FROM agent_logins WHERE agent_id IN (SELECT id FROM agents WHERE user_id::text = ANY(${uids}))`;
   await sql`DELETE FROM agents WHERE user_id::text = ANY(${uids})`;
+  await sql`DELETE FROM server_members WHERE user_id::text = ANY(${uids})`;
+  await sql`DELETE FROM servers WHERE created_by::text = ANY(${uids}) OR owner_id::text = ANY(${uids})`;
   await sql`DELETE FROM users WHERE id::text = ANY(${uids})`;
 }
 

@@ -10,3 +10,13 @@ Thumbs.db
 *.tmp
 *.swp
 packages/daemon/.slock/
+
+# Personal / ephemeral
+cookies.txt
+msgs.json
+docs/test_heredoc.md
+
+# Claude session state
+.claude/goal-progress.json
+.claude/scheduled_tasks.*
+.claude/settings.local.json

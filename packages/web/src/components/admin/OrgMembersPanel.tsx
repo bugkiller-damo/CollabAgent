@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { apiGet, apiClient } from "../../api/client";
+import { toast } from "../../stores/toastStore";
 
 interface Org { id: string; name: string; personal: boolean; role: string; memberCount: number; agentCount: number; }
 interface Member { user_id: string; role: string; handle: string; display_name?: string; }
@@ -46,7 +47,7 @@ export function OrgMembersPanel() {
     try {
       await apiClient(`/api/orgs/${org.id}/members/${m.user_id}`, { method: "DELETE" });
       loadMembers(org.id);
-    } catch (err: any) { alert(err?.message || "移除失败"); }
+    } catch (err: any) { toast.error(err?.message || "移除失败"); }
   };
 
   if (!org) return null;

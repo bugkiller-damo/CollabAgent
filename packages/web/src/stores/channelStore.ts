@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { apiGet, apiPost, apiPatch } from "../api/client";
+import { toast } from "./toastStore";
 import type { Channel } from "@collabagent/shared";
 
 interface ChannelState {
@@ -34,8 +35,8 @@ export const useChannelStore = create<ChannelState>((set, get) => ({
         serverId: data.serverId || get().serverId,
         joinedChannels: new Set(chs.filter((c) => c.joined).map((c) => c.name)),
       });
-    } catch {
-      // backend not ready
+    } catch (err: any) {
+      toast.error("加载频道列表失败：" + (err?.message || "网络错误"));
     }
   },
 

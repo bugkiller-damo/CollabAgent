@@ -45,8 +45,8 @@ export function RegisterPage() {
         "/api/auth/register",
         { handle, password, email, displayName: handle, invite: invite || undefined }
       );
-      localStorage.setItem("auth_token", data.token);
-      useAuthStore.setState({ token: data.token, user: data.user as any, isAuthenticated: true });
+      localStorage.setItem("user", JSON.stringify(data.user));
+      useAuthStore.setState({ user: data.user as any, isAuthenticated: true });
       navigate("/channels/general");
     } catch (err) {
       setError((err as Error).message || "注册失败");

@@ -122,11 +122,23 @@ function ConnectedFor({ since }: { since: number }) {
 export function MetricsDashboard() {
   const [m, setM] = useState<Metrics | null>(null);
   const [err, setErr] = useState("");
-  // 客户端累积采样，驱动 sparkline
+  // 客户端累积采样，驱动 sparkline；首次加载从 DB 历史初始化，之后实时追加
   const [hist, setHist] = useState<{ messages: number[]; dm: number[]; errors: number[] }>({ messages: [], dm: [], errors: [] });
 
   useEffect(() => {
     let alive = true;
+
+    // 从持久化历史加载初始 sparkline 数据（跨重启趋势）
+    apiGet<{ samples: { messages_sent: number; dm_sent: number; errors: number }[] }>("/api/metrics/history?range=1h")
+      .then((d) => {
+        if (!alive || d.samples.length === 0) return;
+        setHist({
+          messages: d.samples.map((s) => s.messages_sent).slice(-HISTORY),
+          dm: d.samples.map((s) => s.dm_sent).slice(-HISTORY),
+          errors: d.samples.map((s) => s.errors).slice(-HISTORY),
+        });
+      }).catch(() => { /* 历史数据非关键，静默 */ });
+
     const load = () => apiGet<Metrics>("/api/metrics").then((d) => {
       if (!alive) return;
       setM(d);

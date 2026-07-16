@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { apiGet, apiPost } from "../api/client";
 import { useChannelStore } from "../stores";
+import { toast } from "../stores/toastStore";
 
 interface Task {
   id: string;
@@ -54,17 +55,17 @@ export function TaskBoard() {
     if (!t || !channel) return;
     setNewTitle("");
     try { await apiPost("/api/tasks", { channel: "#" + channel, tasks: [{ title: t }] }); load(); }
-    catch (err: any) { alert(err?.message || "创建失败"); }
+    catch (err: any) { toast.error(err?.message || "创建失败"); }
   };
 
   const claim = async (num: number) => {
     try { await apiPost("/api/tasks/claim", { channel: "#" + channel, task_numbers: [num] }); load(); }
-    catch (err: any) { alert(err?.message || "认领失败"); }
+    catch (err: any) { toast.error(err?.message || "认领失败"); }
   };
 
   const moveTo = async (num: number, status: string) => {
     try { await apiPost("/api/tasks/update-status", { channel: "#" + channel, number: num, status }); load(); }
-    catch (err: any) { alert(err?.message || "移动失败"); }
+    catch (err: any) { toast.error(err?.message || "移动失败"); }
   };
 
   const onDrop = (status: string) => {

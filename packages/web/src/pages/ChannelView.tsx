@@ -1,7 +1,8 @@
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { useEffect, useState, useRef } from "react";
 import { useMessageStore, useChannelStore, useUiStore } from "../stores";
-import { apiClient, uploadAttachment, type UploadedAttachment } from "../api/client";
+import { apiClient, apiGet, uploadAttachment, type UploadedAttachment } from "../api/client";
+import { toast } from "../stores/toastStore";
 import { useMentionSuggest } from "../hooks/useMentionSuggest";
 import { MessageSkeleton } from "../components/Skeleton";
 import { MentionPopup } from "../components/chat/MentionPopup";
@@ -18,6 +19,8 @@ const EMPTY_MSGS: never[] = [];
 
 export function ChannelView() {
   const { channelName } = useParams<{ channelName: string }>();
+  const location = useLocation();
+  const highlightMsgId = location.hash?.replace("#", "") || undefined;
   const target = channelName ? `#${channelName}` : "";
   const messages = useMessageStore((s) => (target && s.messagesByTarget[target]) || EMPTY_MSGS);
   const fetchHistory = useMessageStore((s) => s.fetchHistory);
@@ -56,6 +59,23 @@ export function ChannelView() {
     }
   }, [channelName]);
 
+  // 高亮消息不在当前页时，按 seq 抓取含该消息的上一页
+  const highlightLoadedRef = useRef(false);
+  useEffect(() => {
+    if (!highlightMsgId || highlightLoadedRef.current) return;
+    if (messages.length === 0) return;
+    const inPage = messages.find((m: any) => m.id === highlightMsgId);
+    if (inPage) { highlightLoadedRef.current = true; return; }
+    // 搜索拿 seq，再加载包含它的页面
+    apiGet<{ results: { id: string; seq: number }[] }>("/api/messages/search", { q: highlightMsgId.slice(0, 8) }).then((r) => {
+      const hit = r.results.find((x) => x.id === highlightMsgId);
+      if (hit) {
+        fetchHistory(target, { before: hit.seq + 1, limit: 50 }).catch(() => {});
+        highlightLoadedRef.current = true;
+      }
+    }).catch(() => {});
+  }, [highlightMsgId, messages, target, fetchHistory]);
+
   useEffect(() => {
     const el = containerRef.current;
     if (el) {
@@ -82,7 +102,7 @@ export function ChannelView() {
     const list = Array.from(files);
     for (const file of list) {
       if (file.size > 10 * 1024 * 1024) {
-        alert(`"${file.name}" 超过 10MB 上限`);
+        toast.error(`"${file.name}" 超过 10MB 上限`);
         continue;
       }
       const tempId = "att-" + Date.now() + "-" + Math.random().toString(36).slice(2, 7);
@@ -111,7 +131,7 @@ export function ChannelView() {
         scrollToBottom();
       } catch (err) {
         console.error("Send with attachments failed", err);
-        alert("发送失败，请重试");
+        toast.error("发送失败，请重试");
       }
       return;
     }
@@ -204,7 +224,7 @@ export function ChannelView() {
           )}
         </div>
       ) : useVirtual ? (
-        <VirtualMessageList items={listItems} channelName={channelName} onRetry={retrySend} onDiscard={discardPending} />
+        <VirtualMessageList items={listItems} channelName={channelName} highlightMsgId={highlightMsgId} onRetry={retrySend} onDiscard={discardPending} />
       ) : (
         <div ref={containerRef} className="flex-1 p-4 overflow-y-auto space-y-1">
           {messages.map((msg: any) => (

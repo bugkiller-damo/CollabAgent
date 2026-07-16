@@ -22,8 +22,18 @@ export function LoginPage() {
   };
 
   const handleDevBypass = () => {
-    useAuthStore.getState().loginWithToken("dev-token");
-    navigate("/channels/general");
+    fetch("/api/auth/login", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ handle: "dev", password: "dev", remember: true }),
+    }).then((r) => r.json()).then((d) => {
+      if (d.user) {
+        localStorage.setItem("user", JSON.stringify(d.user));
+        useAuthStore.setState({ user: d.user as any, isAuthenticated: true });
+        navigate("/channels/general");
+      }
+    }).catch(() => {});
   };
 
   return (

@@ -35,8 +35,11 @@ interface MessageState {
   receiveMessage: (message: Message) => void;
   editMessage: (messageId: string, content: string) => Promise<void>;
   applyMessageUpdate: (messageId: string, content: string, editedAt?: string) => void;
-  addReaction: (messageId: string, emoji: string) => Promise<void>;
-  removeReaction: (messageId: string, emoji: string) => Promise<void>;
+  deleteMessage: (messageId: string) => Promise<void>;
+  applyMessageDelete: (messageId: string) => void;
+  addReaction: (messageId: string, emoji: string, userId: string) => Promise<void>;
+  removeReaction: (messageId: string, emoji: string, userId: string) => Promise<void>;
+  applyReaction: (messageId: string, emoji: string, userId: string, action: "add" | "remove") => void;
 }
 
 export const useMessageStore = create<MessageState>((set, get) => ({
@@ -124,11 +127,62 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     });
   },
 
-  addReaction: async (messageId, emoji) => {
+  addReaction: async (messageId, emoji, userId) => {
     await apiPost(`/api/messages/${messageId}/reactions`, { emoji });
+    get().applyReaction(messageId, emoji, userId, "add");
   },
 
-  removeReaction: async (messageId, emoji) => {
-    await apiPost(`/api/messages/${messageId}/reactions/remove`, { emoji });
+  removeReaction: async (messageId, emoji, userId) => {
+    await apiClient(`/api/messages/${messageId}/reactions/${encodeURIComponent(emoji)}`, { method: "DELETE" });
+    get().applyReaction(messageId, emoji, userId, "remove");
+  },
+
+  deleteMessage: async (messageId) => {
+    await apiClient(`/api/messages/${messageId}`, { method: "DELETE" });
+    get().applyMessageDelete(messageId);
+  },
+
+  applyMessageDelete: (messageId) => {
+    set((s) => {
+      const next: Record<string, Message[]> = {};
+      for (const k in s.messagesByTarget) {
+        next[k] = s.messagesByTarget[k].map((m: any) =>
+          m.id === messageId ? { ...m, content: "", deleted: true } : m
+        );
+      }
+      return { messagesByTarget: next };
+    });
+  },
+
+  applyReaction: (messageId, emoji, userId, action) => {
+    set((s) => {
+      const next: Record<string, Message[]> = {};
+      for (const k in s.messagesByTarget) {
+        next[k] = s.messagesByTarget[k].map((m: any) => {
+          if (m.id !== messageId) return m;
+          const reactions: { emoji: string; userIds: string[] }[] = m.reactions || [];
+          const idx = reactions.findIndex((r) => r.emoji === emoji);
+          let newReactions: typeof reactions;
+          if (action === "add") {
+            if (idx >= 0) {
+              if (reactions[idx].userIds.includes(userId)) return m;
+              newReactions = reactions.map((r, i) => i === idx ? { ...r, userIds: [...r.userIds, userId] } : r);
+            } else {
+              newReactions = [...reactions, { emoji, userIds: [userId] }];
+            }
+          } else {
+            if (idx < 0) return m;
+            const newUserIds = reactions[idx].userIds.filter((u) => u !== userId);
+            if (newUserIds.length === 0) {
+              newReactions = reactions.filter((_, i) => i !== idx);
+            } else {
+              newReactions = reactions.map((r, i) => i === idx ? { ...r, userIds: newUserIds } : r);
+            }
+          }
+          return { ...m, reactions: newReactions };
+        });
+      }
+      return { messagesByTarget: next };
+    });
   },
 }));

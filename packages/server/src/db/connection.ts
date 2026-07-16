@@ -2,8 +2,13 @@ import postgres from "postgres";
 import fp from "fastify-plugin";
 import type { FastifyInstance } from "fastify";
 import { runMigrations } from "./migrate.js";
+import { config } from "../lib/config.js";
 
-const sql = postgres(process.env.DATABASE_URL || "postgresql://postgres:P@ssw0rd@localhost:5432/collabagent");
+const sql = postgres(config.DATABASE_URL, {
+  max: config.DB_POOL_MAX,
+  idle_timeout: 30,
+  max_lifetime: 60 * 30,
+});
 
 export { sql };
 

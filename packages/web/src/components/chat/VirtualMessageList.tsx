@@ -10,14 +10,16 @@ export type ListItem =
 interface Props {
   items: ListItem[];
   channelName?: string;
+  highlightMsgId?: string;
   onRetry: (tempId: string) => void;
   onDiscard: (tempId: string) => void;
 }
 
-export function VirtualMessageList({ items, channelName, onRetry, onDiscard }: Props) {
+export function VirtualMessageList({ items, channelName, highlightMsgId, onRetry, onDiscard }: Props) {
   const parentRef = useRef<HTMLDivElement>(null);
   const prevCount = useRef(items.length);
   const didInitialScroll = useRef(false);
+  const didHighlight = useRef<string | undefined>(undefined);
 
   const virtualizer = useVirtualizer({
     count: items.length,
@@ -48,6 +50,17 @@ export function VirtualMessageList({ items, channelName, onRetry, onDiscard }: P
     prevCount.current = items.length;
   }, [items.length, virtualizer]);
 
+  // 高亮消息：滚动到目标并标记
+  useEffect(() => {
+    if (!highlightMsgId || didHighlight.current === highlightMsgId) return;
+    if (items.length === 0) return;
+    const idx = items.findIndex((it) => it.kind === "msg" && it.data.id === highlightMsgId);
+    if (idx >= 0) {
+      didHighlight.current = highlightMsgId;
+      virtualizer.scrollToIndex(idx, { align: "center" });
+    }
+  }, [highlightMsgId, items, virtualizer]);
+
   return (
     <div ref={parentRef} className="flex-1 overflow-y-auto">
       <div style={{ height: virtualizer.getTotalSize(), width: "100%", position: "relative" }}>
@@ -62,7 +75,7 @@ export function VirtualMessageList({ items, channelName, onRetry, onDiscard }: P
               className="px-4 py-0.5"
             >
               {it.kind === "msg"
-                ? <MessageRow msg={it.data} channelName={channelName} />
+                ? <MessageRow msg={it.data} channelName={channelName} isHighlighted={highlightMsgId !== undefined && it.data.id === highlightMsgId && didHighlight.current === highlightMsgId} />
                 : <PendingRow item={it.data} onRetry={onRetry} onDiscard={onDiscard} />}
             </div>
           );

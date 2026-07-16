@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import { App } from "./App";
 import "./index.css";
+import "highlight.js/styles/github-dark.css";
 
 // Theme initialization
 const theme = localStorage.getItem("theme") || "system";

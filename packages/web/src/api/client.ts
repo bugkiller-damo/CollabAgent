@@ -1,4 +1,3 @@
-import { useAuthStore } from "../stores/authStore";
 
 type FetchOptions = Omit<RequestInit, "body"> & { body?: unknown };
 
@@ -14,10 +13,9 @@ export function readCsrf(): string | null {
 }
 
 export async function apiClient<T = unknown>(url: string, options: FetchOptions = {}): Promise<T> {
-  const token = useAuthStore.getState().token;
-  const headers: Record<string, string> = {};
+    const headers: Record<string, string> = {};
   if (options.body !== undefined) headers["Content-Type"] = "application/json";
-  if (token) headers["Authorization"] = `Bearer ${token}`;
+  
   const method = (options.method || "GET").toUpperCase();
   if (["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
     const csrf = readCsrf();
@@ -38,17 +36,17 @@ export async function apiClient<T = unknown>(url: string, options: FetchOptions 
   return res.json();
 }
 
-export function apiGet<T = unknown>(url: string, params?: Record<string, string>): Promise<T> {
+export function apiGet<T = unknown>(url: string, params?: Record<string, string>, signal?: AbortSignal): Promise<T> {
   const qs = params ? "?" + new URLSearchParams(params).toString() : "";
-  return apiClient<T>(url + qs, { method: "GET" });
+  return apiClient<T>(url + qs, { method: "GET", signal });
 }
 
-export function apiPatch<T = unknown>(url: string, body?: unknown): Promise<T> {
-  return apiClient<T>(url, { method: "PATCH", body });
+export function apiPatch<T = unknown>(url: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+  return apiClient<T>(url, { method: "PATCH", body, signal });
 }
 
-export function apiPost<T = unknown>(url: string, body?: unknown): Promise<T> {
-  return apiClient<T>(url, { method: "POST", body });
+export function apiPost<T = unknown>(url: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+  return apiClient<T>(url, { method: "POST", body, signal });
 }
 
 export interface UploadedAttachment {
@@ -60,11 +58,10 @@ export interface UploadedAttachment {
 }
 
 export async function uploadAttachment(file: File): Promise<UploadedAttachment> {
-  const token = useAuthStore.getState().token;
-  const fd = new FormData();
+    const fd = new FormData();
   fd.append("file", file);
   const headers: Record<string, string> = {};
-  if (token) headers["Authorization"] = `Bearer ${token}`;
+  
   const csrf = readCsrf();
   if (csrf) headers["X-CSRF-Token"] = csrf;
   const res = await fetch("/api/attachments/upload", {

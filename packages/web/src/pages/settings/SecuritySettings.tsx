@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { apiGet, apiClient } from "../../api/client";
 import { useAuthStore } from "../../stores";
+import { toast } from "../../stores/toastStore";
 
 interface Session {
   id: string;
@@ -40,18 +41,18 @@ export function SecuritySettings() {
 
   const revoke = async (id: string) => {
     try { await apiClient(`/api/auth/sessions/${id}`, { method: "DELETE" }); load(); }
-    catch (e: any) { alert(e?.message || "下线失败"); }
+    catch (e: any) { toast.error(e?.message || "下线失败"); }
   };
 
   const logoutAll = async () => {
     if (!confirm("将退出所有设备（包括当前），确定？")) return;
     try { await apiClient("/api/auth/logout-all", { method: "POST" }); logout(); navigate("/login"); }
-    catch (e: any) { alert(e?.message || "操作失败"); }
+    catch (e: any) { toast.error(e?.message || "操作失败"); }
   };
 
   const exportData = async () => {
     try {
-      const data = await apiGet<any>("/api/auth/export");
+      const data = await apiGet<any>("/api/profile/export");
       const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -59,20 +60,20 @@ export function SecuritySettings() {
       a.download = `collabagent-export-${new Date().toISOString().slice(0, 10)}.json`;
       a.click();
       URL.revokeObjectURL(url);
-    } catch (e: any) { alert(e?.message || "导出失败"); }
+    } catch (e: any) { toast.error(e?.message || "导出失败"); }
   };
 
   const deactivate = async () => {
-    if (confirmText !== "注销") { alert('请在输入框中输入「注销」以确认'); return; }
-    if (!pwd) { alert("请输入密码确认"); return; }
+    if (confirmText !== "注销") { toast.warning('请在输入框中输入「注销」以确认'); return; }
+    if (!pwd) { toast.warning("请输入密码确认"); return; }
     setBusy(true);
     try {
-      await apiClient("/api/auth/deactivate", { method: "POST", body: { password: pwd } });
-      alert("账户已注销");
+      await apiClient("/api/profile/deactivate", { method: "POST", body: { password: pwd } });
+      toast.success("账户已注销");
       logout();
       navigate("/login");
     } catch (e: any) {
-      alert(e?.message || "注销失败");
+      toast.error(e?.message || "注销失败");
     } finally {
       setBusy(false);
     }

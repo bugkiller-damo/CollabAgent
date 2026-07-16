@@ -11,7 +11,10 @@ import { nextFireFromRepeat } from "./reminders.js";
 export function startReminderScheduler(app: FastifyInstance, intervalMs = 20000): () => void {
   const tick = async () => {
     try {
-      if (daemonClients.size === 0) return;
+      if (daemonClients.size === 0) {
+        app.log?.info?.("[Reminder] skip: no daemon");
+        return;
+      }
       // 原子认领：把到期的 scheduled 提醒一次性翻成 fired 并取回（其它实例 SKIP LOCKED 跳过）
       const claimed = await app.pg.query(
         `UPDATE reminders SET status = 'fired', last_fired_at = now(), fire_count = fire_count + 1, updated_at = now()
@@ -28,7 +31,7 @@ export function startReminderScheduler(app: FastifyInstance, intervalMs = 20000)
         const { inc } = await import("./metrics.js");
         inc("remindersFired", claimed.rows.length);
       }
-      for (const r of claimed.rows as any[]) {
+      for (const r of claimed.rows as { owner_id: string; id: number; title: string; channel_ref: string | null; repeat_rule: string | null }[]) {
         broadcastToDaemons({
           type: "reminder.fire",
           agentId: r.owner_id,
@@ -49,10 +52,10 @@ export function startReminderScheduler(app: FastifyInstance, intervalMs = 20000)
             [r.id, JSON.stringify({ title: r.title, repeat: r.repeat_rule || null, next: next ? next.toISOString() : null })]
           )
           .catch(() => {});
-        console.log(`[Reminder] fired "${r.title}" for agent ${String(r.owner_id).slice(0, 8)}`);
+        app.log?.info?.(`[Reminder] fired "${r.title}" for agent ${String(r.owner_id).slice(0, 8)}`);
       }
     } catch (err) {
-      console.error("[Reminder] scheduler error:", (err as Error).message);
+      app.log.error({ err: (err as Error).message }, "[Reminder] scheduler error");
     }
   };
   const timer = setInterval(tick, intervalMs);
