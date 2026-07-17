@@ -41,6 +41,9 @@ function MessageRowBase({ msg, channelName, isHighlighted }: { msg: any; channel
   const deleted = msg.deleted;
   const firstUrl = (msg.content?.match(/https?:\/\/[^\s<>()]+/) || [])[0];
   const reactions: { emoji: string; userIds: string[] }[] = msg.reactions || [];
+  // 经理/worker 任务派发通知（agents-dispatch.ts 里插入的三种消息前缀），
+  // 视觉上和普通聊天区分开，方便人类一眼认出这是任务合同而不是闲聊。
+  const dispatchKind = msg.content?.startsWith("📋") ? "派发" : msg.content?.startsWith("✅") ? "回报" : msg.content?.startsWith("🚫") ? "撤回" : null;
 
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState(msg.content || "");
@@ -84,7 +87,7 @@ function MessageRowBase({ msg, channelName, isHighlighted }: { msg: any; channel
   };
 
   return (
-    <div className={`group flex gap-3 hover:bg-gray-100 dark:hover:bg-gray-800/50 p-2 rounded relative ${isHighlighted ? "animate-highlight" : ""}`}>
+    <div className={`group flex gap-3 hover:bg-gray-100 dark:hover:bg-gray-800/50 p-2 rounded relative ${isHighlighted ? "animate-highlight" : ""} ${dispatchKind ? "border-l-2 border-amber-400 dark:border-amber-600 bg-amber-50/40 dark:bg-amber-900/10" : ""}`}>
       <div className="w-8 h-8 rounded bg-gray-600 shrink-0 flex items-center justify-center text-xs text-white">
         {(msg.senderName || "?")[0]}
       </div>
@@ -96,6 +99,11 @@ function MessageRowBase({ msg, channelName, isHighlighted }: { msg: any; channel
           </span>
           {edited && <span className="text-gray-400 text-xs">(已编辑)</span>}
           {deleted && <span className="text-gray-400 text-xs italic">(已删除)</span>}
+          {dispatchKind && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900 text-amber-700 dark:text-amber-300">
+              任务{dispatchKind}
+            </span>
+          )}
         </div>
 
         {editing ? (

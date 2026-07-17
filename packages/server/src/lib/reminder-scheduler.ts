@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { daemonClients, broadcastToDaemons } from "../ws/handler.js";
+import { daemonClients, sendToDaemon } from "../ws/handler.js";
 import { nextFireFromRepeat } from "./reminders.js";
 
 // 周期扫描到期提醒：唤醒对应 daemon（agent），周期性的算下一次、一次性的标记完成。
@@ -32,11 +32,17 @@ export function startReminderScheduler(app: FastifyInstance, intervalMs = 20000)
         inc("remindersFired", claimed.rows.length);
       }
       for (const r of claimed.rows as { owner_id: string; id: number; title: string; channel_ref: string | null; repeat_rule: string | null }[]) {
-        broadcastToDaemons({
-          type: "reminder.fire",
-          agentId: r.owner_id,
-          reminder: { id: r.id, title: r.title, channel: r.channel_ref || null },
-        });
+        // 解析出这个 agent 的所有者，只通知对应那台 daemon——广播会让别的 daemon
+        // 误把它当成自己托管的 agent 尝试拉起，spawn 阶段 403 "not your agent"。
+        const owner = await app.pg.query<{ user_id: string }>("SELECT user_id FROM agents WHERE id = $1", [r.owner_id]);
+        const ownerUserId = owner.rows[0]?.user_id;
+        if (ownerUserId) {
+          sendToDaemon(String(ownerUserId), {
+            type: "reminder.fire",
+            agentId: r.owner_id,
+            reminder: { id: r.id, title: r.title, channel: r.channel_ref || null },
+          });
+        }
         // 周期性提醒：认领后立即排下一次（翻回 scheduled）。
         const next = r.repeat_rule ? nextFireFromRepeat(r.repeat_rule, new Date()) : null;
         if (next) {

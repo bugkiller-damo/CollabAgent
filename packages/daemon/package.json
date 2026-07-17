@@ -16,7 +16,9 @@
     "@anthropic-ai/sdk": "^0.99.0",
     "@collabagent/shared": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "@xterm/headless": "^6.0.0",
     "commander": "^12.1.0",
+    "node-pty": "^1.1.0",
     "undici": "^7.0.0",
     "ws": "^8.18.0",
     "zod": "^3.25.76"

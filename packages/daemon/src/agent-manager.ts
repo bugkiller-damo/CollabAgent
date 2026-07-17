@@ -1,33 +1,35 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, type IPty } from "node-pty";
 import { randomUUID } from "node:crypto";
-import { EventEmitter } from "node:events";
-import type { AgentRunSnapshot, IAgentManager, PtyOutputBus, PtyOutputEvent, StartAgentInput } from "./types/index.js";
+import type { AgentRunSnapshot, IAgentManager, PtyOutputBus, StartAgentInput } from "./types/index.js";
+import { createPtyOutputBus } from "./pty-output-bus.js";
+import {
+  attachAgentPty,
+  finishAgentRun,
+  toAgentRunSnapshot,
+  type AgentRunProcess,
+} from "./agent-manager-support.js";
+import { createTerminalState } from "./terminal-state.js";
 
 /**
  * Agent 进程管理器。
  *
- * 封装子进程的 spawn/kill/通信逻辑，当前使用 child_process.spawn，
- * 设计上兼容未来替换为 node-pty。
+ * 使用 node-pty 创建伪终端（PTY）启动 Agent，支持：
+ * - 完整终端环境（提示符、ANSI 转义、颜色）
+ * - 真正的 resize / pause / resume 信号
+ * - 按 runId 索引的输出总线
+ *
+ * 接口与 child_process 实现保持一致（IAgentManager），上层调用方无感切换。
  *
  * ### 职责
- * - 启动 Agent 进程（spawn）
+ * - 启动 Agent 进程（pty.spawn）
  * - 停止、暂停、恢复进程
- * - 向 stdin 写入数据
+ * - 向 PTY 写入数据
  * - 调整终端尺寸
  * - 通过 PtyOutputBus 暴露 stdout/stderr 输出
  */
 export const createAgentManager = (): IAgentManager => {
-  const processes = new Map<string, { proc: ChildProcess; snapshot: AgentRunSnapshot }>();
-  const emitter = new EventEmitter();
-
-  const outputBus: PtyOutputBus = {
-    on(event: "data", handler: (ev: PtyOutputEvent) => void): void {
-      emitter.on(event, handler);
-    },
-    off(event: "data", handler: (ev: PtyOutputEvent) => void): void {
-      emitter.off(event, handler);
-    },
-  };
+  const processes = new Map<string, AgentRunProcess>();
+  const outputBus: PtyOutputBus = createPtyOutputBus();
 
   return {
     async startAgent(input: StartAgentInput): Promise<AgentRunSnapshot> {
@@ -35,90 +37,101 @@ export const createAgentManager = (): IAgentManager => {
       const cols = input.cols ?? 80;
       const rows = input.rows ?? 24;
 
-      const proc = spawn(input.agentName, [], {
+      // node-pty 直连子进程，不经 cmd.exe 间接启动
+      const pty: IPty = spawn(input.agentName, input.args ?? [], {
         cwd: input.workspaceDir,
-        shell: true,
-        windowsHide: true,
         env: { ...process.env, ...input.env },
-        stdio: ["pipe", "pipe", "pipe"],
+        cols,
+        rows,
+        name: "xterm-256color",
       });
 
-      const snapshot: AgentRunSnapshot = {
+      const run: AgentRunProcess = {
         runId,
         agentId: input.agentId,
-        pid: proc.pid ?? 0,
+        pid: (pty.pid as number) ?? 0,
+        pty,
+        output: "",
+        terminal: createTerminalState(cols, rows),
         status: "running",
         exitCode: null,
         cols,
         rows,
         startedAt: Date.now(),
+        // 绑定 runId（此刻已知，调用方的 onExit 只关心自己那次 start 的结果）
+        onExit: input.onExit ? (exitCode) => input.onExit!(runId, exitCode) : undefined,
+        stop: () => {},
+        write: () => {},
+        resize: () => {},
+        pause: () => {},
+        resume: () => {},
+        isStopped: () => false,
       };
 
-      processes.set(runId, { proc, snapshot });
+      attachAgentPty(run, pty, outputBus);
+      processes.set(runId, run);
 
-      proc.stdout?.on("data", (data: Buffer) => {
-        const ev: PtyOutputEvent = { runId, data: data.toString(), timestamp: Date.now() };
-        emitter.emit("data", ev);
-      });
-
-      proc.stderr?.on("data", (data: Buffer) => {
-        const ev: PtyOutputEvent = { runId, data: data.toString(), timestamp: Date.now() };
-        emitter.emit("data", ev);
-      });
-
-      proc.on("exit", (code) => {
-        snapshot.exitCode = code;
-        snapshot.status = "exited";
-      });
-
-      proc.on("error", () => {
-        snapshot.status = "error";
-      });
-
-      return snapshot;
+      return toAgentRunSnapshot(run);
     },
 
     stopRun(runId: string): void {
       const entry = processes.get(runId);
       if (!entry) return;
-      try { entry.proc.kill(); } catch { /* ignore */ }
-      entry.snapshot.status = "exited";
+      entry.stop();
     },
 
     writeInput(runId: string, input: string | Buffer): void {
       const entry = processes.get(runId);
-      if (!entry?.proc.stdin) return;
-      entry.proc.stdin.write(input);
+      if (!entry) return;
+      entry.write(input);
     },
 
-    resizeRun(runId: string, _cols: number, _rows: number): void {
-      // node-pty: pty.resize(cols, rows)
-      // child_process.spawn: no-op (not supported without PTY)
+    resizeRun(runId: string, cols: number, rows: number): void {
       const entry = processes.get(runId);
-      if (entry) {
-        entry.snapshot.cols = _cols;
-        entry.snapshot.rows = _rows;
-      }
+      if (!entry) return;
+      entry.resize(cols, rows);
     },
 
     pauseRun(runId: string): void {
       const entry = processes.get(runId);
       if (!entry) return;
-      try { entry.proc.kill("SIGSTOP"); } catch { /* Windows: no SIGSTOP */ }
+      entry.pause();
     },
 
     resumeRun(runId: string): void {
       const entry = processes.get(runId);
       if (!entry) return;
-      try { entry.proc.kill("SIGCONT"); } catch { /* Windows: no SIGCONT */ }
+      entry.resume();
     },
 
     getRun(runId: string): AgentRunSnapshot | undefined {
-      return processes.get(runId)?.snapshot;
+      const entry = processes.get(runId);
+      if (!entry) return undefined;
+      return toAgentRunSnapshot(entry);
     },
 
     getOutputBus(): PtyOutputBus {
       return outputBus;
     },
+
+    removeRun(runId: string): void {
+      removeAgentRun(processes, outputBus, runId);
+    },
   };
 };
+
+/**
+ * 内部使用：从注册表移除 run 并清理订阅者（agent-runtime 负责调用）。
+ * 不放在 IAgentManager 接口里以保持接口最小化。
+ */
+export const removeAgentRun = (processes: Map<string, AgentRunProcess>, outputBus: PtyOutputBus, runId: string): void => {
+  const entry = processes.get(runId);
+  if (!entry) return;
+  outputBus.clear(runId);
+  try { entry.terminal.dispose(); } catch { /* 已经 dispose 过或本来就没启动完整 */ }
+  processes.delete(runId);
+};
+
+/** 暴露辅助函数供上层 runtime 直接调用 */
+export { attachAgentPty, finishAgentRun, toAgentRunSnapshot };
+export type { AgentRunProcess };

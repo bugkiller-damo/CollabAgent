@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
-import { daemonClients, broadcastToDaemons } from "../ws/handler.js";
-import { getAgent } from "../lib/agent-helpers.js";
+import { daemonClients, sendToDaemon } from "../ws/handler.js";
+import { getAgent, requireOwnAgent } from "../lib/agent-helpers.js";
 import { agentMessageRoutes } from "./agents-messages.js";
 import { agentTaskRoutes } from "./agents-tasks.js";
 import { agentReminderRoutes } from "./agents-reminders.js";
@@ -34,12 +34,16 @@ export async function agentRoutes(app: FastifyInstance) {
       [userId, serverId as string, name as string, (displayName || name) as string, description || "", runtime || "claude", model || "sonnet"]
     );
     const agent = result.rows[0];
-    broadcastToDaemons({ type: "agent:start", agentId: agent.id, config: { name: agent.name, displayName: agent.display_name, description: agent.description, runtime: agent.runtime, model: agent.model } });
+    // 只通知这个 agent 真正的所有者的 daemon——广播给所有 daemon 会导致别的 daemon
+    // 也把这个 agent 注册进本地的 agentDrivers（hasAgent() 返回 true），但它们的
+    // 账号级 apiKey 换不出这个 agent 的凭证，@ 提及/派发到它时会在 spawn 阶段
+    // 403 "not your agent"。
+    sendToDaemon(String(agent.user_id), { type: "agent:start", agentId: agent.id, config: { name: agent.name, displayName: agent.display_name, description: agent.description, runtime: agent.runtime, model: agent.model } });
     return { agent };
   });
 
   // Profile (self or others)
-  app.get("/:agentId/profile", { preHandler: [app.authenticate] }, async (req, reply) => {
+  app.get("/:agentId/profile", { preHandler: [app.authenticate, requireOwnAgent] }, async (req, reply) => {
     const agentId = (req.params as Record<string, string>).agentId;
     const { target } = req.query as Record<string, string>;
     if (target) {
@@ -56,7 +60,7 @@ export async function agentRoutes(app: FastifyInstance) {
   });
 
   // Update profile
-  app.post("/:agentId/profile", { preHandler: [app.authenticate] }, async (req, reply) => {
+  app.post("/:agentId/profile", { preHandler: [app.authenticate, requireOwnAgent] }, async (req, reply) => {
     const agentId = (req.params as Record<string, string>).agentId;
     const { displayName, description } = req.body as { displayName?: string; description?: string };
     const sets: string[] = []; const params: any[] = []; let p = 1;
@@ -70,7 +74,7 @@ export async function agentRoutes(app: FastifyInstance) {
   });
 
   // Update runtime config
-  app.patch("/:agentId", { preHandler: [app.authenticate] }, async (req, reply) => {
+  app.patch("/:agentId", { preHandler: [app.authenticate, requireOwnAgent] }, async (req, reply) => {
     const { agentId } = req.params as Record<string, string>;
     const { status, runtime, model } = req.body as Record<string, unknown>;
     const sets: string[] = []; const params: unknown[] = []; let p = 1;

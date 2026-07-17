@@ -27,6 +27,8 @@ import { agentRoutes } from "./routes/agents.js";
 import { agentMessageRoutes } from "./routes/agents-messages.js";
 import { agentTaskRoutes } from "./routes/agents-tasks.js";
 import { agentReminderRoutes } from "./routes/agents-reminders.js";
+import { agentCredentialRoutes } from "./routes/agents-credentials.js";
+import { agentDispatchRoutes } from "./routes/agents-dispatch.js";
 import { previewRoutes } from "./routes/preview.js";
 import { orgRoutes } from "./routes/orgs.js";
 import { metricsRoutes } from "./routes/metrics.js";
@@ -95,6 +97,28 @@ server.decorate("authenticate", async function (request: any, reply: any) {
     return;
   }
 
+  // Agent-run scoped token (sk_agent_*) —— 每次 daemon spawn 一个 agent PTY 时签发，
+  // 只在这个 agentId 范围内有效，不像 sk_machine_ 那样是账号级全权限。
+  // 只有带 :agentId 路径参数的路由才能用这种 token 认证——鉴权时直接按这个
+  // agentId 做单条索引查找（比 sk_machine_ 的全表扫描+逐行 bcrypt 更高效），
+  // 因为 Fastify 的 preHandler 在路由匹配完成之后才跑，此时 request.params 已就绪。
+  if (token.startsWith("sk_agent_")) {
+    const agentId = (request.params as Record<string, string> | undefined)?.agentId;
+    if (!agentId) return reply.status(401).send({ error: "Invalid agent token" });
+    const bcrypt = (await import("bcryptjs")).default;
+    const cred = await server.pg.query<{ token_hash: string; user_id: string; name: string }>(
+      `SELECT ac.token_hash, a.user_id, a.name
+       FROM agent_credentials ac JOIN agents a ON a.id = ac.agent_id
+       WHERE ac.agent_id = $1 AND ac.revoked_at IS NULL AND (ac.expires_at IS NULL OR ac.expires_at > now())`,
+      [agentId]
+    );
+    if (cred.rows.length > 0 && (await bcrypt.compare(token, cred.rows[0].token_hash))) {
+      request.user = { sub: cred.rows[0].user_id, handle: cred.rows[0].name, scope: "agent-run", agentId };
+      return;
+    }
+    return reply.status(401).send({ error: "Invalid or expired agent token" });
+  }
+
   // Machine token (sk_machine_*)
   if (token.startsWith("sk_machine_")) {
     const bcrypt = (await import("bcryptjs")).default;
@@ -158,6 +182,8 @@ await server.register(agentRoutes, { prefix: "/internal/agent" });
 await server.register(agentMessageRoutes, { prefix: "/internal/agent" });
 await server.register(agentTaskRoutes, { prefix: "/internal/agent" });
 await server.register(agentReminderRoutes, { prefix: "/internal/agent" });
+await server.register(agentCredentialRoutes, { prefix: "/internal/agent" });
+await server.register(agentDispatchRoutes, { prefix: "/internal/agent" });
 await server.register(notificationRoutes);
 await server.register(orgRoutes, { prefix: "/api" });
 await server.register(agentPublicRoutes, { prefix: "/api" });

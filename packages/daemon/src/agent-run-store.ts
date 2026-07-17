@@ -85,9 +85,39 @@ export const createJsonRunStore = (filePath: string): IAgentRunStore => {
     writeAll(data);
   };
 
-  const loadRuntimeState = (): AgentRuntimeState | null => {
+  const loadRuntimeState = (agentId: string): AgentRuntimeState | null => {
     const states = readAll().states;
-    return states.length ? states[states.length - 1] : null;
+    // saveRuntimeState 已经保证每个 agentId 在 states 里最多一条（写入前先按
+    // agentId 过滤掉旧的），这里按 agentId 精确查找，而不是"数组最后一条"——
+    // 后者在只有一个 agent 的场景下碰巧是对的，但在多 agent 场景下会把 agent A
+    // 的运行时状态（含 lastSessionId）当成 agent B 的返回，造成 session resume
+    // 用错 sessionId、崩溃恢复摘要张冠李戴。
+    return states.find((s) => s.agentId === agentId) ?? null;
+  };
+
+  const markUnfinishedRunsStale = (): number => {
+    const data = readAll();
+    const now = Date.now();
+    let count = 0;
+    for (const run of data.runs) {
+      if (run.status === "starting" || run.status === "running") {
+        run.status = "error";
+        run.endedAt = now;
+        count++;
+      }
+    }
+    if (count > 0) writeAll(data);
+    return count;
+  };
+
+  const listActiveAgents = (): { agentId: string; agentName: string }[] => {
+    const seen = new Map<string, string>();
+    for (const run of readAll().runs) {
+      if (run.status === "starting" || run.status === "running") {
+        seen.set(run.agentId, run.agentName);
+      }
+    }
+    return Array.from(seen, ([agentId, agentName]) => ({ agentId, agentName }));
   };
 
   return {
@@ -97,6 +127,8 @@ export const createJsonRunStore = (filePath: string): IAgentRunStore => {
     getLastRun,
     saveRuntimeState,
     loadRuntimeState,
+    markUnfinishedRunsStale,
+    listActiveAgents,
   };
 };
 

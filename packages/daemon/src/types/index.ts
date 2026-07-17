@@ -39,6 +39,11 @@ export interface AgentRunSnapshot {
   pid: number;
   status: RunStatus;
   exitCode: number | null;
+  /** 当前累积的 PTY 输出（原始字节流水账，仅供诊断日志用）；按 MAX_RUN_OUTPUT_LENGTH 截断 */
+  output: string;
+  /** 终端模拟器解析出的"当前实际渲染出来的屏幕"文本（见 terminal-state.ts）——
+   *  判断"就绪/忙碌/回合结束"一律应该看这个，而不是对 output 做正则扫描 */
+  screenText: string;
   cols: number;
   rows: number;
   startedAt: number;
@@ -78,8 +83,12 @@ export interface StartAgentInput {
   workspaceDir: string;
   systemPromptFile: string;
   env: Record<string, string>;
+  /** 传给子进程的额外参数（如 --append-system-prompt-file、--dangerously-skip-permissions） */
+  args?: string[];
   cols?: number;
   rows?: number;
+  /** 进程退出时触发（含 runId，便于调用方在不预先知道 runId 的情况下做清理） */
+  onExit?: (runId: string, exitCode: number | null) => void;
 }
 
 /** DaemonCore 配置 */
@@ -107,10 +116,21 @@ export interface PtyOutputEvent {
   timestamp: number;
 }
 
-/** PTY 输出总线（agent-manager 暴露给 agent-runtime 的流） */
+/**
+ * PTY 输出总线（agent-manager 暴露给 agent-runtime 的流）。
+ *
+ * 引入 node-pty 之后，输出从一次性 EventEmitter 改为按 runId 索引的发布/订阅通道，
+ * 便于多个订阅者（如输出打印 + 提示符检测 + 转写日志）独立监听。
+ */
 export interface PtyOutputBus {
-  on(event: "data", handler: (ev: PtyOutputEvent) => void): void;
-  off(event: "data", handler: (ev: PtyOutputEvent) => void): void;
+  /** 广播一条 PTY 输出事件给该 runId 的所有订阅者 */
+  publish(ev: PtyOutputEvent): void;
+  /** 订阅某个 runId 的输出；返回 unsubscribe 函数 */
+  subscribe(runId: string, listener: (ev: PtyOutputEvent) => void): () => void;
+  /** 清除某个 runId 的所有订阅者（run 结束时调用） */
+  clear(runId: string): void;
+  /** 当前订阅者数量（用于调试 / 测试断言） */
+  listenerCount(runId: string): number;
 }
 
 // —— CLI 预设 ——
@@ -158,6 +178,8 @@ export interface IAgentManager {
   resumeRun(runId: string): void;
   getRun(runId: string): AgentRunSnapshot | undefined;
   getOutputBus(): PtyOutputBus;
+  /** run 退出后清理内部记录（processes Map + outputBus 订阅），由 agent-runtime 在 onExit 回调中调用 */
+  removeRun(runId: string): void;
 }
 
 export interface IAgentRunStore {
@@ -166,7 +188,16 @@ export interface IAgentRunStore {
   listAgentRuns(agentId: string): AgentRunRecord[];
   getLastRun(agentId: string): AgentRunRecord | null;
   saveRuntimeState(state: AgentRuntimeState): void;
-  loadRuntimeState(): AgentRuntimeState | null;
+  loadRuntimeState(agentId: string): AgentRuntimeState | null;
+  /** 崩溃恢复：daemon 启动时调用一次，把上次进程遗留的 starting/running 记录标记为 error */
+  markUnfinishedRunsStale(): number;
+  /**
+   * 崩溃前处于 starting/running 状态的 agent 列表（用于 autostart 崩溃恢复，见
+   * docs/2026-07-16/13-autostart-session-resume-plan.md 方案 A）。
+   * **必须在 `markUnfinishedRunsStale()` 之前调用**——后者会把这些记录的
+   * status 改写成 "error"，调用顺序反了会永远查到空列表。
+   */
+  listActiveAgents(): { agentId: string; agentName: string }[];
 }
 
 export interface IAgentStartup {

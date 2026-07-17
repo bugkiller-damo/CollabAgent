@@ -1,10 +1,10 @@
 import type { FastifyInstance } from "fastify";
-import { agentCanAccessChannel, resolveChannelByName } from "../lib/agent-helpers.js";
+import { agentCanAccessChannel, resolveChannelByName, requireOwnAgent } from "../lib/agent-helpers.js";
 
 const STATUSES = ["todo", "in_progress", "in_review", "done", "closed"];
 
 export async function agentTaskRoutes(app: FastifyInstance) {
-  app.get("/:agentId/tasks", { preHandler: [app.authenticate] }, async (req, reply) => {
+  app.get("/:agentId/tasks", { preHandler: [app.authenticate, requireOwnAgent] }, async (req, reply) => {
     const agentId = (req.params as Record<string, string>).agentId;
     const { channel, status } = req.query as Record<string, string>;
     if (!channel) return reply.status(400).send({ error: "channel required" });
@@ -17,7 +17,7 @@ export async function agentTaskRoutes(app: FastifyInstance) {
     return { tasks: (await app.pg.query(q + " ORDER BY task_number ASC", p)).rows };
   });
 
-  app.post("/:agentId/tasks", { preHandler: [app.authenticate] }, async (req, reply) => {
+  app.post("/:agentId/tasks", { preHandler: [app.authenticate, requireOwnAgent] }, async (req, reply) => {
     const agentId = (req.params as Record<string, string>).agentId;
     const { channel, tasks } = req.body as { channel?: string; tasks?: { title: string }[] };
     if (!channel || !tasks?.length) return reply.status(400).send({ error: "channel and tasks required" });
@@ -35,7 +35,7 @@ export async function agentTaskRoutes(app: FastifyInstance) {
     return { tasks: created };
   });
 
-  app.post("/:agentId/tasks/claim", { preHandler: [app.authenticate] }, async (req, reply) => {
+  app.post("/:agentId/tasks/claim", { preHandler: [app.authenticate, requireOwnAgent] }, async (req, reply) => {
     const agentId = (req.params as Record<string, string>).agentId;
     const { channel, task_numbers, message_ids } = req.body as { channel?: string; task_numbers?: number[]; message_ids?: string[] };
     if (!channel) return reply.status(400).send({ error: "channel required" });
@@ -59,7 +59,7 @@ export async function agentTaskRoutes(app: FastifyInstance) {
     return { results };
   });
 
-  app.post("/:agentId/tasks/unclaim", { preHandler: [app.authenticate] }, async (req, reply) => {
+  app.post("/:agentId/tasks/unclaim", { preHandler: [app.authenticate, requireOwnAgent] }, async (req, reply) => {
     const agentId = (req.params as Record<string, string>).agentId;
     const { channel, task_number } = req.body as { channel?: string; task_number?: number };
     if (!channel) return reply.status(400).send({ error: "channel required" });
@@ -70,7 +70,7 @@ export async function agentTaskRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
-  app.post("/:agentId/tasks/update-status", { preHandler: [app.authenticate] }, async (req, reply) => {
+  app.post("/:agentId/tasks/update-status", { preHandler: [app.authenticate, requireOwnAgent] }, async (req, reply) => {
     const agentId = (req.params as Record<string, string>).agentId;
     const { channel, number, status } = req.body as { channel?: string; number?: number; status?: string };
     if (!channel) return reply.status(400).send({ error: "channel required" });

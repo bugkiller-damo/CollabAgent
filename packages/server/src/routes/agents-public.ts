@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { sql } from "../db/connection.js";
-import { daemonClients, broadcastToDaemons } from "../ws/handler.js";
+import { daemonClients, sendToDaemon } from "../ws/handler.js";
 import { getOrCreatePersonalOrg, getUserOrgIds } from "../lib/orgs.js";
 
 /**
@@ -13,17 +13,26 @@ function parseRuntimeProfile(v: unknown): { runtime?: string; model?: string } {
 }
 
 export async function agentPublicRoutes(app: FastifyInstance) {
-  // GET /agents — 列表（按调用者所属组织过滤可见性）
+  // GET /agents — 列表（按调用者所属组织过滤可见性；mine=1 时只返回自己名下的
+  // ——daemon loadExistingAgents 用：daemon 只能托管自己账号下的 agent，列出组织里
+  // 其它用户的 agent 会导致它误注册、hasAgent() 谎报，真正 spawn 时 403 "not your agent"）
   app.get("/agents", { preHandler: [app.authenticate] }, async (req: any) => {
     const orgIds = await getUserOrgIds(app, req.user.sub);
     if (orgIds.length === 0) return { agents: [] };
+    const mine = (req.query as Record<string, string> | undefined)?.mine;
+    const params: any[] = [orgIds];
+    let filter = "";
+    if (mine === "1" || mine === "true") {
+      params.push(String(req.user.sub));
+      filter = " AND user_id::text = $" + params.length;
+    }
     const agents = await app.pg.query<{
       id: string; user_id: string; name: string; display_name: string;
       description: string; avatar_url: string; status: string;
       runtime_profile: unknown; server_id: string; created_at: string;
     }>(
-      "SELECT id, user_id, name, display_name, description, avatar_url, status, runtime_profile, server_id, created_at FROM agents WHERE server_id::text = ANY($1) ORDER BY created_at DESC",
-      [orgIds]
+      "SELECT id, user_id, name, display_name, description, avatar_url, status, runtime_profile, server_id, created_at FROM agents WHERE server_id::text = ANY($1)" + filter + " ORDER BY created_at DESC",
+      params
     );
     return {
       agents: agents.rows.map((a) => {
@@ -59,8 +68,10 @@ export async function agentPublicRoutes(app: FastifyInstance) {
     );
     const agent = result.rows[0];
 
-    // Auto-start: notify all connected daemons to spawn this agent
-    broadcastToDaemons({
+    // Auto-start: notify this agent's owning daemon to spawn it（不广播——见 agents.ts
+    // 对应 call site 的注释：广播会让别的 daemon 误注册这个 agent，hasAgent() 谎报，
+    // 真正 @/派发时在 spawn 阶段 403 "not your agent"）。
+    sendToDaemon(String(req.user.sub), {
       type: "agent:start",
       agent: { id: agent.id, name: agent.name, displayName: agent.display_name, runtime: runtime || "claude", model: model || "sonnet" },
       config: { runtime_profile: agent.runtime_profile },
@@ -72,6 +83,13 @@ export async function agentPublicRoutes(app: FastifyInstance) {
   // PATCH /agents/:agentId — 编辑（资料 + 运行时）
   app.patch("/agents/:agentId", { preHandler: [app.authenticate] }, async (req: any, reply: any) => {
     const { agentId } = req.params;
+    // POST /agents（创建）已经检查了调用者是否属于目标 org；PATCH/DELETE 之前完全没做
+    // 同类检查——任何登录用户都能改/删服务器上任意一个 agent。这里补上跟创建端点
+    // 一致的 org 归属校验。
+    const existing = await app.pg.query<{ server_id: string; user_id: string }>("SELECT server_id, user_id FROM agents WHERE id = $1", [agentId]);
+    if (existing.rows.length === 0) return reply.status(404).send({ error: "agent not found" });
+    const myOrgs = await getUserOrgIds(app, req.user.sub);
+    if (!myOrgs.includes(String(existing.rows[0].server_id))) return reply.status(403).send({ error: "not a member of that org" });
     const { name, displayName, description, avatarUrl, runtime, model } = req.body || {};
     const sets: string[] = [];
     const params: any[] = [];
@@ -94,7 +112,7 @@ export async function agentPublicRoutes(app: FastifyInstance) {
 
     const agent = r.rows[0];
     const rp = parseRuntimeProfile(agent.runtime_profile);
-    broadcastToDaemons({
+    sendToDaemon(String(agent.user_id), {
       type: "agent:start",
       agentId: agent.id,
       config: { name: agent.name, displayName: agent.display_name, description: agent.description, runtime: rp.runtime, model: rp.model },
@@ -105,12 +123,14 @@ export async function agentPublicRoutes(app: FastifyInstance) {
   // DELETE /agents/:agentId — 删除（连带频道成员关系；保留历史消息）
   app.delete("/agents/:agentId", { preHandler: [app.authenticate] }, async (req: any, reply: any) => {
     const { agentId } = req.params;
-    const exists = await app.pg.query("SELECT id FROM agents WHERE id = $1", [agentId]);
+    const exists = await app.pg.query<{ server_id: string; user_id: string }>("SELECT server_id, user_id FROM agents WHERE id = $1", [agentId]);
     if (exists.rows.length === 0) return reply.status(404).send({ error: "agent not found" });
+    const myOrgs = await getUserOrgIds(app, req.user.sub);
+    if (!myOrgs.includes(String(exists.rows[0].server_id))) return reply.status(403).send({ error: "not a member of that org" });
 
     await app.pg.query("DELETE FROM channel_members WHERE member_id = $1 AND member_type = 'agent'", [agentId]);
     await app.pg.query("DELETE FROM agents WHERE id = $1", [agentId]);
-    broadcastToDaemons({ type: "agent:stop", agentId });
+    sendToDaemon(String(exists.rows[0].user_id), { type: "agent:stop", agentId });
     return { ok: true };
   });
 }

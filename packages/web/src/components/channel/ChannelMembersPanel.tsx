@@ -7,6 +7,7 @@ interface Member {
   member_id: string;
   member_type: "human" | "agent";
   role: string;
+  is_manager?: boolean;
   handle: string;
   display_name?: string;
 }
@@ -61,6 +62,15 @@ export function ChannelMembersPanel({ channelId, onClose }: { channelId: string;
     } catch (err: any) { toast.error(err?.message || "修改失败"); }
   };
 
+  const handleManager = async (m: Member, is_manager: boolean) => {
+    try {
+      await apiClient(`/api/channels/${channelId}/members/${m.member_id}`, { method: "PATCH", body: { is_manager } });
+      load();
+    } catch (err: any) {
+      toast.error(err?.message === "channel already has a manager" ? "该频道已有经理，请先取消原经理" : (err?.message || "设置失败"));
+    }
+  };
+
   const humans = members.filter((m) => m.member_type === "human");
   const agents = members.filter((m) => m.member_type === "agent");
 
@@ -90,6 +100,19 @@ export function ChannelMembersPanel({ channelId, onClose }: { channelId: string;
               {ROLE_LABEL[m.role] || m.role}
             </span>
           )
+        )}
+        {m.member_type === "agent" && m.is_manager && (
+          <span title="该频道的经理 agent，可派发任务给其它 agent"
+            className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900 text-amber-700 dark:text-amber-300">
+            👔 经理
+          </span>
+        )}
+        {m.member_type === "agent" && (
+          <button onClick={() => handleManager(m, !m.is_manager)}
+            title={m.is_manager ? "取消经理身份" : "设为该频道的经理（可派发任务给其它 agent）"}
+            className="text-gray-400 hover:text-amber-500 text-xs opacity-0 group-hover:opacity-100 whitespace-nowrap">
+            {m.is_manager ? "取消经理" : "设为经理"}
+          </button>
         )}
         {m.member_type === "human" && m.role !== "owner" && !isSelf && (
           <button onClick={() => handleRemove(m)} title="移除成员"

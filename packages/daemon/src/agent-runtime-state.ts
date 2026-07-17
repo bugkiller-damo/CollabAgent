@@ -1,0 +1,86 @@
+import type { AgentStatus } from "./types/index.js";
+
+/**
+ * Agent 四态模型（uninit/idle/starting/working/stopped）状态机。
+ * 见 docs/2026-07-15/03-state-machine.md。
+ */
+interface AgentState {
+  status: AgentStatus;
+  lastTransitionAt: number;
+  startupTimer: ReturnType<typeof setTimeout> | null;
+}
+
+const VALID_TRANSITIONS: Record<AgentStatus, AgentStatus[]> = {
+  uninit: ["idle", "stopped"],
+  idle: ["starting", "stopped"],
+  starting: ["working", "idle", "stopped"],
+  working: ["idle", "stopped"],
+  stopped: ["idle"],
+};
+
+const STATE_LABEL: Record<AgentStatus, string> = {
+  uninit: "未初始化",
+  idle: "空闲",
+  starting: "启动中",
+  working: "工作中",
+  stopped: "已停止",
+};
+
+function assertTransition(from: AgentStatus, to: AgentStatus): void {
+  const allowed = VALID_TRANSITIONS[from];
+  if (!allowed?.includes(to)) {
+    console.warn(`[Runtime] Invalid state transition: ${from} → ${to} (ignored)`);
+    throw new Error(`Invalid state transition: ${from} → ${to}`);
+  }
+}
+
+/** installStuckDetector 用的查询结果——只暴露诊断需要的字段，不泄露内部 Map */
+export interface WorkingAgentInfo {
+  name: string;
+  lastTransitionAt: number;
+}
+
+export interface IAgentStateMachine {
+  transitionState(name: string, to: AgentStatus): void;
+  getState(name: string): AgentStatus | undefined;
+  setStartupTimer(name: string, timer: ReturnType<typeof setTimeout>): void;
+  clearStartupTimer(name: string): void;
+  /** 当前处于 "working" 状态的 agent 列表（installStuckDetector 用） */
+  getWorkingAgents(): WorkingAgentInfo[];
+}
+
+export const createAgentStateMachine = (): IAgentStateMachine => {
+  const agentStates = new Map<string, AgentState>();
+
+  const transitionState = (name: string, to: AgentStatus): void => {
+    const current = agentStates.get(name);
+    const from: AgentStatus = current?.status ?? "uninit";
+    try { assertTransition(from, to); } catch { return; }
+    agentStates.set(name, { status: to, lastTransitionAt: Date.now(), startupTimer: null });
+    if (from !== to) {
+      console.log(`[Runtime] @${name} ${STATE_LABEL[from]} → ${STATE_LABEL[to]}`);
+    }
+  };
+
+  const clearStartupTimer = (name: string): void => {
+    const st = agentStates.get(name);
+    if (st?.startupTimer) { clearTimeout(st.startupTimer); st.startupTimer = null; }
+  };
+
+  return {
+    transitionState,
+    clearStartupTimer,
+    getState: (name: string) => agentStates.get(name)?.status,
+    setStartupTimer: (name: string, timer: ReturnType<typeof setTimeout>) => {
+      const st = agentStates.get(name);
+      if (st) st.startupTimer = timer;
+    },
+    getWorkingAgents: (): WorkingAgentInfo[] => {
+      const result: WorkingAgentInfo[] = [];
+      for (const [name, st] of agentStates.entries()) {
+        if (st.status === "working") result.push({ name, lastTransitionAt: st.lastTransitionAt });
+      }
+      return result;
+    },
+  };
+};

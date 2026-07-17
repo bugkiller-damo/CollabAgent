@@ -7,6 +7,7 @@ import { createAgentTokenRegistry } from "./agent-tokens.js";
 import { createLiveRunRegistry } from "./live-run-registry.js";
 import { createAgentRuntime, type IAgentRuntime } from "./agent-runtime.js";
 import { setupSlockWrapper } from "./setup-slock-wrapper.js";
+import { createJsonRunStore, defaultStorePath } from "./agent-run-store.js";
 
 export class DaemonCore {
   private ws: WebSocket | null = null;
@@ -19,6 +20,8 @@ export class DaemonCore {
   private client: ApiClient;
   private runtime: IAgentRuntime;
   private agentId = "00000000-0000-0000-0000-000000000001";
+  /** 崩溃前处于 starting/running 状态的 agent（autostart 方案 A 用），见 constructor 里的采集顺序说明 */
+  private autostartCandidates: { agentId: string; agentName: string }[] = [];
 
   constructor(private config: DaemonConfig) {
     this.serverUrl = config.serverUrl;
@@ -35,10 +38,22 @@ export class DaemonCore {
     this.client = new ApiClient(ctx);
     const tokenRegistry = createAgentTokenRegistry();
     const liveRunRegistry = createLiveRunRegistry();
+    const runStore = createJsonRunStore(defaultStorePath());
+    // 必须在 markUnfinishedRunsStale() 之前采集——那个方法会把这些记录的
+    // status 改写成 "error"，先后顺序反了 listActiveAgents() 就永远查到空列表
+    // （见 docs/2026-07-16/13-autostart-session-resume-plan.md 方案 A）。
+    this.autostartCandidates = runStore.listActiveAgents();
+    // 崩溃恢复：上次进程若被硬杀（未走到正常 exit 清理），遗留的 starting/running
+    // 记录会一直卡在那，把它们标记为 error，避免重启摘要里显示"永远在启动中"
+    const staleCount = runStore.markUnfinishedRunsStale();
+    if (staleCount > 0) {
+      console.warn(`[Daemon] Marked ${staleCount} unfinished run(s) as stale (previous crash)`);
+    }
     this.runtime = createAgentRuntime(
       { serverUrl: this.serverUrl, apiKey: this.apiKey },
       tokenRegistry,
       liveRunRegistry,
+      runStore,
     );
   }
 
@@ -48,6 +63,41 @@ export class DaemonCore {
     await this.setupSlockWrapper();
     this.connect();
     await this.runtime.loadExistingAgents();
+    this.wireAgentOutput();
+    await this.autostartCrashedAgents();
+  }
+
+  /**
+   * Autostart 方案 A（见 docs/2026-07-16/13-autostart-session-resume-plan.md）：
+   * 只拉起"崩溃前正在运行"的 agent，不是所有注册过的 agent——多数正常场景下
+   * （上次是优雅关闭，或从没崩溃过）这个列表是空的，完全零成本。逐个顺序
+   * await（不是 Promise.all 并发拉起），避免同时崩溃多个 agent 时一次性并发
+   * spawn 一堆 Claude Code 进程抢资源。
+   */
+  private async autostartCrashedAgents(): Promise<void> {
+    if (!this.autostartCandidates.length) return;
+    console.log(`[Daemon] Autostarting ${this.autostartCandidates.length} agent(s) active before last crash/restart`);
+    for (const { agentName } of this.autostartCandidates) {
+      try {
+        await this.runtime.autostartAgent(agentName);
+      } catch (err: any) {
+        console.error(`[Daemon] Autostart failed for @${agentName}:`, err?.message ?? err);
+      }
+    }
+  }
+
+  /**
+   * 接入 agent-manager 的 PtyOutputBus。
+   *
+   * 实际的 PTY 输出转发已经在 agent-runtime 内部按需订阅（每个新 run 自动挂订阅）。
+   * 这里仅做接入检查：确认 bus 已就绪、记录已建立的订阅者数。
+   * 通过 `SLOCK_VERBOSE_PTY=0` 可关闭本日志。
+   */
+  private wireAgentOutput(): void {
+    if (process.env.SLOCK_VERBOSE_PTY === "0") return;
+    const manager = this.runtime.__getAgentManager();
+    const bus = manager.getOutputBus();
+    console.log(`[Daemon] PTY output bus ready (type=${typeof bus.subscribe})`);
   }
 
   // 启动预检：本机 claude CLI 是否可用。缺失/未登录不阻断启动（daemon 仍连服务器），
@@ -153,9 +203,29 @@ private connect(): void {
       case "agent:deliver": {
         const m = (msg.message || msg) as Record<string, unknown>;
         const content = m.content as string;
-        if (m.senderType === "agent") break;
         if (!content || typeof content !== "string") break;
         if (content.startsWith("🤖 ")) break;
+
+        // 经理/worker 任务派发通知（agents-dispatch.ts 插入的消息）：sender_type
+        // 本来就是 'agent'，会被下面的防自环判断挡掉——用一个显式的 forceDeliverTo
+        // 字段（携带目标 agent 的 handle）绕开那个判断，直接路由过去。没有这个
+        // 字段的普通 agent 消息仍然照旧被挡，不会打开新的自环口子。
+        const forceTarget = m.forceDeliverTo as string | undefined;
+        if (forceTarget) {
+          if (this.runtime.hasAgent(forceTarget)) {
+            const rawChannel = (m.channelId as string) || "general";
+            const channelName = rawChannel.replace(/^#/, "").split(":")[0];
+            const threadId = (m.threadId as string) || (m.thread_id as string) || "";
+            const replyTarget = threadId ? `#${channelName}:${threadId.slice(0, 8)}` : `#${channelName}`;
+            const senderName = (m.senderName as string) || (m.senderId as string) || "unknown";
+            console.log(`[Daemon] Dispatch message for @${forceTarget} in ${replyTarget}: ${content.slice(0, 50)}`);
+            try { await this.runtime.runAgent(forceTarget, channelName, replyTarget, senderName, content); }
+            catch (err: any) { console.error("[Daemon] Dispatch routing failed:", err?.message); }
+          }
+          break;
+        }
+
+        if (m.senderType === "agent") break;
 
         if (m.dm) {
           const recipients = (m.dmAgentRecipients as string[]) || [];

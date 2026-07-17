@@ -76,7 +76,7 @@ export async function channelRoutes(app: FastifyInstance) {
       return reply.status(403).send({ error: "no access to this channel" });
     }
     const result = await app.pg.query(
-      `SELECT cm.member_id, cm.member_type, cm.role, cm.joined_at,
+      `SELECT cm.member_id, cm.member_type, cm.role, cm.is_manager, cm.joined_at,
               COALESCE(u.handle, a.name) as handle,
               COALESCE(u.display_name, a.display_name) as display_name
        FROM channel_members cm
@@ -125,10 +125,20 @@ export async function channelRoutes(app: FastifyInstance) {
       memberId = String(user.rows[0].id); memberType = "human";
     } else {
       const ch = await app.pg.query<{ server_id: string }>("SELECT server_id FROM channels WHERE id = $1", [channelId]);
-      const agent = await app.pg.query<{ id: string }>(
+      // 先按频道所在 server 找（同 server 的团队 agent）；找不到再退回"当前用户自己名下的
+      // agent"，不管它挂在哪个 server 下——agent 默认落在创建者的私有 server，跟频道所在
+      // server 天然不一致（尤其是频道建在共享的 Default Server 时），邀请自己的 agent 不应
+      // 该被这个边界卡住。
+      let agent = await app.pg.query<{ id: string }>(
         "SELECT id FROM agents WHERE name = $1 AND server_id = $2",
         [clean, ch.rows[0]?.server_id]
       );
+      if (agent.rows.length === 0) {
+        agent = await app.pg.query<{ id: string }>(
+          "SELECT id FROM agents WHERE name = $1 AND user_id = $2",
+          [clean, req.user.sub]
+        );
+      }
       if (agent.rows.length > 0) { memberId = String(agent.rows[0].id); memberType = "agent"; }
     }
     if (!memberId || !memberType) return reply.status(404).send({ error: "user or agent not found" });
@@ -160,20 +170,44 @@ export async function channelRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
-  // 角色分配：管理员 / 普通成员
+  // 角色分配：管理员 / 普通成员；is_manager：指定/取消该 agent 为频道的经理（是否启用由用户自己决定）
   app.patch("/:channelId/members/:memberId", { preHandler: [app.authenticate] }, async (req, reply) => {
     const { channelId, memberId } = req.params as Record<string, string>;
     if (!(await canManageChannel(app, channelId, req.user.sub))) {
       return reply.status(403).send({ error: "only channel admins can change roles" });
     }
-    const { role } = req.body as { role?: string };
-    if (!role || !["admin", "member", "owner"].includes(role)) {
-      return reply.status(400).send({ error: "invalid role" });
+    const { role, is_manager } = req.body as { role?: string; is_manager?: boolean };
+    if (role === undefined && is_manager === undefined) {
+      return reply.status(400).send({ error: "role or is_manager required" });
     }
-    await app.pg.query(
-      `UPDATE channel_members SET role = $1 WHERE channel_id = $2 AND member_id = $3`,
-      [role, channelId, memberId]
-    );
+    if (role !== undefined) {
+      if (!["admin", "member", "owner"].includes(role)) {
+        return reply.status(400).send({ error: "invalid role" });
+      }
+      await app.pg.query(
+        `UPDATE channel_members SET role = $1 WHERE channel_id = $2 AND member_id = $3`,
+        [role, channelId, memberId]
+      );
+    }
+    if (is_manager !== undefined) {
+      const member = await app.pg.query<{ member_type: string }>(
+        "SELECT member_type FROM channel_members WHERE channel_id = $1 AND member_id = $2",
+        [channelId, memberId]
+      );
+      if (member.rows.length === 0) return reply.status(404).send({ error: "member not found" });
+      if (member.rows[0].member_type !== "agent") {
+        return reply.status(400).send({ error: "only agents can be designated as channel manager" });
+      }
+      try {
+        await app.pg.query(
+          `UPDATE channel_members SET is_manager = $1 WHERE channel_id = $2 AND member_id = $3`,
+          [is_manager, channelId, memberId]
+        );
+      } catch (err: any) {
+        if (err?.code === "23505") return reply.status(409).send({ error: "channel already has a manager" });
+        throw err;
+      }
+    }
     return { ok: true };
   });
 

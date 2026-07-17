@@ -1,13 +1,13 @@
 import type { FastifyInstance } from "fastify";
 import { randomUUID } from "node:crypto";
 import { isDmTarget, resolveDmTarget, dmOtherMembers, type Party } from "../lib/dm.js";
-import { getAgent, agentCanAccessChannel, resolveAgentChannelDbId } from "../lib/agent-helpers.js";
+import { getAgent, agentCanAccessChannel, resolveAgentChannelDbId, requireOwnAgent } from "../lib/agent-helpers.js";
 import { getStorage, isAllowedMimeType } from "../lib/storage.js";
 import { broadcast } from "../ws/handler.js";
 import { attachmentsJson } from "../lib/query-fragments.js";
 
 export async function agentMessageRoutes(app: FastifyInstance) {
-  app.post("/:agentId/send", { preHandler: [app.authenticate] }, async (req, reply) => {
+  app.post("/:agentId/send", { preHandler: [app.authenticate, requireOwnAgent] }, async (req, reply) => {
     const { target, content, threadId, attachmentIds } = req.body as Record<string, unknown>;
     const agentId = (req.params as Record<string, string>).agentId;
     const attIds: string[] = Array.isArray(attachmentIds) ? (attachmentIds as string[]) : [];
@@ -53,7 +53,7 @@ export async function agentMessageRoutes(app: FastifyInstance) {
     return { state: "sent", messageId: msg.id, messageSeq: msg.seq, attachments, channelId: dm ? "dm:" + channelDbId : undefined };
   });
 
-  app.get("/:agentId/receive", { preHandler: [app.authenticate] }, async (req, reply) => {
+  app.get("/:agentId/receive", { preHandler: [app.authenticate, requireOwnAgent] }, async (req, reply) => {
     const agentId = (req.params as Record<string, string>).agentId;
     const agent = await getAgent(app, agentId);
     if (!agent) return reply.status(404).send({ error: "agent not found" });
@@ -68,7 +68,7 @@ export async function agentMessageRoutes(app: FastifyInstance) {
     return { messages };
   });
 
-  app.get("/:agentId/history", { preHandler: [app.authenticate] }, async (req, reply) => {
+  app.get("/:agentId/history", { preHandler: [app.authenticate, requireOwnAgent] }, async (req, reply) => {
     const agentId = (req.params as Record<string, string>).agentId;
     const { channel, limit } = req.query as Record<string, string>;
     if (!channel) return reply.status(400).send({ error: "channel required" });
@@ -79,7 +79,7 @@ export async function agentMessageRoutes(app: FastifyInstance) {
     return { messages: result.rows.reverse() };
   });
 
-  app.get("/:agentId/server", { preHandler: [app.authenticate] }, async (req, reply) => {
+  app.get("/:agentId/server", { preHandler: [app.authenticate, requireOwnAgent] }, async (req, reply) => {
     const agentId = (req.params as Record<string, string>).agentId;
     const agent = await getAgent(app, agentId);
     if (!agent) return reply.status(404).send({ error: "agent not found" });
@@ -91,18 +91,18 @@ export async function agentMessageRoutes(app: FastifyInstance) {
     return { serverId: agent.server_id, channels: channels.rows, agents: agents.rows, humans: humans.rows };
   });
 
-  app.get("/:agentId/channel-members", { preHandler: [app.authenticate] }, async (req, reply) => {
+  app.get("/:agentId/channel-members", { preHandler: [app.authenticate, requireOwnAgent] }, async (req, reply) => {
     const agentId = (req.params as Record<string, string>).agentId;
     const { channel } = req.query as Record<string, string>;
     if (!channel) return reply.status(400).send({ error: "channel required" });
     const channelDbId = await resolveAgentChannelDbId(app, agentId, channel);
     if (!channelDbId) return reply.status(404).send({ error: "channel not found" });
     if (!(await agentCanAccessChannel(app, channelDbId, agentId))) return reply.status(403).send({ error: "no access" });
-    const result = await app.pg.query(`SELECT cm.member_id, cm.member_type, cm.role, COALESCE(u.handle, a.name) as handle, COALESCE(u.display_name, a.display_name) as display_name FROM channel_members cm LEFT JOIN users u ON cm.member_type = 'human' AND cm.member_id = u.id LEFT JOIN agents a ON cm.member_type = 'agent' AND cm.member_id = a.id WHERE cm.channel_id = $1`, [channelDbId]);
+    const result = await app.pg.query(`SELECT cm.member_id, cm.member_type, cm.role, cm.is_manager, COALESCE(u.handle, a.name) as handle, COALESCE(u.display_name, a.display_name) as display_name FROM channel_members cm LEFT JOIN users u ON cm.member_type = 'human' AND cm.member_id = u.id LEFT JOIN agents a ON cm.member_type = 'agent' AND cm.member_id = a.id WHERE cm.channel_id = $1`, [channelDbId]);
     return { members: result.rows };
   });
 
-  app.post("/:agentId/upload", { preHandler: [app.authenticate] }, async (req, reply) => {
+  app.post("/:agentId/upload", { preHandler: [app.authenticate, requireOwnAgent] }, async (req, reply) => {
     const agentId = (req.params as Record<string, string>).agentId;
     const data = await req.file();
     if (!data) return reply.status(400).send({ error: "file required" });
@@ -118,18 +118,18 @@ export async function agentMessageRoutes(app: FastifyInstance) {
     return { attachmentId: row.id, filename: row.filename, mimeType: row.mime_type, sizeBytes: row.size_bytes, url: row.storage_url };
   });
 
-  app.post("/:agentId/messages/:messageId/reactions", { preHandler: [app.authenticate] }, async (req) => {
+  app.post("/:agentId/messages/:messageId/reactions", { preHandler: [app.authenticate, requireOwnAgent] }, async (req) => {
     const agentId = (req.params as Record<string, string>).agentId, messageId = (req.params as Record<string, string>).messageId, { emoji } = req.body as { emoji?: string };
     await app.pg.query("INSERT INTO message_reactions (message_id, user_id, emoji) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING", [messageId, agentId, emoji]);
     return { ok: true };
   });
-  app.delete("/:agentId/messages/:messageId/reactions", { preHandler: [app.authenticate] }, async (req) => {
+  app.delete("/:agentId/messages/:messageId/reactions", { preHandler: [app.authenticate, requireOwnAgent] }, async (req) => {
     const agentId = (req.params as Record<string, string>).agentId, messageId = (req.params as Record<string, string>).messageId, { emoji } = req.body as { emoji?: string };
     await app.pg.query("DELETE FROM message_reactions WHERE message_id = $1 AND user_id = $2 AND emoji = $3", [messageId, agentId, emoji]);
     return { ok: true };
   });
 
-  app.get("/:agentId/search", { preHandler: [app.authenticate] }, async (req, reply) => {
+  app.get("/:agentId/search", { preHandler: [app.authenticate, requireOwnAgent] }, async (req, reply) => {
     const agentId = (req.params as Record<string, string>).agentId;
     const { q, channel, limit } = req.query as Record<string, string>;
     if (!q) return reply.status(400).send({ error: "query required" });

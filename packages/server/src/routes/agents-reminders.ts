@@ -1,8 +1,9 @@
 import type { FastifyInstance } from "fastify";
 import { initialFireAt, parseDurationToMs, reminderToDto } from "../lib/reminders.js";
+import { requireOwnAgent } from "../lib/agent-helpers.js";
 
 export async function agentReminderRoutes(app: FastifyInstance) {
-  app.post("/:agentId/reminders", { preHandler: [app.authenticate] }, async (req, reply) => {
+  app.post("/:agentId/reminders", { preHandler: [app.authenticate, requireOwnAgent] }, async (req, reply) => {
     const agentId = (req.params as Record<string, string>).agentId;
     const body = (req.body as Record<string, unknown>) || {};
     if (!body.title) return reply.status(400).send({ error: "title required" });
@@ -12,7 +13,7 @@ export async function agentReminderRoutes(app: FastifyInstance) {
     return { reminder: reminderToDto(r.rows[0]) };
   });
 
-  app.get("/:agentId/reminders", { preHandler: [app.authenticate] }, async (req) => {
+  app.get("/:agentId/reminders", { preHandler: [app.authenticate, requireOwnAgent] }, async (req) => {
     const agentId = (req.params as Record<string, string>).agentId;
     const { status } = req.query as Record<string, string>;
     const all = status === "all";
@@ -20,14 +21,14 @@ export async function agentReminderRoutes(app: FastifyInstance) {
     return { reminders: r.rows.map(reminderToDto) };
   });
 
-  app.delete("/:agentId/reminders/:reminderId", { preHandler: [app.authenticate] }, async (req, reply) => {
+  app.delete("/:agentId/reminders/:reminderId", { preHandler: [app.authenticate, requireOwnAgent] }, async (req, reply) => {
     const agentId = (req.params as Record<string, string>).agentId, reminderId = (req.params as Record<string, string>).reminderId;
     const r = await app.pg.query("UPDATE reminders SET status = 'canceled', updated_at = now() WHERE id = $1 AND owner_id = $2 RETURNING id", [reminderId, agentId]);
     if (r.rows.length === 0) return reply.status(404).send({ error: "reminder not found" });
     return { ok: true };
   });
 
-  app.post("/:agentId/reminders/:reminderId/snooze", { preHandler: [app.authenticate] }, async (req, reply) => {
+  app.post("/:agentId/reminders/:reminderId/snooze", { preHandler: [app.authenticate, requireOwnAgent] }, async (req, reply) => {
     const agentId = (req.params as Record<string, string>).agentId, reminderId = (req.params as Record<string, string>).reminderId;
     const ms = parseDurationToMs(String((req.body as { duration?: string })?.duration || ""));
     if (!ms) return reply.status(400).send({ error: "invalid duration (e.g. 30m, 2h)" });
@@ -38,7 +39,7 @@ export async function agentReminderRoutes(app: FastifyInstance) {
     return { reminder: reminderToDto(r.rows[0]) };
   });
 
-  app.patch("/:agentId/reminders/:reminderId", { preHandler: [app.authenticate] }, async (req, reply) => {
+  app.patch("/:agentId/reminders/:reminderId", { preHandler: [app.authenticate, requireOwnAgent] }, async (req, reply) => {
     const agentId = (req.params as Record<string, string>).agentId, reminderId = (req.params as Record<string, string>).reminderId;
     const body = (req.body as Record<string, unknown>) || {};
     const sets: string[] = []; const params: any[] = []; let p = 1;
@@ -52,7 +53,7 @@ export async function agentReminderRoutes(app: FastifyInstance) {
     return { reminder: reminderToDto(r.rows[0]) };
   });
 
-  app.get("/:agentId/reminders/:reminderId/log", { preHandler: [app.authenticate] }, async (req, reply) => {
+  app.get("/:agentId/reminders/:reminderId/log", { preHandler: [app.authenticate, requireOwnAgent] }, async (req, reply) => {
     const agentId = (req.params as Record<string, string>).agentId, reminderId = (req.params as Record<string, string>).reminderId;
     const r = await app.pg.query("SELECT * FROM reminders WHERE id = $1 AND owner_id = $2", [reminderId, agentId]);
     if (r.rows.length === 0) return reply.status(404).send({ error: "reminder not found" });

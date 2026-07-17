@@ -11,16 +11,55 @@ import type { AgentInfo } from "./types/index.js";
  * - 创建工作区目录（agentWorkspace → createWorkspaceDir）
  */
 
+export interface DispatchContext {
+  /** 这个 agent 是不是当前频道的经理（channel_members.is_manager） */
+  isManager: boolean;
+  /** 频道里除自己之外的其它 agent handle（供经理挑选派发对象） */
+  otherAgents: string[];
+}
+
+/**
+ * 查询"我是不是这个频道的经理、频道里还有哪些别的 agent"，用来在系统提示里
+ * 写成确定的事实，而不是让 agent 自己猜——之前的通用条件句式（"如果你是经理…"）
+ * agent 没有任何办法判断自己是不是经理，实测会直接把整条指令当模糊闲聊处理。
+ * 查询失败（网络问题/频道还没同步等）时返回 null，调用方应退回通用提示文案。
+ */
+export async function fetchDispatchContext(
+  serverUrl: string,
+  apiKey: string,
+  agentId: string,
+  channelName: string,
+): Promise<DispatchContext | null> {
+  try {
+    const url = new URL(`/internal/agent/${agentId}/channel-members`, serverUrl);
+    url.searchParams.set("channel", "#" + channelName);
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${apiKey}` } });
+    if (!res.ok) return null;
+    const data = (await res.json()) as {
+      members: { member_id: string; member_type: string; is_manager?: boolean; handle: string }[];
+    };
+    const members = data.members || [];
+    const self = members.find((m) => m.member_type === "agent" && String(m.member_id) === String(agentId));
+    const otherAgents = members
+      .filter((m) => m.member_type === "agent" && String(m.member_id) !== String(agentId))
+      .map((m) => m.handle);
+    return { isManager: !!self?.is_manager, otherAgents };
+  } catch {
+    return null;
+  }
+}
+
 /** 生成系统提示文件并返回文件路径 */
 export function writeSystemPromptFile(
   agentName: string,
   channelName: string,
   autonomous: boolean,
   info: { displayName?: string; description?: string },
+  dispatchContext?: DispatchContext | null,
 ): string {
   const identity = { name: agentName, displayName: info.displayName, description: info.description };
   const prompt = autonomous
-    ? generateSystemPrompt(identity, channelName)
+    ? generateSystemPrompt(identity, channelName, dispatchContext)
     : generateRelaySystemPrompt(identity, channelName);
   const dir = join(process.cwd(), ".slock");
   mkdirSync(dir, { recursive: true });
