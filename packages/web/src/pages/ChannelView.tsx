@@ -1,21 +1,52 @@
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { useEffect, useState, useRef } from "react";
-import { useMessageStore, useChannelStore, useUiStore } from "../stores";
-import { apiClient, apiGet, uploadAttachment, type UploadedAttachment } from "../api/client";
+import { useMessageStore, useChannelStore, useUiStore, useAgentStore } from "../stores";
+import { apiClient, apiGet } from "../api/client";
 import { toast } from "../stores/toastStore";
-import { useMentionSuggest } from "../hooks/useMentionSuggest";
-import { MessageSkeleton } from "../components/Skeleton";
-import { MentionPopup } from "../components/chat/MentionPopup";
 import { MessageRow } from "../components/chat/MessageRow";
 import { PendingRow } from "../components/chat/PendingRow";
 import { VirtualMessageList, type ListItem } from "../components/chat/VirtualMessageList";
 import { EmptyState } from "../components/EmptyState";
-
-const VIRTUAL_THRESHOLD = 100;
+import { MessageSkeleton } from "../components/Skeleton";
+import { PageHeader } from "../components/layout/PageHeader";
+import { IconButton } from "../components/ui/IconButton";
+import { MessageComposer, type ComposerAttachment } from "../components/chat/MessageComposer";
 import { ChannelMembersPanel } from "../components/channel/ChannelMembersPanel";
 import { ChannelSettingsModal } from "../components/channel/ChannelSettingsModal";
 
+const VIRTUAL_THRESHOLD = 100;
 const EMPTY_MSGS: never[] = [];
+
+const membersIcon = (
+  <svg className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 0 0 2.625.372 9.337 9.337 0 0 0 4.121-.952 4.125 4.125 0 0 0-7.533-2.493M15 19.128v-.003c0-1.113-.295-2.228-.837-3.244M15 19.128c.956.6 2.04.872 3.124.872M7.5 14.251c.956.6 2.04.872 3.124.872 1.085 0 2.169-.273 3.124-.872M7.5 14.251c.63.394 1.343.6 2.076.6h.017c.734 0 1.446-.206 2.076-.6m-4.17-.6a4.125 4.125 0 0 1-7.532 2.493 9.337 9.337 0 0 1 4.121-.952 9.38 9.38 0 0 1 2.625.372m9.94 3.198-1.807-1.626a4.125 4.125 0 0 0-5.512 0l-1.806 1.626M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+  </svg>
+);
+
+const settingsIcon = (
+  <svg className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" d="M9.53 16.122a3 3 0 0 0-5.78 1.128 2.25 2.25 0 0 1-2.4 2.245 4.5 4.5 0 0 0-2.206.037A9.968 9.968 0 0 0 12 21a9.969 9.969 0 0 0 7.855-3.476 4.5 4.5 0 0 0-2.206-.037 2.25 2.25 0 0 1-2.4-2.245 3 3 0 0 0-5.78-1.121Zm7.806-9.124a2.25 2.25 0 0 1 2.25 2.25v.75h1.125a2.25 2.25 0 0 1 2.25 2.25v2.25a2.25 2.25 0 0 1-2.25 2.25h-9.75c-.621 0-1.125.504-1.125 1.125v2.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25ZM6.75 12h.008v.008H6.75V12Zm0 3h.008v.008H6.75V15Zm0 3h.008v.008H6.75V18Z" />
+  </svg>
+);
+
+const boardIcon = (
+  <svg className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 0 0 2.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 0 0-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 0 0 .75-.75 2.25 2.25 0 0 0-.1-.664m-5.8 0A2.251 2.251 0 0 1 13.5 2.25H15c1.012 0 1.867.668 2.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m0 0H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25ZM6.75 12h.008v.008H6.75V12Zm0 3h.008v.008H6.75V15Zm0 3h.008v.008H6.75V18Z" />
+  </svg>
+);
+
+const lockIcon = (
+  <svg className="h-4 w-4 text-amber-500" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" aria-label="私有频道">
+    <title>私有频道</title>
+    <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 1 0-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 0 0 2.25-2.25v-6.75a2.25 2.25 0 0 0-2.25-2.25H6.75a2.25 2.25 0 0 0-2.25 2.25v6.75a2.25 2.25 0 0 0 2.25 2.25Z" />
+  </svg>
+);
+
+const terminalIcon = (
+  <svg className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" d="m6.75 7.5 3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0 0 21 18V6a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 6v12a2.25 2.25 0 0 0 2.25 2.25Z" />
+  </svg>
+);
 
 export function ChannelView() {
   const { channelName } = useParams<{ channelName: string }>();
@@ -27,27 +58,18 @@ export function ChannelView() {
   const loading = useMessageStore((s) => s.loading);
   const setActiveChannel = useChannelStore((s) => s.setActiveChannel);
   const currentChannel = useChannelStore((s) => s.channels.find((c: any) => c.name === channelName));
+
   const [showMembers, setShowMembers] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [draft, setDraft] = useState("");
   const [pending, setPending] = useState<{ tempId: string; content: string; status: "sending" | "failed" | "queued" }[]>([]);
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
+  const [droppedFiles, setDroppedFiles] = useState<File[] | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const fetchedRef = useRef<string | null>(null);
   const pendingRef = useRef(pending);
   pendingRef.current = pending;
-  const [attachments, setAttachments] = useState<{ tempId: string; name: string; status: "uploading" | "done" | "error"; uploaded?: UploadedAttachment }[]>([]);
-  const [dragOver, setDragOver] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const online = useUiStore((s) => s.online);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const { filtered, selectedIdx, visible, handleInput, handleKeyDown: mentionKD, insertMention: rawInsert } = useMentionSuggest(textareaRef);
-  const insertMention = (handle: string) => {
-    const newText = rawInsert(handle);
-    if (newText) setDraft(newText);
-  };
   const navigate = useNavigate();
-  const fetchedRef = useRef<string | null>(null);
-
-  // 回复数由 /api/messages 列表查询直接返回（replyCount），无需逐条再请求 thread
 
   useEffect(() => {
     if (channelName && fetchedRef.current !== channelName) {
@@ -57,16 +79,14 @@ export function ChannelView() {
       setAttachments([]);
       fetchHistory(target).catch(() => {});
     }
-  }, [channelName]);
+  }, [channelName, target, fetchHistory, setActiveChannel]);
 
-  // 高亮消息不在当前页时，按 seq 抓取含该消息的上一页
   const highlightLoadedRef = useRef(false);
   useEffect(() => {
     if (!highlightMsgId || highlightLoadedRef.current) return;
     if (messages.length === 0) return;
     const inPage = messages.find((m: any) => m.id === highlightMsgId);
     if (inPage) { highlightLoadedRef.current = true; return; }
-    // 搜索拿 seq，再加载包含它的页面
     apiGet<{ results: { id: string; seq: number }[] }>("/api/messages/search", { q: highlightMsgId.slice(0, 8) }).then((r) => {
       const hit = r.results.find((x) => x.id === highlightMsgId);
       if (hit) {
@@ -84,11 +104,14 @@ export function ChannelView() {
     }
   }, [messages]);
 
-  const scrollToBottom = () => setTimeout(() => { const el = containerRef.current; if (el) el.scrollTop = el.scrollHeight; }, 50);
+  const scrollToBottom = () => setTimeout(() => {
+    const el = containerRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, 50);
 
-  const trySend = async (tempId: string, content: string) => {
+  const trySend = async (tempId: string, content: string, attachmentIds?: string[]) => {
     try {
-      await apiClient("/api/messages/send", { method: "POST", body: { target, content } });
+      await apiClient("/api/messages/send", { method: "POST", body: { target, content, attachmentIds } });
       setPending((p) => p.filter((m) => m.tempId !== tempId));
       fetchHistory(target).catch(() => {});
       scrollToBottom();
@@ -98,33 +121,8 @@ export function ChannelView() {
     }
   };
 
-  const handleFiles = (files: FileList | File[]) => {
-    const list = Array.from(files);
-    for (const file of list) {
-      if (file.size > 10 * 1024 * 1024) {
-        toast.error(`"${file.name}" 超过 10MB 上限`);
-        continue;
-      }
-      const tempId = "att-" + Date.now() + "-" + Math.random().toString(36).slice(2, 7);
-      setAttachments((a) => [...a, { tempId, name: file.name, status: "uploading" }]);
-      uploadAttachment(file)
-        .then((uploaded) => setAttachments((a) => a.map((x) => (x.tempId === tempId ? { ...x, status: "done", uploaded } : x))))
-        .catch(() => setAttachments((a) => a.map((x) => (x.tempId === tempId ? { ...x, status: "error" } : x))));
-    }
-  };
-
-  const removeAttachment = (tempId: string) => setAttachments((a) => a.filter((x) => x.tempId !== tempId));
-
-  const doSend = async () => {
-    const content = draft.trim();
-    if (attachments.some((a) => a.status === "uploading")) return; // 等待上传完成
-    const attachmentIds = attachments.filter((a) => a.status === "done" && a.uploaded).map((a) => a.uploaded!.attachmentId);
-    if (!content && attachmentIds.length === 0) return;
-
-    // 带附件的消息直接发送（不走文字的乐观队列）
+  const handleSend = async (content: string, attachmentIds: string[]) => {
     if (attachmentIds.length > 0) {
-      setDraft("");
-      setAttachments([]);
       try {
         await apiClient("/api/messages/send", { method: "POST", body: { target, content, attachmentIds } });
         fetchHistory(target).catch(() => {});
@@ -132,21 +130,23 @@ export function ChannelView() {
       } catch (err) {
         console.error("Send with attachments failed", err);
         toast.error("发送失败，请重试");
+        throw err;
       }
       return;
     }
 
+    const trimmed = content.trim();
+    if (!trimmed) return;
+
     const tempId = "tmp-" + Date.now();
-    setDraft("");
     if (typeof navigator !== "undefined" && navigator.onLine === false) {
-      // 离线：入队，恢复网络后自动发送
-      setPending((p) => [...p, { tempId, content, status: "queued" }]);
+      setPending((p) => [...p, { tempId, content: trimmed, status: "queued" }]);
       scrollToBottom();
       return;
     }
-    setPending((p) => [...p, { tempId, content, status: "sending" }]);
+    setPending((p) => [...p, { tempId, content: trimmed, status: "sending" }]);
     scrollToBottom();
-    trySend(tempId, content);
+    trySend(tempId, trimmed);
   };
 
   const retrySend = (tempId: string) => {
@@ -158,7 +158,9 @@ export function ChannelView() {
 
   const discardPending = (tempId: string) => setPending((p) => p.filter((m) => m.tempId !== tempId));
 
-  // 网络恢复 → 自动发送队列中的离线消息
+  const online = useUiStore((s) => s.online);
+  const terminalAgent = useUiStore((s) => s.terminalAgent);
+  const openTerminal = useUiStore((s) => s.openTerminal);
   useEffect(() => {
     if (!online) return;
     const queued = pendingRef.current.filter((m) => m.status === "queued");
@@ -167,6 +169,7 @@ export function ChannelView() {
     queued.forEach((m) => trySend(m.tempId, m.content));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [online]);
+
   const isEmpty = messages.length === 0 && pending.length === 0;
   const totalCount = messages.length + pending.length;
   const useVirtual = totalCount > VIRTUAL_THRESHOLD;
@@ -177,109 +180,99 @@ export function ChannelView() {
       ]
     : [];
 
-  const handleSend = (e: React.FormEvent) => { e.preventDefault(); doSend(); };
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey && !visible) { e.preventDefault(); doSend(); }
+  const onDropFiles = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(false);
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length) {
+      setDroppedFiles(files);
+      setTimeout(() => setDroppedFiles(null), 50);
+    }
   };
 
   return (
     <div className="flex min-h-0 flex-1">
-    <div className="flex flex-col min-h-0 flex-1 relative"
-      onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-      onDragLeave={(e) => { if (e.currentTarget === e.target) setDragOver(false); }}
-      onDrop={(e) => { e.preventDefault(); setDragOver(false); if (e.dataTransfer.files?.length) handleFiles(e.dataTransfer.files); }}
-    >
-      {dragOver && (
-        <div className="absolute inset-0 z-20 flex items-center justify-center bg-blue-500/10 border-2 border-dashed border-blue-400 rounded pointer-events-none">
-          <span className="text-blue-500 font-medium">松开以上传文件</span>
-        </div>
-      )}
-      <div className="p-4 border-b border-gray-200 dark:border-gray-700">
-        <div className="flex items-center gap-3">
-        <h2 className="text-gray-900 dark:text-white font-bold">#{channelName}</h2>
-        {currentChannel?.description && (
-          <span className="text-gray-500 text-xs truncate max-w-xs">{currentChannel.description}</span>
+      <div className="relative flex min-h-0 flex-1 flex-col"
+        onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+        onDragLeave={(e) => { if (e.currentTarget === e.target) setDragOver(false); }}
+        onDrop={onDropFiles}
+      >
+        {dragOver && (
+          <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-lg border-2 border-dashed border-blue-400 bg-blue-500/10 m-2"
+          >
+            <span className="font-medium text-blue-500">松开以上传文件</span>
+          </div>
         )}
-        <div className="ml-auto flex items-center gap-3">
-          <button onClick={()=>navigate("/tasks/"+channelName)} className="text-gray-500 hover:text-blue-400 text-xs">
-            看板
-          </button>
-          <button onClick={() => setShowMembers((v) => !v)} title="成员"
-            className={"text-xs " + (showMembers ? "text-blue-400" : "text-gray-500 hover:text-blue-400")}>
-            👥 成员
-          </button>
-          {currentChannel && (
-            <button onClick={() => setShowSettings(true)} title="频道设置"
-              className="text-gray-500 hover:text-blue-400 text-xs">
-              ⚙️ 设置
-            </button>
-          )}
-        </div>
-      </div>
-      </div>
-      {isEmpty ? (
-        <div className="flex-1 p-4 overflow-y-auto">
-          {loading ? <MessageSkeleton /> : (
-            <EmptyState icon="💬" title="还没有消息" description="发送第一条消息，开启这个频道的对话吧" />
-          )}
-        </div>
-      ) : useVirtual ? (
-        <VirtualMessageList items={listItems} channelName={channelName} highlightMsgId={highlightMsgId} onRetry={retrySend} onDiscard={discardPending} />
-      ) : (
-        <div ref={containerRef} className="flex-1 p-4 overflow-y-auto space-y-1">
-          {messages.map((msg: any) => (
-            <MessageRow key={msg.id} msg={msg} channelName={channelName} />
-          ))}
-          {pending.map((m) => (
-            <PendingRow key={m.tempId} item={m} onRetry={retrySend} onDiscard={discardPending} />
-          ))}
-        </div>
-      )}
-      <form onSubmit={handleSend} className="p-4 border-t border-gray-200 dark:border-gray-700 relative">
-        <MentionPopup items={filtered} selectedIdx={selectedIdx} onSelect={insertMention} />
-        {attachments.length > 0 && (
-          <div className="flex flex-wrap gap-2 mb-2">
-            {attachments.map((a) => (
-              <div key={a.tempId} className="flex items-center gap-1.5 text-xs bg-gray-200 dark:bg-gray-700 rounded px-2 py-1">
-                <span className="text-gray-700 dark:text-gray-200 truncate max-w-[140px]">📎 {a.name}</span>
-                {a.status === "uploading" && <span className="text-gray-400">上传中…</span>}
-                {a.status === "error" && <span className="text-red-500">失败</span>}
-                <button type="button" onClick={() => removeAttachment(a.tempId)} className="text-gray-400 hover:text-red-500">✕</button>
-              </div>
+
+        <PageHeader
+          title={`#${channelName}`}
+          subtitle={currentChannel?.description}
+          leading={(currentChannel as any)?.type === "private" || (currentChannel as any)?.visibility === "private" ? lockIcon : undefined}
+        >
+          <div className="flex items-center gap-1">
+            <IconButton
+              label="观察终端"
+              tooltip="观察 Agent 终端"
+              onClick={() => {
+                // 优先看正在工作的 agent；否则沿用上次选择；再否则列表第一个
+                const agents = useAgentStore.getState().agents;
+                const working = Object.values(agents).find((a) => a.status === "working" || (a.status as string) === "thinking");
+                const fallback = useUiStore.getState().terminalAgent || Object.keys(agents)[0];
+                openTerminal(working?.name || fallback || "agent");
+              }}
+              className={terminalAgent ? "text-blue-500" : ""}
+            >
+              {terminalIcon}
+            </IconButton>
+            <IconButton label="看板" tooltip="任务看板" onClick={() => navigate("/tasks/" + channelName)}>{boardIcon}</IconButton>
+            <IconButton label="成员" tooltip="成员" onClick={() => setShowMembers((v) => !v)} className={showMembers ? "text-blue-500" : ""}>{membersIcon}</IconButton>
+            {currentChannel && (
+              <IconButton label="频道设置" tooltip="频道设置" onClick={() => setShowSettings(true)}>{settingsIcon}</IconButton>
+            )}
+          </div>
+        </PageHeader>
+
+        {isEmpty ? (
+          <div className="flex-1 overflow-y-auto p-4">
+            {loading ? <MessageSkeleton /> : (
+              <EmptyState icon="💬" title="还没有消息" description="发送第一条消息，开启这个频道的对话吧" />
+            )}
+          </div>
+        ) : useVirtual ? (
+          <VirtualMessageList items={listItems} channelName={channelName} highlightMsgId={highlightMsgId} onRetry={retrySend} onDiscard={discardPending} />
+        ) : (
+          <div ref={containerRef} className="flex-1 space-y-1 overflow-y-auto p-4">
+            {messages.map((msg: any, idx: number) => (
+              <MessageRow key={msg.id} msg={msg} channelName={channelName} prevMsg={messages[idx - 1]} />
+            ))}
+            {pending.map((m) => (
+              <PendingRow key={m.tempId} item={m} onRetry={retrySend} onDiscard={discardPending} />
             ))}
           </div>
         )}
-        <div className="flex items-end gap-2">
-          <input ref={fileInputRef} type="file" multiple className="hidden"
-            onChange={(e) => { if (e.target.files?.length) handleFiles(e.target.files); e.target.value = ""; }} />
-          <button type="button" title="上传文件" onClick={() => fileInputRef.current?.click()}
-            className="shrink-0 text-gray-500 hover:text-blue-500 text-xl px-1 pb-1">📎</button>
-          <textarea ref={textareaRef} value={draft}
-            onChange={(e) => { setDraft(e.target.value); handleInput(); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px"; }}
-            onKeyDown={e => { mentionKD(e); if (!visible && e.key === "Enter" && !e.shiftKey) { e.preventDefault(); doSend(); } } }
-            onPaste={(e) => { const files = Array.from(e.clipboardData.files); if (files.length) { e.preventDefault(); handleFiles(files); } }}
+
+        <div className="border-t border-gray-200 p-4 dark:border-gray-700">
+          <MessageComposer
             placeholder={`发送消息到 #${channelName}... (@ 提及，可拖拽/粘贴文件)`}
-            rows={1}
-            className="flex-1 p-2 rounded bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 focus:outline-none focus:border-blue-500 resize-none text-sm"
+            attachments={attachments}
+            onAttachmentsChange={setAttachments}
+            onSend={handleSend}
+            droppedFiles={droppedFiles}
           />
         </div>
-        <div className="flex justify-between mt-1 text-gray-600 text-xs">
-          <span>Enter 发送 · Shift+Enter 换行 · @ 提及 · 📎 拖拽/粘贴上传</span>
-          {draft.length > 0 && <span>{draft.length}/4000</span>}
-        </div>
-      </form>
-    </div>
-    {showMembers && currentChannel && (
-      <ChannelMembersPanel channelId={(currentChannel as any).id} onClose={() => setShowMembers(false)} />
-    )}
-    {showSettings && currentChannel && (
-      <ChannelSettingsModal
-        channel={currentChannel}
-        onClose={() => setShowSettings(false)}
-        onArchived={() => navigate("/channels/general")}
-        onDeleted={() => navigate("/channels/general")}
-      />
-    )}
+      </div>
+
+      {showMembers && currentChannel && (
+        <ChannelMembersPanel channelId={(currentChannel as any).id} onClose={() => setShowMembers(false)} />
+      )}
+      {showSettings && currentChannel && (
+        <ChannelSettingsModal
+          channel={currentChannel}
+          onClose={() => setShowSettings(false)}
+          onArchived={() => navigate("/channels/general")}
+          onDeleted={() => navigate("/channels/general")}
+        />
+      )}
     </div>
   );
 }

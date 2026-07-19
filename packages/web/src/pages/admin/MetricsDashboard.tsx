@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { apiGet } from "../../api/client";
+import { PageHeader } from "../../components/layout/PageHeader";
 
 interface DaemonInfo { hostname: string; daemonVersion: string; runtimes: string[]; connectedAt: number; }
 interface Metrics {
@@ -164,16 +165,16 @@ export function MetricsDashboard() {
   );
 
   return (
-    <div className="p-6 max-w-5xl space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-gray-900 dark:text-white text-xl font-bold">运行指标</h2>
-          <p className="text-gray-500 text-xs mt-1">启动于 {new Date(m.startedAt).toLocaleString()} · 已运行 {fmtDuration(m.uptimeSec)}</p>
-        </div>
+    <div className="mx-auto w-full max-w-7xl space-y-6 p-4 sm:p-6">
+      <PageHeader title="运行指标" backTo="/admin" breadcrumb={[{ label: "管理后台", to: "/admin" }, { label: "运行指标" }]}>
         <div className="flex items-center gap-2 text-xs text-emerald-600 dark:text-emerald-400">
           <LivePulse /> 实时 · 每 {POLL_MS / 1000} 秒刷新
         </div>
-      </div>
+      </PageHeader>
+
+      <p className="text-xs text-gray-500 dark:text-gray-400">
+        启动于 {new Date(m.startedAt).toLocaleString()} · 已运行 {fmtDuration(m.uptimeSec)}
+      </p>
 
       {/* 实时概览 */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">

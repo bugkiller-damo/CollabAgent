@@ -48,6 +48,8 @@ export async function rateLimitHook(request: any, reply: any) {
   if (request.url === "/api/health") return;
   // 测试环境跳过限流
   if (process.env.NODE_ENV === "test") return;
-  const result = await backend.check(`${request.ip}:${request.url}`, optsFor(request.url));
+  // key 只取 pathname（去 query string）——否则改 query 参数就能绕过限流桶
+  const path = (request.url || "").split("?")[0];
+  const result = await backend.check(`${request.ip}:${request.method}:${path}`, optsFor(path));
   if (!result.allowed) reply.status(429).send({ error: "请求过于频繁，请稍后再试" });
 }

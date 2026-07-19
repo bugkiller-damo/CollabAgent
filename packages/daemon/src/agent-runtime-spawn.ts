@@ -168,6 +168,12 @@ export interface SpawnPtyForAgentDeps {
   runIdByAgent: Map<string, string>;
   /** runId -> unsubscribe 函数（回合结束订阅） */
   unsubByRunId: Map<string, () => void>;
+  /** 查 agent 配置的模型（runtime_profile.model）——spawn 时拼 --model；未配置返回 undefined */
+  getAgentModel: (agentName: string) => string | undefined;
+  /** agentName -> 最近一次 PTY 输出时间（静默兜底回合结束用，agent-runtime.ts 的扫描器读） */
+  lastOutputAtByAgent: Map<string, number>;
+  /** 查该 agent 的首选终端尺寸（面板协商后记住的；未设置返回 undefined 用默认 80x24） */
+  getPreferredTermSize: (agentName: string) => { cols: number; rows: number } | undefined;
 }
 
 export type SpawnPtyForAgent = (
@@ -193,7 +199,8 @@ export const createSpawnPtyForAgent = (deps: SpawnPtyForAgentDeps): SpawnPtyForA
   const {
     agentManager, resolvedClaudePath, runStore, exitChain,
     stateMachine, turnTracker, idleReclaimer, postStartWriter,
-    runIdByAgent, unsubByRunId,
+    runIdByAgent, unsubByRunId, getAgentModel, lastOutputAtByAgent,
+    getPreferredTermSize,
   } = deps;
 
   // 预热打包：createSpawnPtyForAgent 在 daemon 启动时构造一次（早于任何用户
@@ -233,6 +240,16 @@ export const createSpawnPtyForAgent = (deps: SpawnPtyForAgentDeps): SpawnPtyForA
 
     const resumeArgs = resumeSessionId ? renderResumeArgs(getCommandPreset("claude"), resumeSessionId) : [];
 
+    // 模型配置（runtime_profile.model，Web 端 sonnet/opus/haiku 可选）——此前从未
+    // 接进启动参数，管理后台选的模型完全是摆设。做一次保守校验，防注入/坏值。
+    const configuredModel = getAgentModel(agentName);
+    const modelArgs = configuredModel && /^[a-z0-9._-]+$/i.test(configuredModel)
+      ? ["--model", configuredModel]
+      : [];
+    if (modelArgs.length > 0) {
+      console.log(`[Runtime] @${agentName} spawning with --model ${configuredModel}`);
+    }
+
     // 用一个 Promise 让宽限期窗口能知道"这次 attempt 是否已经退出"，同时把
     // 真正的清理转给 exitChain——它的清理回调对"还没 registerRunContext 过的
     // runId"是安全的 no-op（见下方注释），所以宽限期还没过时提前触发也不会
@@ -246,7 +263,10 @@ export const createSpawnPtyForAgent = (deps: SpawnPtyForAgentDeps): SpawnPtyForA
       workspaceDir: workspace,
       systemPromptFile: promptFile,
       env: ptyEnv,
-      args: [...CLAUDE_YOLO_ARGS, ...resumeArgs],
+      args: [...CLAUDE_YOLO_ARGS, ...modelArgs, ...resumeArgs],
+      // 面板协商过的首选尺寸（若有）：新 PTY 直接按用户面板比例启动，
+      // 而不是先 80x24 启动再被动 resize
+      ...(getPreferredTermSize(agentName) ?? {}),
       onExit: (runId, exitCode) => {
         notifyExit?.();
         // 此刻大概率还没调用 registerRunContext（宽限期检测还没过），
@@ -308,6 +328,7 @@ export const createSpawnPtyForAgent = (deps: SpawnPtyForAgentDeps): SpawnPtyForA
       if (process.env.SLOCK_VERBOSE_PTY === "1") {
         process.stdout.write(ev.data);
       }
+      lastOutputAtByAgent.set(agentName, Date.now());
 
       // 回合结束检测：
       const run = agentManager.getRun(snapshot.runId);
@@ -406,25 +427,26 @@ export const createSpawnPtyForAgent = (deps: SpawnPtyForAgentDeps): SpawnPtyForA
           return;
         }
         const promptContent = readFileSync(promptFile, "utf-8");
+        // 静态系统提示写入工作区 CLAUDE.md：Claude Code 每个会话（含 --resume）都会
+        // 自动从 cwd 加载它，比 bootstrap 一次性 paste 更抗 /compact 压缩，也省掉
+        // 每次 spawn 重复传输 ~3.5KB。bootstrap 只留身份 + 动态内容 + 一个
+        // "去读 CLAUDE.md" 的指针——即使自动加载因故未生效，agent 也会被指引去读文件。
+        writeFileSync(join(workspace, "CLAUDE.md"), promptContent, "utf-8");
         // 若之前有运行记录（daemon 重启或本次进程内曾崩溃重启）且这次不是靠
         // session resume 恢复的，注入恢复摘要，让 agent 知道自己不是"第一次"
         // 启动（仿照 Hive restart-policy.ts）。
         const priorRuns = runStore?.listAgentRuns(agentId) ?? [];
         const restartSummary = !didResume && priorRuns.length ? formatRestartSummary(agentName, priorRuns) : "";
         // 拼上身份标记 + 当前时间，让 agent 知道这是系统消息；末尾直接接上触发本次
-        // 启动的用户消息，保证 Claude 先看到"我是谁/怎么回复"，再看到"用户说了什么"
+        // 启动的用户消息，保证 Claude 先看到"我是谁/去哪读规则"，再看到"用户说了什么"
         const bootstrap = [
           `[Slock 系统消息：启动说明]`,
           ``,
           `你是 Slock 平台上的 @${agentName}（agentId: ${agentId}）。`,
           `当前工作区: ${workspace}`,
-          `频道: ${agentName}`,
           ...(restartSummary ? ["", restartSummary] : []),
           ``,
-          `下面是你的完整系统提示（请严格遵守）：`,
-          ``,
-          promptContent,
-          ``,
+          `你的完整系统提示已写入当前工作区的 CLAUDE.md（Claude Code 会自动加载；请先读一遍并严格遵守）。`,
           `[启动说明结束]`,
           ``,
           initialUserMsg,

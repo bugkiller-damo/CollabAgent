@@ -1,6 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { readFile } from "node:fs/promises";
+import { basename } from "node:path";
 
 /**
  * Slock 平台的 MCP server（独立进程，由 Claude Code 通过 `.mcp.json` 以 stdio
@@ -52,6 +54,25 @@ async function callSlock(path: string, init?: RequestInit): Promise<unknown> {
   return text ? JSON.parse(text) : {};
 }
 
+/** multipart 上传专用（callSlock 是 JSON-only）：/upload 端点收 multipart/form-data */
+async function callSlockUpload(path: string, form: FormData): Promise<unknown> {
+  const res = await fetch(`${SERVER_URL}/internal/agent/${AGENT_ID}${path}`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${AGENT_TOKEN}` }, // 不要手动设 content-type，fetch 会自动带 boundary
+    body: form,
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    let detail = text;
+    try {
+      const parsed = JSON.parse(text) as { error?: string };
+      if (parsed?.error) detail = parsed.error;
+    } catch { /* ignore */ }
+    throw new Error(`${res.status} ${detail}`);
+  }
+  return text ? JSON.parse(text) : {};
+}
+
 function ok(data: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(data) }] };
 }
@@ -72,14 +93,37 @@ server.registerTool(
       target: z.string().describe('目标：频道（如 "#general"）、频道内线程（如 "#general:threadId"）、或私信（如 "dm:@handle"）'),
       content: z.string().describe("消息正文"),
       threadId: z.string().optional().describe("可选：显式指定线程 id"),
+      attachmentIds: z.array(z.string()).optional().describe("可选：随消息附带的附件 id 列表（先用 upload_attachment 上传获得）"),
     },
   },
-  async ({ target, content, threadId }) => {
+  async ({ target, content, threadId, attachmentIds }) => {
     try {
       const result = await callSlock("/send", {
         method: "POST",
-        body: JSON.stringify({ target, content, threadId }),
+        body: JSON.stringify({ target, content, threadId, attachmentIds }),
       });
+      return ok(result);
+    } catch (err) {
+      return fail(err);
+    }
+  },
+);
+
+server.registerTool(
+  "upload_attachment",
+  {
+    title: "上传附件",
+    description: "上传一个本地文件，返回 attachmentId（之后用 send_message 的 attachmentIds 随消息发出）",
+    inputSchema: {
+      path: z.string().describe("本地文件绝对路径，如 D:\\docs\\report.pdf"),
+    },
+  },
+  async ({ path }) => {
+    try {
+      const buf = await readFile(path);
+      const form = new FormData();
+      form.append("file", new Blob([buf]), basename(path));
+      const result = await callSlockUpload("/upload", form);
       return ok(result);
     } catch (err) {
       return fail(err);
@@ -294,6 +338,66 @@ server.registerTool(
 );
 
 server.registerTool(
+  "read_history",
+  {
+    title: "读取历史消息",
+    description: "读取指定频道/私信的最近消息记录",
+    inputSchema: {
+      channel: z.string().describe('目标：频道（如 "#general"）或私信（如 "dm:@handle"）'),
+      limit: z.number().int().min(1).max(100).optional().describe("条数（默认 30，上限 100）"),
+    },
+  },
+  async ({ channel, limit }) => {
+    try {
+      const qs = new URLSearchParams({ channel, limit: String(limit || 30) });
+      const result = await callSlock(`/history?${qs.toString()}`);
+      return ok(result);
+    } catch (err) {
+      return fail(err);
+    }
+  },
+);
+
+server.registerTool(
+  "check_messages",
+  {
+    title: "查收新消息",
+    description: "查收自上次查收以来发给你的新消息（含频道 @ 与私信；查收后游标前移，重复调用只拿增量）",
+    inputSchema: {},
+  },
+  async () => {
+    try {
+      const result = await callSlock("/receive");
+      return ok(result);
+    } catch (err) {
+      return fail(err);
+    }
+  },
+);
+
+server.registerTool(
+  "search_messages",
+  {
+    title: "搜索消息",
+    description: "在你有权限的频道里按关键词搜索消息",
+    inputSchema: {
+      query: z.string().describe("搜索关键词"),
+      channel: z.string().optional().describe('可选：限定频道（如 "#general"）'),
+      limit: z.number().int().min(1).max(50).optional().describe("条数（默认 20）"),
+    },
+  },
+  async ({ query, channel, limit }) => {
+    try {
+      const qs = new URLSearchParams({ q: query, ...(channel ? { channel } : {}), ...(limit ? { limit: String(limit) } : {}) });
+      const result = await callSlock(`/search?${qs.toString()}`);
+      return ok(result);
+    } catch (err) {
+      return fail(err);
+    }
+  },
+);
+
+server.registerTool(
   "schedule_reminder",
   {
     title: "设置提醒",
@@ -311,6 +415,45 @@ server.registerTool(
         method: "POST",
         body: JSON.stringify({ title, delaySeconds, fireAt, channel }),
       });
+      return ok(result);
+    } catch (err) {
+      return fail(err);
+    }
+  },
+);
+
+server.registerTool(
+  "list_reminders",
+  {
+    title: "列出提醒",
+    description: "列出你设置过的提醒（默认只看未到期的）",
+    inputSchema: {
+      status: z.enum(["scheduled", "all"]).optional().describe("scheduled=只看待触发（默认）；all=含已触发/已取消"),
+    },
+  },
+  async ({ status }) => {
+    try {
+      const qs = status ? new URLSearchParams({ status }) : undefined;
+      const result = await callSlock(`/reminders${qs ? "?" + qs.toString() : ""}`);
+      return ok(result);
+    } catch (err) {
+      return fail(err);
+    }
+  },
+);
+
+server.registerTool(
+  "cancel_reminder",
+  {
+    title: "取消提醒",
+    description: "取消一个未到期的提醒",
+    inputSchema: {
+      reminderId: z.string().describe("提醒 id（用 list_reminders 查询获得）"),
+    },
+  },
+  async ({ reminderId }) => {
+    try {
+      const result = await callSlock(`/reminders/${encodeURIComponent(reminderId)}`, { method: "DELETE" });
       return ok(result);
     } catch (err) {
       return fail(err);

@@ -131,6 +131,8 @@ export const toAgentRunSnapshot = (run: AgentRunProcess): AgentRunSnapshot => ({
   exitCode: run.exitCode,
   output: run.output,
   screenText: run.terminal.getScreenText(),
+  // 最近 ~400 行历史（scrollback + 当前屏）——终端观察的回看与退出落盘用
+  historyText: run.terminal.getHistoryText(400),
   cols: run.cols,
   rows: run.rows,
   startedAt: run.startedAt,

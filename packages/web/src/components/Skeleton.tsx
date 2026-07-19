@@ -1,6 +1,19 @@
 // Reusable skeleton loading components
-export function Skeleton({ className = "" }: { className?: string }) {
-  return <div className={"animate-pulse bg-gray-300 dark:bg-gray-700 rounded " + className} />;
+interface SkeletonProps {
+  className?: string;
+  shimmer?: boolean;
+}
+
+export function Skeleton({ className = "", shimmer = true }: SkeletonProps) {
+  return (
+    <div
+      className={[
+        "rounded",
+        shimmer ? "animate-shimmer bg-gray-300 dark:bg-gray-700" : "animate-pulse bg-gray-300 dark:bg-gray-700",
+        className,
+      ].join(" ")}
+    />
+  );
 }
 
 export function MessageSkeleton() {

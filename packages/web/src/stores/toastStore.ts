@@ -1,14 +1,12 @@
 import { create } from "zustand";
 
-// 极简 toast 系统：4 种 severity，4 秒自动消失
-// 用法：import { toast } from "@/stores/toastStore"; toast.error("保存失败");
-
 export type ToastKind = "info" | "success" | "warning" | "error";
 
 export interface ToastItem {
   id: number;
   kind: ToastKind;
   message: string;
+  exiting?: boolean;
 }
 
 interface ToastState {
@@ -28,10 +26,15 @@ export const useToastStore = create<ToastState>((set, get) => ({
       setTimeout(() => get().dismiss(id), durationMs);
     }
   },
-  dismiss: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
+  dismiss: (id) => {
+    // 标记为退出中，触发退场动画，动画结束后再移除
+    set((s) => ({ toasts: s.toasts.map((t) => (t.id === id ? { ...t, exiting: true } : t)) }));
+    setTimeout(() => {
+      set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) }));
+    }, 180);
+  },
 }));
 
-// 便捷方法（直接调用，不必订阅 store）
 export const toast = {
   info: (msg: string) => useToastStore.getState().push("info", msg),
   success: (msg: string) => useToastStore.getState().push("success", msg),

@@ -5,11 +5,16 @@
 // 直接跑单次（不监督）用 `dev:once`。
 import { spawn, type ChildProcess } from "node:child_process";
 import { watch } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const srcDir = dirname(fileURLToPath(import.meta.url));
 const entry = join(srcDir, "index.ts");
+// 「计划内重启」标记：watch 触发重启前写给 daemon——它不是崩溃，下次启动不应
+// 触发 autostart 崩溃恢复（否则每次改代码热重启都会把所有活跃 agent 拉起一遍，
+// 2026-07-18 实测：supervisor 重启后 agent 未被提问就自动 spawn）。
+const plannedRestartMarker = join(srcDir, "..", ".slock", "planned-restart");
 const passthrough = process.argv.slice(2);
 const q = (a: string) => (/\s/.test(a) ? `"${a}"` : a);
 
@@ -41,7 +46,15 @@ function startChild(): void {
 
 function restartForChange(file: string): void {
   console.log(`[Supervisor] change detected (${file}), restarting daemon…`);
-  if (child) { expectRestart = true; child.kill(); }
+  if (child) {
+    expectRestart = true;
+    // 写「计划内重启」标记：daemon 下次启动看到它就不跑 autostart
+    try {
+      mkdirSync(join(srcDir, "..", ".slock"), { recursive: true });
+      writeFileSync(plannedRestartMarker, String(Date.now()));
+    } catch { /* best-effort */ }
+    child.kill();
+  }
   else startChild();
 }
 

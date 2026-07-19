@@ -64,6 +64,7 @@ export function createFakeAgentManager(): FakeAgentManager {
     exitCode: run.exitCode,
     output: run.output,
     screenText: run.terminal.getScreenText(),
+    historyText: run.terminal.getHistoryText(400),
     cols: run.cols,
     rows: run.rows,
     startedAt: run.startedAt,

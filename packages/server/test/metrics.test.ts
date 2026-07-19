@@ -1,13 +1,20 @@
-import { describe, it, expect, afterAll } from "vitest";
-import { api, sql, closeSql } from "./helpers.js";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { api, registerUser, cleanupTestData, sql, closeSql, type TestUser } from "./helpers.js";
+
+let user: TestUser;
+
+beforeAll(async () => {
+  user = await registerUser();
+});
 
 afterAll(async () => {
+  await cleanupTestData();
   await closeSql();
 });
 
 describe("metrics persistence", () => {
   it("GET /api/metrics/history returns array (possibly empty)", async () => {
-    const r = await api("/api/metrics/history?range=1h");
+    const r = await api("/api/metrics/history?range=1h", { cookie: user.cookie });
     expect(r.status).toBe(200);
     expect(r.data).toHaveProperty("samples");
     expect(Array.isArray(r.data.samples)).toBe(true);
@@ -21,7 +28,7 @@ describe("metrics persistence", () => {
       VALUES (now(), 100, 20, 5, 2, 10, 256, 512, 1024, 3, 15, 12)
     `;
 
-    const r = await api("/api/metrics/history?range=1h");
+    const r = await api("/api/metrics/history?range=1h", { cookie: user.cookie });
     expect(r.status).toBe(200);
     expect(r.data.samples.length).toBeGreaterThanOrEqual(1);
 
@@ -35,10 +42,17 @@ describe("metrics persistence", () => {
   });
 
   it("GET /api/metrics still works alongside history", async () => {
-    const r = await api("/api/metrics");
+    const r = await api("/api/metrics", { cookie: user.cookie });
     expect(r.status).toBe(200);
     expect(r.data).toHaveProperty("uptimeSec");
     expect(r.data.counters).toHaveProperty("messagesSent");
     expect(r.data.online).toHaveProperty("daemons");
+  });
+
+  it("GET /api/metrics requires auth (401 unauthenticated)", async () => {
+    const r = await api("/api/metrics");
+    expect(r.status).toBe(401);
+    const h = await api("/api/metrics/history?range=1h");
+    expect(h.status).toBe(401);
   });
 });

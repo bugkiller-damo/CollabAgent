@@ -81,7 +81,6 @@ await server.register(pgPlugin);
   setWsPg(server.pg);
 }
 await server.register(fastifyMultipart, { limits: { fileSize: config.MAX_UPLOAD_SIZE } });
-await server.register(fastifyStatic, { root: UPLOAD_DIR, prefix: "/files/", decorateReply: false });
 
 // Auth decorator — supports JWT (Bearer 或 httpOnly cookie), dev-token, and machine token
 server.decorate("authenticate", async function (request: any, reply: any) {
@@ -105,14 +104,14 @@ server.decorate("authenticate", async function (request: any, reply: any) {
   if (token.startsWith("sk_agent_")) {
     const agentId = (request.params as Record<string, string> | undefined)?.agentId;
     if (!agentId) return reply.status(401).send({ error: "Invalid agent token" });
-    const bcrypt = (await import("bcryptjs")).default;
+    const { verifyTokenHash } = await import("./lib/token-hash.js");
     const cred = await server.pg.query<{ token_hash: string; user_id: string; name: string }>(
       `SELECT ac.token_hash, a.user_id, a.name
        FROM agent_credentials ac JOIN agents a ON a.id = ac.agent_id
        WHERE ac.agent_id = $1 AND ac.revoked_at IS NULL AND (ac.expires_at IS NULL OR ac.expires_at > now())`,
       [agentId]
     );
-    if (cred.rows.length > 0 && (await bcrypt.compare(token, cred.rows[0].token_hash))) {
+    if (cred.rows.length > 0 && (await verifyTokenHash(token, cred.rows[0].token_hash))) {
       request.user = { sub: cred.rows[0].user_id, handle: cred.rows[0].name, scope: "agent-run", agentId };
       return;
     }
@@ -121,12 +120,27 @@ server.decorate("authenticate", async function (request: any, reply: any) {
 
   // Machine token (sk_machine_*)
   if (token.startsWith("sk_machine_")) {
-    const bcrypt = (await import("bcryptjs")).default;
-    const result = await server.pg.query<{ user_id: string; server_id: string; scope: string; token_hash: string }>(
-      "SELECT user_id, server_id, scope, token_hash FROM machine_tokens WHERE token_prefix = 'sk_machine_' AND revoked_at IS NULL"
+    const { sha256Token, isBcryptHash } = await import("./lib/token-hash.js");
+    // 快路径：sha256 哈希直接按唯一索引命中（新签发的令牌都走这里）
+    const fast = await server.pg.query<{ user_id: string; scope: string }>(
+      "SELECT user_id, scope FROM machine_tokens WHERE token_hash = $1 AND revoked_at IS NULL",
+      [sha256Token(token)]
     );
-    for (const row of result.rows) {
-      if (await bcrypt.compare(token, row.token_hash)) {
+    if (fast.rows.length > 0) {
+      const user = await server.pg.query("SELECT id, handle FROM users WHERE id = $1", [fast.rows[0].user_id]);
+      if (user.rows.length > 0) {
+        request.user = { sub: user.rows[0].id, handle: user.rows[0].handle, scope: fast.rows[0].scope };
+        return;
+      }
+      return reply.status(401).send({ error: "Invalid machine token" });
+    }
+    // 兼容路径：历史 bcrypt 哈希的令牌（等全部轮换/吊销后可删除此分支）
+    const bcrypt = (await import("bcryptjs")).default;
+    const legacy = await server.pg.query<{ user_id: string; scope: string; token_hash: string }>(
+      "SELECT user_id, scope, token_hash FROM machine_tokens WHERE revoked_at IS NULL"
+    );
+    for (const row of legacy.rows) {
+      if (isBcryptHash(row.token_hash) && (await bcrypt.compare(token, row.token_hash))) {
         const user = await server.pg.query("SELECT id, handle FROM users WHERE id = $1", [row.user_id]);
         if (user.rows.length > 0) {
           request.user = { sub: user.rows[0].id, handle: user.rows[0].handle, scope: row.scope };
@@ -140,11 +154,31 @@ server.decorate("authenticate", async function (request: any, reply: any) {
   // 纯 httpOnly Cookie 鉴权（Bearer JWT 路径已废弃 —— 强制从 cookie 取 JWT，避免 XSS 窃 token）
   const cookieTok = parseCookies(request.headers.cookie)[ACCESS_COOKIE];
   if (cookieTok) {
-    try { request.user = server.jwt.verify(cookieTok); return; }
-    catch { return reply.status(401).send({ error: "Unauthorized" }); }
+    try {
+      const payload = server.jwt.verify(cookieTok) as { sub: string; sid?: string; tv?: string };
+      // 会话状态回查：logout-all / 改密 / 注销会吊销 session 或滚动 token_version，
+      // 不查的话旧 access token 在 7 天有效期内仍能用（lib/session-check.ts，5s 缓存）。
+      if (payload?.sid) {
+        const { isSessionValid } = await import("./lib/session-check.js");
+        if (!(await isSessionValid(server, String(payload.sid), String(payload.sub), payload.tv))) {
+          return reply.status(401).send({ error: "Session expired or revoked" });
+        }
+      }
+      request.user = payload;
+      return;
+    } catch { return reply.status(401).send({ error: "Unauthorized" }); }
   }
 
   return reply.status(401).send({ error: "Unauthorized" });
+});
+
+// /files/ 静态附件下载同样需要鉴权：浏览器 <img>/<a> 同源自动带 cookie，
+// daemon 走 sk_* Bearer —— 两者都能过 authenticate；未登录匿名访问直接 401。
+// 注意：这里只能挡「未登录」，频道成员级别的细粒度校验在 /api/attachments/:id 里做。
+// 必须在 authenticate 装饰器注册之后再挂 hook，否则 hook 拿到的是 undefined。
+await server.register(async (filesScope) => {
+  filesScope.addHook("onRequest", server.authenticate as any);
+  await filesScope.register(fastifyStatic, { root: UPLOAD_DIR, prefix: "/files/", decorateReply: false });
 });
 
 // 全局限流（onRequest 早于 CSRF 校验，先拦截异常流量）
@@ -154,7 +188,10 @@ server.addHook("onRequest", rateLimitHook);
 server.addHook("onRequest", async (request: any, reply: any) => {
   if (!["POST", "PUT", "PATCH", "DELETE"].includes(request.method)) return;
   const authHeader = request.headers.authorization || "";
-  if (authHeader.startsWith("Bearer ") || authHeader.startsWith("sk_machine_")) return; // 非 cookie 鉴权，无 CSRF 风险
+  // Bearer 令牌（含 sk_machine_/sk_agent_）鉴权无 cookie 会话，无 CSRF 风险。
+  // 注意判断的是 Bearer 头整体，而不是直接匹配 sk_ 前缀（令牌永远以 "Bearer sk_..." 形式出现）。
+  const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
+  if (bearerToken) return;
   const { parseCookies, ACCESS_COOKIE, CSRF_COOKIE } = await import("./lib/cookies.js");
   const cookies = parseCookies(request.headers.cookie);
   if (!cookies[ACCESS_COOKIE]) return; // 未用 cookie 会话（如登录前）
@@ -210,8 +247,8 @@ server.get("/api/daemon/status", { preHandler: [server.authenticate] }, async (r
   return { connected: daemonClients.has(String(req.user.sub)) };
 });
 
-// Public user list (for @mention autocomplete)
-server.get("/api/users", async () => {
+// Public user list (for @mention autocomplete) — 需登录，避免未认证枚举全站用户
+server.get("/api/users", { preHandler: [server.authenticate] }, async () => {
   const users = await server.pg.query(
     "SELECT id, handle, display_name, avatar_url FROM users ORDER BY handle"
   );

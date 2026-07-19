@@ -1,4 +1,6 @@
 import { WebSocket } from "ws";
+import { existsSync, unlinkSync, writeFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
 import type { AgentContext } from "./auth.js";
 import type { DaemonConfig } from "./types/index.js";
 import { ApiClient } from "./client.js";
@@ -8,6 +10,7 @@ import { createLiveRunRegistry } from "./live-run-registry.js";
 import { createAgentRuntime, type IAgentRuntime } from "./agent-runtime.js";
 import { setupSlockWrapper } from "./setup-slock-wrapper.js";
 import { createJsonRunStore, defaultStorePath } from "./agent-run-store.js";
+import { readTerminalLogTail } from "./terminal-log.js";
 
 export class DaemonCore {
   private ws: WebSocket | null = null;
@@ -22,6 +25,9 @@ export class DaemonCore {
   private agentId = "00000000-0000-0000-0000-000000000001";
   /** 崩溃前处于 starting/running 状态的 agent（autostart 方案 A 用），见 constructor 里的采集顺序说明 */
   private autostartCandidates: { agentId: string; agentName: string }[] = [];
+  /** 终端观察（G3）：agentName -> 推帧定时器；agentName -> 上次推过的帧（去重） */
+  private terminalWatchers = new Map<string, ReturnType<typeof setInterval>>();
+  private terminalLastFrame = new Map<string, string>();
 
   constructor(private config: DaemonConfig) {
     this.serverUrl = config.serverUrl;
@@ -39,10 +45,20 @@ export class DaemonCore {
     const tokenRegistry = createAgentTokenRegistry();
     const liveRunRegistry = createLiveRunRegistry();
     const runStore = createJsonRunStore(defaultStorePath());
+    // 「计划内重启」标记（supervisor watch 重启 / 上次优雅 stop 写入）：
+    // 有标记说明上次不是崩溃——run 记录虽然是 stale 的，但那是故意停掉的，
+    // 不该触发 autostart 把 agent 全部拉起一遍（2026-07-18 实测：热重启后
+    // agent 没被提问就自动 spawn，用户困惑）。
+    const plannedMarker = join(process.cwd(), ".slock", "planned-restart");
+    const isPlannedRestart = existsSync(plannedMarker);
+    if (isPlannedRestart) {
+      try { unlinkSync(plannedMarker); } catch { /* ignore */ }
+      console.log("[Daemon] Planned restart detected (marker file) — skipping autostart");
+    }
     // 必须在 markUnfinishedRunsStale() 之前采集——那个方法会把这些记录的
     // status 改写成 "error"，先后顺序反了 listActiveAgents() 就永远查到空列表
     // （见 docs/2026-07-16/13-autostart-session-resume-plan.md 方案 A）。
-    this.autostartCandidates = runStore.listActiveAgents();
+    this.autostartCandidates = isPlannedRestart ? [] : runStore.listActiveAgents();
     // 崩溃恢复：上次进程若被硬杀（未走到正常 exit 清理），遗留的 starting/running
     // 记录会一直卡在那，把它们标记为 error，避免重启摘要里显示"永远在启动中"
     const staleCount = runStore.markUnfinishedRunsStale();
@@ -64,7 +80,49 @@ export class DaemonCore {
     this.connect();
     await this.runtime.loadExistingAgents();
     this.wireAgentOutput();
+    this.startStatusReporter();
     await this.autostartCrashedAgents();
+  }
+
+  /**
+   * Agent 状态上报（G7 轻量版，照搬 hive last_pty_line 模式）：每 3s 轮询所有
+   * 已注册 agent 的「状态 + 最后一行终端输出」，有变化才上报。server 中继给
+   * 浏览器后，侧边栏 Agent 状态栏就能实时显示每个 agent 正在干什么。
+   */
+  private statusReporter: ReturnType<typeof setInterval> | null = null;
+  private lastReportedByAgent = new Map<string, string>();
+
+  private startStatusReporter(): void {
+    if (this.statusReporter) return;
+    const tick = () => {
+      if (!this.ws || this.ws.readyState !== this.ws.OPEN) return;
+      const manager = this.runtime.__getAgentManager();
+      for (const name of this.runtime.listAgentNames()) {
+        const runId = this.runtime.__getRunId(name);
+        const run = runId ? manager.getRun(runId) : undefined;
+        const state = this.runtime.getAgentState(name) ?? "unknown";
+        const status = run ? state : "offline";
+        // 最后一行非空终端输出（last_pty_line）
+        let lastLine = "";
+        if (run?.screenText) {
+          const lines = run.screenText.split("\n");
+          for (let i = lines.length - 1; i >= 0; i--) {
+            const t = lines[i]!.trim();
+            if (t) { lastLine = t.slice(0, 80); break; }
+          }
+        }
+        const key = status + "|" + lastLine;
+        if (this.lastReportedByAgent.get(name) === key) continue;
+        this.lastReportedByAgent.set(name, key);
+        const agentId = this.runtime.resolveAgentId(name);
+        this.ws.send(JSON.stringify({
+          type: "agent:status", agentId: agentId || name, agentName: name,
+          status, detail: lastLine,
+        }));
+      }
+    };
+    this.statusReporter = setInterval(tick, 3000);
+    if (typeof this.statusReporter.unref === "function") this.statusReporter.unref();
   }
 
   /**
@@ -196,8 +254,13 @@ private connect(): void {
         const agentName = (agent?.name as string) || (config.name as string) || "";
         const displayName = (agent?.displayName as string) || (config.displayName as string) || agentName;
         const description = (agent?.description as string) || (config.description as string) || "";
+        // runtime_profile.model（Web 端可选 sonnet/opus/haiku）——注册时带上，spawn 拼 --model。
+        // 三种推送变体：创建时 model 在 agent.model；编辑（PATCH）时在 config.model；
+        // 部分路径在 config.runtime_profile.model。三个位置都兜底。
+        const rp = (config.runtime_profile ?? agent?.runtime_profile) as { model?: string } | undefined;
+        const model = (agent?.model as string) || (config.model as string) || rp?.model || undefined;
         if (!agentName) { console.log("[Daemon] agent:start without name, ignored"); break; }
-        this.runtime.registerAgent(agentId, agentName, { displayName, description });
+        this.runtime.registerAgent(agentId, agentName, { displayName, description, model });
         break;
       }
       case "agent:deliver": {
@@ -240,8 +303,14 @@ private connect(): void {
           break;
         }
 
-        const mentionedAgent = this.runtime.findMentionedAgent(content || "");
-        if (!mentionedAgent) break;
+        // server 下发的「有权回应的 agent」列表（messages.ts /send 按频道权限预过滤）：
+        // 有字段（含空数组）→ 只 spawn 列表内 agent，私有频道非成员 agent 不会起 PTY，
+        // 避免「起了进程、思考半天、回复被 403」的资源浪费；无字段（旧 server）退回本地文本解析。
+        const deliverList = m.mentionAgents as string[] | undefined;
+        const target = Array.isArray(deliverList)
+          ? deliverList.find((n) => this.runtime.hasAgent(n))
+          : this.runtime.findMentionedAgent(content || "");
+        if (!target) break;
         const rawChannel = (m.channelId as string) || "general";
         const channelName = rawChannel.replace(/^#/, "").split(":")[0];
         const threadId = (m.threadId as string) || (m.thread_id as string) || "";
@@ -252,13 +321,9 @@ private connect(): void {
         if (m.senderId === this.agentId || !content || typeof content !== "string") break;
         if (content.startsWith("🤖 ")) break;
 
-        const mentionedAgents = this.runtime.mentionedAgentNames(content);
         try {
-          const target = mentionedAgents[0];
-          if (target) {
-            console.log(`[Daemon] Routing to agent @${target} -> ${replyTarget}`);
-            await this.runtime.runAgent(target, channelName, replyTarget, senderName, content);
-          }
+          console.log(`[Daemon] Routing to agent @${target} -> ${replyTarget}`);
+          await this.runtime.runAgent(target, channelName, replyTarget, senderName, content);
         } catch (err: any) {
           console.error("[Daemon] Failed:", err.message);
         }
@@ -285,12 +350,88 @@ private connect(): void {
         await this.runtime.runAgentReminder(remAgentId, reminder);
         break;
       }
+      case "terminal:watch": {
+        // 浏览器观众上线：开始按 400ms 节拍推这个 agent 的终端帧（G3）。
+        // 帧内容直接取终端模拟器渲染好的当前屏（screenText），无变化不推。
+        const agentName = msg.agentName as string;
+        if (!agentName || this.terminalWatchers.has(agentName)) break;
+        // 先补发一段历史：运行中的 run 发 scrollback（观众能看到打开终端前
+        // 发生的事）；没有运行中的 run 则发落盘日志的尾部（agent 已被回收也能回看）。
+        {
+          const runId = this.runtime.__getRunId(agentName);
+          const run = runId ? this.runtime.__getAgentManager().getRun(runId) : undefined;
+          const historyText = run?.historyText || readTerminalLogTail(agentName, 60_000);
+          if (historyText.trim()) {
+            this.ws?.send(JSON.stringify({ type: "terminal:history", agentName, text: historyText }));
+          }
+        }
+        const tick = () => {
+          const runId = this.runtime.__getRunId(agentName);
+          const manager = this.runtime.__getAgentManager();
+          const run = runId ? manager.getRun(runId) : undefined;
+          const state = this.runtime.getAgentState(agentName) ?? "unknown";
+          const status = run ? state : "offline";
+          const screen = run?.screenText ?? "";
+          const key = status + "|" + screen;
+          if (this.terminalLastFrame.get(agentName) === key) return;
+          this.terminalLastFrame.set(agentName, key);
+          this.ws?.send(JSON.stringify({
+            type: "terminal:frame", agentName, screen, status,
+            time: new Date().toISOString(),
+          }));
+        };
+        tick(); // 立即推一帧，观众打开就能看到当前屏
+        this.terminalWatchers.set(agentName, setInterval(tick, 400));
+        console.log(`[Daemon] Terminal watch started for @${agentName}`);
+        break;
+      }
+      case "terminal:history": {
+        // 观众主动请求历史日志（面板「日志」页）：读落盘日志尾部回传
+        const agentName = msg.agentName as string;
+        if (!agentName) break;
+        const text = readTerminalLogTail(agentName);
+        this.ws?.send(JSON.stringify({ type: "terminal:history", agentName, text }));
+        break;
+      }
+      case "terminal:unwatch": {
+        const agentName = msg.agentName as string;
+        const timer = this.terminalWatchers.get(agentName);
+        if (timer) clearInterval(timer);
+        this.terminalWatchers.delete(agentName);
+        this.terminalLastFrame.delete(agentName);
+        break;
+      }
+      case "terminal:resize": {
+        // 面板尺寸协商（真改比例）：浏览器按面板宽度算出期望 cols/rows 发过来，
+        // 这里实时 resize 正在运行的 PTY（Claude Code 收 SIGWINCH 重排画面），
+        // 并记住偏好尺寸供下次 spawn 直接用。
+        const agentName = msg.agentName as string;
+        const cols = Math.min(400, Math.max(20, Math.round(Number(msg.cols) || 0)));
+        const rows = Math.min(100, Math.max(5, Math.round(Number(msg.rows) || 0)));
+        if (!agentName || !cols || !rows) break;
+        this.runtime.setPreferredTermSize(agentName, { cols, rows });
+        const runId = this.runtime.__getRunId(agentName);
+        if (runId) {
+          this.runtime.__getAgentManager().resizeRun(runId, cols, rows);
+        }
+        break;
+      }
       case "ping": this.ws?.send(JSON.stringify({ type: "pong" })); break;
     }
   }
 
   async stop(): Promise<void> {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    if (this.statusReporter) { clearInterval(this.statusReporter); this.statusReporter = null; }
+    for (const timer of this.terminalWatchers.values()) clearInterval(timer);
+    this.terminalWatchers.clear();
+    this.terminalLastFrame.clear();
+    // 优雅停止也写「计划内重启」标记：用户主动停掉 daemon 后下次启动，
+    // 同样不该把停掉的 agent 当崩溃恢复自动拉起。
+    try {
+      mkdirSync(join(process.cwd(), ".slock"), { recursive: true });
+      writeFileSync(join(process.cwd(), ".slock", "planned-restart"), String(Date.now()));
+    } catch { /* best-effort */ }
     if (this.ws) { this.ws.close(); this.ws = null; }
     this.runtime.stopAll();
     console.log("[Daemon] Stopped");

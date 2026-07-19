@@ -5,15 +5,11 @@ import { App } from "./App";
 import "./index.css";
 import "highlight.js/styles/github-dark.css";
 
-// Theme initialization
-const theme = localStorage.getItem("theme") || "system";
-const isDark = theme === "dark" || (theme === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+// Theme initialization: respect saved preference or system default
+const savedTheme = localStorage.getItem("theme") || "system";
+const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+const isDark = savedTheme === "dark" || (savedTheme === "system" && prefersDark);
 document.documentElement.classList.toggle("dark", isDark);
-
-// Apply saved theme on startup
-const savedTheme = localStorage.getItem("theme") || "dark";
-if (savedTheme === "light") document.documentElement.classList.remove("dark");
-else document.documentElement.classList.add("dark");
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

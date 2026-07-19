@@ -192,15 +192,25 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
     }
   };
 
+  // 防失忆 reminder tail（仿照 hive `hive-team-guidance.ts` 验证过的模式）：
+  // 每条流向 agent 的消息尾部附一段精简 XML 提醒。静态系统提示只在新 spawn 的
+  // bootstrap 里出现一次，长会话中 Claude Code 的 /compact/auto-summarize 会把它
+  // 压掉——agent 一旦忘记"必须用 send_message 回复、直接打字不会发出"，表现就是
+  // "思考了但没消息发出来"。reminder 挂在尾部（recency 位置）对抗压缩，且在
+  // dispatchToAgent 收口处统一追加，覆盖首次 spawn 和 PTY 复用两条写入路径。
+  const REMINDER_TAIL = (agentName: string): string =>
+    `\n\n<slock-reminder>你是 @${agentName}（CollabAgent 平台的 AI Agent）。对外回复只能用 \`send_message\` 工具（或 \`slock\` CLI），直接打字不会被发送；回合开始先读工作区里的 MEMORY.md。</slock-reminder>`;
+
   // dedup 包装
   const dispatchToAgent = async (agentName: string, channelName: string, userMsg: string): Promise<void> => {
+    const msgWithReminder = userMsg + REMINDER_TAIL(agentName);
     const inFlight = dispatchPromises.get(agentName);
     if (inFlight) {
       console.log(`[Daemon] @${agentName} dispatch already in-flight, chaining`);
       await inFlight.catch(() => {});
       return;
     }
-    const promise = doDispatch(agentName, channelName, userMsg);
+    const promise = doDispatch(agentName, channelName, msgWithReminder);
     dispatchPromises.set(agentName, promise);
     try {
       await promise;

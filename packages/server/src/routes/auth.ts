@@ -195,6 +195,8 @@ export async function authRoutes(app: FastifyInstance) {
   app.post("/logout", { preHandler: [app.authenticate] }, async (req, reply) => {
     const sid = req.user?.sid;
     if (sid) await app.pg.query("UPDATE user_sessions SET revoked_at = now() WHERE id = $1", [sid]);
+    const { clearSessionCache } = await import("../lib/session-check.js");
+    clearSessionCache();
     clearAuthCookies(reply);
     return { ok: true };
   });
@@ -204,6 +206,8 @@ export async function authRoutes(app: FastifyInstance) {
     const userId = req.user.sub;
     await app.pg.query("UPDATE user_sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL", [userId]);
     await app.pg.query("UPDATE users SET token_version = gen_random_uuid()::text WHERE id = $1", [userId]);
+    const { clearSessionCache } = await import("../lib/session-check.js");
+    clearSessionCache();
     clearAuthCookies(reply);
     return { ok: true };
   });
@@ -231,6 +235,8 @@ export async function authRoutes(app: FastifyInstance) {
       [sid, userId]
     );
     if (r.rows.length === 0) return reply.status(404).send({ error: "session not found" });
+    const { clearSessionCache } = await import("../lib/session-check.js");
+    clearSessionCache();
     return { ok: true };
   });
 }

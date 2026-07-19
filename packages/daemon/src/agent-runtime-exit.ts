@@ -1,5 +1,6 @@
 import { createExitCoordinator } from "./exit-coordinator.js";
 import { createExitHandler, createMinimalExitHandler } from "./exit-handler.js";
+import { appendTerminalLog } from "./terminal-log.js";
 import type {
   IAgentTokenRegistry,
   ILiveRunRegistry,
@@ -111,6 +112,14 @@ export const createExitChain = (deps: ExitChainDeps): IExitChain => {
       if (currentStatus && currentStatus !== "stopped") {
         try { stateMachine.transitionState(ctx.agentName, "idle"); } catch { /* 无效迁移已在内部吞掉 */ }
       }
+    }
+
+    // 3.5) 终端日志落盘（G3 历史回看）：在 removeRun 清掉终端镜像之前，把本次
+    // run 的 scrollback+当前屏文本追加到 .slock/terminal-logs/<agent>.log——
+    // agent 被回收/重启之后，观众仍能回看这个 run 干了什么。
+    const dyingRun = agentManager.getRun(runId);
+    if (dyingRun?.historyText) {
+      appendTerminalLog(ctx.agentName, runId, exitCode, dyingRun.historyText);
     }
 
     // 4) 清理 agent-manager 内部的 processes Map + outputBus 订阅

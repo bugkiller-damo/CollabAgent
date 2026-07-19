@@ -28,7 +28,7 @@ if (typeof document !== "undefined" && !document.getElementById(highlightStyleId
   document.head.appendChild(s);
 }
 
-function MessageRowBase({ msg, channelName, isHighlighted }: { msg: any; channelName?: string; isHighlighted?: boolean }) {
+function MessageRowBase({ msg, channelName, isHighlighted, prevMsg }: { msg: any; channelName?: string; isHighlighted?: boolean; prevMsg?: any }) {
   const navigate = useNavigate();
   const currentUserId = useAuthStore((s) => s.user?.id);
   const editMessage = useMessageStore((s) => s.editMessage);
@@ -41,9 +41,13 @@ function MessageRowBase({ msg, channelName, isHighlighted }: { msg: any; channel
   const deleted = msg.deleted;
   const firstUrl = (msg.content?.match(/https?:\/\/[^\s<>()]+/) || [])[0];
   const reactions: { emoji: string; userIds: string[] }[] = msg.reactions || [];
-  // 经理/worker 任务派发通知（agents-dispatch.ts 里插入的三种消息前缀），
-  // 视觉上和普通聊天区分开，方便人类一眼认出这是任务合同而不是闲聊。
   const dispatchKind = msg.content?.startsWith("📋") ? "派发" : msg.content?.startsWith("✅") ? "回报" : msg.content?.startsWith("🚫") ? "撤回" : null;
+
+  // 紧凑模式：与上一条为同一发送者，且时间差在 5 分钟内
+  const timeDiffMin = prevMsg
+    ? Math.abs(new Date(msg.time || msg.createdAt).getTime() - new Date(prevMsg.time || prevMsg.createdAt).getTime()) / 60000
+    : Infinity;
+  const compact = prevMsg && prevMsg.senderId === msg.senderId && timeDiffMin < 5 && !dispatchKind && !prevMsg.deleted;
 
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState(msg.content || "");
@@ -88,23 +92,29 @@ function MessageRowBase({ msg, channelName, isHighlighted }: { msg: any; channel
 
   return (
     <div className={`group flex gap-3 hover:bg-gray-100 dark:hover:bg-gray-800/50 p-2 rounded relative ${isHighlighted ? "animate-highlight" : ""} ${dispatchKind ? "border-l-2 border-amber-400 dark:border-amber-600 bg-amber-50/40 dark:bg-amber-900/10" : ""}`}>
-      <div className="w-8 h-8 rounded bg-gray-600 shrink-0 flex items-center justify-center text-xs text-white">
-        {(msg.senderName || "?")[0]}
-      </div>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-baseline gap-2">
-          <span className="font-semibold text-gray-900 dark:text-white text-sm">{msg.senderName || msg.senderId || "Unknown"}</span>
-          <span className="text-gray-500 text-xs" title={new Date(msg.time || msg.createdAt).toLocaleString()}>
-            {formatTime(msg.time || msg.createdAt)}
-          </span>
-          {edited && <span className="text-gray-400 text-xs">(已编辑)</span>}
-          {deleted && <span className="text-gray-400 text-xs italic">(已删除)</span>}
-          {dispatchKind && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900 text-amber-700 dark:text-amber-300">
-              任务{dispatchKind}
-            </span>
-          )}
+      {compact ? (
+        <div className="w-8 shrink-0" />
+      ) : (
+        <div className="w-8 h-8 rounded bg-gray-600 shrink-0 flex items-center justify-center text-xs text-white">
+          {(msg.senderName || "?")[0]}
         </div>
+      )}
+      <div className="min-w-0 flex-1">
+        {!compact && (
+          <div className="flex items-baseline gap-2">
+            <span className="font-semibold text-gray-900 dark:text-white text-sm">{msg.senderName || msg.senderId || "Unknown"}</span>
+            <span className="text-gray-500 text-xs" title={new Date(msg.time || msg.createdAt).toLocaleString()}>
+              {formatTime(msg.time || msg.createdAt)}
+            </span>
+            {edited && <span className="text-gray-400 text-xs">(已编辑)</span>}
+            {deleted && <span className="text-gray-400 text-xs italic">(已删除)</span>}
+            {dispatchKind && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900 text-amber-700 dark:text-amber-300">
+                任务{dispatchKind}
+              </span>
+            )}
+          </div>
+        )}
 
         {editing ? (
           <div className="mt-1">
@@ -156,23 +166,23 @@ function MessageRowBase({ msg, channelName, isHighlighted }: { msg: any; channel
               </div>
             )}
 
-            <div className="flex items-center gap-1 mt-1 relative">
+            <div className="flex flex-wrap items-center gap-1 mt-1 relative">
               <button onClick={() => navigate("/channels/" + channelName + "/" + msg.id)}
-                className="text-gray-500 hover:text-blue-400 text-xs px-1.5 py-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700">
+                className="text-gray-500 hover:text-blue-400 text-xs px-1.5 py-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors">
                 💬 {replyCount > 0 ? replyCount + " 条回复" : "回复"}
               </button>
               <button onClick={() => navigator.clipboard.writeText(msg.content || "")}
-                className="text-gray-500 hover:text-gray-900 dark:hover:text-white text-xs px-1.5 py-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 opacity-0 group-hover:opacity-100">
+                className="text-gray-500 hover:text-gray-900 dark:hover:text-white text-xs px-1.5 py-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity">
                 复制
               </button>
               {isOwn && !deleted && (
                 <>
                   <button onClick={() => { setEditText(msg.content || ""); setEditing(true); }}
-                    className="text-gray-500 hover:text-gray-900 dark:hover:text-white text-xs px-1.5 py-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 opacity-0 group-hover:opacity-100">
+                    className="text-gray-500 hover:text-gray-900 dark:hover:text-white text-xs px-1.5 py-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity">
                     编辑
                   </button>
                   <button onClick={() => setConfirmDelete(true)}
-                    className="text-red-500 hover:text-red-600 text-xs px-1.5 py-0.5 rounded hover:bg-red-50 dark:hover:bg-red-900/30"
+                    className="text-red-500 hover:text-red-600 text-xs px-1.5 py-0.5 rounded hover:bg-red-50 dark:hover:bg-red-900/30 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity"
                     title="删除消息">
                     🗑 删除
                   </button>
@@ -181,16 +191,16 @@ function MessageRowBase({ msg, channelName, isHighlighted }: { msg: any; channel
               {!deleted && (
                 <>
                   <button onClick={() => setEmojiPickerOpen((v) => !v)}
-                    className="text-gray-500 hover:text-yellow-400 text-xs px-1.5 py-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 opacity-0 group-hover:opacity-100">
+                    className="text-gray-500 hover:text-yellow-400 text-xs px-1.5 py-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity">
                     😀
                   </button>
                   {emojiPickerOpen && (
-                    <div className="absolute right-0 top-6 z-10 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg p-1 flex gap-0.5">
+                    <div className="absolute right-0 top-6 z-10 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg p-1 flex gap-0.5 animate-scale-in origin-top-right">
                       {EMOJI_CHOICES.map((e) => (
                         <button
                           key={e}
                           onClick={() => { handleReactionClick(e); setEmojiPickerOpen(false); }}
-                          className="text-lg w-7 h-7 rounded hover:bg-gray-100 dark:hover:bg-gray-700"
+                          className="text-lg w-7 h-7 rounded hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
                         >
                           {e}
                         </button>

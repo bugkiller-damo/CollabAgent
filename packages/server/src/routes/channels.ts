@@ -31,18 +31,21 @@ export async function channelRoutes(app: FastifyInstance) {
       "SELECT 1 FROM channels WHERE server_id = $1 AND name = $2", [resolvedServerId, name]
     );
     if (exists.rows.length > 0) return reply.status(409).send({ error: "channel already exists" });
-    const result = await app.pg.query(
-      `INSERT INTO channels (server_id, name, description, type, created_by)
-       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-      [resolvedServerId, name, description || null, vis, userId]
-    );
-    const channel = result.rows[0];
-    // 创建者自动成为频道 owner
-    await app.pg.query(
-      `INSERT INTO channel_members (channel_id, member_id, member_type, role)
-       VALUES ($1, $2, 'human', 'owner') ON CONFLICT DO NOTHING`,
-      [channel.id, userId]
-    );
+    // 频道创建 + 创建者入圈 必须同事务，否则第二步失败会留下无 owner 的频道
+    const channel = await app.pg.transaction(async (tx) => {
+      const result = await tx.query(
+        `INSERT INTO channels (server_id, name, description, type, created_by)
+         VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+        [resolvedServerId, name, description || null, vis, userId]
+      );
+      const ch = result.rows[0] as any;
+      await tx.query(
+        `INSERT INTO channel_members (channel_id, member_id, member_type, role)
+         VALUES ($1, $2, 'human', 'owner') ON CONFLICT DO NOTHING`,
+        [ch.id, userId]
+      );
+      return ch;
+    });
     return { channel };
   });
 
@@ -88,9 +91,16 @@ export async function channelRoutes(app: FastifyInstance) {
     return { members: result.rows };
   });
 
-  app.post("/:channelId/join", { preHandler: [app.authenticate] }, async (req) => {
+  app.post("/:channelId/join", { preHandler: [app.authenticate] }, async (req, reply) => {
     const { channelId } = req.params as Record<string, string>;
     const { memberType } = (req.body as { memberType?: string }) || {};
+    // 私有频道 / DM 不允许自主加入：必须由管理员通过 /invite 拉人，否则拿到
+    // 频道 UUID 即可绕过邀请制直接成为成员。
+    const ch = await app.pg.query<{ type: string }>("SELECT type FROM channels WHERE id = $1", [channelId]);
+    if (ch.rows.length === 0) return reply.status(404).send({ error: "channel not found" });
+    if (ch.rows[0].type !== "public") {
+      return reply.status(403).send({ error: "private channels require an invite" });
+    }
     await app.pg.query(
       `INSERT INTO channel_members (channel_id, member_id, member_type)
        VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
@@ -211,7 +221,7 @@ export async function channelRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
-  // 删除频道（连带成员与消息）
+  // 删除频道（连带成员与消息，事务保证要么全删要么不删）
   app.delete("/:channelId", { preHandler: [app.authenticate] }, async (req, reply) => {
     const { channelId } = req.params as Record<string, string>;
     if (!(await canManageChannel(app, channelId, req.user.sub))) {
@@ -219,16 +229,18 @@ export async function channelRoutes(app: FastifyInstance) {
     }
     const ch = await app.pg.query("SELECT id FROM channels WHERE id = $1", [channelId]);
     if (ch.rows.length === 0) return reply.status(404).send({ error: "channel not found" });
-    await app.pg.query(
-      "DELETE FROM message_reactions WHERE message_id IN (SELECT id FROM messages WHERE channel_id = $1)", [channelId]
-    );
-    await app.pg.query(
-      "DELETE FROM message_attachments WHERE message_id IN (SELECT id FROM messages WHERE channel_id = $1)", [channelId]
-    );
-    await app.pg.query("DELETE FROM action_cards WHERE channel_id = $1", [channelId]);
-    await app.pg.query("DELETE FROM messages WHERE channel_id = $1", [channelId]);
-    await app.pg.query("DELETE FROM channel_members WHERE channel_id = $1", [channelId]);
-    await app.pg.query("DELETE FROM channels WHERE id = $1", [channelId]);
+    await app.pg.transaction(async (tx) => {
+      await tx.query(
+        "DELETE FROM message_reactions WHERE message_id IN (SELECT id FROM messages WHERE channel_id = $1)", [channelId]
+      );
+      await tx.query(
+        "DELETE FROM message_attachments WHERE message_id IN (SELECT id FROM messages WHERE channel_id = $1)", [channelId]
+      );
+      await tx.query("DELETE FROM action_cards WHERE channel_id = $1", [channelId]);
+      await tx.query("DELETE FROM messages WHERE channel_id = $1", [channelId]);
+      await tx.query("DELETE FROM channel_members WHERE channel_id = $1", [channelId]);
+      await tx.query("DELETE FROM channels WHERE id = $1", [channelId]);
+    });
     return { ok: true };
   });
 
@@ -276,8 +288,14 @@ export async function channelRoutes(app: FastifyInstance) {
     return { dms: r.rows };
   });
 
-  app.get("/server", { preHandler: [app.authenticate] }, async (req) => {
+  app.get("/server", { preHandler: [app.authenticate] }, async (req, reply) => {
     const { serverId } = req.query as Record<string, string>;
+    // 校验调用者是该 server 成员，否则任意 serverId 可枚举他人组织的频道/成员
+    const member = await app.pg.query(
+      "SELECT 1 FROM server_members WHERE server_id = $1 AND user_id::text = $2",
+      [serverId, req.user.sub]
+    );
+    if (member.rows.length === 0) return reply.status(403).send({ error: "not a member of that server" });
     const [channels, agents, humans] = await Promise.all([
       app.pg.query(
         `SELECT c.*, cm.role

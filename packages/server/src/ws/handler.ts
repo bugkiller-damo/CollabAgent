@@ -13,6 +13,44 @@ export const daemonClients = new Map<string, WebSocket>();
 export interface DaemonMeta { userId: string; hostname: string; daemonVersion: string; runtimes: string[]; connectedAt: number; }
 export const daemonMeta = new Map<string, DaemonMeta>();
 
+// 终端观察（G3）：userId -> agentName -> 观众 socket 集合。
+// 引用计数：第一个观众出现才通知 daemon 开始推帧，最后一个断开才停止——
+// 无人观看时这条链路零开销。
+const terminalWatchers = new Map<string, Map<string, Set<WebSocket>>>();
+
+function addTerminalWatcher(userId: string, agentName: string, ws: WebSocket): void {
+  let byAgent = terminalWatchers.get(userId);
+  if (!byAgent) { byAgent = new Map(); terminalWatchers.set(userId, byAgent); }
+  let set = byAgent.get(agentName);
+  if (!set) { set = new Set(); byAgent.set(agentName, set); }
+  const wasEmpty = set.size === 0;
+  set.add(ws);
+  if (wasEmpty) sendToDaemon(userId, { type: "terminal:watch", agentName });
+}
+
+function removeTerminalWatcher(userId: string, agentName: string, ws: WebSocket): void {
+  const set = terminalWatchers.get(userId)?.get(agentName);
+  if (!set) return;
+  set.delete(ws);
+  if (set.size === 0) {
+    terminalWatchers.get(userId)?.delete(agentName);
+    sendToDaemon(userId, { type: "terminal:unwatch", agentName });
+  }
+}
+
+/** socket 断开时，把它从该用户所有观看集合里清掉 */
+function removeTerminalWatcherSocket(userId: string, ws: WebSocket): void {
+  const byAgent = terminalWatchers.get(userId);
+  if (!byAgent) return;
+  for (const [agentName, set] of [...byAgent.entries()]) {
+    set.delete(ws);
+    if (set.size === 0) {
+      byAgent.delete(agentName);
+      sendToDaemon(userId, { type: "terminal:unwatch", agentName });
+    }
+  }
+}
+
 function parseAuthToken(req: any): string | null {
   const auth = req.headers?.authorization || req.headers?.Authorization || "";
   const match = /^Bearer\s+(.+)$/i.exec(auth);
@@ -50,8 +88,16 @@ export function wsHandler(connection: WebSocket, req: any) {
       try { connection.close(4001, "unauthorized"); } catch { /* ignore */ }
       return;
     }
+    // 浏览器 token 无效同样拒绝：此前降级为 "anon" 登记，导致未登录连接也能
+    // 收到所有公开频道的消息广播（内容泄露）。统一按未授权关闭。
+    if (!isDaemon && userId === "anon") {
+      try { connection.close(4001, "unauthorized"); } catch { /* ignore */ }
+      return;
+    }
     registerConnection(connection, userId, isDaemon);
     for (const raw of earlyBuffer) connection.emit("message", raw);
+  }).catch(() => {
+    try { connection.close(1011, "internal error"); } catch { /* ignore */ }
   });
 }
 
@@ -60,12 +106,20 @@ async function resolveUserId(token: string | null, isDaemon: boolean): Promise<s
   if (isDaemon) {
     if (!wsPg) return "anon";
     try {
+      const { sha256Token, isBcryptHash } = await import("../lib/token-hash.js");
+      // 快路径：sha256 直接索引命中（新令牌）
+      const fast = await wsPg.query<{ user_id: string }>(
+        "SELECT user_id FROM machine_tokens WHERE token_hash = $1 AND revoked_at IS NULL",
+        [sha256Token(token)]
+      );
+      if (fast.rows.length > 0) return String(fast.rows[0].user_id);
+      // 兼容路径：历史 bcrypt 令牌逐行比对（轮换后可删除）
       const bcrypt = (await import("bcryptjs")).default;
       const result = await wsPg.query<{ user_id: string; token_hash: string }>(
-        "SELECT user_id, token_hash FROM machine_tokens WHERE token_prefix = 'sk_machine_' AND revoked_at IS NULL"
+        "SELECT user_id, token_hash FROM machine_tokens WHERE revoked_at IS NULL"
       );
       for (const row of result.rows) {
-        if (await bcrypt.compare(token, row.token_hash)) return String(row.user_id);
+        if (isBcryptHash(row.token_hash) && (await bcrypt.compare(token, row.token_hash))) return String(row.user_id);
       }
     } catch { /* fall through to anon */ }
     return "anon";
@@ -99,11 +153,28 @@ function registerConnection(connection: WebSocket, userId: string, isDaemon: boo
             break;
           }
           case "agent:status":
-            console.log(`[WS] Agent status: ${msg.status}`);
+            // 转发给该用户的浏览器（Agent 状态栏实时显示，G7 last_pty_line）
+            sendToUser(userId, msg);
             break;
           case "agent:activity":
             console.log(`[WS] Agent activity: ${msg.activity}`);
             break;
+          case "terminal:frame": {
+            // daemon 推来的终端帧 → 只发给这个 agent 的观众（不是所有浏览器连接）
+            const agentName = (msg as Record<string, unknown>).agentName as string | undefined;
+            const set = agentName ? terminalWatchers.get(userId)?.get(agentName) : undefined;
+            if (set) {
+              const payload = JSON.stringify(msg);
+              for (const ws of set) { try { ws.send(payload); } catch { /* ignore */ } }
+            }
+            break;
+          }
+          case "terminal:history": {
+            // daemon 回传的历史日志 → 发给该用户所有浏览器连接（请求方面板消费，
+            // 负载小且频次低，不值得再维护请求级路由）
+            sendToUser(userId, msg);
+            break;
+          }
           case "pong":
             break;
         }
@@ -127,11 +198,24 @@ function registerConnection(connection: WebSocket, userId: string, isDaemon: boo
       try {
         const msg = JSON.parse(raw.toString());
         if (msg.type === "pong") return;
+        // 终端观察（G3）：浏览器请求观看/停止观看某个 agent 的终端
+        if (msg.type === "terminal:watch" && typeof msg.agentName === "string") {
+          addTerminalWatcher(userId, msg.agentName, connection);
+        } else if (msg.type === "terminal:unwatch" && typeof msg.agentName === "string") {
+          removeTerminalWatcher(userId, msg.agentName, connection);
+        } else if (msg.type === "terminal:history" && typeof msg.agentName === "string") {
+          // 历史日志请求：一次性转发给 daemon（响应经下方 daemon 分支 sendToUser 回来）
+          sendToDaemon(userId, { type: "terminal:history", agentName: msg.agentName });
+        } else if (msg.type === "terminal:resize" && typeof msg.agentName === "string") {
+          // 面板尺寸协商：浏览器把期望的 cols/rows 转发给 daemon（实时 resize PTY）
+          sendToDaemon(userId, { type: "terminal:resize", agentName: msg.agentName, cols: msg.cols, rows: msg.rows });
+        }
       } catch { /* ignore */ }
     });
 
     connection.on("close", () => {
       browserClients.get(userId)?.delete(connection);
+      removeTerminalWatcherSocket(userId, connection);
     });
 
     attachHeartbeat(connection);

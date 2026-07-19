@@ -66,6 +66,8 @@ export function VirtualMessageList({ items, channelName, highlightMsgId, onRetry
       <div style={{ height: virtualizer.getTotalSize(), width: "100%", position: "relative" }}>
         {virtualizer.getVirtualItems().map((vi) => {
           const it = items[vi.index];
+          const prevIt = vi.index > 0 ? items[vi.index - 1] : undefined;
+          const prevMsg = prevIt?.kind === "msg" ? prevIt.data : undefined;
           return (
             <div
               key={vi.key}
@@ -75,7 +77,7 @@ export function VirtualMessageList({ items, channelName, highlightMsgId, onRetry
               className="px-4 py-0.5"
             >
               {it.kind === "msg"
-                ? <MessageRow msg={it.data} channelName={channelName} isHighlighted={highlightMsgId !== undefined && it.data.id === highlightMsgId && didHighlight.current === highlightMsgId} />
+                ? <MessageRow msg={it.data} channelName={channelName} prevMsg={prevMsg} isHighlighted={highlightMsgId !== undefined && it.data.id === highlightMsgId && didHighlight.current === highlightMsgId} />
                 : <PendingRow item={it.data} onRetry={onRetry} onDiscard={onDiscard} />}
             </div>
           );

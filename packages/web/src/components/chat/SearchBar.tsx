@@ -80,7 +80,7 @@ export function SearchBar() {
       {open && results.length > 0 && (
         <div
           ref={panelRef}
-          className="absolute top-full mt-1 left-0 right-0 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl z-50 max-h-80 overflow-y-auto"
+          className="absolute top-full mt-1 left-0 right-0 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl z-50 max-h-80 overflow-y-auto animate-slide-in-up origin-top"
         >
           <p className="text-xs text-gray-400 px-3 py-1.5 border-b border-gray-100 dark:border-gray-700">
             找到 {results.length} 条结果
@@ -105,7 +105,7 @@ export function SearchBar() {
       )}
 
       {open && query && !loading && results.length === 0 && (
-        <div ref={panelRef} className="absolute top-full mt-1 left-0 right-0 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl z-50 p-4 text-center text-gray-500 text-sm">
+        <div ref={panelRef} className="absolute top-full mt-1 left-0 right-0 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl z-50 p-4 text-center text-gray-500 text-sm animate-slide-in-up origin-top">
           没有找到匹配的消息
         </div>
       )}

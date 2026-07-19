@@ -13,6 +13,9 @@ interface UiState {
   setWsStatus: (status: WsStatus, reconnectAttempt?: number) => void;
   online: boolean;
   setOnline: (online: boolean) => void;
+  /** 终端观察面板当前打开的 agent（null = 关闭） */
+  terminalAgent: string | null;
+  openTerminal: (agentName: string | null) => void;
 }
 
 const getInitialTheme = (): Theme => {
@@ -29,6 +32,8 @@ export const useUiStore = create<UiState>((set) => ({
     set((s) => ({ wsStatus: status, wsReconnectAttempt: reconnectAttempt ?? s.wsReconnectAttempt })),
   online: typeof navigator !== "undefined" ? navigator.onLine : true,
   setOnline: (online) => set({ online }),
+  terminalAgent: null,
+  openTerminal: (agentName) => set({ terminalAgent: agentName }),
 
   toggleTheme: () => {
     set((s) => {

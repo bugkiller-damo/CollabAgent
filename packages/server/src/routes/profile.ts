@@ -53,6 +53,9 @@ export async function profileRoutes(app: FastifyInstance) {
     }
     const hash = await bcrypt.hash(newPassword as string, 12);
     await app.pg.query("UPDATE users SET password_hash = $1, token_version = gen_random_uuid()::text, updated_at = now() WHERE id = $2", [hash, req.user.sub]);
+    // token_version 已滚动 → 让会话校验缓存立即失效，旧 access token 即刻不可用
+    const { clearSessionCache } = await import("../lib/session-check.js");
+    clearSessionCache();
     return { ok: true };
   });
 
@@ -109,6 +112,8 @@ export async function profileRoutes(app: FastifyInstance) {
     );
     await app.pg.query("UPDATE user_sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL", [userId]);
     await app.pg.query("UPDATE machine_tokens SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL", [userId]);
+    const { clearSessionCache } = await import("../lib/session-check.js");
+    clearSessionCache();
     clearAuthCookies(reply);
     return { ok: true };
   });
@@ -157,7 +162,10 @@ export async function profileRoutes(app: FastifyInstance) {
       "abcdefghijklmnopqrstuvwxyz0123456789"[Math.floor(Math.random() * 36)]
     ).join("");
     const tokenValue = prefix + randomPart;
-    const hash = await bcrypt.hash(tokenValue, 12);
+    // 高熵随机令牌用 sha256 落库（见 lib/token-hash.ts）——认证走唯一索引 O(1)，
+    // 取代全表扫描 + 逐行 bcrypt 的热路径
+    const { sha256Token } = await import("../lib/token-hash.js");
+    const hash = sha256Token(tokenValue);
 
     await app.pg.query(
       "INSERT INTO machine_tokens (user_id, server_id, token_hash, token_prefix, scope) VALUES ($1, $2, $3, $4, $5)",
