@@ -44,6 +44,8 @@ export interface AgentRunSnapshot {
   /** 终端模拟器解析出的"当前实际渲染出来的屏幕"文本（见 terminal-state.ts）——
    *  判断"就绪/忙碌/回合结束"一律应该看这个，而不是对 output 做正则扫描 */
   screenText: string;
+  /** 最近 ~400 行历史文本（scrollback + 当前屏）——终端观察的回看与退出落盘用 */
+  historyText: string;
   cols: number;
   rows: number;
   startedAt: number;

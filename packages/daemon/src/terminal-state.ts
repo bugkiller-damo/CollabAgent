@@ -26,11 +26,17 @@ export interface ITerminalState {
   resize(cols: number, rows: number): void;
   /** 当前渲染出来的整屏文本，按行拼接（去掉每行行尾空白，不过滤空行，保留原始布局） */
   getScreenText(): string;
+  /** scrollback + 当前屏的最近 maxLines 行文本——终端观察（G3）的"回看历史"用。
+   *  scrollback: 1000 之后滚出可视区的内容仍保留在缓冲区里，可支撑观众翻回
+   *  本次 run 较早的画面。 */
+  getHistoryText(maxLines?: number): string;
   dispose(): void;
 }
 
 export const createTerminalState = (cols: number, rows: number): ITerminalState => {
-  const term = new Terminal({ cols, rows, allowProposedApi: true, scrollback: 0 });
+  // scrollback 1000：回合结束检测只看"当前帧"不受影响，但终端观察的观众可以
+  // 回看本次 run 的历史画面（见 getHistoryText）。
+  const term = new Terminal({ cols, rows, allowProposedApi: true, scrollback: 1000 });
 
   return {
     write(data: string, onFlushed?: () => void): void {
@@ -42,8 +48,22 @@ export const createTerminalState = (cols: number, rows: number): ITerminalState 
     },
     getScreenText(): string {
       const buf = term.buffer.active;
+      // 视口从 baseY 开始（scrollback>0 时缓冲区前段是历史行，getLine(0)
+      // 是最老的历史而不是当前屏——2026-07-19 实测：面板只能看到启动画面，
+      // 就是这里漏了 baseY 偏移）
       const lines: string[] = [];
       for (let y = 0; y < term.rows; y++) {
+        const line = buf.getLine(buf.baseY + y);
+        lines.push(line ? line.translateToString(true) : "");
+      }
+      return lines.join("\n");
+    },
+    getHistoryText(maxLines = 200): string {
+      const buf = term.buffer.active;
+      const total = buf.length;
+      const start = Math.max(0, total - maxLines);
+      const lines: string[] = [];
+      for (let y = start; y < total; y++) {
         const line = buf.getLine(y);
         lines.push(line ? line.translateToString(true) : "");
       }

@@ -1,13 +1,16 @@
 import { useEffect, useState, useCallback } from "react";
 import { apiGet, apiPost, apiPatch, apiClient } from "../../api/client";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
+import { PageHeader } from "../../components/layout/PageHeader";
+import { Card } from "../../components/ui/Card";
+import { Input } from "../../components/ui/Input";
+import { Button } from "../../components/ui/Button";
 
 interface Channel {
   id: string; name: string; description: string | null;
   type: string; archived: boolean; role?: string | null;
 }
 
-// 频道管理：创建、归档/取消归档、删除。后端 /api/channels 已具备完整 CRUD。
 export function ChannelManagement() {
   const [channels, setChannels] = useState<Channel[]>([]);
   const [loading, setLoading] = useState(true);
@@ -32,69 +35,82 @@ export function ChannelManagement() {
     setMsg("");
     try {
       await apiPost("/api/channels", { name: n, description: description.trim(), visibility });
-      setName(""); setDescription(""); setVisibility("public"); setShowForm(false);
+      setName("");
+      setDescription("");
+      setVisibility("public");
+      setShowForm(false);
       load();
-    } catch (e: any) { setMsg(e?.message || "创建失败"); }
+    } catch (e: any) {
+      setMsg(e?.message || "创建失败");
+    }
   };
 
   const toggleArchive = async (c: Channel) => {
-    try { await apiPatch(`/api/channels/${c.id}`, { archived: !c.archived }); load(); }
-    catch (e: any) { setMsg(e?.message || "操作失败"); }
+    try {
+      await apiPatch(`/api/channels/${c.id}`, { archived: !c.archived });
+      load();
+    } catch (e: any) {
+      setMsg(e?.message || "操作失败");
+    }
   };
 
   const doDelete = async (c: Channel) => {
-    try { await apiClient(`/api/channels/${c.id}`, { method: "DELETE" }); setConfirmDelete(null); load(); }
-    catch (e: any) { setMsg(e?.message || "删除失败"); setConfirmDelete(null); }
+    try {
+      await apiClient(`/api/channels/${c.id}`, { method: "DELETE" });
+      setConfirmDelete(null);
+      load();
+    } catch (e: any) {
+      setMsg(e?.message || "删除失败");
+      setConfirmDelete(null);
+    }
   };
 
-  const inputCls = "w-full p-2 rounded text-sm bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600";
-
   return (
-    <div className="p-6 max-w-3xl space-y-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-gray-900 dark:text-white text-xl font-bold">频道管理</h2>
-        <button onClick={() => setShowForm((v) => !v)} className="bg-blue-600 text-white px-3 py-2 rounded text-sm hover:bg-blue-500">
-          {showForm ? "取消" : "+ 新建频道"}
-        </button>
+    <div className="mx-auto w-full max-w-7xl space-y-4 p-4 sm:p-6">
+      <PageHeader title="频道管理" backTo="/admin" breadcrumb={[{ label: "管理后台", to: "/admin" }, { label: "频道管理" }]} />
+
+      <div className="flex items-center justify-end">
+        <Button onClick={() => setShowForm((v) => !v)} size="sm">{showForm ? "取消" : "+ 新建频道"}</Button>
       </div>
-      {msg && <p className="text-red-400 text-sm">{msg}</p>}
+
+      {msg && <p className="text-sm text-red-500">{msg}</p>}
 
       {showForm && (
-        <div className="bg-gray-50 dark:bg-gray-800 rounded-lg p-4 space-y-3">
-          <input className={inputCls} placeholder="频道名称（如 product）" value={name}
-            onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && create()} />
-          <input className={inputCls} placeholder="描述（可选）" value={description}
-            onChange={(e) => setDescription(e.target.value)} />
-          <select className={inputCls} value={visibility} onChange={(e) => setVisibility(e.target.value)}>
+        <Card className="space-y-3">
+          <Input placeholder="频道名称（如 product）" value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && create()} />
+          <Input placeholder="描述（可选）" value={description} onChange={(e) => setDescription(e.target.value)} />
+          <select
+            value={visibility}
+            onChange={(e) => setVisibility(e.target.value)}
+            className="w-full rounded-md border border-gray-300 bg-gray-100 p-2 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+          >
             <option value="public">公开（所有成员可见）</option>
             <option value="private">私有（仅受邀成员）</option>
           </select>
-          <button onClick={create} disabled={!name.trim()}
-            className="bg-blue-600 text-white px-4 py-2 rounded text-sm hover:bg-blue-500 disabled:opacity-50">创建</button>
-        </div>
+          <Button onClick={create} disabled={!name.trim()} size="sm">创建</Button>
+        </Card>
       )}
 
       {loading ? (
-        <p className="text-gray-500 text-sm">加载中…</p>
+        <p className="text-sm text-gray-500">加载中…</p>
       ) : (
-        <div className="bg-gray-50 dark:bg-gray-800 rounded-lg divide-y divide-gray-200 dark:divide-gray-700">
+        <Card padding="none" className="divide-y divide-gray-200 dark:divide-gray-700">
           {channels.map((c) => (
             <div key={c.id} className="flex items-center gap-3 p-3">
               <span className="text-gray-400">{c.type === "private" ? "🔒" : "#"}</span>
-              <div className="flex-1 min-w-0">
-                <p className="text-gray-900 dark:text-white text-sm truncate">
-                  {c.name}{c.archived && <span className="ml-2 text-xs text-gray-400">（已归档）</span>}
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-medium text-gray-900 dark:text-white">
+                  {c.name}
+                  {c.archived && <span className="ml-2 text-xs text-gray-400">（已归档）</span>}
                 </p>
-                {c.description && <p className="text-gray-500 text-xs truncate">{c.description}</p>}
+                {c.description && <p className="truncate text-xs text-gray-500">{c.description}</p>}
               </div>
-              <button onClick={() => toggleArchive(c)} className="text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-200">
-                {c.archived ? "取消归档" : "归档"}
-              </button>
-              <button onClick={() => setConfirmDelete(c)} className="text-xs text-gray-400 hover:text-red-500">删除</button>
+              <Button onClick={() => toggleArchive(c)} variant="ghost" size="sm">{c.archived ? "取消归档" : "归档"}</Button>
+              <Button onClick={() => setConfirmDelete(c)} variant="ghost" size="sm" className="text-red-500 hover:text-red-600">删除</Button>
             </div>
           ))}
-          {channels.length === 0 && <p className="text-gray-500 text-sm p-4">暂无频道</p>}
-        </div>
+          {channels.length === 0 && <p className="p-4 text-sm text-gray-500">暂无频道</p>}
+        </Card>
       )}
 
       {confirmDelete && (

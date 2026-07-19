@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
-import bcrypt from "bcryptjs";
 import { requireOwnAgent } from "../lib/agent-helpers.js";
+import { sha256Token } from "../lib/token-hash.js";
 
 /**
  * Per-agent-run scoped token（对应 agent_credentials 表 —— 之前只有 schema/迁移，
@@ -39,7 +39,8 @@ export async function agentCredentialRoutes(app: FastifyInstance) {
     if (!requireMachineAuth(req, reply)) return;
     const agentId = (req.params as Record<string, string>).agentId;
     const token = generateToken();
-    const hash = await bcrypt.hash(token, 12);
+    // sha256 落库（lib/token-hash.ts）：spawn/verify 热路径 O(1) 索引命中
+    const hash = sha256Token(token);
     const expiresAt = new Date(Date.now() + TTL_MS);
     await app.pg.query(
       `INSERT INTO agent_credentials (agent_id, token_hash, token_prefix, expires_at, revoked_at)

@@ -1,7 +1,8 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, copyFileSync } from "node:fs";
 import { join } from "node:path";
 import { generateRelaySystemPrompt, generateSystemPrompt } from "./system-prompt.js";
 import type { AgentInfo } from "./types/index.js";
+import { safeAgentDirName, legacyAgentDirName } from "./agent-dir-name.js";
 
 /**
  * Agent 启动指令与工作区管理模块。
@@ -63,7 +64,7 @@ export function writeSystemPromptFile(
     : generateRelaySystemPrompt(identity, channelName);
   const dir = join(process.cwd(), ".slock");
   mkdirSync(dir, { recursive: true });
-  const file = join(dir, `sysprompt-${agentName.replace(/[^a-zA-Z0-9_-]/g, "_")}.md`);
+  const file = join(dir, `sysprompt-${safeAgentDirName(agentName)}.md`);
   writeFileSync(file, prompt, "utf-8");
   return file;
 }
@@ -73,10 +74,23 @@ export function createWorkspaceDir(
   agentName: string,
   info: { displayName?: string; description?: string },
 ): string {
-  const safe = agentName.replace(/[^a-zA-Z0-9_-]/g, "_");
+  const safe = safeAgentDirName(agentName);
   const dir = join(process.cwd(), ".slock", "workspaces", safe);
   mkdirSync(dir, { recursive: true });
   const memFile = join(dir, "MEMORY.md");
+  if (!existsSync(memFile)) {
+    // 迁移旧命名方案的工作区：旧方案把非 ASCII 全替换成 "_"（等长中文名共用
+    // 同一个目录，见 agent-dir-name.ts）。新目录还没有 MEMORY.md 且旧目录有，
+    // 就把旧记忆复制过来——数据本来就是混的，复制不会让情况变更糟。
+    const legacyDir = join(process.cwd(), ".slock", "workspaces", legacyAgentDirName(agentName));
+    const legacyMem = join(legacyDir, "MEMORY.md");
+    if (legacyDir !== dir && existsSync(legacyMem)) {
+      try {
+        copyFileSync(legacyMem, memFile);
+        console.log(`[Runtime] Migrated MEMORY.md from legacy workspace ${legacyAgentDirName(agentName)} -> ${safe}`);
+      } catch { /* 迁移失败退回种模板，不阻塞启动 */ }
+    }
+  }
   if (!existsSync(memFile)) {
     const seed = [
       `# ${info.displayName || agentName} 的记忆`,

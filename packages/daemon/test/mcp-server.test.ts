@@ -114,7 +114,7 @@ async function spawnMcpClient() {
 const SPAWN_TEST_TIMEOUT = 15_000;
 
 describe("slock-mcp-server (bundled, spawned as a real child process)", () => {
-  it("bundles and boots without throwing, registering all 11 tools", async () => {
+  it("bundles and boots without throwing, registering all 17 tools", async () => {
     const client = await spawnMcpClient();
     try {
       const res = await client.listTools();
@@ -122,16 +122,22 @@ describe("slock-mcp-server (bundled, spawned as a real child process)", () => {
       expect(names).toEqual(
         [
           "cancel_dispatch",
+          "cancel_reminder",
+          "check_messages",
           "claim_tasks",
           "create_tasks",
           "dispatch_task",
           "list_dispatches",
+          "list_reminders",
           "list_tasks",
+          "read_history",
           "report_task",
           "schedule_reminder",
+          "search_messages",
           "send_message",
           "unclaim_task",
           "update_task_status",
+          "upload_attachment",
         ].sort(),
       );
     } finally {

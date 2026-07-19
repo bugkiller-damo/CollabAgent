@@ -19,12 +19,19 @@ export function ToastContainer() {
       role="status"
       aria-live="polite"
     >
-      {toasts.map((t) => {
+      {toasts.map((t, idx) => {
         const s = kindStyles[t.kind];
+        const delay = idx * 60;
         return (
           <div
             key={t.id}
-            className={`pointer-events-auto flex items-start gap-2 ${s.bg} text-white px-4 py-3 rounded-lg shadow-lg max-w-md border-l-4 ${s.border} animate-[slideIn_0.2s_ease-out]`}
+            style={{ animationDelay: t.exiting ? undefined : `${delay}ms` }}
+            className={[
+              "pointer-events-auto flex items-start gap-2 text-white px-4 py-3 rounded-lg shadow-lg max-w-md border-l-4",
+              s.bg,
+              s.border,
+              t.exiting ? "animate-fade-out" : "animate-slide-in-right",
+            ].join(" ")}
           >
             <span className="text-lg shrink-0">{s.icon}</span>
             <p className="text-sm flex-1 break-words">{t.message}</p>

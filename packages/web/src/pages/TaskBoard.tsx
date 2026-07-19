@@ -3,6 +3,9 @@ import { useParams, useNavigate } from "react-router-dom";
 import { apiGet, apiPost } from "../api/client";
 import { useChannelStore } from "../stores";
 import { toast } from "../stores/toastStore";
+import { PageHeader } from "../components/layout/PageHeader";
+import { Button } from "../components/ui/Button";
+import { Input } from "../components/ui/Input";
 
 interface Task {
   id: string;
@@ -34,11 +37,10 @@ export function TaskBoard() {
   const [dragNum, setDragNum] = useState<number | null>(null);
   const [dragOverCol, setDragOverCol] = useState<string | null>(null);
 
-  // 选定频道：路由参数 > 当前活动频道 > 第一个频道
   useEffect(() => {
     const pick = channelName || activeChannelName || (channels[0] as any)?.name || "";
     if (pick && pick !== channel) setChannel(pick);
-  }, [channelName, activeChannelName, channels]);
+  }, [channelName, activeChannelName, channels, channel]);
 
   const load = useCallback(() => {
     if (!channel) return;
@@ -54,18 +56,30 @@ export function TaskBoard() {
     const t = newTitle.trim();
     if (!t || !channel) return;
     setNewTitle("");
-    try { await apiPost("/api/tasks", { channel: "#" + channel, tasks: [{ title: t }] }); load(); }
-    catch (err: any) { toast.error(err?.message || "创建失败"); }
+    try {
+      await apiPost("/api/tasks", { channel: "#" + channel, tasks: [{ title: t }] });
+      load();
+    } catch (err: any) {
+      toast.error(err?.message || "创建失败");
+    }
   };
 
   const claim = async (num: number) => {
-    try { await apiPost("/api/tasks/claim", { channel: "#" + channel, task_numbers: [num] }); load(); }
-    catch (err: any) { toast.error(err?.message || "认领失败"); }
+    try {
+      await apiPost("/api/tasks/claim", { channel: "#" + channel, task_numbers: [num] });
+      load();
+    } catch (err: any) {
+      toast.error(err?.message || "认领失败");
+    }
   };
 
   const moveTo = async (num: number, status: string) => {
-    try { await apiPost("/api/tasks/update-status", { channel: "#" + channel, number: num, status }); load(); }
-    catch (err: any) { toast.error(err?.message || "移动失败"); }
+    try {
+      await apiPost("/api/tasks/update-status", { channel: "#" + channel, number: num, status });
+      load();
+    } catch (err: any) {
+      toast.error(err?.message || "移动失败");
+    }
   };
 
   const onDrop = (status: string) => {
@@ -77,52 +91,70 @@ export function TaskBoard() {
   };
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="p-4 border-b border-gray-200 dark:border-gray-700 flex items-center gap-3 flex-wrap">
-        <h2 className="text-gray-900 dark:text-white font-bold">任务看板</h2>
-        <select value={channel} onChange={(e) => { setChannel(e.target.value); navigate("/tasks/" + e.target.value); }}
-          className="p-1.5 rounded text-sm bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600">
-          {channels.map((c: any) => <option key={c.id} value={c.name}>#{c.name}</option>)}
-        </select>
-        <div className="ml-auto flex items-center gap-2">
-          <input value={newTitle} onChange={(e) => setNewTitle(e.target.value)}
+    <div className="flex min-h-0 flex-1 flex-col">
+      <PageHeader title="任务看板" backTo={`/channels/${channel}`}
+        breadcrumb={channel ? [{ label: `#${channel}`, to: `/channels/${channel}` }, { label: "任务看板" }] : undefined}
+      >
+        <div className="flex flex-wrap items-center gap-2">
+          <select
+            value={channel}
+            onChange={(e) => { setChannel(e.target.value); navigate("/tasks/" + e.target.value); }}
+            className="rounded-md border border-gray-300 bg-gray-100 px-2 py-1.5 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+          >
+            {channels.map((c: any) => <option key={c.id} value={c.name}>#{c.name}</option>)}
+          </select>
+          <Input
+            value={newTitle}
+            onChange={(e) => setNewTitle(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") createTask(); }}
             placeholder="新建任务标题…"
-            className="p-1.5 rounded text-sm bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 w-56" />
-          <button onClick={createTask} disabled={!newTitle.trim()}
-            className="px-3 py-1.5 rounded text-sm bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-50">+ 新建</button>
+            className="w-56"
+          />
+          <Button onClick={createTask} disabled={!newTitle.trim()} size="sm">+ 新建</Button>
         </div>
-      </div>
+      </PageHeader>
 
-      <div className="flex-1 p-4 flex gap-4 overflow-x-auto">
+      <div className="grid flex-1 grid-cols-1 content-start gap-4 overflow-y-auto p-4 sm:grid-cols-2 xl:grid-cols-4">
         {COLUMNS.map((col) => {
           const colTasks = tasks.filter((t) => t.task_status === col.status);
           return (
-            <div key={col.status}
+            <div
+              key={col.status}
               onDragOver={(e) => { e.preventDefault(); setDragOverCol(col.status); }}
               onDragLeave={(e) => { if (e.currentTarget === e.target) setDragOverCol(null); }}
               onDrop={() => onDrop(col.status)}
-              className={"flex-1 min-w-64 rounded-lg p-3 border-t-4 " + col.tint + " bg-gray-100 dark:bg-gray-800 " +
-                (dragOverCol === col.status ? "ring-2 ring-blue-400" : "")}>
-              <h3 className="text-gray-700 dark:text-gray-300 font-semibold mb-3 flex items-center justify-between">
-                {col.label}<span className="text-gray-400 text-xs">{colTasks.length}</span>
+              className={[
+                "min-w-0 rounded-lg border-t-4 bg-gray-100 p-3 dark:bg-gray-800",
+                col.tint,
+                dragOverCol === col.status ? "ring-2 ring-blue-400" : "",
+              ].join(" ")}
+            >
+              <h3 className="mb-3 flex items-center justify-between font-semibold text-gray-700 dark:text-gray-300">
+                {col.label}
+                <span className="text-xs text-gray-400">{colTasks.length}</span>
               </h3>
-              <div className="space-y-2 min-h-[40px]">
+              <div className="min-h-[40px] space-y-2">
                 {colTasks.map((t) => (
-                  <div key={t.id} draggable
+                  <div
+                    key={t.id}
+                    draggable
                     onDragStart={() => setDragNum(t.task_number)}
                     onDragEnd={() => { setDragNum(null); setDragOverCol(null); }}
-                    className="bg-white dark:bg-gray-700 rounded p-2.5 shadow-sm cursor-grab active:cursor-grabbing border border-gray-200 dark:border-gray-600">
+                    className="cursor-grab rounded border border-gray-200 bg-white p-2.5 shadow-sm active:cursor-grabbing dark:border-gray-600 dark:bg-gray-700"
+                  >
                     <div className="flex items-start gap-2">
-                      <span className="text-gray-400 text-xs shrink-0">#{t.task_number}</span>
-                      <p className="text-gray-800 dark:text-gray-200 text-sm flex-1">{t.content}</p>
+                      <span className="shrink-0 text-xs text-gray-400">#{t.task_number}</span>
+                      <p className="flex-1 text-sm text-gray-800 dark:text-gray-200">{t.content}</p>
                     </div>
-                    <div className="flex items-center justify-between mt-2">
+                    <div className="mt-2 flex items-center justify-between">
                       {t.assignee_handle
                         ? <span className="text-[11px] text-blue-600 dark:text-blue-400">@{t.assignee_handle}</span>
                         : <button onClick={() => claim(t.task_number)} className="text-[11px] text-gray-500 hover:text-blue-500">认领</button>}
-                      <select value={t.task_status} onChange={(e) => moveTo(t.task_number, e.target.value)}
-                        className="text-[11px] bg-transparent text-gray-500 dark:text-gray-400 border border-gray-200 dark:border-gray-600 rounded px-1">
+                      <select
+                        value={t.task_status}
+                        onChange={(e) => moveTo(t.task_number, e.target.value)}
+                        className="rounded border border-gray-200 bg-transparent px-1 text-[11px] text-gray-500 dark:border-gray-600 dark:text-gray-400"
+                      >
                         {COLUMNS.map((c) => <option key={c.status} value={c.status}>{c.label}</option>)}
                         <option value="closed">已关闭</option>
                       </select>
@@ -130,7 +162,7 @@ export function TaskBoard() {
                   </div>
                 ))}
                 {!loading && colTasks.length === 0 && (
-                  <p className="text-gray-400 text-xs text-center py-2">拖到此处</p>
+                  <p className="py-2 text-center text-xs text-gray-400">拖到此处</p>
                 )}
               </div>
             </div>

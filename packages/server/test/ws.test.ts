@@ -68,12 +68,11 @@ afterAll(async () => {
 // ── Tests ────────────────────────────────────────────────
 
 describe("WS: connection auth", () => {
-  it("anonymous (no auth) connects as browser client", async () => {
-    const { ws, connected } = connectWs();
-    const msg = await connected;
-    expect(msg.type).toBe("connected");
-    expect(msg).toHaveProperty("time"); // browser-style "time" field
-    ws.close();
+  it("anonymous (no auth) is rejected with 4001", async () => {
+    // 2026-07-17 安全修复：未认证浏览器连接不再降级为 anon（此前可收到公开频道全量消息）
+    const ws = new WebSocket(WS_BASE);
+    const code = await closeCode(ws);
+    expect(code).toBe(4001);
   });
 
   it("valid JWT cookie authenticates as browser user", async () => {
@@ -85,12 +84,10 @@ describe("WS: connection auth", () => {
     ws.close();
   });
 
-  it("invalid JWT treated as anonymous browser client", async () => {
-    const { ws, connected } = connectWs({ Cookie: "access_token=eyJhbGciOiJIUzI1NiJ9.invalid.hwis" });
-    const msg = await connected;
-    expect(msg.type).toBe("connected"); // falls back to anon
-    expect(msg).toHaveProperty("time");
-    ws.close();
+  it("invalid JWT is rejected with 4001 (not silently anon)", async () => {
+    const ws = new WebSocket(WS_BASE, { headers: { Cookie: "access_token=eyJhbGciOiJIUzI1NiJ9.invalid.hwis" } });
+    const code = await closeCode(ws);
+    expect(code).toBe(4001);
   });
 
   it("daemon with valid machine token connects and receives serverTime", async () => {
@@ -118,12 +115,11 @@ describe("WS: connection auth", () => {
     expect(code).toBe(4001);
   });
 
-  it("machine token auth is case-sensitive — wrong case treated as anon browser", async () => {
-    const { ws, connected } = connectWs({ Authorization: "Bearer SK_MACHINE_foo" });
-    const msg = await connected;
-    expect(msg.type).toBe("connected");
-    expect(msg).toHaveProperty("time");
-    ws.close();
+  it("machine token auth is case-sensitive — wrong case is not a daemon token, closed 4001", async () => {
+    // "SK_MACHINE_foo" 不是合法 daemon token（前缀小写敏感），按浏览器 JWT 路径校验失败 → 拒绝
+    const ws = new WebSocket(WS_BASE, { headers: { Authorization: "Bearer SK_MACHINE_foo" } });
+    const code = await closeCode(ws);
+    expect(code).toBe(4001);
   });
 });
 

@@ -114,19 +114,23 @@ export interface IAgentRuntime {
   autostartAgent(agentName: string): Promise<void>;
 
   // 注册表
-  registerAgent(id: string, name: string, info: { displayName?: string; description?: string }): void;
+  registerAgent(id: string, name: string, info: { displayName?: string; description?: string; model?: string }): void;
   unregisterAgent(name: string): void;
   loadExistingAgents(): Promise<void>;
   resolveAgentId(agentName: string): string | null;
   findMentionedAgent(content: string): string | null;
   mentionedAgentNames(content: string): string[];
+  /** 全部已注册 agent 的名字列表（G7 状态栏轮询用） */
+  listAgentNames(): string[];
 
   // 生命周期
   stopAgent(agentName: string): void;
   stopAll(): void;
+  /** 记录该 agent 的首选终端尺寸（面板尺寸协商用）——下次 spawn 直接按此尺寸启动 */
+  setPreferredTermSize(agentName: string, size: { cols: number; rows: number }): void;
 
   // 查询
-  getAgentInfo(name: string): { displayName?: string; description?: string } | undefined;
+  getAgentInfo(name: string): { displayName?: string; description?: string; model?: string } | undefined;
   hasAgent(name: string): boolean;
   getAgentState(name: string): AgentStatus | undefined;
 
@@ -149,12 +153,14 @@ export const createAgentRuntime = (
   const agentDrivers = new Map<string, boolean>();
   const agentSessions = new Map<string, string>();
   const agentNameToId = new Map<string, string>();
-  const agentInfo = new Map<string, { displayName?: string; description?: string }>();
+  const agentInfo = new Map<string, { displayName?: string; description?: string; model?: string }>();
 
   // ---- PTY 模式基础设施 ----
   const agentManager: IAgentManager = agentManagerOverride ?? createAgentManager();
   // agentName -> runId 缓存（常驻 PTY）
   const runIdByAgent = new Map<string, string>();
+  // agentName -> 首选终端尺寸（面板协商；下次 spawn 应用）
+  const preferredTermSize = new Map<string, { cols: number; rows: number }>();
   // runId -> unsubscribe 函数
   const unsubByRunId = new Map<string, () => void>();
   // 旧 PersistentClaude 路径（兜底）
@@ -193,10 +199,14 @@ export const createAgentRuntime = (
 
   const { transitionState, clearStartupTimer } = stateMachine;
 
-  // ---- 空闲回收（对应 ADR-005："工作中的 agent 队列空 + 60s 无活动 -> 优雅关闭"）----
+  // ---- 空闲回收（对应 ADR-005："工作中的 agent 队列空 + 无活动 -> 优雅关闭"）----
   // touch() 在每次回合结束（working -> idle）时调用；untrack() 在开始新一轮 working 或
   // 显式停止时调用，避免正在处理消息的 agent 被计入空闲时间。
+  // 默认 60s 对连续聊天太激进——用户隔一两分钟追问一次就会吃到完整冷启动（2026-07-17
+  // 实测：78s 被回收，第二个问题重新 spawn）。默认放宽到 300s，可用
+  // SLOCK_IDLE_RECLAIM_MS 调整。
   const idleReclaimer = createIdleReclaimer({
+    timeoutMs: Number(process.env.SLOCK_IDLE_RECLAIM_MS) || 300_000,
     onReclaim: (name) => {
       const runId = runIdByAgent.get(name);
       if (runId) agentManager.stopRun(runId); // 真正的清理交给下面的退出清理链回调
@@ -232,13 +242,22 @@ export const createAgentRuntime = (
     return mentionedAgentNames(content)[0] || null;
   };
 
-  // ---- 卡住检测器（诊断用） ----
+  // ---- 卡住检测器（诊断用） + 静默兜底回合结束 ----
+
+  /** agentName -> 最近一次 PTY 输出事件的时间（spawn 的输出订阅更新） */
+  const lastOutputAtByAgent = new Map<string, number>();
 
   /**
-   * 每 5s 扫描一次 working 状态的 agent；如果超 30s 还没回到 idle，
-   * 打印警告 + 当前 output 长度和尾部 200 字符（去 ANSI），便于排查
-   * 回合结束检测为啥没触发。
+   * 每 5s 扫描一次 working 状态的 agent：
+   * 1) 静默兜底回合结束：有 pending 但 20s 无任何输出且当前屏有提示符 → 判回合结束。
+   *    Claude 真在思考时屏幕持续有 spinner 输出，不会静默 20s，所以不会误判；
+   *    这专门兜住「安静完成、从没出现过 esc to interrupt 忙碌帧」的回合——
+   *    比如 autostart 注入的「安静等待」消息（2026-07-18 实测：busyObserved 永远
+   *    false，round-end 按 busy→idle 不变量永不触发，STUCK 到被回收为止）。
+   * 2) STUCK 警告：超过阈值还没回到 idle 就打印警告 + output 尾部/当前屏，便于排查。
    */
+  const STUCK_WARN_MS = Number(process.env.SLOCK_STUCK_WARN_MS) || 90_000;
+  const QUIESCE_MS = Number(process.env.SLOCK_QUIESCE_MS) || 20_000;
   let _stuckDetectorInstalled = false;
   const installStuckDetector = (): void => {
     if (_stuckDetectorInstalled) return;
@@ -247,15 +266,34 @@ export const createAgentRuntime = (
     setInterval(() => {
       const now = Date.now();
       for (const { name: agentName, lastTransitionAt } of stateMachine.getWorkingAgents()) {
+        const runId = runIdByAgent.get(agentName);
+        const run = runId ? agentManager.getRun(runId) : undefined;
+
+        // 静默兜底（先于 STUCK 警告）
+        const lastOut = lastOutputAtByAgent.get(agentName) ?? 0;
+        if (
+          turnTracker.hasPending(agentName) && run &&
+          lastOut > 0 && now - lastOut > QUIESCE_MS &&
+          PROMPT_RE.test(run.screenText)
+        ) {
+          turnTracker.decPending(agentName);
+          turnTracker.clearBusyObserved(agentName);
+          stateMachine.transitionState(agentName, "idle");
+          idleReclaimer.touch(agentName);
+          console.log(
+            `[Runtime] @${agentName} round-end (quiescence fallback: no output for ${((now - lastOut) / 1000).toFixed(0)}s, ` +
+            `busyObserved was ${turnTracker.hasBeenBusy(agentName)})`,
+          );
+          continue;
+        }
+
         const elapsed = now - lastTransitionAt;
-        if (elapsed > 30000) {
-          // 同一 agent 至少间隔 30s 才再警告一次
+        if (elapsed > STUCK_WARN_MS) {
+          // 同一 agent 至少间隔一个阈值周期才再警告一次
           const lastWarn = lastWarnedAt.get(agentName) ?? 0;
-          if (now - lastWarn < 30000) continue;
+          if (now - lastWarn < STUCK_WARN_MS) continue;
           lastWarnedAt.set(agentName, now);
 
-          const runId = runIdByAgent.get(agentName);
-          const run = runId ? agentManager.getRun(runId) : undefined;
           const tail = (run?.output ?? "").slice(-200).replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "");
           const screen = (run?.screenText ?? "").replace(/\s+/g, " ").trim().slice(-300);
           console.warn(
@@ -274,6 +312,9 @@ export const createAgentRuntime = (
     agentManager, resolvedClaudePath, runStore, exitChain,
     stateMachine, turnTracker, idleReclaimer, postStartWriter,
     runIdByAgent, unsubByRunId,
+    getAgentModel: (name) => agentInfo.get(name)?.model,
+    lastOutputAtByAgent,
+    getPreferredTermSize: (name) => preferredTermSize.get(name),
   });
 
   // ---- 消息分发核心（见 agent-runtime-dispatch.ts）----
@@ -313,10 +354,18 @@ export const createAgentRuntime = (
       await dispatchToAgent(agentName, "general", userMsg);
     },
 
-    registerAgent(id: string, name: string, info: { displayName?: string; description?: string }): void {
+    registerAgent(id: string, name: string, info: { displayName?: string; description?: string; model?: string }): void {
       agentDrivers.set(name, true);
       if (id) agentNameToId.set(name, id);
-      agentInfo.set(name, info);
+      // 合并而非覆盖：编辑 agent（PATCH → agent:start 重推）时某些字段可能缺省，
+      // 整体覆盖会把之前已捕获的 model 抹掉（2026-07-17 实测：改成 haiku 后
+      // spawn 无 --model，因为重推消息没解出 model，覆盖了启动时捕获的 sonnet）。
+      const prev = agentInfo.get(name);
+      agentInfo.set(name, {
+        displayName: info.displayName ?? prev?.displayName,
+        description: info.description ?? prev?.description,
+        model: info.model ?? prev?.model,
+      });
       // 清理旧 PTY / 旧 session
       const oldRunId = runIdByAgent.get(name);
       if (oldRunId) {
@@ -362,7 +411,7 @@ export const createAgentRuntime = (
         for (const agent of (data.agents || [])) {
           const name = agent.name as string;
           if (agent.id) agentNameToId.set(name, agent.id as string);
-          agentInfo.set(name, { displayName: agent.display_name, description: agent.description });
+          agentInfo.set(name, { displayName: agent.display_name, description: agent.description, model: agent.model });
           if (!agentDrivers.has(name)) {
             console.log("[Daemon] Registered (lazy): @" + name + " -> " + (agent.id || "?").slice(0, 8));
             agentDrivers.set(name, true);
@@ -377,6 +426,8 @@ export const createAgentRuntime = (
     resolveAgentId,
     findMentionedAgent,
     mentionedAgentNames,
+    listAgentNames: () => Array.from(agentDrivers.keys()),
+    setPreferredTermSize: (agentName, size) => { preferredTermSize.set(agentName, size); },
 
     stopAgent(agentName: string): void {
       const runId = runIdByAgent.get(agentName);
@@ -393,8 +444,7 @@ export const createAgentRuntime = (
 
     stopAll(): void {
       idleReclaimer.stop();
-      for (const unsub of unsubByRunId.values()) unsub();
-      unsubByRunId.clear();
+      for (const unsub of unsubByRunId.values()) unsub();      unsubByRunId.clear();
       for (const runId of runIdByAgent.values()) agentManager.stopRun(runId);
       runIdByAgent.clear();
       for (const s of persistentSessions.values()) s.stop();

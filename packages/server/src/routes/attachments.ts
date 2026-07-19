@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { randomUUID } from "node:crypto";
 import { getStorage, isAllowedMimeType } from "../lib/storage.js";
+import { canAccessChannel } from "../lib/access.js";
 
 export async function attachmentRoutes(app: FastifyInstance) {
   app.post("/upload", { preHandler: [app.authenticate] }, async (req, reply) => {
@@ -38,10 +39,33 @@ export async function attachmentRoutes(app: FastifyInstance) {
     };
   });
 
-  app.get("/:id", async (req, reply) => {
-    const result = await app.pg.query<{ storage_key: string; mime_type: string; filename: string }>("SELECT * FROM attachments WHERE id = $1", [(req.params as Record<string, string>).id]);
+  app.get("/:id", { preHandler: [app.authenticate] }, async (req, reply) => {
+    const attachmentId = (req.params as Record<string, string>).id;
+    const userId = req.user.sub;
+    const result = await app.pg.query<{ id: string; storage_key: string; mime_type: string; filename: string; uploader_id: string }>(
+      "SELECT * FROM attachments WHERE id = $1",
+      [attachmentId]
+    );
     if (result.rows.length === 0) return reply.status(404).send({ error: "not found" });
     const row = result.rows[0];
+
+    // 访问控制：上传者本人，或附件所挂消息所在频道的成员。
+    // 尚未挂到任何消息的附件（发送前先上传的场景）仅上传者可访问。
+    const isUploader = String(row.uploader_id) === String(userId);
+    if (!isUploader) {
+      const links = await app.pg.query<{ channel_id: string }>(
+        `SELECT m.channel_id FROM message_attachments ma
+          JOIN messages m ON m.id = ma.message_id
+         WHERE ma.attachment_id = $1 LIMIT 5`,
+        [attachmentId]
+      );
+      let allowed = false;
+      for (const link of links.rows) {
+        if (await canAccessChannel(app, String(link.channel_id), userId)) { allowed = true; break; }
+      }
+      if (!allowed) return reply.status(403).send({ error: "no access to this attachment" });
+    }
+
     // ?meta=1 返回元数据；默认直接下载文件字节（供 slock attachment view 使用）
     if ((req.query as Record<string, string>).meta) return row;
     try {

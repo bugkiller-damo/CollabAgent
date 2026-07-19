@@ -1,7 +1,7 @@
 import type { AgentStatus } from "./types/index.js";
 
 /**
- * Agent 四态模型（uninit/idle/starting/working/stopped）状态机。
+ * Agent 五态模型（uninit/idle/starting/working/stopped）状态机。
  * 见 docs/2026-07-15/03-state-machine.md。
  */
 interface AgentState {
@@ -12,7 +12,9 @@ interface AgentState {
 
 const VALID_TRANSITIONS: Record<AgentStatus, AgentStatus[]> = {
   uninit: ["idle", "stopped"],
-  idle: ["starting", "stopped"],
+  // idle → working 合法：PTY 复用分支（agent 空闲但进程还活着）收到新消息时
+  // 直接进入工作态，不需要重新走 starting（agent-runtime-dispatch.ts 的 else 分支）。
+  idle: ["starting", "working", "stopped"],
   starting: ["working", "idle", "stopped"],
   working: ["idle", "stopped"],
   stopped: ["idle"],
@@ -55,11 +57,12 @@ export const createAgentStateMachine = (): IAgentStateMachine => {
   const transitionState = (name: string, to: AgentStatus): void => {
     const current = agentStates.get(name);
     const from: AgentStatus = current?.status ?? "uninit";
+    // 同态迁移是 no-op（退出清理链等会对已是 idle 的 agent 再转一次 idle），
+    // 直接放行，不打扰 assertTransition 的警告日志。
+    if (from === to) return;
     try { assertTransition(from, to); } catch { return; }
     agentStates.set(name, { status: to, lastTransitionAt: Date.now(), startupTimer: null });
-    if (from !== to) {
-      console.log(`[Runtime] @${name} ${STATE_LABEL[from]} → ${STATE_LABEL[to]}`);
-    }
+    console.log(`[Runtime] @${name} ${STATE_LABEL[from]} → ${STATE_LABEL[to]}`);
   };
 
   const clearStartupTimer = (name: string): void => {

@@ -37,19 +37,23 @@ export async function reminderRoutes(app: FastifyInstance) {
   });
 
   app.get("/:id", { preHandler: [app.authenticate] }, async (req, reply) => {
-    const result = await app.pg.query("SELECT * FROM reminders WHERE id = $1", [(req.params as Record<string, string>).id]);
+    const result = await app.pg.query(
+      "SELECT * FROM reminders WHERE id = $1 AND owner_id = $2",
+      [(req.params as Record<string, string>).id, req.user.sub]
+    );
     if (result.rows.length === 0) return reply.status(404).send({ error: "not found" });
     return { reminder: result.rows[0] };
   });
 
-  app.patch("/:id", { preHandler: [app.authenticate] }, async (req) => {
+  app.patch("/:id", { preHandler: [app.authenticate] }, async (req, reply) => {
     const { title, fireAt, repeat } = req.body as Record<string, unknown>;
     const { id } = req.params as Record<string, string>;
     const result = await app.pg.query(
       `UPDATE reminders SET title = COALESCE($2, title), fire_at = COALESCE($3, fire_at),
-       repeat_rule = COALESCE($4, repeat_rule), updated_at = now() WHERE id = $1 RETURNING *`,
-      [id, title || null, fireAt ? new Date(String(fireAt)) : null, repeat || null]
+       repeat_rule = COALESCE($4, repeat_rule), updated_at = now() WHERE id = $1 AND owner_id = $5 RETURNING *`,
+      [id, title || null, fireAt ? new Date(String(fireAt)) : null, repeat || null, req.user.sub]
     );
+    if (result.rows.length === 0) return reply.status(404).send({ error: "not found" });
     return { reminder: result.rows[0] };
   });
 
@@ -61,9 +65,10 @@ export async function reminderRoutes(app: FastifyInstance) {
     const units: Record<string, number> = { m: 60000, h: 3600000, d: 86400000 };
     const ms = Number(match[1]) * units[match[2]];
     const result = await app.pg.query(
-      "UPDATE reminders SET fire_at = $1, updated_at = now() WHERE id = $2 RETURNING *",
-      [new Date(Date.now() + ms), id]
+      "UPDATE reminders SET fire_at = $1, updated_at = now() WHERE id = $2 AND owner_id = $3 RETURNING *",
+      [new Date(Date.now() + ms), id, req.user.sub]
     );
+    if (result.rows.length === 0) return reply.status(404).send({ error: "not found" });
     await app.pg.query(
       "INSERT INTO reminder_events (reminder_id, event_type, detail) VALUES ($1, $2, $3)",
       [id, "snoozed", JSON.stringify({ duration, newFireAt: result.rows[0].fire_at })]
@@ -71,12 +76,22 @@ export async function reminderRoutes(app: FastifyInstance) {
     return { reminder: result.rows[0] };
   });
 
-  app.delete("/:id", { preHandler: [app.authenticate] }, async (req) => {
-    await app.pg.query("UPDATE reminders SET status = 'canceled', updated_at = now() WHERE id = $1", [(req.params as Record<string, string>).id]);
+  app.delete("/:id", { preHandler: [app.authenticate] }, async (req, reply) => {
+    const result = await app.pg.query(
+      "UPDATE reminders SET status = 'canceled', updated_at = now() WHERE id = $1 AND owner_id = $2 RETURNING id",
+      [(req.params as Record<string, string>).id, req.user.sub]
+    );
+    if (result.rows.length === 0) return reply.status(404).send({ error: "not found" });
     return { ok: true };
   });
 
-  app.get("/:id/log", { preHandler: [app.authenticate] }, async (req) => {
+  app.get("/:id/log", { preHandler: [app.authenticate] }, async (req, reply) => {
+    // 先校验提醒归属，再返回事件日志（否则他人提醒的历史可被读取）
+    const own = await app.pg.query(
+      "SELECT 1 FROM reminders WHERE id = $1 AND owner_id = $2",
+      [(req.params as Record<string, string>).id, req.user.sub]
+    );
+    if (own.rows.length === 0) return reply.status(404).send({ error: "not found" });
     const result = await app.pg.query(
       "SELECT * FROM reminder_events WHERE reminder_id = $1 ORDER BY created_at ASC",
       [(req.params as Record<string, string>).id]

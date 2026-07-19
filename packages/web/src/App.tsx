@@ -25,10 +25,6 @@ const NotFoundPage = lazy(() => import("./pages/NotFoundPage").then(m => ({ defa
 const NotificationSettings = lazy(() => import("./pages/settings/NotificationSettings").then(m => ({ default: m.NotificationSettings })));
 const IntegrationSettings = lazy(() => import("./pages/settings/IntegrationSettings").then(m => ({ default: m.IntegrationSettings })));
 
-function SettingsPlaceholder({ title }: { title: string }) {
-  return <div className="p-6 text-gray-400"><h2 className="text-white text-xl font-bold mb-2">{title}</h2><p>即将推出</p></div>;
-}
-
 /** Suspense fallback：轻量骨架屏，不额外引入组件 */
 function PageLoading() {
   return (

@@ -3,6 +3,10 @@ import { useNavigate } from "react-router-dom";
 import { apiGet, apiClient } from "../../api/client";
 import { useAuthStore } from "../../stores";
 import { toast } from "../../stores/toastStore";
+import { PageHeader } from "../../components/layout/PageHeader";
+import { Card } from "../../components/ui/Card";
+import { Input } from "../../components/ui/Input";
+import { Button } from "../../components/ui/Button";
 
 interface Session {
   id: string;
@@ -40,14 +44,23 @@ export function SecuritySettings() {
   useEffect(() => { load(); }, []);
 
   const revoke = async (id: string) => {
-    try { await apiClient(`/api/auth/sessions/${id}`, { method: "DELETE" }); load(); }
-    catch (e: any) { toast.error(e?.message || "下线失败"); }
+    try {
+      await apiClient(`/api/auth/sessions/${id}`, { method: "DELETE" });
+      load();
+    } catch (e: any) {
+      toast.error(e?.message || "下线失败");
+    }
   };
 
   const logoutAll = async () => {
     if (!confirm("将退出所有设备（包括当前），确定？")) return;
-    try { await apiClient("/api/auth/logout-all", { method: "POST" }); logout(); navigate("/login"); }
-    catch (e: any) { toast.error(e?.message || "操作失败"); }
+    try {
+      await apiClient("/api/auth/logout-all", { method: "POST" });
+      logout();
+      navigate("/login");
+    } catch (e: any) {
+      toast.error(e?.message || "操作失败");
+    }
   };
 
   const exportData = async () => {
@@ -60,7 +73,9 @@ export function SecuritySettings() {
       a.download = `collabagent-export-${new Date().toISOString().slice(0, 10)}.json`;
       a.click();
       URL.revokeObjectURL(url);
-    } catch (e: any) { toast.error(e?.message || "导出失败"); }
+    } catch (e: any) {
+      toast.error(e?.message || "导出失败");
+    }
   };
 
   const deactivate = async () => {
@@ -80,56 +95,53 @@ export function SecuritySettings() {
   };
 
   return (
-    <div className="max-w-2xl space-y-8">
+    <div className="w-full space-y-8">
+      <PageHeader title="安全与账户" backTo="/settings" />
+
       <section>
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-gray-900 dark:text-white font-bold">登录设备</h3>
-          <button onClick={logoutAll} className="text-xs text-red-500 hover:underline">退出所有设备</button>
+        <div className="mb-3 flex items-center justify-between">
+          <h3 className="font-bold text-gray-900 dark:text-white">登录设备</h3>
+          <Button onClick={logoutAll} variant="ghost" size="sm" className="text-red-500 hover:text-red-600">退出所有设备</Button>
         </div>
         {loading ? (
-          <p className="text-gray-400 text-sm">加载中…</p>
+          <p className="text-sm text-gray-400">加载中…</p>
         ) : sessions.length === 0 ? (
-          <p className="text-gray-400 text-sm">没有活跃会话</p>
+          <p className="text-sm text-gray-400">没有活跃会话</p>
         ) : (
           <div className="space-y-2">
             {sessions.map((s) => (
-              <div key={s.id} className="flex items-center justify-between p-3 rounded border border-gray-200 dark:border-gray-700">
+              <Card key={s.id} padding="sm" className="flex items-center justify-between">
                 <div className="min-w-0">
-                  <div className="text-sm text-gray-900 dark:text-white flex items-center gap-2">
+                  <div className="flex items-center gap-2 text-sm text-gray-900 dark:text-white">
                     {deviceLabel(s.user_agent)}
-                    {s.current && <span className="text-[11px] px-1.5 py-0.5 rounded bg-green-100 dark:bg-green-900/40 text-green-600 dark:text-green-300">当前设备</span>}
+                    {s.current && <span className="rounded bg-green-100 px-1.5 py-0.5 text-[11px] text-green-600 dark:bg-green-900/40 dark:text-green-300">当前设备</span>}
                   </div>
-                  <div className="text-xs text-gray-500 truncate">
+                  <div className="truncate text-xs text-gray-500">
                     {s.ip || "—"} · 最近活跃 {new Date(s.last_seen_at).toLocaleString("zh-CN")}
                   </div>
                 </div>
                 {!s.current && (
-                  <button onClick={() => revoke(s.id)} className="text-xs text-red-500 hover:underline shrink-0 ml-3">下线</button>
+                  <Button onClick={() => revoke(s.id)} variant="ghost" size="sm" className="shrink-0 text-red-500 hover:text-red-600">下线</Button>
                 )}
-              </div>
+              </Card>
             ))}
           </div>
         )}
       </section>
 
       <section>
-        <h3 className="text-gray-900 dark:text-white font-bold mb-3">数据导出</h3>
-        <p className="text-gray-500 text-sm mb-2">导出你的资料、消息、频道成员关系、提醒与会话为 JSON 文件。</p>
-        <button onClick={exportData} className="px-3 py-1.5 rounded text-sm bg-blue-600 text-white hover:bg-blue-500">导出我的数据</button>
+        <h3 className="mb-3 font-bold text-gray-900 dark:text-white">数据导出</h3>
+        <p className="mb-3 text-sm text-gray-500">导出你的资料、消息、频道成员关系、提醒与会话为 JSON 文件。</p>
+        <Button onClick={exportData} size="sm">导出我的数据</Button>
       </section>
 
-      <section className="border border-red-300 dark:border-red-900/50 rounded p-4">
-        <h3 className="text-red-600 dark:text-red-400 font-bold mb-2">注销账户</h3>
-        <p className="text-gray-500 text-sm mb-3">注销后将无法登录，个人信息会被清除（历史消息保留）。此操作不可轻易撤销。</p>
-        <div className="space-y-2 max-w-sm">
-          <input type="password" value={pwd} onChange={(e) => setPwd(e.target.value)} placeholder="输入密码确认"
-            className="w-full p-2 rounded text-sm bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600" />
-          <input value={confirmText} onChange={(e) => setConfirmText(e.target.value)} placeholder='输入「注销」二字确认'
-            className="w-full p-2 rounded text-sm bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600" />
-          <button onClick={deactivate} disabled={busy}
-            className="px-3 py-1.5 rounded text-sm bg-red-600 text-white hover:bg-red-500 disabled:opacity-50">
-            {busy ? "处理中…" : "确认注销账户"}
-          </button>
+      <section className="rounded-lg border border-red-300 p-4 dark:border-red-900/50">
+        <h3 className="mb-2 font-bold text-red-600 dark:text-red-400">注销账户</h3>
+        <p className="mb-3 text-sm text-gray-500">注销后将无法登录，个人信息会被清除（历史消息保留）。此操作不可轻易撤销。</p>
+        <div className="max-w-sm space-y-2">
+          <Input type="password" value={pwd} onChange={(e) => setPwd(e.target.value)} placeholder="输入密码确认" />
+          <Input value={confirmText} onChange={(e) => setConfirmText(e.target.value)} placeholder='输入「注销」二字确认' />
+          <Button onClick={deactivate} disabled={busy} variant="danger" size="sm">{busy ? "处理中…" : "确认注销账户"}</Button>
         </div>
       </section>
     </div>

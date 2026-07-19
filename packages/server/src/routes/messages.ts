@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { broadcast } from "../ws/handler.js";
-import { canAccessChannel } from "../lib/access.js";
+import { canAccessChannel, getChannelType } from "../lib/access.js";
 import { isDmTarget, resolveDmTarget, dmOtherMembers, type Party } from "../lib/dm.js";
 import { createNotification } from "../lib/notifications.js";
 import { inc } from "../lib/metrics.js";
@@ -8,6 +8,30 @@ import { cleanChannelName, resolveChannel } from "../lib/channel.js";
 import { reactionsJson, attachmentsJson } from "../lib/query-fragments.js";
 
 export async function messageRoutes(app: FastifyInstance) {
+  // 从消息文本解析 @提及 的 handle（仅用于人类用户——handle 注册时限死 ASCII）
+  function parseMentionHandles(content: string): string[] {
+    const names = new Set<string>();
+    for (const word of content.split(/\s+/)) {
+      if (word.startsWith("@") && word.length > 1) {
+        const name = word.slice(1).replace(/[^a-zA-Z0-9_]/g, "");
+        if (name) names.add(name);
+      }
+    }
+    return Array.from(names);
+  }
+
+  // 检测文本是否 @了某个名字：子串匹配 "@name"，且名字后不能紧跟字母/数字/下划线/中文
+  // （防止 agent 名 "test" 误中 "@tester"）。支持中文 agent 名。
+  function contentMentions(content: string, name: string): boolean {
+    let idx = content.indexOf("@" + name);
+    while (idx >= 0) {
+      const after = content[idx + name.length + 1];
+      if (after === undefined || !/[\p{L}\p{N}_]/u.test(after)) return true;
+      idx = content.indexOf("@" + name, idx + 1);
+    }
+    return false;
+  }
+
   // Get messages by channel
   app.get("/", { preHandler: [app.authenticate] }, async (req, reply) => {
     const { channel, limit } = req.query as Record<string, string>;
@@ -89,42 +113,70 @@ export async function messageRoutes(app: FastifyInstance) {
       const sv = await app.pg.query<{ server_id: string }>("SELECT server_id FROM channels WHERE id = $1", [resolvedChannelId]);
       resolvedServerId = sv.rows[0]?.server_id;
     }
-    const result = await app.pg.query(
-      "INSERT INTO messages (channel_id, server_id, sender_id, sender_type, content, thread_id) VALUES ($1, $2, $3, 'human', $4, $5) RETURNING id, seq, created_at",
-      [resolvedChannelId, resolvedServerId, userId, content || "", threadId || null]
-    );
-    const msg = result.rows[0];
-    // @提及 agent：批量 INSERT（一次性查 + 插，消除 N+1）
-    if (!dm && content && content.includes("@")) {
-      const mentionedNames = new Set<string>();
-      for (const word of content.split(/\s+/)) {
-        if (word.startsWith("@") && word.length > 1) {
-          mentionedNames.add(word.slice(1).replace(/[^a-zA-Z0-9_]/g, ""));
+    const channelType = await getChannelType(app, resolvedChannelId);
+    // 消息本体 + （公开频道的）agent 自动入圈 + 附件挂载 一个事务提交。
+    // （通知放在事务外：通知失败不应回滚消息本身）
+    const { msg, attachments, mentionAgents } = await app.pg.transaction(async (tx) => {
+      const result = await tx.query(
+        "INSERT INTO messages (channel_id, server_id, sender_id, sender_type, content, thread_id) VALUES ($1, $2, $3, 'human', $4, $5) RETURNING id, seq, created_at",
+        [resolvedChannelId, resolvedServerId, userId, content || "", threadId || null]
+      );
+      const msg = result.rows[0] as any;
+      let mentionAgents: string[] | undefined;
+      // @提及 agent：按频道类型决定「谁能被唤醒」。
+      // 检测方式：对候选 agent 名做子串匹配（支持中文名；此前按 ASCII 解析 handle，
+      // 会把中文名剥光——"@716测试机" 变成 "716" 查无此人，"@悬疑小说家" 直接变空串）。
+      if (!dm && content && content.includes("@")) {
+        if (channelType === "public") {
+          // 候选集：频道所在 server 的 agent + 发送者自己名下的 agent（与 /invite 回退一致）
+          const candidates = await tx.query<{ name: string }>(
+            "SELECT name FROM agents WHERE server_id = $1 OR user_id = $2",
+            [resolvedServerId, userId]
+          );
+          const mentionedNames = candidates.rows.map((r) => r.name).filter((n) => n && contentMentions(content, n));
+          if (mentionedNames.length > 0) {
+            // 公开频道：自动入圈，入圈后即可被唤醒
+            await tx.query(
+              `INSERT INTO channel_members (channel_id, member_id, member_type, role)
+               SELECT $1, a.id, 'agent', 'member' FROM agents a
+               WHERE a.name = ANY($2) AND (a.server_id = $3 OR a.user_id = $4)
+               ON CONFLICT DO NOTHING`,
+              [resolvedChannelId, mentionedNames, resolvedServerId, userId]
+            );
+            mentionAgents = mentionedNames;
+          } else {
+            mentionAgents = [];
+          }
+        } else {
+          // 私有频道：不自动入圈（非管理员不能拉人），只唤醒「已经是成员」的 agent。
+          // 不在列表里的 agent daemon 不会 spawn —— 避免起了 PTY 回复时再被 403 的资源浪费。
+          const members = await tx.query<{ name: string }>(
+            `SELECT a.name FROM agents a
+             JOIN channel_members cm ON cm.member_id = a.id AND cm.member_type = 'agent' AND cm.channel_id = $1`,
+            [resolvedChannelId]
+          );
+          mentionAgents = members.rows.map((r) => r.name).filter((n) => n && contentMentions(content, n));
         }
       }
-      if (mentionedNames.size > 0) {
-        await app.pg.query(
-          `INSERT INTO channel_members (channel_id, member_id, member_type, role)
-           SELECT $1, a.id, 'agent', 'member' FROM agents a
-           WHERE a.server_id = $2 AND a.name = ANY($3)
-           ON CONFLICT DO NOTHING`,
-          [resolvedChannelId, resolvedServerId, Array.from(mentionedNames)]
+      let attachments: any[] = [];
+      if (ids.length > 0) {
+        const values = ids.map((_, i) => `($1, $${i + 2})`).join(", ");
+        await tx.query(`INSERT INTO message_attachments (message_id, attachment_id) VALUES ${values} ON CONFLICT DO NOTHING`, [msg.id, ...ids]);
+        const att = await tx.query<{ id: string; filename: string; mimeType: string; sizeBytes: number; url: string }>(
+          "SELECT id, filename, mime_type as \"mimeType\", size_bytes as \"sizeBytes\", storage_url as url FROM attachments WHERE id = ANY($1)", [ids]
         );
+        attachments = att.rows;
       }
-    }
+      return { msg, attachments, mentionAgents };
+    });
+
     // @提及用户 → 通知（SELECT 已批量化，createNotification 含 INSERT）
     if (!dm && content && content.includes("@")) {
-      const atNames = new Set<string>();
-      for (const word of content.split(/s+/)) {
-        if (word.startsWith("@") && word.length > 1) {
-          const name = word.slice(1).replace(/[^a-zA-Z0-9_]/g, "");
-          if (name) atNames.add(name);
-        }
-      }
-      if (atNames.size > 0) {
+      const atNames = parseMentionHandles(content);
+      if (atNames.length > 0) {
         const users = await app.pg.query<{ id: string; handle: string; display_name: string }>(
           "SELECT id, handle, display_name FROM users WHERE handle = ANY($1)",
-          [Array.from(atNames)]
+          [atNames]
         );
         for (const u of users.rows) {
           if (String(u.id) !== userId) {
@@ -140,15 +192,6 @@ export async function messageRoutes(app: FastifyInstance) {
       }
     }
 
-    let attachments: any[] = [];
-    if (ids.length > 0) {
-      const values = ids.map((_, i) => `($1, $${i + 2})`).join(", ");
-      await app.pg.query(`INSERT INTO message_attachments (message_id, attachment_id) VALUES ${values} ON CONFLICT DO NOTHING`, [msg.id, ...ids]);
-      const att = await app.pg.query<{ id: string; filename: string; mimeType: string; sizeBytes: number; url: string }>(
-        "SELECT id, filename, mime_type as \"mimeType\", size_bytes as \"sizeBytes\", storage_url as url FROM attachments WHERE id = ANY($1)", [ids]
-      );
-      attachments = att.rows;
-    }
     const senderName = req.user?.display_name || req.user?.handle || "unknown";
     // DM：浏览器侧用稳定的 dm:<uuid> 作为会话键；并附带 agent 接收方供 daemon「无需 @」唤醒
     let dmAgentRecipients: string[] | undefined;
@@ -163,6 +206,9 @@ export async function messageRoutes(app: FastifyInstance) {
         id: msg.id, seq: msg.seq, channelId: channelIdOut,
         senderId: userId, senderName, senderHandle, senderType: "human",
         content: content || "", time: msg.created_at, threadId: threadId || null, attachments,
+        // server 预过滤的「有权回应的 agent」列表：daemon 只 spawn 列表内的 agent，
+        // 空数组 = 有人被 @ 但无人有权回应 → 不 spawn（避免 PTY 空转）。
+        ...(mentionAgents !== undefined ? { mentionAgents } : {}),
         ...(dm ? { dm: true, dmAgentRecipients, dmPeerHandle: dmPeer?.handle } : {}),
       },
     });
@@ -207,12 +253,13 @@ export async function messageRoutes(app: FastifyInstance) {
     const { q } = req.query as Record<string, string | undefined>;
     const userId = req.user.sub;
     // 仅搜调用方可见的频道：公开频道，或其为成员的私有/DM 频道
+    // content_tsv 是 stored 生成列（migration 008），GIN 索引命中，不再现算 to_tsvector
     const result = await app.pg.query(
       `SELECT m.id, m.content, '#' || c.name as "channelId", m.seq, m.created_at as "time", m.sender_id as "senderId", m.sender_type as "senderType"
          FROM messages m
          JOIN channels c ON c.id = m.channel_id
          LEFT JOIN channel_members cm ON cm.channel_id = c.id AND cm.member_id::text = $3 AND cm.member_type = 'human'
-        WHERE to_tsvector('simple', m.content) @@ plainto_tsquery('simple', $1)
+        WHERE m.content_tsv @@ plainto_tsquery('simple', $1)
           AND (c.type NOT IN ('private','dm') OR cm.member_id IS NOT NULL)
         ORDER BY m.created_at DESC LIMIT $2`,
       [q || "", 20, userId]
@@ -238,16 +285,26 @@ export async function messageRoutes(app: FastifyInstance) {
     return { message: r.rows[0] };
   });
 
-  // 消息编辑历史
+  // 消息编辑历史（需频道可见性：编辑历史同样包含消息内容）
   app.get("/:messageId/edits", { preHandler: [app.authenticate] }, async (req, reply) => {
     const { messageId } = req.params as Record<string, string>;
+    const m = await app.pg.query<{ channel_id: string }>("SELECT channel_id FROM messages WHERE id = $1", [messageId]);
+    if (m.rows.length === 0) return reply.status(404).send({ error: "message not found" });
+    if (!(await canAccessChannel(app, String(m.rows[0].channel_id), req.user.sub))) {
+      return reply.status(403).send({ error: "no access to this channel" });
+    }
     const r = await app.pg.query("SELECT id, old_content, edited_by, edited_at FROM message_edits WHERE message_id = $1 ORDER BY edited_at ASC", [messageId]);
     return { edits: r.rows };
   });
 
-  app.post("/:messageId/reactions", { preHandler: [app.authenticate] }, async (req) => {
+  app.post("/:messageId/reactions", { preHandler: [app.authenticate] }, async (req, reply) => {
     const { messageId } = req.params as Record<string, string>;
     const { emoji } = req.body as Record<string, unknown>;
+    const m = await app.pg.query<{ channel_id: string }>("SELECT channel_id FROM messages WHERE id = $1", [messageId]);
+    if (m.rows.length === 0) return reply.status(404).send({ error: "message not found" });
+    if (!(await canAccessChannel(app, String(m.rows[0].channel_id), req.user.sub))) {
+      return reply.status(403).send({ error: "no access to this channel" });
+    }
     await app.pg.query(
       "INSERT INTO message_reactions (message_id, user_id, emoji) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
       [messageId, req.user.sub, emoji as string]
@@ -256,8 +313,13 @@ export async function messageRoutes(app: FastifyInstance) {
   });
 
   // 删除表情反应
-  app.delete("/:messageId/reactions/:emoji", { preHandler: [app.authenticate] }, async (req) => {
+  app.delete("/:messageId/reactions/:emoji", { preHandler: [app.authenticate] }, async (req, reply) => {
     const { messageId, emoji } = req.params as Record<string, string>;
+    const m = await app.pg.query<{ channel_id: string }>("SELECT channel_id FROM messages WHERE id = $1", [messageId]);
+    if (m.rows.length === 0) return reply.status(404).send({ error: "message not found" });
+    if (!(await canAccessChannel(app, String(m.rows[0].channel_id), req.user.sub))) {
+      return reply.status(403).send({ error: "no access to this channel" });
+    }
     await app.pg.query(
       "DELETE FROM message_reactions WHERE message_id = $1 AND user_id = $2 AND emoji = $3",
       [messageId, req.user.sub, emoji]

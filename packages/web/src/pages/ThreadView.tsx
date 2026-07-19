@@ -1,11 +1,13 @@
-import { useParams, Link } from "react-router-dom";
+import { useParams, useNavigate } from "react-router-dom";
 import { useEffect, useState, useRef } from "react";
 import { apiClient } from "../api/client";
-import { useAuthStore } from "../stores/authStore";
 import { useMessageStore } from "../stores";
 import { MarkdownContent } from "../components/chat/MarkdownContent";
-import { useMentionSuggest } from "../hooks/useMentionSuggest";
-import { MentionPopup } from "../components/chat/MentionPopup";
+import { MessageComposer } from "../components/chat/MessageComposer";
+import { PageHeader } from "../components/layout/PageHeader";
+import { Avatar } from "../components/ui/Avatar";
+import { EmptyState } from "../components/EmptyState";
+import { formatTime } from "../lib/formatTime";
 
 interface ThreadMsg {
   id: string;
@@ -19,24 +21,18 @@ interface ThreadMsg {
 
 export function ThreadView() {
   const { channelName, threadId } = useParams<{ channelName: string; threadId: string }>();
-  // 用 messageStore 作为实时数据源：WS handler 收到带 thread_id 的消息会以
-  // `channelName:threadIdPrefix` 为 key 写入 store。手动刷新也走 store 拿初值。
   const threadKey = channelName && threadId ? `${channelName}:${threadId.substring(0, 8)}` : "";
   const liveReplies = useMessageStore((s) => (threadKey ? s.messagesByTarget[threadKey] : undefined)) || [];
   const [parent, setParent] = useState<ThreadMsg | null>(null);
   const [replies, setReplies] = useState<ThreadMsg[]>([]);
-  const [draft, setDraft] = useState("");
   const [error, setError] = useState("");
   const fetchedRef = useRef<string | null>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const { filtered, selectedIdx, visible, handleInput, handleKeyDown: mentionKD, insertMention: rawInsert } = useMentionSuggest(textareaRef);
-  const insertMention = (handle: string) => { const t = rawInsert(handle); if (t) setDraft(t); };
+  const navigate = useNavigate();
 
   const loadThread = async () => {
+    if (!threadId) return;
     try {
-      const data = await apiClient<{ parent: ThreadMsg; replies: ThreadMsg[] }>(
-        `/api/messages/thread/${threadId}`, { method: "GET" }
-      );
+      const data = await apiClient<{ parent: ThreadMsg; replies: ThreadMsg[] }>(`/api/messages/thread/${threadId}`, { method: "GET" });
       setParent(data.parent);
       setReplies(data.replies || []);
     } catch {
@@ -51,7 +47,6 @@ export function ThreadView() {
     }
   }, [threadId]);
 
-  // 实时：合并 store 中 thread key 的新消息（来自 WS 推送），去重后追加
   useEffect(() => {
     if (liveReplies.length === 0) return;
     setReplies((prev) => {
@@ -71,58 +66,47 @@ export function ThreadView() {
     });
   }, [liveReplies]);
 
-  const handleReply = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!draft.trim() || !channelName) return;
+  const handleSend = async (content: string) => {
+    if (!content.trim() || !channelName || !threadId) return;
     try {
       await apiClient("/api/messages/send", {
         method: "POST",
-        body: {
-          target: `#${channelName}:${threadId}`,
-          content: draft,
-          threadId,
-        },
+        body: { target: `#${channelName}:${threadId}`, content, threadId },
       });
-      setDraft("");
-      // 重新拉取父消息的最新回复列表（也包含本条）
       await loadThread();
     } catch {
       setError("回复失败");
+      throw new Error("回复失败");
     }
   };
 
   if (error && !parent) {
     return (
-      <div className="flex flex-col h-full items-center justify-center text-gray-600 dark:text-gray-400">
-        <p>{error}</p>
-        <Link to={`/channels/${channelName}`} className="text-blue-400 mt-2 hover:underline">
-          返回 #{channelName}
-        </Link>
+      <div className="flex flex-1 flex-col">
+        <PageHeader title="线程" breadcrumb={[{ label: "频道", to: `/channels/${channelName}` }, { label: "线程" }]} />
+        <div className="flex flex-1 items-center justify-center p-4">
+          <EmptyState icon="⚠️" title="加载失败" description={error}
+            actionLabel="返回频道" onAction={() => navigate(`/channels/${channelName}`)} />
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="p-4 border-b border-gray-200 dark:border-gray-700">
-        <div className="flex items-center gap-2">
-          <h2 className="text-gray-900 dark:text-white font-bold">Thread</h2>
-          <span className="text-gray-500 text-sm">in</span>
-          <Link to={`/channels/${channelName}`} className="text-blue-400 hover:underline text-sm">
-            #{channelName}
-          </Link>
-        </div>
-      </div>
+    <div className="flex min-h-0 flex-1 flex-col">
+      <PageHeader
+        title="线程"
+        backTo={`/channels/${channelName}`}
+        breadcrumb={[{ label: `#${channelName}`, to: `/channels/${channelName}` }, { label: "线程" }]}
+      />
 
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+      <div className="flex-1 space-y-4 overflow-y-auto p-4">
         {parent && (
-          <div className="bg-gray-100 dark:bg-gray-800 rounded-lg p-4 border border-gray-200 dark:border-gray-700">
-            <div className="flex items-center gap-2 mb-2">
-              <div className="w-7 h-7 rounded bg-gray-600 flex items-center justify-center text-xs text-gray-900 dark:text-white">
-                {(parent.senderName || parent.sender_id || "?")[0]}
-              </div>
-              <span className="font-semibold text-gray-900 dark:text-white text-sm">{parent.senderName || parent.sender_id}</span>
-              <span className="text-gray-500 text-xs" title={new Date(parent.time).toLocaleString()}>
+          <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-800">
+            <div className="mb-2 flex items-center gap-2">
+              <Avatar name={parent.senderName || parent.sender_id} size="md" />
+              <span className="text-sm font-semibold text-gray-900 dark:text-white">{parent.senderName || parent.sender_id}</span>
+              <span className="text-xs text-gray-500 dark:text-gray-400" title={new Date(parent.time).toLocaleString()}>
                 {formatTime(parent.time)}
               </span>
             </div>
@@ -133,20 +117,18 @@ export function ThreadView() {
         {replies.length > 0 && (
           <div className="flex items-center gap-2">
             <div className="flex-1 border-t border-gray-200 dark:border-gray-700" />
-            <span className="text-gray-500 text-xs">{replies.length} 条回复</span>
+            <span className="text-xs text-gray-500 dark:text-gray-400">{replies.length} 条回复</span>
             <div className="flex-1 border-t border-gray-200 dark:border-gray-700" />
           </div>
         )}
 
         {replies.map((msg) => (
-          <div key={msg.id} className="group flex gap-3 hover:bg-gray-100 dark:hover:bg-gray-800/50 p-2 rounded">
-            <div className="w-7 h-7 rounded bg-gray-600 shrink-0 flex items-center justify-center text-xs text-gray-900 dark:text-white">
-              {(msg.senderName || msg.sender_id || "?")[0]}
-            </div>
+          <div key={msg.id} className="group flex gap-3 rounded p-2 hover:bg-gray-100 dark:hover:bg-gray-800/50">
+            <Avatar name={msg.senderName || msg.sender_id} size="md" />
             <div className="min-w-0">
               <div className="flex items-baseline gap-2">
-                <span className="font-semibold text-gray-900 dark:text-white text-sm">{msg.senderName || msg.sender_id}</span>
-                <span className="text-gray-500 text-xs" title={new Date(msg.time).toLocaleString()}>
+                <span className="text-sm font-semibold text-gray-900 dark:text-white">{msg.senderName || msg.sender_id}</span>
+                <span className="text-xs text-gray-500 dark:text-gray-400" title={new Date(msg.time).toLocaleString()}>
                   {formatTime(msg.time)}
                 </span>
               </div>
@@ -156,21 +138,16 @@ export function ThreadView() {
         ))}
 
         {replies.length === 0 && parent && (
-          <p className="text-gray-500 text-center text-sm">还没有回复，说点什么吧</p>
+          <p className="text-center text-sm text-gray-500 dark:text-gray-400">还没有回复，说点什么吧</p>
         )}
       </div>
 
-      <form onSubmit={handleReply} className="p-4 border-t border-gray-200 dark:border-gray-700 relative">
-        <MentionPopup items={filtered} selectedIdx={selectedIdx} onSelect={insertMention} />
-        <textarea
-          ref={textareaRef}
-          value={draft} rows={1}
-          onChange={e => { setDraft(e.target.value); handleInput(); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px"; }}
+      <div className="border-t border-gray-200 p-4 dark:border-gray-700">
+        <MessageComposer
           placeholder="回复线程... (Enter 发送, Shift+Enter 换行, @ 提及)"
-          className="w-full p-2 rounded bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 focus:outline-none focus:border-blue-500 resize-none"
-          onKeyDown={e => { mentionKD(e); if (!visible && e.key === "Enter" && !e.shiftKey) { e.preventDefault(); (e.target as any).form?.requestSubmit(); } }}
+          onSend={handleSend}
         />
-      </form>
+      </div>
     </div>
   );
 }

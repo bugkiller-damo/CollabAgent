@@ -2,6 +2,9 @@ import { useState } from "react";
 import { useChannelStore } from "../../stores";
 import { apiClient } from "../../api/client";
 import { ConfirmDialog } from "../ConfirmDialog";
+import { Modal } from "../ui/Modal";
+import { Input } from "../ui/Input";
+import { Button } from "../ui/Button";
 
 interface Props {
   channel: any;
@@ -61,63 +64,65 @@ export function ChannelSettingsModal({ channel, onClose, onArchived, onDeleted }
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
-      <div className="bg-white dark:bg-gray-800 rounded-lg p-6 w-full max-w-md mx-4 space-y-4"
-        onClick={(e) => e.stopPropagation()}>
-        <h3 className="text-gray-900 dark:text-white text-lg font-bold">频道设置 · #{channel.name}</h3>
+    <>
+      <Modal open onClose={onClose}>
+        <h3 className="text-lg font-bold text-gray-900 dark:text-white">频道设置 · #{channel.name}</h3>
 
-        <div>
-          <label className="text-gray-600 dark:text-gray-400 text-sm block mb-1">描述</label>
-          <input type="text" value={description} onChange={(e) => setDescription(e.target.value)}
-            placeholder="这个频道用来做什么？"
-            className="w-full p-2 rounded bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600" />
-        </div>
+        <div className="space-y-4">
+          <div>
+            <label className="mb-1 block text-sm text-gray-600 dark:text-gray-400">描述</label>
+            <Input
+              type="text"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="这个频道用来做什么？"
+            />
+          </div>
 
-        <div>
-          <label className="text-gray-600 dark:text-gray-400 text-sm block mb-1">可见性</label>
-          <div className="flex gap-2">
-            <button type="button" onClick={() => setVisibility("public")}
-              className={"flex-1 p-2 rounded text-sm border " +
-                (visibility === "public"
-                  ? "bg-blue-600 text-white border-blue-600"
-                  : "bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 border-gray-300 dark:border-gray-600")}>
-              # 公开
-            </button>
-            <button type="button" onClick={() => setVisibility("private")}
-              className={"flex-1 p-2 rounded text-sm border " +
-                (visibility === "private"
-                  ? "bg-blue-600 text-white border-blue-600"
-                  : "bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 border-gray-300 dark:border-gray-600")}>
-              🔒 私有
-            </button>
+          <div>
+            <label className="mb-1 block text-sm text-gray-600 dark:text-gray-400">可见性</label>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setVisibility("public")}
+                className={[
+                  "flex-1 rounded-md border p-2 text-sm transition-colors",
+                  visibility === "public"
+                    ? "border-blue-600 bg-blue-600 text-white"
+                    : "border-gray-300 bg-gray-100 text-gray-600 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-300",
+                ].join(" ")}
+              >
+                # 公开
+              </button>
+              <button
+                type="button"
+                onClick={() => setVisibility("private")}
+                className={[
+                  "flex-1 rounded-md border p-2 text-sm transition-colors",
+                  visibility === "private"
+                    ? "border-blue-600 bg-blue-600 text-white"
+                    : "border-gray-300 bg-gray-100 text-gray-600 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-300",
+                ].join(" ")}
+              >
+                🔒 私有
+              </button>
+            </div>
+          </div>
+
+          {error && <p className="text-sm text-red-500">{error}</p>}
+
+          <div className="flex items-center justify-between pt-2">
+            <div className="flex gap-3">
+              <Button onClick={() => setConfirm("archive")} disabled={saving} variant="ghost" size="sm" className="text-amber-500 hover:text-amber-400">归档</Button>
+              <Button onClick={() => setConfirm("delete")} disabled={saving} variant="ghost" size="sm" className="text-red-500 hover:text-red-400">删除频道</Button>
+            </div>
+            <div className="flex gap-2">
+              <Button onClick={onClose} variant="secondary" size="sm">取消</Button>
+              <Button onClick={handleSave} disabled={saving} loading={saving} size="sm">{saving ? "保存中…" : "保存"}</Button>
+            </div>
           </div>
         </div>
-
-        {error && <p className="text-red-400 text-sm">{error}</p>}
-
-        <div className="flex items-center justify-between pt-2">
-          <div className="flex gap-3">
-            <button type="button" onClick={() => setConfirm("archive")} disabled={saving}
-              className="text-sm text-amber-500 hover:text-amber-400 disabled:opacity-50">
-              归档
-            </button>
-            <button type="button" onClick={() => setConfirm("delete")} disabled={saving}
-              className="text-sm text-red-500 hover:text-red-400 disabled:opacity-50">
-              删除频道
-            </button>
-          </div>
-          <div className="flex gap-2">
-            <button type="button" onClick={onClose}
-              className="px-4 py-2 rounded text-sm bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600">
-              取消
-            </button>
-            <button type="button" onClick={handleSave} disabled={saving}
-              className="px-4 py-2 rounded text-sm bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-50">
-              {saving ? "保存中…" : "保存"}
-            </button>
-          </div>
-        </div>
-      </div>
+      </Modal>
 
       {confirm === "delete" && (
         <ConfirmDialog
@@ -138,6 +143,6 @@ export function ChannelSettingsModal({ channel, onClose, onArchived, onDeleted }
           onCancel={() => setConfirm(null)}
         />
       )}
-    </div>
+    </>
   );
 }

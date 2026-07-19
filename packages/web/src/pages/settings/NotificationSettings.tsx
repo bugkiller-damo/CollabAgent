@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { toast } from "../../stores/toastStore";
+import { PageHeader } from "../../components/layout/PageHeader";
 
 /** 通知偏好（按类型设置接收渠道） */
 const NOTIF_TYPES = [
@@ -37,23 +38,33 @@ export function NotificationSettings() {
   };
 
   return (
-    <div className="p-6 max-w-lg space-y-6">
-      <h2 className="text-gray-900 dark:text-white text-xl font-bold">通知设置</h2>
-      <p className="text-gray-500 text-sm">选择你希望接收的通知类型（偏好存储在本地浏览器）</p>
+    <div className="w-full space-y-6">
+      <PageHeader title="通知" backTo="/settings" />
+      <p className="text-sm text-gray-500">选择你希望接收的通知类型（偏好存储在本地浏览器）</p>
 
-      <div className="space-y-3">
+      <div className="grid max-w-4xl grid-cols-1 gap-3 sm:grid-cols-2">
         {NOTIF_TYPES.map((n) => (
-          <label key={n.key} className="flex items-center justify-between p-4 rounded-lg bg-gray-50 dark:bg-gray-800 border border-gray-100 dark:border-gray-700/50 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700/50 transition-colors">
+          <label
+            key={n.key}
+            className="flex cursor-pointer items-center justify-between rounded-lg border border-gray-100 bg-gray-50 p-4 transition-colors hover:bg-gray-100 dark:border-gray-700/50 dark:bg-gray-800 dark:hover:bg-gray-700/50"
+          >
             <div>
-              <p className="text-gray-900 dark:text-white font-medium text-sm">{n.label}</p>
-              <p className="text-gray-500 text-xs mt-0.5">{n.desc}</p>
+              <p className="text-sm font-medium text-gray-900 dark:text-white">{n.label}</p>
+              <p className="mt-0.5 text-xs text-gray-500">{n.desc}</p>
             </div>
-            <div
+            <button
+              type="button"
+              role="switch"
+              aria-checked={prefs[n.key]}
               onClick={() => toggle(n.key)}
-              className={`relative w-10 h-5 rounded-full transition-colors ${prefs[n.key] ? "bg-blue-600" : "bg-gray-300 dark:bg-gray-600"}`}
+              className={`relative h-5 w-10 rounded-full transition-colors ${prefs[n.key] ? "bg-blue-600" : "bg-gray-300 dark:bg-gray-600"}`}
             >
-              <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${prefs[n.key] ? "translate-x-5" : "translate-x-0.5"}`} />
-            </div>
+              <span
+                className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${
+                  prefs[n.key] ? "translate-x-5" : "translate-x-0.5"
+                }`}
+              />
+            </button>
           </label>
         ))}
       </div>

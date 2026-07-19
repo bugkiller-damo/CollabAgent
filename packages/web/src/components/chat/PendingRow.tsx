@@ -10,7 +10,7 @@ export function PendingRow({ item, onRetry, onDiscard }: {
   onDiscard: (tempId: string) => void;
 }) {
   return (
-    <div className="flex gap-3 p-2 rounded">
+    <div className="flex gap-3 p-2 rounded animate-slide-in-up">
       <div className="w-8 h-8 rounded bg-blue-600 shrink-0 flex items-center justify-center text-xs text-white">我</div>
       <div className="min-w-0 flex-1">
         <p className={"text-sm whitespace-pre-wrap " + (item.status === "failed" ? "text-gray-500" : "text-gray-700 dark:text-gray-300")}>{item.content}</p>

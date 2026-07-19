@@ -15,6 +15,8 @@ export async function setupSlockWrapper(agentId: string, serverUrl: string, apiK
   const cliPath = join(srcDir, "cli.ts");
 
   let runCmd = `npx tsx "${cliPath}" %*`;
+  let shRunCmd = "";
+  const cliPathPosix = cliPath.replace(/\\/g, "/");
   try {
     const esbuild = await import("esbuild");
     const bundlePath = join(slockDir, "slock-cli.cjs");
@@ -28,9 +30,11 @@ export async function setupSlockWrapper(agentId: string, serverUrl: string, apiK
       logLevel: "silent",
     });
     runCmd = `node "${bundlePath}" %*`;
+    shRunCmd = `node "${bundlePath.replace(/\\/g, "/")}" "$@"`;
     console.log(`[Daemon] CLI bundled -> ${bundlePath} (slock runs via node)`);
   } catch (err: any) {
     console.warn(`[Daemon] CLI bundle failed, falling back to npx tsx: ${err?.message}`);
+    shRunCmd = `npx tsx "${cliPathPosix}" "$@"`;
   }
 
   const batContent = [
@@ -42,7 +46,23 @@ export async function setupSlockWrapper(agentId: string, serverUrl: string, apiK
     runCmd,
   ].join("\r\n");
   writeFileSync(join(slockDir, "slock.bat"), batContent);
-  console.log(`[Daemon] slock wrapper written to ${slockDir}/slock.bat`);
+
+  // 无扩展名的 sh wrapper：Claude Code 的 Bash 工具在 Windows 上走 git-bash，
+  // bash 不解析 PATHEXT，敲 `slock` 找不到 `slock.bat`（2026-07-17 实测 agent
+  // 报告 "slock CLI 不在 bash PATH 中"，自己摸到全路径才调通）。同名无扩展名
+  // 的 POSIX 脚本让 bash 也能直接命中。
+  const shContent = [
+    `#!/bin/sh`,
+    `: "\${SLOCK_AGENT_ID:=${agentId}}"`,
+    `: "\${SLOCK_SERVER_URL:=${serverUrl}}"`,
+    `: "\${SLOCK_AGENT_TOKEN:=${apiKey}}"`,
+    `: "\${SLOCK_AGENT_ACTIVE_CAPABILITIES:=send,read,mentions,tasks,reactions,server,channels}"`,
+    `export SLOCK_AGENT_ID SLOCK_SERVER_URL SLOCK_AGENT_TOKEN SLOCK_AGENT_ACTIVE_CAPABILITIES`,
+    shRunCmd,
+    ``,
+  ].join("\n");
+  writeFileSync(join(slockDir, "slock"), shContent);
+  console.log(`[Daemon] slock wrapper written to ${slockDir}/slock.bat + ${slockDir}/slock (sh)`);
 
   const currentPath = process.env.PATH || "";
   if (!currentPath.includes(slockDir)) {
