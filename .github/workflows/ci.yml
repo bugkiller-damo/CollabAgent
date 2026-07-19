@@ -30,6 +30,7 @@ jobs:
       REFRESH_SECRET: ci-test-refresh-secret
       PORT: "3001"
       BASE_URL: http://localhost:3001
+      NODE_ENV: test
 
     steps:
       - uses: actions/checkout@v5
