@@ -36,8 +36,13 @@ export interface DispatchDeps {
   persistentSessions: Map<string, PersistentClaude>;
   /** claudePrint 一次性模式的 session 缓存 */
   agentSessions: Map<string, string>;
-  /** 按 agentName 去重，避免同一 agent 并发 dispatch 互相踩 */
+  /** 按 agentName 串行化 dispatch（门控投递队列的链尾） */
   dispatchPromises: Map<string, Promise<void>>;
+  /**
+   * 门控投递反馈：消息因 agent 忙碌被排队时回调一次（daemon-core 经 WS 上报
+   * server → 浏览器 toast"已缓冲，空闲后投递"）。可选，测试注入时可以不传。
+   */
+  onDeliveryQueued?: (agentName: string, channelName: string) => void;
 }
 
 /**
@@ -201,22 +206,27 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
   const REMINDER_TAIL = (agentName: string): string =>
     `\n\n<slock-reminder>你是 @${agentName}（CollabAgent 平台的 AI Agent）。对外回复只能用 \`send_message\` 工具（或 \`slock\` CLI），直接打字不会被发送；回合开始先读工作区里的 MEMORY.md。</slock-reminder>`;
 
-  // dedup 包装
-  const dispatchToAgent = async (agentName: string, channelName: string, userMsg: string): Promise<void> => {
+  // 门控投递队列（替代旧的"in-flight 就丢弃"）：同一 agent 的消息挂到 promise
+  // 链尾串行执行——agent 忙时新消息在链上缓冲，上一条 dispatch 完成后按序投递，
+  // 不再丢消息。投递时机仍由 postStartWriter 的提示符就绪门控保证（写入会等到
+  // Claude 出现输入提示符，思考/工具执行期间的输入由 Claude Code 自己排队处理）。
+  const dispatchToAgent = (agentName: string, channelName: string, userMsg: string): Promise<void> => {
     const msgWithReminder = userMsg + REMINDER_TAIL(agentName);
     const inFlight = dispatchPromises.get(agentName);
     if (inFlight) {
-      console.log(`[Daemon] @${agentName} dispatch already in-flight, chaining`);
-      await inFlight.catch(() => {});
-      return;
+      console.log(`[Daemon] @${agentName} busy — message queued (gated delivery)`);
+      try { deps.onDeliveryQueued?.(agentName, channelName); } catch { /* 回调失败不阻塞排队 */ }
     }
-    const promise = doDispatch(agentName, channelName, msgWithReminder);
-    dispatchPromises.set(agentName, promise);
-    try {
-      await promise;
-    } finally {
-      dispatchPromises.delete(agentName);
-    }
+    const next = (inFlight ?? Promise.resolve())
+      .catch(() => {}) // 上一条失败不阻断队列后续消息
+      .then(() => doDispatch(agentName, channelName, msgWithReminder));
+    dispatchPromises.set(agentName, next);
+    // 链尾清理：map 里还是这条链才删（期间有新消息入队则保留链尾）
+    const cleanup = () => {
+      if (dispatchPromises.get(agentName) === next) dispatchPromises.delete(agentName);
+    };
+    next.then(cleanup, cleanup);
+    return next;
   };
 
   const runAgent = async (

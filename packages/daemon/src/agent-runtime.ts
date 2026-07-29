@@ -96,6 +96,8 @@ const resolveClaudeBinary = (): string => {
 export interface AgentRuntimeOptions {
   serverUrl: string;
   apiKey: string;
+  /** 门控投递反馈：消息被排队时回调（daemon-core 注入，经 WS 通知前端"已缓冲"） */
+  onDeliveryQueued?: (agentName: string, channelName: string) => void;
 }
 
 export interface IAgentRuntime {
@@ -104,14 +106,9 @@ export interface IAgentRuntime {
   runAgent(agentName: string, channelName: string, replyTarget: string, senderName: string, content: string): Promise<void>;
   runAgentDm(agentName: string, replyTarget: string, senderName: string, content: string): Promise<void>;
   runAgentReminder(agentName: string, reminder: { title?: string; channel?: string }): Promise<void>;
-  /**
-   * 崩溃恢复 autostart（见 docs/2026-07-16/13-autostart-session-resume-plan.md
-   * 方案 A）：daemon 重启后，把崩溃前正在运行的 agent 重新拉起来，不等它们
-   * 自然收到下一条真实消息才冷启动。内部直接复用 dispatchToAgent 的完整流程
-   * （token 换取/PTY 启动/状态机迁移都不用重新实现），只是触发内容换成一条
-   * "系统重启，安静等待，不用主动发言"的说明，而不是真实用户消息。
-   */
-  autostartAgent(agentName: string): Promise<void>;
+  // 注：原 autostartAgent（崩溃恢复主动拉起 + 注入"安静等待"恢复消息）已于
+  // 2026-07-29 移除——那条恢复消息是一整个 agent 回合且 99% 空转（实测 55k 输出），
+  // 改为 lazy spawn + session resume（见 daemon-core.autostartCrashedAgents）。
 
   // 注册表
   registerAgent(id: string, name: string, info: { displayName?: string; description?: string; model?: string }): void;
@@ -203,10 +200,11 @@ export const createAgentRuntime = (
   // touch() 在每次回合结束（working -> idle）时调用；untrack() 在开始新一轮 working 或
   // 显式停止时调用，避免正在处理消息的 agent 被计入空闲时间。
   // 默认 60s 对连续聊天太激进——用户隔一两分钟追问一次就会吃到完整冷启动（2026-07-17
-  // 实测：78s 被回收，第二个问题重新 spawn）。默认放宽到 300s，可用
-  // SLOCK_IDLE_RECLAIM_MS 调整。
+  // 实测：78s 被回收，第二个问题重新 spawn）。300s 仍然太短：冷启动 = 全量 bootstrap +
+  // 上下文重建（读 MEMORY/查历史/查派发），是 token 消耗大头（2026-07-29 实测：317s 被
+  // 回收，下条消息又付一次全量冷启动）。默认放宽到 1800s，可用 SLOCK_IDLE_RECLAIM_MS 调整。
   const idleReclaimer = createIdleReclaimer({
-    timeoutMs: Number(process.env.SLOCK_IDLE_RECLAIM_MS) || 300_000,
+    timeoutMs: Number(process.env.SLOCK_IDLE_RECLAIM_MS) || 1_800_000,
     onReclaim: (name) => {
       const runId = runIdByAgent.get(name);
       if (runId) agentManager.stopRun(runId); // 真正的清理交给下面的退出清理链回调
@@ -323,6 +321,7 @@ export const createAgentRuntime = (
     credentialsClient, postStartWriter, spawnPtyForAgent, usePty,
     resolveAgentId, agentInfo, runIdByAgent, persistentSessions,
     agentSessions, dispatchPromises,
+    onDeliveryQueued: options.onDeliveryQueued,
   });
 
   // ---- 公开接口 ----
@@ -332,27 +331,6 @@ export const createAgentRuntime = (
     runAgent,
     runAgentDm,
     runAgentReminder,
-
-    async autostartAgent(agentName: string): Promise<void> {
-      // 崩溃恢复记录里的 agent 可能已经在服务端被删掉了——只对仍然注册着的
-      // agent 生效，不要凭一条陈旧的本地记录去拉起一个已经不存在的 agent。
-      if (!agentDrivers.has(agentName)) {
-        console.log(`[Daemon] Skip autostart for @${agentName}: no longer registered`);
-        return;
-      }
-      // 没有真实触发它的用户消息/频道，只能用 "general" 兜底（AgentRunRecord
-      // 本身不记频道）。userMsg 明确说明这是系统重启、不是真实消息，用来压过
-      // 系统提示里"被 @ 了就要回复"的默认框架——不保证 100% 生效（这条路径
-      // 没有真机验证过），但至少给了明确指令，不是靠 agent 自己猜。
-      const userMsg = [
-        `[Slock 系统消息：daemon 重启后自动恢复]`,
-        ``,
-        `你在崩溃/重启前正在运行，现在被自动重新拉起来、恢复运行环境和记忆——`,
-        `这不是用户发来的消息。如果没有真正待处理的用户消息，不需要主动发言，`,
-        `安静等待下一条真实消息即可；只有确实有值得跟进的事情才主动开口。`,
-      ].join("\n");
-      await dispatchToAgent(agentName, "general", userMsg);
-    },
 
     registerAgent(id: string, name: string, info: { displayName?: string; description?: string; model?: string }): void {
       agentDrivers.set(name, true);

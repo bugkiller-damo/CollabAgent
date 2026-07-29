@@ -14,12 +14,11 @@ import type { IAgentRunStore } from "../src/types/index.js";
 /**
  * 方案三 §3.1（session resume）的回归测试。
  *
- * 默认关闭（`SLOCK_SESSION_RESUME` 未设置）时行为必须跟没有这个功能之前完全
- * 一致——这是这个功能能不能安全上线的底线，见 agent-runtime-spawn.ts 顶部
- * 那段注释里的风险说明。打开之后的宽限期/重试逻辑是这个方案里唯一没有真机
- * 验证过的部分，这里用 fake-agent-manager 的 `simulateExit` 精确控制"PTY 很快
- * 退出"这个时序，钉死"resume 失败 -> 清空 sessionId -> 自动重试一次不带
- * --resume"这条兜底路径确实按设计工作。
+ * 2026-07-29 起**默认开启**（`SLOCK_SESSION_RESUME=0` 显式关闭时才退回旧行为）
+ * ——冷启动全量 bootstrap + 上下文重建是 token 消耗大头，见
+ * agent-runtime-spawn.ts 顶部注释。宽限期/重试逻辑用 fake-agent-manager 的
+ * `simulateExit` 精确控制"PTY 很快退出"这个时序，钉死"resume 失败 -> 清空
+ * sessionId -> 自动重试一次不带 --resume"这条兜底路径确实按设计工作。
  */
 
 const AGENT_NAME = "zz_session_resume_agent";
@@ -84,7 +83,8 @@ describe("session resume (agent-runtime-spawn.ts, fake PTY)", () => {
     throw new Error("timed out waiting for a new fake run to be created");
   }
 
-  it("does not inject --resume when SLOCK_SESSION_RESUME is unset, even with a saved session id", async () => {
+  it("does not inject --resume when SLOCK_SESSION_RESUME is explicitly '0', even with a saved session id", async () => {
+    process.env.SLOCK_SESSION_RESUME = "0"; // 显式关闭（2026-07-29 起默认开启，见 spawn.ts isSessionResumeEnabled）
     runStore.saveRuntimeState({
       agentId: AGENT_ID, agentName: AGENT_NAME, status: "idle", lastTransitionAt: Date.now(),
       totalRuns: 1, currentRunId: null, lastSessionId: "seeded-session-id", lastSessionUpdatedAt: Date.now(),
@@ -96,6 +96,19 @@ describe("session resume (agent-runtime-spawn.ts, fake PTY)", () => {
     const run = manager.getFakeRun(runId!);
     expect(run?.args).toBeDefined();
     expect(run!.args.join(" ")).not.toContain("--resume");
+  });
+
+  it("injects --resume by default (SLOCK_SESSION_RESUME unset) when a session id is saved", async () => {
+    runStore.saveRuntimeState({
+      agentId: AGENT_ID, agentName: AGENT_NAME, status: "idle", lastTransitionAt: Date.now(),
+      totalRuns: 1, currentRunId: null, lastSessionId: "seeded-session-id", lastSessionUpdatedAt: Date.now(),
+    });
+
+    await runtime.dispatchToAgent(AGENT_NAME, "general", "hello");
+    const runId = runtime.__getRunId(AGENT_NAME);
+    const run = manager.getFakeRun(runId!);
+    expect(run!.args).toContain("--resume");
+    expect(run!.args).toContain("seeded-session-id");
   });
 
   it(

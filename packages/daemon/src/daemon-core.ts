@@ -66,7 +66,17 @@ export class DaemonCore {
       console.warn(`[Daemon] Marked ${staleCount} unfinished run(s) as stale (previous crash)`);
     }
     this.runtime = createAgentRuntime(
-      { serverUrl: this.serverUrl, apiKey: this.apiKey },
+      {
+        serverUrl: this.serverUrl,
+        apiKey: this.apiKey,
+        // 门控投递反馈：消息排队时经 WS 告诉 server（server 中继给浏览器 toast）。
+        // 注意 connect() 在 start() 里先于 loadExistingAgents 调用，但回调触发
+        // 只在消息到达后，此时 this.ws 必然已就绪；ws 未 OPEN 时静默丢弃即可。
+        onDeliveryQueued: (agentName, channelName) => {
+          if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+          this.ws.send(JSON.stringify({ type: "agent:delivery-queued", agentName, channelName }));
+        },
+      },
       tokenRegistry,
       liveRunRegistry,
       runStore,
@@ -126,22 +136,20 @@ export class DaemonCore {
   }
 
   /**
-   * Autostart 方案 A（见 docs/2026-07-16/13-autostart-session-resume-plan.md）：
-   * 只拉起"崩溃前正在运行"的 agent，不是所有注册过的 agent——多数正常场景下
-   * （上次是优雅关闭，或从没崩溃过）这个列表是空的，完全零成本。逐个顺序
-   * await（不是 Promise.all 并发拉起），避免同时崩溃多个 agent 时一次性并发
-   * spawn 一堆 Claude Code 进程抢资源。
+   * 崩溃恢复（原 Autostart 方案 A，见 docs/2026-07-16/13-autostart-session-resume-plan.md）。
+   *
+   * 2026-07-29 起**不再主动拉起**：旧实现给每个候选 agent 注入一条"系统重启，
+   * 安静等待"的恢复消息，但这是一条完整的 agent 回合（实测 55k 输出、1m23s），
+   * 且 99% 的结论都是"没有真实消息，静默等待"——纯烧 token。新行为：只记日志，
+   * agent 保持 lazy 注册，下一条真实消息到来时再 spawn；上下文由 session
+   * resume（默认开）或 restart-summary 注入保住，不丢状态。
    */
   private async autostartCrashedAgents(): Promise<void> {
     if (!this.autostartCandidates.length) return;
-    console.log(`[Daemon] Autostarting ${this.autostartCandidates.length} agent(s) active before last crash/restart`);
-    for (const { agentName } of this.autostartCandidates) {
-      try {
-        await this.runtime.autostartAgent(agentName);
-      } catch (err: any) {
-        console.error(`[Daemon] Autostart failed for @${agentName}:`, err?.message ?? err);
-      }
-    }
+    console.log(
+      `[Daemon] ${this.autostartCandidates.length} agent(s) were active before last crash/restart — ` +
+      `skipping eager autostart (they will lazy-spawn with session resume on their next real message)`,
+    );
   }
 
   /**
