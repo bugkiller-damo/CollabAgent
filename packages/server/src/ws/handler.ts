@@ -156,6 +156,10 @@ function registerConnection(connection: WebSocket, userId: string, isDaemon: boo
             // 转发给该用户的浏览器（Agent 状态栏实时显示，G7 last_pty_line）
             sendToUser(userId, msg);
             break;
+          case "agent:delivery-queued":
+            // 门控投递反馈：daemon 把忙碌期消息排队了 → 浏览器 toast"已缓冲，空闲后投递"
+            sendToUser(userId, msg);
+            break;
           case "agent:activity":
             console.log(`[WS] Agent activity: ${msg.activity}`);
             break;

@@ -66,6 +66,38 @@ export async function taskRoutes(app: FastifyInstance) {
     return { tasks: created };
   });
 
+  // 已有消息 → 任务：给消息行补 task_number（单条原子 UPDATE 取号，避免并发重号）
+  app.post("/from-message", { preHandler: [app.authenticate] }, async (req, reply) => {
+    const { message_id } = req.body as { message_id?: string };
+    if (!message_id) return reply.status(400).send({ error: "message_id required" });
+    const found = await app.pg.query<{ id: string; channel_id: string; task_number: number | null; content: string | null }>(
+      "SELECT id, channel_id, task_number, content FROM messages WHERE id = $1",
+      [message_id]
+    );
+    const msg = found.rows[0];
+    if (!msg) return reply.status(404).send({ error: "message not found" });
+    if (!(await canAccessChannel(app, msg.channel_id, req.user.sub))) {
+      return reply.status(403).send({ error: "no access to this channel" });
+    }
+    if (msg.task_number != null) {
+      return reply.status(409).send({ error: "message is already a task", task_number: msg.task_number });
+    }
+    if (!msg.content) return reply.status(400).send({ error: "cannot convert a deleted message" });
+    const result = await app.pg.query(
+      `UPDATE messages
+         SET task_number = (SELECT COALESCE(MAX(task_number), 0) + 1 FROM messages
+                            WHERE channel_id = $2 AND task_number IS NOT NULL),
+             task_status = 'todo', updated_at = now()
+       WHERE id = $1 AND task_number IS NULL
+       RETURNING id, task_number, task_status, content`,
+      [message_id, msg.channel_id]
+    );
+    if (result.rows.length === 0) {
+      return reply.status(409).send({ error: "message is already a task" });
+    }
+    return { task: result.rows[0] };
+  });
+
   app.post("/claim", { preHandler: [app.authenticate] }, async (req, reply) => {
     const { channel, task_numbers, message_ids } = req.body as { channel?: string; task_numbers?: number[]; message_ids?: string[] };
     if (!channel) return reply.status(400).send({ error: "channel required" });

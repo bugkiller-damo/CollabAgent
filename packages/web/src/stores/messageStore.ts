@@ -35,6 +35,7 @@ interface MessageState {
   receiveMessage: (message: Message) => void;
   editMessage: (messageId: string, content: string) => Promise<void>;
   applyMessageUpdate: (messageId: string, content: string, editedAt?: string) => void;
+  applyMessageTask: (messageId: string, taskNumber: number) => void;
   deleteMessage: (messageId: string) => Promise<void>;
   applyMessageDelete: (messageId: string) => void;
   addReaction: (messageId: string, emoji: string, userId: string) => Promise<void>;
@@ -121,6 +122,18 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       for (const k in s.messagesByTarget) {
         next[k] = s.messagesByTarget[k].map((m: any) =>
           m.id === messageId ? { ...m, content, editedAt: editedAt || new Date().toISOString() } : m
+        );
+      }
+      return { messagesByTarget: next };
+    });
+  },
+
+  applyMessageTask: (messageId, taskNumber) => {
+    set((s) => {
+      const next: Record<string, Message[]> = {};
+      for (const k in s.messagesByTarget) {
+        next[k] = s.messagesByTarget[k].map((m: any) =>
+          m.id === messageId ? { ...m, task_number: taskNumber, task_status: "todo" } : m
         );
       }
       return { messagesByTarget: next };

@@ -1,6 +1,8 @@
 import postgres from "postgres";
 
-const RAW_BASE = process.env.BASE_URL;
+// 注意：BASE_URL 是 Vite/Vitest 的保留变量——vitest worker 会把它覆盖成 "/"（base 配置），
+// 导致测试静默打到默认 3001。本地指定非默认端口请用 SLOCK_TEST_BASE_URL（2026-07-29 实测踩坑）。
+const RAW_BASE = process.env.SLOCK_TEST_BASE_URL || process.env.BASE_URL;
 export const BASE = (RAW_BASE && /^https?:\/\//.test(RAW_BASE) ? RAW_BASE : "http://localhost:3001").replace(/\/+$/, "");
 const DB_URL = process.env.DATABASE_URL || "postgresql://postgres:P@ssw0rd@localhost:5432/collabagent";
 

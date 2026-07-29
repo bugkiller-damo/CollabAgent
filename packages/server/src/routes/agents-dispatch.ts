@@ -31,7 +31,7 @@ async function insertAndDeliver(
   senderAgent: any,
   content: string,
   forceDeliverTo: string,
-): Promise<void> {
+): Promise<string> {
   const result = await app.pg.query(
     "INSERT INTO messages (channel_id, server_id, sender_id, sender_type, content) VALUES ($1, $2, $3, 'agent', $4) RETURNING id, seq, created_at",
     [channelId, serverId, senderId, content],
@@ -55,6 +55,7 @@ async function insertAndDeliver(
       forceDeliverTo,
     },
   });
+  return String(msg.id);
 }
 
 export async function agentDispatchRoutes(app: FastifyInstance) {
@@ -85,11 +86,23 @@ export async function agentDispatchRoutes(app: FastifyInstance) {
       )
     ).rows[0];
 
-    await insertAndDeliver(
+    const msgId = await insertAndDeliver(
       app, ch.id, ch.server_id as string, ch.name as string, agentId, manager,
       `📋 @${peer.handle} 你收到经理 @${manager?.name || "manager"} 派的任务（dispatch ${dispatch.id}）：${text}`,
       peer.handle,
     );
+
+    // P1 同步：dispatch 通知消息同时成为看板卡片（in_progress + assignee=worker），
+    // 原子取号防并发重号；台账记 task_message_id 供 report/cancel 联动
+    await app.pg.query(
+      `UPDATE messages
+         SET task_number = (SELECT COALESCE(MAX(task_number), 0) + 1 FROM messages
+                            WHERE channel_id = $2 AND task_number IS NOT NULL),
+             task_status = 'in_progress', task_assignee = $3, updated_at = now()
+       WHERE id = $1`,
+      [msgId, ch.id, peer.id],
+    );
+    await app.pg.query("UPDATE dispatches SET task_message_id = $1 WHERE id = $2", [msgId, dispatch.id]);
 
     return { dispatch };
   });
@@ -116,8 +129,8 @@ export async function agentDispatchRoutes(app: FastifyInstance) {
     const dispatchId = (req.params as Record<string, string>).dispatchId;
     const { reportText, artifacts } = req.body as { reportText?: string; artifacts?: string[] };
 
-    const found = await app.pg.query<{ id: string; channel_id: string; from_agent_id: string }>(
-      "SELECT id, channel_id, from_agent_id FROM dispatches WHERE id = $1 AND to_agent_id = $2 AND status = 'open'",
+    const found = await app.pg.query<{ id: string; channel_id: string; from_agent_id: string; task_message_id: string | null }>(
+      "SELECT id, channel_id, from_agent_id, task_message_id FROM dispatches WHERE id = $1 AND to_agent_id = $2 AND status = 'open'",
       [dispatchId, agentId],
     );
     if (found.rows.length === 0) return reply.status(404).send({ error: "no open dispatch for this agent" });
@@ -127,6 +140,13 @@ export async function agentDispatchRoutes(app: FastifyInstance) {
       "UPDATE dispatches SET status = 'reported', report_text = $1, artifacts = $2, reported_at = now() WHERE id = $3",
       [reportText || "", JSON.stringify(artifacts || []), dispatchId],
     );
+    // P1 同步：回报 → 看板卡片转 in_review（等经理审查）
+    if (dispatch.task_message_id) {
+      await app.pg.query(
+        "UPDATE messages SET task_status = 'in_review', updated_at = now() WHERE id = $1",
+        [dispatch.task_message_id],
+      );
+    }
 
     const worker = await getAgent(app, agentId);
     const manager = await getAgent(app, dispatch.from_agent_id);
@@ -146,14 +166,21 @@ export async function agentDispatchRoutes(app: FastifyInstance) {
     const dispatchId = (req.params as Record<string, string>).dispatchId;
     const { reason } = req.body as { reason?: string };
 
-    const found = await app.pg.query<{ id: string; channel_id: string; to_agent_id: string }>(
-      "SELECT id, channel_id, to_agent_id FROM dispatches WHERE id = $1 AND from_agent_id = $2 AND status = 'open'",
+    const found = await app.pg.query<{ id: string; channel_id: string; to_agent_id: string; task_message_id: string | null }>(
+      "SELECT id, channel_id, to_agent_id, task_message_id FROM dispatches WHERE id = $1 AND from_agent_id = $2 AND status = 'open'",
       [dispatchId, agentId],
     );
     if (found.rows.length === 0) return reply.status(404).send({ error: "no open dispatch owned by this agent" });
     const dispatch = found.rows[0];
 
     await app.pg.query("UPDATE dispatches SET status = 'cancelled', cancelled_at = now() WHERE id = $1", [dispatchId]);
+    // P1 同步：撤回 → 看板卡片关闭
+    if (dispatch.task_message_id) {
+      await app.pg.query(
+        "UPDATE messages SET task_status = 'closed', updated_at = now() WHERE id = $1",
+        [dispatch.task_message_id],
+      );
+    }
 
     const manager = await getAgent(app, agentId);
     const worker = await getAgent(app, dispatch.to_agent_id);

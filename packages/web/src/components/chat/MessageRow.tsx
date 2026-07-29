@@ -32,6 +32,7 @@ function MessageRowBase({ msg, channelName, isHighlighted, prevMsg }: { msg: any
   const navigate = useNavigate();
   const currentUserId = useAuthStore((s) => s.user?.id);
   const editMessage = useMessageStore((s) => s.editMessage);
+  const applyMessageTask = useMessageStore((s) => s.applyMessageTask);
   const deleteMessage = useMessageStore((s) => s.deleteMessage);
   const addReaction = useMessageStore((s) => s.addReaction);
   const removeReaction = useMessageStore((s) => s.removeReaction);
@@ -53,6 +54,23 @@ function MessageRowBase({ msg, channelName, isHighlighted, prevMsg }: { msg: any
   const [editText, setEditText] = useState(msg.content || "");
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [emojiPickerOpen, setEmojiPickerOpen] = useState(false);
+  const [converting, setConverting] = useState(false);
+  // DM 会话的 channelName 是 "@handle" 格式（DmView convKey），转任务按钮只在频道上下文显示
+  const isChannel = !!channelName && !channelName.startsWith("@");
+
+  const handleConvertToTask = async () => {
+    if (converting) return;
+    setConverting(true);
+    try {
+      const data = await apiClient<{ task: { task_number: number } }>("/api/tasks/from-message", { method: "POST", body: { message_id: msg.id } });
+      applyMessageTask(msg.id, data.task.task_number);
+      toast.success(`已转为任务 #${data.task.task_number}，可在看板查看`);
+    } catch (err: any) {
+      toast.error(err?.message || "转任务失败");
+    } finally {
+      setConverting(false);
+    }
+  };
 
   const saveEdit = async () => {
     const text = editText.trim();
@@ -171,6 +189,19 @@ function MessageRowBase({ msg, channelName, isHighlighted, prevMsg }: { msg: any
                 className="text-gray-500 hover:text-blue-400 text-xs px-1.5 py-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors">
                 💬 {replyCount > 0 ? replyCount + " 条回复" : "回复"}
               </button>
+              {isChannel && !deleted && (
+                msg.task_number != null ? (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300">
+                    📋 任务 #{msg.task_number}
+                  </span>
+                ) : (
+                  <button onClick={handleConvertToTask} disabled={converting}
+                    className="text-gray-500 hover:text-blue-500 text-xs px-1.5 py-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity disabled:opacity-50"
+                    title="把这条消息转为看板任务">
+                    {converting ? "转换中…" : "📋 转任务"}
+                  </button>
+                )
+              )}
               <button onClick={() => navigator.clipboard.writeText(msg.content || "")}
                 className="text-gray-500 hover:text-gray-900 dark:hover:text-white text-xs px-1.5 py-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity">
                 复制
