@@ -10,6 +10,7 @@ import { OnboardingChecklist } from '../OnboardingChecklist';
 import { NotificationBell } from '../notifications/NotificationBell';
 import { SearchBar } from '../chat/SearchBar';
 import { ToastContainer } from '../Toast';
+import { toast } from '../../stores/toastStore';
 import { useNotificationStore } from '../../stores/notificationStore';
 import { useTerminalStore } from '../../stores/terminalStore';
 import { setWsSender } from '../../stores/wsSender';
@@ -124,6 +125,11 @@ export function AppLayout() {
         const a = msg as any;
         // daemon 上报带 agentName（G7 last_pty_line）；旧消息只有 agentId，兜底
         useAgentStore.getState().updateStatus(a.agentName || a.agentId || 'agent', msg.type === 'agent:status' ? (a.status || 'idle') : 'working', a.detail || '');
+      }
+      // 门控投递反馈：daemon 把发给忙碌 agent 的消息排队了（agent 空闲后按序投递，不丢）
+      if ((msg.type as string) === 'agent:delivery-queued') {
+        const q = msg as any;
+        toast.info(`⏳ @${q.agentName} 正在工作，消息已缓冲，将在其空闲后自动投递`);
       }
       if ((msg.type as string) === "message:update" && (msg as any).message) {
         const u = (msg as any).message;

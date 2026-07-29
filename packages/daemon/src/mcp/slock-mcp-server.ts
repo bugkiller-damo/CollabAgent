@@ -36,9 +36,17 @@ if (!AGENT_ID || !AGENT_TOKEN || !SERVER_URL) {
 }
 
 async function callSlock(path: string, init?: RequestInit): Promise<unknown> {
+  // content-type: application/json 只在有 body 时带——无 body 的 DELETE/POST 若带
+  // JSON content-type，Fastify 会报 400 "Body cannot be empty"（2026-07-29 实测
+  // cancel_reminder 中招，agent 反复重试白烧 token）。
+  const headers: Record<string, string> = {
+    ...(init?.headers as Record<string, string> | undefined),
+    Authorization: `Bearer ${AGENT_TOKEN}`,
+  };
+  if (init?.body !== undefined) headers["content-type"] = "application/json";
   const res = await fetch(`${SERVER_URL}/internal/agent/${AGENT_ID}${path}`, {
     ...init,
-    headers: { ...init?.headers, Authorization: `Bearer ${AGENT_TOKEN}`, "content-type": "application/json" },
+    headers,
   });
   const text = await res.text();
   if (!res.ok) {

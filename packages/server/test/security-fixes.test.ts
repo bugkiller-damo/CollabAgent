@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { api, registerUser, cleanupTestData, closeSql, type TestUser } from "./helpers.js";
+import { api, registerUser, cleanupTestData, closeSql, BASE, type TestUser } from "./helpers.js";
+
+// 与 ws.test.ts 一致：WS 地址从 BASE 派生，不写死 3001（本地可用 SLOCK_TEST_BASE_URL 指定端口）
+const WS_BASE = BASE.replace(/^http/, "ws") + "/ws";
 
 // 2026-07-17 安全修复的回归测试：
 // 1. @提及 用户通知（split(/s+/) 正则 bug 修复后必须真正发通知）
@@ -41,7 +44,7 @@ describe("security fixes 2026-07-17", () => {
     const fd = new FormData();
     fd.append("file", new Blob(["hello attachment"], { type: "text/plain" }), "sec-note.txt");
     const csrf = alice.cookie.split(";").map((s) => s.trim()).find((s) => s.startsWith("csrf_token="))?.split("=")[1] || "";
-    const up = await fetch("http://localhost:3001/api/attachments/upload", {
+    const up = await fetch(`${BASE}/api/attachments/upload`, {
       method: "POST",
       headers: { cookie: alice.cookie, "x-csrf-token": decodeURIComponent(csrf) },
       body: fd,
@@ -105,7 +108,7 @@ describe("security fixes 2026-07-17", () => {
     // 用新令牌调一个需认证的端点
     const me = await api("/api/users", { cookie: `x=1`, csrf: false, token: undefined, });
     expect(me.status).toBe(401); // 无 cookie 仍 401
-    const authed = await fetch("http://localhost:3001/api/users", {
+    const authed = await fetch(`${BASE}/api/users`, {
       headers: { authorization: `Bearer ${token}` },
     });
     expect(authed.status).toBe(200);
@@ -114,7 +117,7 @@ describe("security fixes 2026-07-17", () => {
     const row = (tokens.data.tokens as any[]).find((t) => token.startsWith(t.prefix));
     if (row) {
       await api(`/api/profile/tokens/${row.id}`, { method: "DELETE", cookie: alice.cookie });
-      const revoked = await fetch("http://localhost:3001/api/users", { headers: { authorization: `Bearer ${token}` } });
+      const revoked = await fetch(`${BASE}/api/users`, { headers: { authorization: `Bearer ${token}` } });
       expect(revoked.status).toBe(401);
     }
   });
@@ -142,7 +145,7 @@ describe("security fixes 2026-07-17", () => {
 
     // alice 浏览器 WS 收听投递
     const { WebSocket } = await import("ws");
-    const ws = new WebSocket("ws://localhost:3001/ws", { headers: { Cookie: alice.cookie } });
+    const ws = new WebSocket(WS_BASE, { headers: { Cookie: alice.cookie } });
     await new Promise((res) => ws.once("message", res)); // connected
     const deliver = new Promise<any>((resolve, reject) => {
       const t = setTimeout(() => reject(new Error("deliver timeout")), 8000);
@@ -177,7 +180,7 @@ describe("security fixes 2026-07-17", () => {
     await api("/api/channels", { method: "POST", cookie: alice.cookie, body: { name: "sec-fix-pub2", visibility: "public" } });
 
     const { WebSocket } = await import("ws");
-    const ws = new WebSocket("ws://localhost:3001/ws", { headers: { Cookie: alice.cookie } });
+    const ws = new WebSocket(WS_BASE, { headers: { Cookie: alice.cookie } });
     await new Promise((res) => ws.once("message", res));
     const deliver = new Promise<any>((resolve, reject) => {
       const t = setTimeout(() => reject(new Error("deliver timeout")), 8000);
@@ -217,7 +220,7 @@ describe("security fixes 2026-07-17", () => {
     await api("/api/channels", { method: "POST", cookie: alice.cookie, body: { name: "sec-fix-pub3", visibility: "public" } });
 
     const { WebSocket } = await import("ws");
-    const ws = new WebSocket("ws://localhost:3001/ws", { headers: { Cookie: alice.cookie } });
+    const ws = new WebSocket(WS_BASE, { headers: { Cookie: alice.cookie } });
     await new Promise((res) => ws.once("message", res));
     const deliver = new Promise<any>((resolve, reject) => {
       const t = setTimeout(() => reject(new Error("deliver timeout")), 8000);

@@ -25,6 +25,24 @@ let restartTimes: number[] = [];     // 崩溃时间窗，用于退避
 let restartTimer: ReturnType<typeof setTimeout> | null = null;
 let watchDebounce: ReturnType<typeof setTimeout> | null = null;
 
+/**
+ * 整树杀 daemon 子进程。Windows 上 child 是 shell:true 包出来的 cmd 包装层，
+ * child.kill() 只杀 cmd，真正的 node/tsx 孙子进程变孤儿继续跑——
+ * 2026-07-29 实测后果：新旧两个 daemon 并存（日志全双份）、agent 被重复
+ * spawn（双倍 token）、旧 PTY 的 scoped token 被新 spawn 吊销（MCP 401）。
+ * taskkill /T 把 cmd + node + 其下所有 agent PTY 整棵树拔掉。
+ */
+function killTree(c: ChildProcess): void {
+  if (c.pid == null) return;
+  if (process.platform === "win32") {
+    try {
+      spawn("taskkill", ["/pid", String(c.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+      return;
+    } catch { /* fall through to plain kill */ }
+  }
+  try { c.kill(); } catch { /* already dead */ }
+}
+
 function startChild(): void {
   const cmd = `npx tsx ${q(entry)} ${passthrough.map(q).join(" ")}`.trim();
   console.log("[Supervisor] starting daemon…");
@@ -53,7 +71,7 @@ function restartForChange(file: string): void {
       mkdirSync(join(srcDir, "..", ".slock"), { recursive: true });
       writeFileSync(plannedRestartMarker, String(Date.now()));
     } catch { /* best-effort */ }
-    child.kill();
+    killTree(child);
   }
   else startChild();
 }
@@ -77,7 +95,7 @@ function shutdown(): void {
   if (shuttingDown) return;
   shuttingDown = true;
   if (restartTimer) clearTimeout(restartTimer);
-  if (child) { try { child.kill(); } catch { /* ignore */ } }
+  if (child) killTree(child);
   console.log("[Supervisor] shutting down");
   setTimeout(() => process.exit(0), 200);
 }

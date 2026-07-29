@@ -128,7 +128,9 @@ export class ApiClient {
     pathname = this.rewriteAgentCredentialPath(pathname);
     const url = new URL(pathname, this.ctx.serverUrl).toString();
     const headers = this.buildAuthHeaders();
-    headers["Content-Type"] = "application/json";
+    // content-type 只在有 body 时带：无 body 的 DELETE/POST 带 JSON content-type
+    // 会被 Fastify 拒成 400 "Body cannot be empty"（2026-07-29 实测 reminder cancel）
+    if (body !== undefined) headers["Content-Type"] = "application/json";
 
     const dispatcher = buildFetchDispatcher(url);
     const init: RequestInit = { method, headers };

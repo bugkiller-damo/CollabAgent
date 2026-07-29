@@ -40,21 +40,18 @@ const CLAUDE_YOLO_ARGS = [
  * 捕获（把 sessionId 存进 runStore）始终开启——风险很低，纯粹是往状态文件
  * 多写一个字段，不影响任何现有行为，即使从没被消费也无害。
  *
- * 但"把捕获到的 sessionId 喂回 `--resume` 参数"默认关闭，需要显式设置
- * `SLOCK_SESSION_RESUME=1` 才启用——设计文档明确把这个方向标成"这个方案里
- * 风险最高、最需要先用小范围实测验证的一环"（`--resume` 遇到不存在/损坏的
- * session id 时 Claude Code 的真实表现未知：直接报错退出？还是静默降级成
- * 新 session？这个环境里没有真实 Claude Code + 真实服务器可以跑一次端到端
- * spawn 来验证，所以先做成显式 opt-in，等用户在真机上验证过降级路径没问题
- * 再考虑默认开启）。即使打开，下面也内置了一层尽力而为的兜底：如果开了
- * resume 之后 PTY 在很短时间内就退出（见 `RESUME_QUICK_FAIL_WINDOW_MS`），
- * 视为 resume 失败，清空存的 sessionId 并立即无 `--resume` 重新尝试一次，
- * 避免"resume 失败"变成"agent 从此再也起不来"（每次都用同一个坏掉的
- * sessionId 反复失败）。
+ * 但"把捕获到的 sessionId 喂回 `--resume` 参数"此前默认关闭（设计文档把这条
+ * 标成"风险最高、需要小范围实测验证的一环"）。2026-07-29 起**默认开启**：
+ * token 实测显示每次冷启动都要全量 bootstrap + agent 用工具调用重建上下文
+ * （读 MEMORY/查历史/查派发），是消耗大头；而 resume 的失败兜底链已经完备——
+ * 如果开了 resume 之后 PTY 在很短时间内就退出（见
+ * `RESUME_QUICK_FAIL_WINDOW_MS`），视为 resume 失败，清空存的 sessionId 并
+ * 立即无 `--resume` 重新尝试一次，不会"agent 从此再也起不来"。
+ * 显式 `SLOCK_SESSION_RESUME=0` 可关回旧行为。
  */
 // 每次调用时读一次（不在模块顶层冻成常量），这样测试可以在 beforeEach 里
 // 直接改 process.env 生效，不需要靠 vi.resetModules() 重新加载整个模块图。
-const isSessionResumeEnabled = (): boolean => process.env.SLOCK_SESSION_RESUME === "1";
+const isSessionResumeEnabled = (): boolean => process.env.SLOCK_SESSION_RESUME !== "0";
 /** 判定"resume 失败"的宽限期：PTY 在这么短时间内退出，大概率是 --resume 本身炸了，不是正常工作后退出。
  *  可用 `SLOCK_RESUME_GRACE_MS` 覆盖（主要是测试用——真实环境不需要调）。 */
 const getResumeGraceWindowMs = (): number => {
@@ -152,6 +149,16 @@ const writeMcpConfig = (
     }
   }
   settings.enableAllProjectMcpServers = true;
+  // effort 降档：Claude Code 2.1.x 会话默认 high effort，thinking token 照付
+  // （2026-07-29 实测：haiku agent 屏幕显示 "● high · /effort"，Thought for 22s）。
+  // 协作平台的 agent 以执行类任务为主，medium 足够；SLOCK_AGENT_EFFORT 可覆盖。
+  // 注意：settings.json 的 effort 键名未查到官方文档确认（2026-07-29 web 检索
+  // 未证实）——Claude Code 对未知键静默忽略，写错无害；真机验证 /effort 指示
+  // 没变的话说明键名不对，需要换控制通道（如 MAX_THINKING_TOKENS env）。
+  const effort = (process.env.SLOCK_AGENT_EFFORT || "medium").toLowerCase();
+  if (["low", "medium", "high"].includes(effort) && settings.effort === undefined) {
+    settings.effort = effort;
+  }
   writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
 };
 
