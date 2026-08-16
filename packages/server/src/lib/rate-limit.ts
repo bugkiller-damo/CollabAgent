@@ -1,5 +1,5 @@
 /**
- * 全局限流中间件 — 支持 Redis（ioredis）和内存两种后端。
+ * 全局限流中间件 — 支持 Valkey/Redis（ioredis，协议兼容）和内存两种后端。
  */
 import { config } from "./config.js";
 
@@ -25,7 +25,7 @@ class MemoryBackend {
   startCleanup() { setInterval(() => { const n = Date.now(); for (const [k, v] of this.store) if (v.resetAt < n) this.store.delete(k); }, 60_000); }
 }
 
-class RedisBackend {
+class ValkeyBackend {
   private r: any;
   constructor(url: string) {
     this.r = new Redis(url, { lazyConnect: true, maxRetriesPerRequest: 1 });
@@ -36,7 +36,7 @@ class RedisBackend {
   }
 }
 
-const backend = config.REDIS_URL ? new RedisBackend(config.REDIS_URL) : (() => { const m = new MemoryBackend(); m.startCleanup(); return m; })();
+const backend = config.VALKEY_URL ? new ValkeyBackend(config.VALKEY_URL) : (() => { const m = new MemoryBackend(); m.startCleanup(); return m; })();
 
 function optsFor(url: string): RateLimitOpts {
   if (/\/api\/(profile\/deactivate|auth\/deactivate|change-password)/.test(url)) return DEFAULTS.sensitive;

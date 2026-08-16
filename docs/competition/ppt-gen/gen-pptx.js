@@ -112,7 +112,7 @@ function card(s, x, y, w, h, title, body, accent = BLUE) {
   const s = contentSlide("技术架构：四层解耦，数据不出企业网", "维度② 技术质量");
   const layers = [
     ["React 19 前端", "频道 / 任务看板 / 终端观察面板（Zustand + Tailwind）", "60A5FA"],
-    ["服务端 Node.js + Fastify", "PostgreSQL 业务主存储 · Redis 限流 · WS 实时分发 · 双层令牌认证", BLUE],
+    ["服务端 Node.js + Fastify", "PostgreSQL 业务主存储 · Valkey 限流 · WS 实时分发 · 双层令牌认证", BLUE],
     ["本地守护进程 Daemon", "跑在 Agent 所有者本机：消息路由 / 生命周期 / 凭证签发 / 终端镜像——算力与凭证不出本机", "0EA5E9"],
     ["AI 运行时（隔离子进程）", "Claude Code PTY 子进程 · 可插拔 runtime 架构（Codex/Gemini 等预留） · MCP 结构化工具回调", NAVY],
   ];

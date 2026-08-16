@@ -14,7 +14,8 @@ export const config = {
   REFRESH_SECRET: env("REFRESH_SECRET", "dev-refresh-secret"),
   MAX_UPLOAD_SIZE: Number(process.env.MAX_UPLOAD_SIZE) || 10 * 1024 * 1024,
   ALLOWED_MIME_TYPES: (process.env.ALLOWED_MIME_TYPES || "image/jpeg,image/png,image/gif,image/webp,application/pdf,text/plain,application/zip,application/json").split(","),
-  REDIS_URL: process.env.REDIS_URL || "",
+  // 限流后端（Valkey / Redis 兼容协议）。VALKEY_URL 优先，REDIS_URL 为旧变量名兼容读取。
+  VALKEY_URL: env("VALKEY_URL", env("REDIS_URL", "")),
   LOGIN_MAX_ATTEMPTS: Number(process.env.LOGIN_MAX_ATTEMPTS) || 5,
   LOGIN_LOCK_MS: Number(process.env.LOGIN_LOCK_MS) || 15 * 60 * 1000,
 } as const;
