@@ -114,8 +114,8 @@ export function ChannelMembersPanel({ channelId, onClose }: { channelId: string;
             {m.is_manager ? "取消经理" : "设为经理"}
           </button>
         )}
-        {m.member_type === "human" && m.role !== "owner" && !isSelf && (
-          <button onClick={() => handleRemove(m)} title="移除成员"
+        {(m.member_type === "agent" || (m.role !== "owner" && !isSelf)) && (
+          <button onClick={() => handleRemove(m)} title={m.member_type === "agent" ? "将 Agent 移出频道" : "移除成员"}
             className="text-gray-400 hover:text-red-500 text-xs opacity-0 group-hover:opacity-100">✕</button>
         )}
       </div>

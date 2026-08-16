@@ -1,7 +1,7 @@
 import { useParams, useNavigate } from "react-router-dom";
 import { useEffect, useState, useRef } from "react";
 import { apiClient } from "../api/client";
-import { useMessageStore } from "../stores";
+import { useMessageStore, useChannelStore } from "../stores";
 import { MarkdownContent } from "../components/chat/MarkdownContent";
 import { MessageComposer } from "../components/chat/MessageComposer";
 import { PageHeader } from "../components/layout/PageHeader";
@@ -23,6 +23,7 @@ export function ThreadView() {
   const { channelName, threadId } = useParams<{ channelName: string; threadId: string }>();
   const threadKey = channelName && threadId ? `${channelName}:${threadId.substring(0, 8)}` : "";
   const liveReplies = useMessageStore((s) => (threadKey ? s.messagesByTarget[threadKey] : undefined)) || [];
+  const currentChannel = useChannelStore((s) => s.channels.find((c: any) => c.name === channelName));
   const [parent, setParent] = useState<ThreadMsg | null>(null);
   const [replies, setReplies] = useState<ThreadMsg[]>([]);
   const [error, setError] = useState("");
@@ -100,7 +101,7 @@ export function ThreadView() {
         breadcrumb={[{ label: `#${channelName}`, to: `/channels/${channelName}` }, { label: "线程" }]}
       />
 
-      <div className="flex-1 space-y-4 overflow-y-auto p-4">
+      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
         {parent && (
           <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-800">
             <div className="mb-2 flex items-center gap-2">
@@ -146,6 +147,7 @@ export function ThreadView() {
         <MessageComposer
           placeholder="回复线程... (Enter 发送, Shift+Enter 换行, @ 提及)"
           onSend={handleSend}
+          mentionScope={{ channelId: parent?.channel_id ?? (currentChannel as any)?.id, channelType: (currentChannel as any)?.type }}
         />
       </div>
     </div>

@@ -13,8 +13,10 @@ services:
       - pgdata:/var/lib/postgresql/data
       - ./packages/server/src/db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
 
-  redis:
-    image: redis:7-alpine
+  valkey:
+    # Valkey 是 Redis 的 Linux 基金会 fork（BSD 协议），wire protocol 兼容，
+    # ioredis 客户端无需更换；URL scheme 沿用 redis://（ioredis 只解析 redis/rediss scheme）。
+    image: valkey/valkey:8-alpine
     ports:
       - "6379:6379"
 
@@ -26,12 +28,12 @@ services:
       - "3001:3001"
     environment:
       DATABASE_URL: postgresql://collabagent:collabagent_dev@postgres:5432/collabagent
-      REDIS_URL: redis://redis:6379
+      VALKEY_URL: redis://valkey:6379
       JWT_SECRET: dev-secret-change-in-production
       PORT: 3001
     depends_on:
       - postgres
-      - redis
+      - valkey
     volumes:
       - ./packages:/app/packages
       - ./node_modules:/app/node_modules

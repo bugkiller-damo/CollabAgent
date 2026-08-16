@@ -1,9 +1,8 @@
-// 不从 "vitest/config" import defineConfig——vitest 在这个workspace 里不是
-// packages/daemon 自己声明的依赖（只是 pnpm store 里恰好存在的间接依赖，靠
-// `node ../../node_modules/.pnpm/node_modules/vitest/vitest.mjs` 这种直接路径
-// 调用的），从这个包的 node_modules 解析 "vitest/config" 会失败。config 对象
-// 本身不需要这个 helper 才能生效，纯对象导出就够。
-export default {
+// vitest 已作为 packages/daemon 的正式 devDependency 声明（见 package.json），
+// 这里用标准的 defineConfig 获取类型提示。
+import { defineConfig } from "vitest/config";
+
+export default defineConfig({
   test: {
     // 这套测试里有几个文件会真的 spawn 子进程（mcp-server.test.ts 真的 spawn
     // 打包出来的 MCP server；session-resume.test.ts 用真实定时器等宽限期/
@@ -15,4 +14,4 @@ export default {
     // 执行记录里"先保证正确性，测试跑得慢一点可以接受"）。
     fileParallelism: false,
   },
-};
+});

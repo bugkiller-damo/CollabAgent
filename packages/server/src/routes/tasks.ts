@@ -155,20 +155,27 @@ export async function taskRoutes(app: FastifyInstance) {
       "UPDATE messages SET task_status = $1, updated_at = now() WHERE channel_id = $2 AND task_number = $3 RETURNING *",
       [status, chId, number]
     );
-    // 任务完成/关闭时通知创建者
-    if (result.rows.length > 0 && (status === "done" || status === "closed")) {
-      const task = result.rows[0];
-      const { createNotification } = await import("../lib/notifications.js");
-      const channelResult = await app.pg.query("SELECT name FROM channels WHERE id = $1", [chId]);
-      const channelName = channelResult.rows[0]?.name || channel;
-      await createNotification(app, {
-        userId: String(task.sender_id), type: "task_assigned", actorId: String(req.user.sub),
-        actorName: String(req.user?.handle ?? "unknown"),
-        channelId: String(chId),
-        title: `任务 #${number} 已完成`,
-        body: String(task.content || "").slice(0, 200),
-        metadata: { channelName, taskNumber: number, newStatus: status },
-      });
+    // 任务完成/关闭时通知创建者（仅人类创建者有通知中心；agent 创建的跳过，
+    // 否则 notifications.user_id 外键指向 users 表会因 agent id 违约导致 500。
+    // 通知失败不阻断状态更新本身。）
+    if (result.rows.length > 0 && (status === "done" || status === "closed") &&
+        result.rows[0].sender_type === "human") {
+      try {
+        const task = result.rows[0];
+        const { createNotification } = await import("../lib/notifications.js");
+        const channelResult = await app.pg.query("SELECT name FROM channels WHERE id = $1", [chId]);
+        const channelName = channelResult.rows[0]?.name || channel;
+        await createNotification(app, {
+          userId: String(task.sender_id), type: "task_assigned", actorId: String(req.user.sub),
+          actorName: String(req.user?.handle ?? "unknown"),
+          channelId: String(chId),
+          title: `任务 #${number} 已完成`,
+          body: String(task.content || "").slice(0, 200),
+          metadata: { channelName, taskNumber: number, newStatus: status },
+        });
+      } catch (err) {
+        req.log.warn({ err }, "task completion notification failed");
+      }
     }
     return { ok: true, task: result.rows[0] };
   });

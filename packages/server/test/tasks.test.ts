@@ -110,6 +110,13 @@ describe("tasks: dispatch 派发同步看板（P1）", () => {
     const list2 = await api(`/api/tasks?channel=${encodeURIComponent("#" + chName)}`, { cookie: a.cookie });
     expect(list2.data.tasks.find((t: any) => t.task_number === card.task_number).task_status).toBe("in_review");
 
+    // 人类在看板把 agent 创建的任务标为 done：创建者是 agent，无通知中心，
+    // 通知写入必须跳过而不是外键违约 500
+    const done = await api("/api/tasks/update-status", { method: "POST", cookie: a.cookie, body: { channel: "#" + chName, number: card.task_number, status: "done" } });
+    expect(done.status).toBe(200);
+    const list2b = await api(`/api/tasks?channel=${encodeURIComponent("#" + chName)}`, { cookie: a.cookie });
+    expect(list2b.data.tasks.find((t: any) => t.task_number === card.task_number).task_status).toBe("done");
+
     // 再派发一条 → 撤回 → closed，且新卡取号不冲突
     const d2 = await api(`/internal/agent/${mgr.id}/dispatch`, { method: "POST", cookie: a.cookie, body: { channel: "#" + chName, toAgent: wkr.name, text: "再做个设置页" } });
     expect(d2.status).toBe(200);
