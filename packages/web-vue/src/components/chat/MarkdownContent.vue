@@ -15,10 +15,19 @@ const props = defineProps<{
  * - linkify:true → 自动识别裸链接并转 <a>
  * - highlight     → highlight.js 回调（与 React rehype-highlight 的着色行为一致，主题已由 main.ts 全局引入）
  */
-const md = new MarkdownIt({
+// 与 markdown-it 的 utils.escapeHtml 等价（& < > " 四个字符），独立实现以避免在 md 初始化闭包内自引用
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+const md: MarkdownIt = new MarkdownIt({
   html: false,
   linkify: true,
-  highlight(str, lang) {
+  highlight(str: string, lang: string): string {
     if (lang && hljs.getLanguage(lang)) {
       try {
         return (
@@ -30,7 +39,7 @@ const md = new MarkdownIt({
         // 降级到转义输出
       }
     }
-    return '<pre class="hljs"><code>' + md.utils.escapeHtml(str) + "</code></pre>";
+    return '<pre class="hljs"><code>' + escapeHtml(str) + "</code></pre>";
   },
 });
 

@@ -35,11 +35,18 @@ const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>(
   })),
 );
 
+// measureElement 在 vue-tsc 下参数被收窄为 TItemElement（HTMLDivElement），
+// 与 Vue 模板 :ref 回调期望的 Element|ComponentPublicInstance|null 不兼容，
+// 包一层 unknown 桥接后转回 HTMLDivElement，交给 virtualizer 测量。
+function measureElement(el: unknown) {
+  virtualizer.value.measureElement(el as HTMLDivElement | null);
+}
+
 // 初次渲染滚动到底部（React 版在 useEffect 内执行，等价于挂载后 + 空列表变非空后的首次滚动）
 function maybeInitialScroll(len: number) {
   if (!didInitialScroll.value && len > 0) {
     didInitialScroll.value = true;
-    virtualizer.scrollToIndex(len - 1, { align: "end" });
+    virtualizer.value.scrollToIndex(len - 1, { align: "end" });
   }
 }
 
@@ -54,7 +61,7 @@ watch(
     const el = parentRef.value;
     if (el && len > prevCount.value) {
       const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 150;
-      if (nearBottom) virtualizer.scrollToIndex(len - 1, { align: "end" });
+      if (nearBottom) virtualizer.value.scrollToIndex(len - 1, { align: "end" });
     }
     prevCount.value = len;
   },
@@ -70,7 +77,7 @@ watch(
     const idx = items.findIndex((it) => it.kind === "msg" && it.data.id === hid);
     if (idx >= 0) {
       didHighlight.value = hid;
-      virtualizer.scrollToIndex(idx, { align: "center" });
+      virtualizer.value.scrollToIndex(idx, { align: "center" });
     }
   },
   { flush: "post" },
@@ -82,9 +89,9 @@ watch(
     <div :style="{ height: virtualizer.getTotalSize() + 'px', width: '100%', position: 'relative' }">
       <div
         v-for="vi in virtualizer.getVirtualItems()"
-        :key="vi.key"
+        :key="String(vi.key)"
         :data-index="vi.index"
-        :ref="virtualizer.measureElement"
+        :ref="measureElement"
         :style="{
           position: 'absolute',
           top: 0,
