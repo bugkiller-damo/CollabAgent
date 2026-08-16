@@ -148,6 +148,8 @@ export function MessageComposer({
   return (
     <div
       className="relative"
+      role="group"
+      aria-label="消息输入区（可将文件拖入此处上传）"
       onDragOver={(e) => {
         e.preventDefault();
         setDragOver(true);

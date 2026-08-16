@@ -207,7 +207,12 @@ export function AppLayout() {
   return (
     <div className="flex h-screen overflow-hidden bg-gray-50 dark:bg-gray-900">
       {sidebarOpen && (
-        <div className="fixed inset-0 z-30 bg-black/40 lg:hidden" onClick={() => setSidebarOpen(false)} />
+        <button
+          type="button"
+          aria-label="关闭菜单"
+          className="fixed inset-0 z-30 bg-black/40 lg:hidden"
+          onClick={() => setSidebarOpen(false)}
+        />
       )}
       <div
         className={`fixed lg:static inset-y-0 left-0 z-40 w-60 transform transition-transform duration-200 ease-in-out ${sidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"}`}

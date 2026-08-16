@@ -201,7 +201,9 @@ export function ChannelView() {
     const queued = pendingRef.current.filter((m) => m.status === "queued");
     if (queued.length === 0) return;
     setPending((p) => p.map((m) => (m.status === "queued" ? { ...m, status: "sending" } : m)));
-    queued.forEach((m) => trySend(m.tempId, m.content));
+    queued.forEach((m) => {
+      trySend(m.tempId, m.content);
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [online]);
 
@@ -229,6 +231,8 @@ export function ChannelView() {
     <div className="flex min-h-0 flex-1">
       <div
         className="relative flex min-h-0 flex-1 flex-col"
+        role="group"
+        aria-label="频道消息区（可将文件拖入此处上传）"
         onDragOver={(e) => {
           e.preventDefault();
           setDragOver(true);

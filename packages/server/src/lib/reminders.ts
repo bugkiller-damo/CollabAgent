@@ -33,7 +33,7 @@ export function nextFireFromRepeat(repeat: string, from: Date): Date | null {
 export function initialFireAt(body: { fireAt?: string; delaySeconds?: number; repeat?: string }): Date | null {
   if (body.fireAt) {
     const d = new Date(body.fireAt);
-    return isNaN(d.getTime()) ? null : d;
+    return Number.isNaN(d.getTime()) ? null : d;
   }
   if (body.delaySeconds != null) return new Date(Date.now() + Number(body.delaySeconds) * 1000);
   if (body.repeat) return nextFireFromRepeat(body.repeat, new Date());

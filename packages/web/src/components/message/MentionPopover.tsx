@@ -58,6 +58,7 @@ export function MentionPopover({
       {list.map((m, i) => (
         <button
           key={m.id}
+          type="button"
           onClick={() => onSelect(m.handle)}
           className={
             "w-full text-left px-3 py-2 text-sm flex items-center gap-2 " +

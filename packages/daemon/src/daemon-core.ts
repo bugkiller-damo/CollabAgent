@@ -4,8 +4,6 @@ import { WebSocket } from "ws";
 import { createJsonRunStore, defaultStorePath } from "./agent-run-store.js";
 import { createAgentRuntime, type IAgentRuntime } from "./agent-runtime.js";
 import { createAgentTokenRegistry } from "./agent-tokens.js";
-import type { AgentContext } from "./auth.js";
-import { ApiClient } from "./client.js";
 import { probeClaude } from "./drivers/probe.js";
 import { createLiveRunRegistry } from "./live-run-registry.js";
 import { setupSlockWrapper } from "./setup-slock-wrapper.js";
@@ -16,11 +14,9 @@ export class DaemonCore {
   private ws: WebSocket | null = null;
   private serverUrl: string;
   private apiKey: string;
-  private slockDir: string | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelay = 1000;
   private authFailed = false;
-  private client: ApiClient;
   private runtime: IAgentRuntime;
   private agentId = "00000000-0000-0000-0000-000000000001";
   /** 崩溃前处于 starting/running 状态的 agent（autostart 方案 A 用），见 constructor 里的采集顺序说明 */
@@ -32,16 +28,6 @@ export class DaemonCore {
   constructor(private config: DaemonConfig) {
     this.serverUrl = config.serverUrl;
     this.apiKey = config.apiKey;
-    const ctx: AgentContext = {
-      agentId: this.agentId,
-      serverUrl: config.serverUrl,
-      serverId: null,
-      token: config.apiKey,
-      clientMode: "legacy-machine",
-      secretSource: "legacy-token-env",
-      activeCapabilities: null,
-    };
-    this.client = new ApiClient(ctx);
     const tokenRegistry = createAgentTokenRegistry();
     const liveRunRegistry = createLiveRunRegistry();
     const runStore = createJsonRunStore(defaultStorePath());
@@ -204,7 +190,7 @@ export class DaemonCore {
   }
 
   private async setupSlockWrapper() {
-    this.slockDir = await setupSlockWrapper(this.agentId, this.serverUrl, this.apiKey);
+    await setupSlockWrapper(this.agentId, this.serverUrl, this.apiKey);
   }
 
   private connect(): void {

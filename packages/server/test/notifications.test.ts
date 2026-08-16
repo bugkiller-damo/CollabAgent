@@ -35,7 +35,9 @@ describe("notifications: 列表 / 已读 / 未读计数", () => {
 
   it("unreadOnly 过滤", async () => {
     const r = await api("/api/notifications?unreadOnly=true", { cookie: ck });
-    r.data.notifications.forEach((n: any) => expect(n.read).toBe(false));
+    r.data.notifications.forEach((n: any) => {
+      expect(n.read).toBe(false);
+    });
   });
 
   it("标记单条已读", async () => {

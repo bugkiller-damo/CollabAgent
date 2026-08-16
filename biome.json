@@ -13,9 +13,9 @@
       "!**/uploads",
       "!**/coverage",
       "!**/*.css",
-      "!packages/web/src/components/ui/**",
+      "!packages/web/src/components/ui",
       "!**/gen-pptx.js",
-      "!docs/**",
+      "!docs",
       "!biome-report.json"
     ]
   },

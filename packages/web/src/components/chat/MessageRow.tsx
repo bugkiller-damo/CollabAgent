@@ -182,10 +182,11 @@ function MessageRowBase({
             />
             <div className="text-xs text-gray-400 mt-0.5">
               Enter 保存 · Esc 取消
-              <button onClick={saveEdit} className="ml-2 text-blue-500 hover:underline">
+              <button type="button" onClick={saveEdit} className="ml-2 text-blue-500 hover:underline">
                 保存
               </button>
               <button
+                type="button"
                 onClick={() => {
                   setEditing(false);
                   setEditText(msg.content || "");
@@ -216,6 +217,7 @@ function MessageRowBase({
                   return (
                     <button
                       key={r.emoji}
+                      type="button"
                       onClick={() => handleReactionClick(r.emoji)}
                       className={`text-xs px-1.5 py-0.5 rounded border ${hasMy ? "bg-blue-100 dark:bg-blue-900/40 border-blue-300 dark:border-blue-700" : "bg-gray-100 dark:bg-gray-800 border-gray-200 dark:border-gray-700"} hover:opacity-80`}
                       title={`${r.userIds.length} 人`}
@@ -229,6 +231,7 @@ function MessageRowBase({
 
             <div className="flex flex-wrap items-center gap-1 mt-1 relative">
               <button
+                type="button"
                 onClick={() => navigate("/channels/" + channelName + "/" + msg.id)}
                 className="text-gray-500 hover:text-blue-400 text-xs px-1.5 py-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
               >
@@ -242,6 +245,7 @@ function MessageRowBase({
                   </span>
                 ) : (
                   <button
+                    type="button"
                     onClick={handleConvertToTask}
                     disabled={converting}
                     className="text-gray-500 hover:text-blue-500 text-xs px-1.5 py-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity disabled:opacity-50"
@@ -251,6 +255,7 @@ function MessageRowBase({
                   </button>
                 ))}
               <button
+                type="button"
                 onClick={() => navigator.clipboard.writeText(msg.content || "")}
                 className="text-gray-500 hover:text-gray-900 dark:hover:text-white text-xs px-1.5 py-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity"
               >
@@ -259,6 +264,7 @@ function MessageRowBase({
               {isOwn && !deleted && (
                 <>
                   <button
+                    type="button"
                     onClick={() => {
                       setEditText(msg.content || "");
                       setEditing(true);
@@ -268,6 +274,7 @@ function MessageRowBase({
                     编辑
                   </button>
                   <button
+                    type="button"
                     onClick={() => setConfirmDelete(true)}
                     className="text-red-500 hover:text-red-600 text-xs px-1.5 py-0.5 rounded hover:bg-red-50 dark:hover:bg-red-900/30 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity"
                     title="删除消息"
@@ -279,6 +286,7 @@ function MessageRowBase({
               {!deleted && (
                 <>
                   <button
+                    type="button"
                     onClick={() => setEmojiPickerOpen((v) => !v)}
                     className="text-gray-500 hover:text-yellow-400 text-xs px-1.5 py-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity"
                   >
@@ -289,6 +297,7 @@ function MessageRowBase({
                       {EMOJI_CHOICES.map((e) => (
                         <button
                           key={e}
+                          type="button"
                           onClick={() => {
                             handleReactionClick(e);
                             setEmojiPickerOpen(false);

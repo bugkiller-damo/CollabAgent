@@ -35,7 +35,12 @@ export function ToastContainer() {
           >
             <span className="text-lg shrink-0">{s.icon}</span>
             <p className="text-sm flex-1 break-words">{t.message}</p>
-            <button onClick={() => dismiss(t.id)} className="text-white/70 hover:text-white shrink-0" aria-label="关闭">
+            <button
+              type="button"
+              onClick={() => dismiss(t.id)}
+              className="text-white/70 hover:text-white shrink-0"
+              aria-label="关闭"
+            >
               ✕
             </button>
           </div>

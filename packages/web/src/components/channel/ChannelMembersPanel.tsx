@@ -143,6 +143,7 @@ export function ChannelMembersPanel({ channelId, onClose }: { channelId: string;
         )}
         {m.member_type === "agent" && (
           <button
+            type="button"
             onClick={() => handleManager(m, !m.is_manager)}
             title={m.is_manager ? "取消经理身份" : "设为该频道的经理（可派发任务给其它 agent）"}
             className="text-gray-400 hover:text-amber-500 text-xs opacity-0 group-hover:opacity-100 whitespace-nowrap"
@@ -152,6 +153,7 @@ export function ChannelMembersPanel({ channelId, onClose }: { channelId: string;
         )}
         {(m.member_type === "agent" || (m.role !== "owner" && !isSelf)) && (
           <button
+            type="button"
             onClick={() => handleRemove(m)}
             title={m.member_type === "agent" ? "将 Agent 移出频道" : "移除成员"}
             className="text-gray-400 hover:text-red-500 text-xs opacity-0 group-hover:opacity-100"
@@ -167,7 +169,11 @@ export function ChannelMembersPanel({ channelId, onClose }: { channelId: string;
     <aside className="w-60 shrink-0 border-l border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 flex flex-col">
       <div className="flex items-center justify-between p-3 border-b border-gray-200 dark:border-gray-700">
         <span className="text-gray-700 dark:text-gray-300 text-sm font-semibold">成员（{members.length}）</span>
-        <button onClick={onClose} className="text-gray-400 hover:text-gray-700 dark:hover:text-white text-sm">
+        <button
+          type="button"
+          onClick={onClose}
+          className="text-gray-400 hover:text-gray-700 dark:hover:text-white text-sm"
+        >
           ✕
         </button>
       </div>
@@ -185,6 +191,7 @@ export function ChannelMembersPanel({ channelId, onClose }: { channelId: string;
             className="flex-1 min-w-0 text-sm p-1.5 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600"
           />
           <button
+            type="button"
             onClick={handleInvite}
             disabled={busy || !inviteHandle.trim()}
             className="px-2 rounded text-sm bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-50"

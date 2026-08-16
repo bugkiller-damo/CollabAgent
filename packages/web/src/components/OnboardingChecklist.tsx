@@ -55,6 +55,7 @@ export function OnboardingChecklist() {
       <div className="flex items-start justify-between mb-2">
         <h3 className="text-gray-900 dark:text-white text-sm font-semibold">快速开始</h3>
         <button
+          type="button"
           onClick={dismiss}
           className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 text-sm"
           title="不再显示"

@@ -283,9 +283,9 @@ export function MetricsDashboard() {
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {m.daemons.map((d, i) => (
+            {m.daemons.map((d) => (
               <div
-                key={d.hostname + i}
+                key={d.hostname + ":" + d.connectedAt}
                 className="bg-gray-50 dark:bg-gray-800 rounded-xl p-4 border border-gray-100 dark:border-gray-700/50 flex items-center gap-3"
               >
                 <LivePulse />

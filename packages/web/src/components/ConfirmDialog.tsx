@@ -25,12 +25,14 @@ export function ConfirmDialog({
       {message && <p className="text-sm text-gray-600 dark:text-gray-400">{message}</p>}
       <div className="flex justify-end gap-2 pt-1">
         <button
+          type="button"
           onClick={onCancel}
           className="rounded-md bg-gray-200 px-4 py-2 text-sm text-gray-700 transition-colors hover:bg-gray-300 active:scale-[0.98] dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
         >
           {cancelLabel}
         </button>
         <button
+          type="button"
           onClick={onConfirm}
           className={[
             "rounded-md px-4 py-2 text-sm text-white transition-colors active:scale-[0.98]",

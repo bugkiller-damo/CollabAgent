@@ -14,6 +14,7 @@ export function EmptyState({ icon = "💬", title, description, actionLabel, onA
       {description && <p className="mb-4 max-w-sm text-sm text-gray-500 dark:text-gray-500">{description}</p>}
       {actionLabel && onAction && (
         <button
+          type="button"
           onClick={onAction}
           className="rounded-md bg-blue-600 px-4 py-2 text-sm text-white transition-colors hover:bg-blue-500"
         >

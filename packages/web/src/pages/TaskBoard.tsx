@@ -141,6 +141,8 @@ export function TaskBoard() {
           return (
             <div
               key={col.status}
+              role="group"
+              aria-label={`任务列「${col.label}」（可拖放任务到此列）`}
               onDragOver={(e) => {
                 e.preventDefault();
                 setDragOverCol(col.status);
@@ -163,6 +165,8 @@ export function TaskBoard() {
                 {colTasks.map((t) => (
                   <div
                     key={t.id}
+                    role="group"
+                    aria-label={`任务 #${t.task_number}`}
                     draggable
                     onDragStart={() => setDragNum(t.task_number)}
                     onDragEnd={() => {
@@ -180,6 +184,7 @@ export function TaskBoard() {
                         <span className="text-[11px] text-blue-600 dark:text-blue-400">@{t.assignee_handle}</span>
                       ) : (
                         <button
+                          type="button"
                           onClick={() => claim(t.task_number)}
                           className="text-[11px] text-gray-500 hover:text-blue-500"
                         >

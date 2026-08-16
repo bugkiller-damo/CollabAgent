@@ -52,6 +52,7 @@ export function AgentStatusBar() {
           return (
             <button
               key={a.id}
+              type="button"
               onClick={() => openTerminal(terminalAgent === a.name ? null : a.name)}
               title="观察终端"
               className={[

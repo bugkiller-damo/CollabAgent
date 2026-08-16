@@ -31,6 +31,7 @@ export function PendingRow({
             <span className="text-amber-500">
               ⏳ 离线，恢复网络后自动发送
               <button
+                type="button"
                 onClick={() => onDiscard(item.tempId)}
                 className="ml-2 underline text-gray-400 hover:text-gray-300"
               >
@@ -41,10 +42,11 @@ export function PendingRow({
           {item.status === "failed" && (
             <span className="text-red-500">
               ⚠️ 发送失败
-              <button onClick={() => onRetry(item.tempId)} className="ml-2 underline hover:text-red-400">
+              <button type="button" onClick={() => onRetry(item.tempId)} className="ml-2 underline hover:text-red-400">
                 重试
               </button>
               <button
+                type="button"
                 onClick={() => onDiscard(item.tempId)}
                 className="ml-2 underline text-gray-400 hover:text-gray-300"
               >

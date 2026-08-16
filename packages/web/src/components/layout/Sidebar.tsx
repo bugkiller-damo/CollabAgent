@@ -153,6 +153,7 @@ export function Sidebar() {
     return (
       <button
         key={ch.id}
+        type="button"
         onClick={() => {
           setActiveChannel(ch.name);
           navigate("/channels/" + ch.name);
@@ -186,7 +187,7 @@ export function Sidebar() {
   return (
     <aside className="flex h-full w-60 shrink-0 flex-col border-r border-gray-200 bg-gray-100 dark:border-gray-700 dark:bg-gray-800">
       <div className="border-b border-gray-200 p-4 dark:border-gray-700">
-        <button className="flex w-full items-center gap-2 text-left">
+        <button type="button" className="flex w-full items-center gap-2 text-left">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-600 text-white">
             <span className="text-sm font-bold">C</span>
           </div>
@@ -233,6 +234,7 @@ export function Sidebar() {
                   {people.map((p) => (
                     <button
                       key={p.type + ":" + p.handle}
+                      type="button"
                       onClick={() => startDm(p.handle)}
                       className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700"
                     >
@@ -249,6 +251,7 @@ export function Sidebar() {
           {dms.map((d) => (
             <button
               key={d.channelId}
+              type="button"
               onClick={() => navigate("/dm/" + d.peerHandle)}
               className={[
                 "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors",

@@ -94,6 +94,7 @@ export function OrgMembersPanel() {
           className="flex-1 p-2 rounded text-sm bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600"
         />
         <button
+          type="button"
           onClick={doInvite}
           disabled={busy || !invite.trim()}
           className="px-3 rounded text-sm bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-50"
@@ -112,6 +113,7 @@ export function OrgMembersPanel() {
             {m.role === "owner" && <span className="text-[10px] text-blue-500">(你)</span>}
             {m.role !== "owner" && (
               <button
+                type="button"
                 onClick={() => removeMember(m)}
                 title="移除"
                 className="text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100"

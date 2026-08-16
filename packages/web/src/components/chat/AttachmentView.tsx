@@ -54,11 +54,19 @@ export function AttachmentView({ attachments }: { attachments: Attachment[] }) {
 
       {lightbox && (
         <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="图片预览"
+          tabIndex={-1}
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
           onClick={() => setLightbox(null)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") setLightbox(null);
+          }}
         >
           <img src={lightbox.url} alt={lightbox.filename} className="max-h-full max-w-full rounded shadow-lg" />
           <button
+            type="button"
             onClick={() => setLightbox(null)}
             className="absolute top-4 right-4 text-white/80 hover:text-white text-2xl"
           >

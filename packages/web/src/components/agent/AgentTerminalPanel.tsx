@@ -134,7 +134,24 @@ export function AgentTerminalPanel({ agentName, onSelectAgent, onClose }: AgentT
     >
       {/* 拖拽调宽把手（左边缘） */}
       <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="拖拽调整宽度"
+        aria-valuenow={width}
+        aria-valuemin={MIN_W}
+        aria-valuemax={MAX_W}
+        tabIndex={0}
         onMouseDown={onDragStart}
+        onKeyDown={(e) => {
+          if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+          e.preventDefault();
+          const delta = e.key === "ArrowLeft" ? 16 : -16;
+          setWidth((w) => {
+            const next = Math.min(MAX_W, Math.max(MIN_W, w + delta));
+            localStorage.setItem("terminal_panel_w", String(next));
+            return next;
+          });
+        }}
         className="absolute inset-y-0 -left-1 z-10 w-2 cursor-col-resize hover:bg-blue-400/40 active:bg-blue-500/50"
         title="拖拽调整宽度"
       />
@@ -155,6 +172,7 @@ export function AgentTerminalPanel({ agentName, onSelectAgent, onClose }: AgentT
         </select>
         <span className={`shrink-0 rounded px-1.5 py-0.5 text-xs ${st.cls}`}>{st.text}</span>
         <button
+          type="button"
           onClick={onClose}
           className="shrink-0 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
           aria-label="关闭终端面板"
@@ -165,12 +183,14 @@ export function AgentTerminalPanel({ agentName, onSelectAgent, onClose }: AgentT
 
       <div className="flex items-center border-b border-gray-200 text-sm dark:border-gray-700">
         <button
+          type="button"
           onClick={() => setTab("live")}
           className={`flex-1 py-1.5 ${tab === "live" ? "border-b-2 border-blue-500 font-medium text-gray-900 dark:text-white" : "text-gray-500"}`}
         >
           实时画面
         </button>
         <button
+          type="button"
           onClick={() => setTab("log")}
           className={`flex-1 py-1.5 ${tab === "log" ? "border-b-2 border-blue-500 font-medium text-gray-900 dark:text-white" : "text-gray-500"}`}
         >
@@ -179,6 +199,7 @@ export function AgentTerminalPanel({ agentName, onSelectAgent, onClose }: AgentT
         {/* 字号调节 */}
         <div className="flex shrink-0 items-center gap-0.5 px-2">
           <button
+            type="button"
             onClick={() => changeFontSize(-1)}
             className="rounded px-1.5 py-0.5 text-xs text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700"
             title="缩小字号"
@@ -187,6 +208,7 @@ export function AgentTerminalPanel({ agentName, onSelectAgent, onClose }: AgentT
           </button>
           <span className="w-6 text-center text-[11px] text-gray-400">{fontSize}</span>
           <button
+            type="button"
             onClick={() => changeFontSize(1)}
             className="rounded px-1.5 py-0.5 text-xs text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700"
             title="放大字号"
@@ -214,6 +236,7 @@ export function AgentTerminalPanel({ agentName, onSelectAgent, onClose }: AgentT
             {history?.trim() || "暂无历史日志（agent 运行过并结束后会落盘保留）"}
           </pre>
           <button
+            type="button"
             onClick={() => wsSend({ type: "terminal:history", agentName })}
             className="border-t border-gray-200 py-1.5 text-xs text-blue-500 hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-700"
           >

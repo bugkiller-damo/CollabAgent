@@ -81,6 +81,7 @@ export function NotificationBell() {
   return (
     <div className="relative" ref={panelRef}>
       <button
+        type="button"
         onClick={() => setOpen(!open)}
         className="relative p-2 rounded hover:bg-gray-200 dark:hover:bg-gray-700 transition"
         title="通知"
@@ -98,7 +99,11 @@ export function NotificationBell() {
           <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700">
             <h3 className="font-semibold text-gray-900 dark:text-gray-100">通知</h3>
             {unreadCount > 0 && (
-              <button onClick={handleMarkAll} className="text-xs text-blue-500 hover:text-blue-600 dark:text-blue-400">
+              <button
+                type="button"
+                onClick={handleMarkAll}
+                className="text-xs text-blue-500 hover:text-blue-600 dark:text-blue-400"
+              >
                 全部已读
               </button>
             )}
@@ -112,6 +117,7 @@ export function NotificationBell() {
               notifications.map((n) => (
                 <button
                   key={n.id}
+                  type="button"
                   onClick={() => handleClick(n)}
                   className={`w-full text-left px-4 py-3 border-b border-gray-100 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 transition flex gap-3 ${
                     !n.read ? "bg-blue-50 dark:bg-blue-900/20" : ""

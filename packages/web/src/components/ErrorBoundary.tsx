@@ -31,12 +31,14 @@ export class ErrorBoundary extends Component<Props, State> {
           <p className="text-gray-400 dark:text-gray-600 text-xs mb-4">刷新或点击下方按钮重试</p>
           <div className="flex gap-2">
             <button
+              type="button"
               onClick={() => this.setState({ hasError: false })}
               className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-500 text-sm"
             >
               重试
             </button>
             <button
+              type="button"
               onClick={() => window.location.reload()}
               className="bg-gray-600 text-white px-4 py-2 rounded hover:bg-gray-500 text-sm"
             >

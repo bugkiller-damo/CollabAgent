@@ -70,6 +70,7 @@ export function UserProfileFooter() {
   return (
     <div ref={ref} className="relative border-t border-gray-200 p-2 dark:border-gray-700">
       <button
+        type="button"
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center gap-2 rounded-md p-2 text-left transition-colors hover:bg-gray-200 dark:hover:bg-gray-700"
       >
@@ -92,6 +93,7 @@ export function UserProfileFooter() {
       {open && (
         <div className="absolute bottom-full left-2 right-2 mb-1 rounded-lg border border-gray-200 bg-white py-1 shadow-lg animate-scale-in origin-bottom-left dark:border-gray-700 dark:bg-gray-800">
           <button
+            type="button"
             onClick={() => {
               setOpen(false);
               navigate("/settings/profile");
@@ -102,6 +104,7 @@ export function UserProfileFooter() {
             设置
           </button>
           <button
+            type="button"
             onClick={() => {
               setTheme(theme === "dark" ? "light" : "dark");
             }}
@@ -112,6 +115,7 @@ export function UserProfileFooter() {
           </button>
           <div className="my-1 border-t border-gray-100 dark:border-gray-700" />
           <button
+            type="button"
             onClick={handleLogout}
             className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20"
           >

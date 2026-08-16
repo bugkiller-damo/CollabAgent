@@ -32,6 +32,13 @@ export { BUSY_MARKER_RE, PROMPT_RE };
 
 const PTY_COMMAND = "claude"; // TODO: read from command-resolver
 
+// ANSI CSI 序列（ESC [ 参数 结尾字母）匹配——stuck 检测里剥 raw tail 用。
+// 不能写 /\x1b…/ 正则字面量：noControlCharactersInRegex 拒绝一切匹配控制字符的
+// 正则字面量（\x1b / \u001b / \u{1b} 都会被拦），改为字符串构造 RegExp，
+// 编译结果与 /\x1b\[[0-9;?]*[a-zA-Z]/g 完全一致（仅用于 replace，无 lastIndex 状态问题）。
+const ESC = "\x1b";
+const ANSI_CSI_RE = new RegExp(`${ESC}\\[[0-9;?]*[a-zA-Z]`, "g");
+
 /**
  * 解析 Claude CLI 的可执行文件路径。
  *
@@ -306,7 +313,7 @@ export const createAgentRuntime = (
           if (now - lastWarn < STUCK_WARN_MS) continue;
           lastWarnedAt.set(agentName, now);
 
-          const tail = (run?.output ?? "").slice(-200).replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "");
+          const tail = (run?.output ?? "").slice(-200).replace(ANSI_CSI_RE, "");
           const screen = (run?.screenText ?? "").replace(/\s+/g, " ").trim().slice(-300);
           console.warn(
             `[Runtime] @${agentName} STUCK in 'working' for ${(elapsed / 1000).toFixed(1)}s ` +

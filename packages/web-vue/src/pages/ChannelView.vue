@@ -182,7 +182,9 @@ watch(
     const queued = pending.value.filter((m) => m.status === "queued");
     if (queued.length === 0) return;
     pending.value = pending.value.map((m) => (m.status === "queued" ? { ...m, status: "sending" } : m));
-    queued.forEach((m) => trySend(m.tempId, m.content));
+    queued.forEach((m) => {
+      trySend(m.tempId, m.content);
+    });
   },
   { immediate: true },
 );

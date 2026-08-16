@@ -102,6 +102,7 @@ export function SearchBar() {
           {results.map((r) => (
             <button
               key={r.id}
+              type="button"
               onClick={() => navigateTo(r)}
               className="w-full text-left px-3 py-2 hover:bg-gray-100 dark:hover:bg-gray-700 border-b border-gray-50 dark:border-gray-700/50 last:border-0"
             >
