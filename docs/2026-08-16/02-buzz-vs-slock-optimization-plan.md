@@ -293,7 +293,7 @@ O9 seq 并发测试 → O10/O11/O12/O13 daemon 收敛与安全 → O16 前端 WS
 | 5 | O2 events 表 + 哈希链 + audit API | | ☐ |
 | 6 | O3 请求级租户解析 | AI | ☑ 2026-08-16 |
 | 7 | O4 Storage 接口 + S3 实现 | AI | ☑ 2026-08-16 |
-| 8 | O6 登录锁迁移 Valkey | | ☐ |
+| 8 | O6 登录锁迁移 Valkey | AI | ☑ 2026-08-16 |
 | 9 | O7 权限缓存一致性方案 | | ☐ |
 | 10 | O8 bcrypt 兼容分支退役计划 | | ☐ |
 | 11 | O19 生产 Dockerfile + compose | | ☐ |
@@ -353,7 +353,7 @@ O9 seq 并发测试 → O10/O11/O12/O13 daemon 收敛与安全 → O16 前端 WS
 | O18 | 依赖安全审计 | 🔴 高 | ✅ 完成 | dependabot（npm+gh-actions weekly）+ audit.yml（高危阻断） |
 | O3 | 多租户边界 | 🟡 中 | ✅ 完成 | `lib/tenant.ts`（请求级租户解析：显式 serverId 参数 → `x-server-id` header → Host 映射 `SERVER_HOST_MAP` → 单租户默认 server 降级）；显式租户强制成员校验防枚举；`resolveChannel`/`resolvePeer`/`resolveDmTarget` 支持 server 作用域（同名频道/agent 不跨社区串号）；`canAccessChannel` 增加 server 级 RBAC（作用域 + 显式租户成员断言，DM 频道保持成员制）；channels/messages/tasks/actions/orgs 路由接入；`/messages/search` 恒按当前租户 server 过滤；`/server/info` 显式租户下 humans 仅列社区成员；`.env.example` 补充 `SERVER_HOST_MAP`；`test/tenant.test.ts` 22 测试（10 单测 + 12 集成断言，双社区隔离验收）+ ws.test 更新 server 成员前置；真 PG 全量 148/148 通过 |
 | O4 | 对象存储抽象 | 🟡 中 | ✅ 完成 | Storage 接口 + 后端工厂（`lib/storage.ts`：`STORAGE_BACKEND=local|s3|minio`、`newStorageKey` 统一 uuid/净化文件名、目录穿越加固）；`lib/storage-s3.ts` S3Storage（@aws-sdk/client-s3，可注入 fake client，404/NoSuchKey 归一，构造参数校验与 config 硬校验双保险）；`routes/attachments.ts` 抽 serveAttachment 共用鉴权出口 + 新增 `GET /by-key?key=` 服务端代理（S3 私有桶 publicUrl 指向此，不暴露签名密钥）+ 显式 per-file 上限；频道删除链事务内清孤儿 attachments 行 + 提交后 best-effort 删对象字节；compose 可选 minio profile；测试 37 个新增（storage-s3 15 + storage 17 + attachments 集成 5），真 PG 全量 186/186 |
-| O6 | 登录防爆破迁移 Valkey | 🟡 中 | ⏳ 待办 | |
+| O6 | 登录防爆破迁移 Valkey | 🟡 中 | ✅ 完成 | `lib/login-lock.ts`：双 key（`login:acct:<账号>` + `login:ip:<IP>`）固定窗口失败计数，Valkey INCR+PEXPIRE 共享存储（多实例一致）+ 内存回退；账号阈值 5/15min（换 IP 仍锁），IP 阈值默认 20（NAT 共享，`LOGIN_IP_MAX_ATTEMPTS`）；成功登录清双 key；Redis 故障 fail-open；auth.ts 删除内存 Map 接入（429 文案不变），recordSession 复用 clientIpOf；13 单测（内存/Valkey fake/纯函数/高层双 key）+ 3 集成测试（跨 IP 账号锁、成功清除、幽灵账号锁）；真 PG 全量 202/202 |
 | O7 | 权限缓存一致性 | 🟡 中 | ⏳ 待办 | |
 | O8 | WS 认证 bcrypt 分支退役 | 🟡 中 | ⏳ 待办 | |
 | O10 | daemon 生产启动路径 | 🟡 中 | ⏳ 待办 | |
