@@ -78,20 +78,14 @@ export async function appendEvent(tx: TxClient, input: AuditEventInput): Promise
   const prev = await tx.query<{ hash: string }>("SELECT hash FROM events ORDER BY id DESC LIMIT 1");
   const prevHash = prev.rows[0]?.hash ?? null;
   const hash = eventHash(input, prevHash);
+  // 注意：payload 必须传 JS 对象而非 JSON.stringify 字符串。
+  // postgres.js 把「字符串参数」当作 jsonb 的字符串值（双重编码），
+  // 会导致 jsonb 里存成 JSON 字符串、读回为 string，与「按对象算 hash」失配，verify 误报断裂。
   const inserted = await tx.query<{ id: string | number }>(
     `INSERT INTO events (actor_id, actor_type, verb, object_type, object_id, payload, prev_hash, hash)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      RETURNING id`,
-    [
-      input.actorId,
-      input.actorType,
-      input.verb,
-      input.objectType,
-      input.objectId,
-      JSON.stringify(input.payload ?? {}),
-      prevHash,
-      hash,
-    ],
+    [input.actorId, input.actorType, input.verb, input.objectType, input.objectId, input.payload ?? {}, prevHash, hash],
   );
   return { id: Number(inserted.rows[0].id), hash };
 }

@@ -347,7 +347,7 @@ O9 seq 并发测试 → O10/O11/O12/O13 daemon 收敛与安全 → O16 前端 WS
 | # | 优化点 | 优先级 | 状态 | 落地说明 |
 |---|---|---|---|---|
 | O1 | Redis pub/sub 扇出 | 🔴 高 | ✅ 完成 | `lib/pubsub.ts`（ioredis + 内存回退）；`ws/handler.ts` 广播/sendToUser/sendToDaemon/terminal:frame 改走 pub/sub 信封；`index.ts` 注入 + 优雅关闭 |
-| O2 | 事件日志/审计 | 🔴 高 | ✅ 完成 | `events` 表（migration 010，BIGINT IDENTITY + 无外键）+ `lib/audit.ts` 哈希链（稳定序列化防 jsonb 键序重排 + advisory lock 串行链头）；消息 send/edit/delete 事务内追加事件；`GET /api/audit` + `/api/audit/verify`；5 单测 |
+| O2 | 事件日志/审计 | 🔴 高 | ✅ 完成 | `events` 表（migration 010，BIGINT IDENTITY + 无外键）+ `lib/audit.ts` 哈希链（稳定序列化防 jsonb 键序重排 + advisory lock 串行链头）；消息 send/edit/delete 事务内追加事件；`GET /api/audit` + `/api/audit/verify`；5 单测 + 2 集成回归测试（2026-08-16 真 PG 修复 payload 双重编码） |
 | O5 | 配置危险默认值硬校验 | 🔴 高 | ✅ 完成 | `config.ts` 生产命中默认值 `exit(1)`；`ALLOW_INSECURE_DEV_SECRETS=1` 逃生门；`.env.example` + 6 单测 |
 | O17 | CI 分层 + lint | 🔴 高 | ✅ 完成 | Biome 全仓 0 error；4 job 分层 CI + lefthook；5 包 lint 脚本 |
 | O18 | 依赖安全审计 | 🔴 高 | ✅ 完成 | dependabot（npm+gh-actions weekly）+ audit.yml（高危阻断） |
@@ -371,3 +371,13 @@ O9 seq 并发测试 → O10/O11/O12/O13 daemon 收敛与安全 → O16 前端 WS
 
 - **O1**：presence（`daemonClients.has()` 驱动的 `isOnline`）仍为实例本地态；`terminalWatchers` 引用计数仍为实例本地。多实例下「同一 agent 的终端观众跨实例 start/stop」需把登记迁到共享存储，本轮未做（消息广播扇出——即验收主目标——已闭环）。
 - **O2**：事件接入当前覆盖 `message.send/edit/delete`；任务流转、频道成员增删、审批动作尚未接入 `appendEvent`（结构已就绪，逐个路由接入即可）；`/api/audit` 可见性校验当前仅支持 `message` 对象，其余 `object_type` fail-closed 返回 403。
+
+### 2026-08-16 真 PG 集成验证记录
+
+复刻 CI L3 job 在本机 PostgreSQL 18.4（`collabagent_test` 库）完整跑通：
+
+- `db:migrate` 实库执行 `010_events.sql` 成功（000–009 此前已应用）。
+- 后台起 server（`PORT=3101`，因本机 `pnpm dev` 占用 3001）→ 全量 vitest **126/126 通过**（15 文件，含 WS pub/sub、消息 send/edit/delete、audit）。
+- **发现并修复一个真 bug**：`appendEvent` 曾用 `JSON.stringify(payload)` 传参，postgres.js 把 jsonb 列存成 JSON 字符串值（双重编码），导致「按对象算 hash」与「读回字符串重算」失配，`/api/audit/verify` 误报链断裂。已改为传 JS 对象，实库验证 `valid:true`。
+- 新增 `test/audit-api.test.ts`（2 测试）回归固化：send→edit→delete 三事件链 `verify` 断言 `valid:true` + 未认证访问 401。
+- 提交：`8b2c36f`（O1/O2 主体）之后的修复与回归测试随本轮提交。
