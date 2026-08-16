@@ -142,13 +142,23 @@ async function resolveUserId(token: string | null, isDaemon: boolean): Promise<s
         [sha256Token(token)],
       );
       if (fast.rows.length > 0) return String(fast.rows[0].user_id);
-      // 兼容路径：历史 bcrypt 令牌逐行比对（轮换后可删除）
+      // 兼容路径：历史 bcrypt 令牌逐行比对（O8：轮换后可删除，判定见
+      // docs/2026-08-16/08-bcrypt-token-retirement.md）。
+      // 观测：machineAuthBcryptScans/Hits 计数器 + 命中 warn 日志。
+      const { inc } = await import("../lib/metrics.js");
+      inc("machineAuthBcryptScans");
       const bcrypt = (await import("bcryptjs")).default;
       const result = await wsPg.query<{ user_id: string; token_hash: string }>(
         "SELECT user_id, token_hash FROM machine_tokens WHERE revoked_at IS NULL",
       );
       for (const row of result.rows) {
-        if (isBcryptHash(row.token_hash) && (await bcrypt.compare(token, row.token_hash))) return String(row.user_id);
+        if (isBcryptHash(row.token_hash) && (await bcrypt.compare(token, row.token_hash))) {
+          inc("machineAuthBcryptHits");
+          console.warn(
+            `[WS] legacy bcrypt machine token used by user=${row.user_id} — rotate/revoke it (see 08-bcrypt-token-retirement.md)`,
+          );
+          return String(row.user_id);
+        }
       }
     } catch {
       /* fall through to anon */

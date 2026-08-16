@@ -1,7 +1,14 @@
 // 轻量内存指标：进程级计数器 + 实时快照，供 GET /api/metrics 暴露。
 // 多实例下各进程独立计数（无共享聚合），但足够单实例运维观测。
 
-type CounterName = "messagesSent" | "dmSent" | "remindersFired" | "errors" | "logins";
+type CounterName =
+  | "messagesSent"
+  | "dmSent"
+  | "remindersFired"
+  | "errors"
+  | "logins"
+  | "machineAuthBcryptScans"
+  | "machineAuthBcryptHits";
 
 const counters: Record<CounterName, number> = {
   messagesSent: 0,
@@ -9,6 +16,8 @@ const counters: Record<CounterName, number> = {
   remindersFired: 0,
   errors: 0,
   logins: 0,
+  machineAuthBcryptScans: 0,
+  machineAuthBcryptHits: 0,
 };
 
 const startedAt = Date.now();

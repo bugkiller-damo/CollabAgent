@@ -146,13 +146,22 @@ server.decorate("authenticate", async (request: any, reply: any) => {
       }
       return reply.status(401).send({ error: "Invalid machine token" });
     }
-    // 兼容路径：历史 bcrypt 哈希的令牌（等全部轮换/吊销后可删除此分支）
+    // 兼容路径：历史 bcrypt 哈希的令牌（等全部轮换/吊销后可删除此分支，O8）。
+    // 观测：machineAuthBcryptScans/Hits 计数器（/api/metrics）+ 命中 warn 日志；
+    // 退役判定见 docs/2026-08-16/08-bcrypt-token-retirement.md。
+    const { inc } = await import("./lib/metrics.js");
+    inc("machineAuthBcryptScans");
     const bcrypt = (await import("bcryptjs")).default;
     const legacy = await server.pg.query<{ user_id: string; scope: string; token_hash: string }>(
       "SELECT user_id, scope, token_hash FROM machine_tokens WHERE revoked_at IS NULL",
     );
     for (const row of legacy.rows) {
       if (isBcryptHash(row.token_hash) && (await bcrypt.compare(token, row.token_hash))) {
+        inc("machineAuthBcryptHits");
+        request.log.warn(
+          { userId: row.user_id, scope: row.scope },
+          "legacy bcrypt machine token used — rotate/revoke it (see 08-bcrypt-token-retirement.md)",
+        );
         const user = await server.pg.query("SELECT id, handle FROM users WHERE id = $1", [row.user_id]);
         if (user.rows.length > 0) {
           request.user = { sub: user.rows[0].id, handle: user.rows[0].handle, scope: row.scope };
