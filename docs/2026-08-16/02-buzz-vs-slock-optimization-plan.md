@@ -291,7 +291,7 @@ O9 seq 并发测试 → O10/O11/O12/O13 daemon 收敛与安全 → O16 前端 WS
 | 3 | O18 依赖审计 job | | ☐ |
 | 4 | O1 Redis pub/sub 扇出 | | ☐ |
 | 5 | O2 events 表 + 哈希链 + audit API | | ☐ |
-| 6 | O3 请求级租户解析 | | ☐ |
+| 6 | O3 请求级租户解析 | AI | ☑ 2026-08-16 |
 | 7 | O4 Storage 接口 + S3 实现 | | ☐ |
 | 8 | O6 登录锁迁移 Valkey | | ☐ |
 | 9 | O7 权限缓存一致性方案 | | ☐ |
@@ -351,7 +351,7 @@ O9 seq 并发测试 → O10/O11/O12/O13 daemon 收敛与安全 → O16 前端 WS
 | O5 | 配置危险默认值硬校验 | 🔴 高 | ✅ 完成 | `config.ts` 生产命中默认值 `exit(1)`；`ALLOW_INSECURE_DEV_SECRETS=1` 逃生门；`.env.example` + 6 单测 |
 | O17 | CI 分层 + lint | 🔴 高 | ✅ 完成 | Biome 全仓 0 error；4 job 分层 CI + lefthook；5 包 lint 脚本 |
 | O18 | 依赖安全审计 | 🔴 高 | ✅ 完成 | dependabot（npm+gh-actions weekly）+ audit.yml（高危阻断） |
-| O3 | 多租户边界 | 🟡 中 | ⏳ 待办 | 下一项：请求级租户解析替代 `getDefaultServerId` |
+| O3 | 多租户边界 | 🟡 中 | ✅ 完成 | `lib/tenant.ts`（请求级租户解析：显式 serverId 参数 → `x-server-id` header → Host 映射 `SERVER_HOST_MAP` → 单租户默认 server 降级）；显式租户强制成员校验防枚举；`resolveChannel`/`resolvePeer`/`resolveDmTarget` 支持 server 作用域（同名频道/agent 不跨社区串号）；`canAccessChannel` 增加 server 级 RBAC（作用域 + 显式租户成员断言，DM 频道保持成员制）；channels/messages/tasks/actions/orgs 路由接入；`/messages/search` 恒按当前租户 server 过滤；`/server/info` 显式租户下 humans 仅列社区成员；`.env.example` 补充 `SERVER_HOST_MAP`；`test/tenant.test.ts` 22 测试（10 单测 + 12 集成断言，双社区隔离验收）+ ws.test 更新 server 成员前置；真 PG 全量 148/148 通过 |
 | O4 | 对象存储抽象 | 🟡 中 | ⏳ 待办 | |
 | O6 | 登录防爆破迁移 Valkey | 🟡 中 | ⏳ 待办 | |
 | O7 | 权限缓存一致性 | 🟡 中 | ⏳ 待办 | |

@@ -1,13 +1,19 @@
 import type { FastifyInstance } from "fastify";
 import { canAccessChannel, canManageChannel } from "../lib/access.js";
-import { cleanChannelName, resolveChannel } from "../lib/channel.js";
+import { resolveChannel } from "../lib/channel.js";
 import { getOrCreateDmChannel, type Party, resolvePeer } from "../lib/dm.js";
-import { getDefaultServerId } from "../lib/server.js";
+import { isServerMember, resolveTenant } from "../lib/tenant.js";
 
 export async function channelRoutes(app: FastifyInstance) {
-  app.get("/", { preHandler: [app.authenticate] }, async (req) => {
+  app.get("/", { preHandler: [app.authenticate] }, async (req, reply) => {
     const { serverId } = req.query as Record<string, string>;
-    const resolvedServerId = serverId || (await getDefaultServerId(app));
+    // O3：请求级租户解析——显式 serverId/header/host 必须校验成员身份，防止任意 serverId 枚举
+    const tenant = await resolveTenant(app, req, { serverId });
+    if (tenant.explicit && !(await isServerMember(app, tenant.serverId, req.user.sub))) {
+      return reply.status(403).send({ error: "not a member of that server" });
+    }
+    const resolvedServerId = tenant.serverId;
+    if (!resolvedServerId) return { channels: [] };
     const result = await app.pg.query(
       `SELECT c.*, cm.role
        FROM channels c
@@ -23,7 +29,11 @@ export async function channelRoutes(app: FastifyInstance) {
   app.post("/", { preHandler: [app.authenticate] }, async (req, reply) => {
     const { serverId, name, description, type, visibility } = req.body as Record<string, unknown>;
     if (!name) return reply.status(400).send({ error: "name required" });
-    const resolvedServerId = serverId || (await getDefaultServerId(app));
+    const tenant = await resolveTenant(app, req, { serverId: serverId as string | undefined });
+    if (tenant.explicit && !(await isServerMember(app, tenant.serverId, req.user.sub))) {
+      return reply.status(403).send({ error: "not a member of that server" });
+    }
+    const resolvedServerId = tenant.serverId;
     if (!resolvedServerId) return reply.status(400).send({ error: "no server available" });
     const vis = visibility || type || "public";
     const userId = req.user.sub;
@@ -257,21 +267,27 @@ export async function channelRoutes(app: FastifyInstance) {
   });
 
   app.get("/resolve", { preHandler: [app.authenticate] }, async (req, reply) => {
-    const { target } = req.query as Record<string, string>;
+    const { target, serverId } = req.query as Record<string, string>;
     if (!target) return reply.status(400).send({ error: "target required" });
+    // O3：显式租户下名字解析限定在租户 server 内（同名频道/agent 跨社区不串号）
+    const tenant = await resolveTenant(app, req, { serverId });
+    if (tenant.explicit && !(await isServerMember(app, tenant.serverId, req.user.sub))) {
+      return reply.status(403).send({ error: "not a member of that server" });
+    }
+    const scope = tenant.explicit ? tenant.serverId : undefined;
     if (target.startsWith("dm:@")) {
       const userId = req.user.sub;
-      const peer = await resolvePeer(app, target.slice(3).split(":")[0]);
+      const peer = await resolvePeer(app, target.slice(3).split(":")[0], scope);
       if (!peer) return reply.status(404).send({ error: "peer not found" });
       const me: Party = { id: userId, type: "human", handle: req.user.handle ?? "unknown" };
       const channelId = await getOrCreateDmChannel(app, me, peer);
       // dmKey：浏览器侧统一会话键，与 WS 投递 channelId 一致
       return { type: "dm", channelId, dmKey: "dm:" + channelId, peer };
     }
-    const name = cleanChannelName(target);
-    const result = await app.pg.query("SELECT * FROM channels WHERE name = $1", [name]);
-    if (result.rows.length === 0) return reply.status(404).send({ error: "channel not found" });
-    return { type: "channel", ...result.rows[0] };
+    // resolveChannel 内部会清理 "#"/线程后缀；显式租户下限定在租户 server 内
+    const ch = await resolveChannel(app, target, "*", scope);
+    if (!ch) return reply.status(404).send({ error: "channel not found" });
+    return { type: "channel", ...ch };
   });
 
   // 我的 DM 会话列表（含对端信息与最近一条消息）

@@ -6,9 +6,22 @@ import { dmOtherMembers, isDmTarget, type Party, resolveDmTarget } from "../lib/
 import { inc } from "../lib/metrics.js";
 import { createNotification } from "../lib/notifications.js";
 import { attachmentsJson, reactionsJson } from "../lib/query-fragments.js";
+import { resolveTenant, type TenantContext } from "../lib/tenant.js";
 import { broadcast } from "../ws/handler.js";
 
 export async function messageRoutes(app: FastifyInstance) {
+  /**
+   * O3：把租户上下文转成 canAccessChannel 的 server 级 RBAC 参数——
+   * 显式租户（param/header/host）下：频道必须属于该 server 且调用者是该 server 成员；
+   * 单租户降级（默认 server）下：保持既有行为不变。
+   */
+  function accessOptsOf(tenant: TenantContext) {
+    return {
+      serverId: tenant.explicit ? tenant.serverId : undefined,
+      enforceServerMembership: tenant.explicit,
+    };
+  }
+
   // 从消息文本解析 @提及 的 handle（仅用于人类用户——handle 注册时限死 ASCII）
   function parseMentionHandles(content: string): string[] {
     const names = new Set<string>();
@@ -38,18 +51,20 @@ export async function messageRoutes(app: FastifyInstance) {
     const { channel, limit } = req.query as Record<string, string>;
     if (!channel) return reply.status(400).send({ error: "channel required" });
     const userId = req.user.sub;
+    const tenant = await resolveTenant(app, req);
+    const scope = tenant.explicit ? tenant.serverId : undefined;
     let channelId: string;
     if (isDmTarget(channel)) {
       const me: Party = { id: userId, type: "human", handle: req.user.handle ?? "unknown" };
-      const resolved = await resolveDmTarget(app, me, channel);
+      const resolved = await resolveDmTarget(app, me, channel, scope);
       if (!resolved) return reply.status(404).send({ error: "dm peer not found" });
       channelId = resolved.channelId;
     } else {
-      const ch = await resolveChannel(app, channel);
+      const ch = await resolveChannel(app, channel, "id", scope);
       if (!ch) return reply.status(404).send({ error: "channel not found" });
       channelId = ch.id;
     }
-    if (!(await canAccessChannel(app, channelId, userId))) {
+    if (!(await canAccessChannel(app, channelId, userId, accessOptsOf(tenant)))) {
       return reply.status(403).send({ error: "no access to this channel" });
     }
     const lim = Number(limit) || 50;
@@ -69,12 +84,13 @@ export async function messageRoutes(app: FastifyInstance) {
   // Get thread replies
   app.get("/thread/:messageId", { preHandler: [app.authenticate] }, async (req, reply) => {
     const { messageId } = req.params as Record<string, string>;
+    const tenant = await resolveTenant(app, req);
     const parent = await app.pg.query(
       'SELECT m.id, m.channel_id, m.content, m.sender_id as "senderId", COALESCE(u.display_name, u.handle, \'User\') as "senderName", m.created_at as "time" FROM messages m LEFT JOIN users u ON m.sender_id = u.id WHERE m.id = $1',
       [messageId],
     );
     if (parent.rows.length === 0) return reply.status(404).send({ error: "message not found" });
-    if (!(await canAccessChannel(app, String(parent.rows[0].channel_id), req.user.sub))) {
+    if (!(await canAccessChannel(app, String(parent.rows[0].channel_id), req.user.sub, accessOptsOf(tenant)))) {
       return reply.status(403).send({ error: "no access to this channel" });
     }
     const replies = await app.pg.query(
@@ -99,6 +115,8 @@ export async function messageRoutes(app: FastifyInstance) {
     if (!target) return reply.status(400).send({ error: "target required" });
     const userId = req.user.sub;
     const senderHandle = String(req.user?.handle || "unknown");
+    const tenant = await resolveTenant(app, req);
+    const scope = tenant.explicit ? tenant.serverId : undefined;
     let resolvedChannelId = channelId;
     let resolvedServerId: string | undefined;
     let dmPeer: Party | undefined;
@@ -106,18 +124,18 @@ export async function messageRoutes(app: FastifyInstance) {
     if (!resolvedChannelId) {
       if (dm) {
         const me: Party = { id: userId, type: "human", handle: senderHandle };
-        const resolved = await resolveDmTarget(app, me, target);
+        const resolved = await resolveDmTarget(app, me, target, scope);
         if (!resolved) return reply.status(404).send({ error: "dm peer not found" });
         resolvedChannelId = resolved.channelId;
         dmPeer = resolved.peer;
       } else {
-        const ch = await resolveChannel(app, target, "id, server_id");
+        const ch = await resolveChannel(app, target, "id, server_id", scope);
         if (!ch) return reply.status(404).send({ error: "channel not found" });
         resolvedChannelId = ch.id;
         resolvedServerId = ch.server_id;
       }
     }
-    if (!(await canAccessChannel(app, resolvedChannelId, userId))) {
+    if (!(await canAccessChannel(app, resolvedChannelId, userId, accessOptsOf(tenant)))) {
       return reply.status(403).send({ error: "no access to this channel" });
     }
     if (!resolvedServerId) {
@@ -267,23 +285,25 @@ export async function messageRoutes(app: FastifyInstance) {
   });
 
   app.get("/history", { preHandler: [app.authenticate] }, async (req, reply) => {
-    const { channel, before, after, around, limit, threadId } = req.query as Record<string, string>;
+    const { channel, before, after, limit, threadId } = req.query as Record<string, string>;
     if (!channel) return reply.status(400).send({ error: "channel required" });
     const userId = req.user.sub;
+    const tenant = await resolveTenant(app, req);
+    const scope = tenant.explicit ? tenant.serverId : undefined;
     let resolvedChannelId: string;
     if (isDmTarget(channel)) {
       const me: Party = { id: userId, type: "human", handle: req.user.handle ?? "unknown" };
-      const resolved = await resolveDmTarget(app, me, channel);
+      const resolved = await resolveDmTarget(app, me, channel, scope);
       if (!resolved) return reply.status(404).send({ error: "dm peer not found" });
       resolvedChannelId = resolved.channelId;
     } else if (channel.startsWith("#")) {
-      const ch = await resolveChannel(app, channel);
+      const ch = await resolveChannel(app, channel, "id", scope);
       if (!ch) return reply.status(404).send({ error: "channel not found" });
       resolvedChannelId = ch.id;
     } else {
       resolvedChannelId = String(channel);
     }
-    if (!(await canAccessChannel(app, resolvedChannelId, userId))) {
+    if (!(await canAccessChannel(app, resolvedChannelId, userId, accessOptsOf(tenant)))) {
       return reply.status(403).send({ error: "no access to this channel" });
     }
     let query =
@@ -315,17 +335,25 @@ export async function messageRoutes(app: FastifyInstance) {
   app.get("/search", { preHandler: [app.authenticate] }, async (req) => {
     const { q } = req.query as Record<string, string | undefined>;
     const userId = req.user.sub;
+    const tenant = await resolveTenant(app, req);
     // 仅搜调用方可见的频道：公开频道，或其为成员的私有/DM 频道
     // content_tsv 是 stored 生成列（migration 008），GIN 索引命中，不再现算 to_tsvector
+    // O3：搜索限定在当前租户 server（显式租户或单租户默认 server）——不跨社区漏数据
+    const params: unknown[] = [q || "", 20, userId];
+    let serverFilter = "";
+    if (tenant.serverId) {
+      params.push(tenant.serverId);
+      serverFilter = ` AND m.server_id = $${params.length}`;
+    }
     const result = await app.pg.query(
       `SELECT m.id, m.content, '#' || c.name as "channelId", m.seq, m.created_at as "time", m.sender_id as "senderId", m.sender_type as "senderType"
          FROM messages m
          JOIN channels c ON c.id = m.channel_id
          LEFT JOIN channel_members cm ON cm.channel_id = c.id AND cm.member_id::text = $3 AND cm.member_type = 'human'
         WHERE m.content_tsv @@ plainto_tsquery('simple', $1)
-          AND (c.type NOT IN ('private','dm') OR cm.member_id IS NOT NULL)
+          AND (c.type NOT IN ('private','dm') OR cm.member_id IS NOT NULL)${serverFilter}
         ORDER BY m.created_at DESC LIMIT $2`,
-      [q || "", 20, userId],
+      params,
     );
     return { results: result.rows, total: result.rows.length };
   });
@@ -376,9 +404,10 @@ export async function messageRoutes(app: FastifyInstance) {
   // 消息编辑历史（需频道可见性：编辑历史同样包含消息内容）
   app.get("/:messageId/edits", { preHandler: [app.authenticate] }, async (req, reply) => {
     const { messageId } = req.params as Record<string, string>;
+    const tenant = await resolveTenant(app, req);
     const m = await app.pg.query<{ channel_id: string }>("SELECT channel_id FROM messages WHERE id = $1", [messageId]);
     if (m.rows.length === 0) return reply.status(404).send({ error: "message not found" });
-    if (!(await canAccessChannel(app, String(m.rows[0].channel_id), req.user.sub))) {
+    if (!(await canAccessChannel(app, String(m.rows[0].channel_id), req.user.sub, accessOptsOf(tenant)))) {
       return reply.status(403).send({ error: "no access to this channel" });
     }
     const r = await app.pg.query(
@@ -391,9 +420,10 @@ export async function messageRoutes(app: FastifyInstance) {
   app.post("/:messageId/reactions", { preHandler: [app.authenticate] }, async (req, reply) => {
     const { messageId } = req.params as Record<string, string>;
     const { emoji } = req.body as Record<string, unknown>;
+    const tenant = await resolveTenant(app, req);
     const m = await app.pg.query<{ channel_id: string }>("SELECT channel_id FROM messages WHERE id = $1", [messageId]);
     if (m.rows.length === 0) return reply.status(404).send({ error: "message not found" });
-    if (!(await canAccessChannel(app, String(m.rows[0].channel_id), req.user.sub))) {
+    if (!(await canAccessChannel(app, String(m.rows[0].channel_id), req.user.sub, accessOptsOf(tenant)))) {
       return reply.status(403).send({ error: "no access to this channel" });
     }
     await app.pg.query(
@@ -406,9 +436,10 @@ export async function messageRoutes(app: FastifyInstance) {
   // 删除表情反应
   app.delete("/:messageId/reactions/:emoji", { preHandler: [app.authenticate] }, async (req, reply) => {
     const { messageId, emoji } = req.params as Record<string, string>;
+    const tenant = await resolveTenant(app, req);
     const m = await app.pg.query<{ channel_id: string }>("SELECT channel_id FROM messages WHERE id = $1", [messageId]);
     if (m.rows.length === 0) return reply.status(404).send({ error: "message not found" });
-    if (!(await canAccessChannel(app, String(m.rows[0].channel_id), req.user.sub))) {
+    if (!(await canAccessChannel(app, String(m.rows[0].channel_id), req.user.sub, accessOptsOf(tenant)))) {
       return reply.status(403).send({ error: "no access to this channel" });
     }
     await app.pg.query("DELETE FROM message_reactions WHERE message_id = $1 AND user_id = $2 AND emoji = $3", [

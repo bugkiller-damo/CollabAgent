@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
-import { api, BASE, cleanupTestData, closeSql, registerUser, uniqHandle } from "./helpers.js";
+import { api, BASE, cleanupTestData, closeSql, registerUser, sql, uniqHandle } from "./helpers.js";
 
 const WS_BASE = BASE.replace(/^http/, "ws") + "/ws";
 
@@ -282,6 +282,9 @@ describe("WS: broadcast delivery", () => {
     // Resolve server id
     const chList = await api("/api/channels", { cookie: owner.cookie });
     const serverId: string = chList.data.channels[0]?.server_id;
+    // O3：显式 serverId 建频道要求调用者是该 server 成员（server 级 RBAC）。
+    // 注册默认只创建个人组织，需显式加入默认社区。
+    await sql`INSERT INTO server_members (server_id, user_id, role) VALUES (${serverId}, ${owner.userId}, 'member') ON CONFLICT DO NOTHING`;
 
     // Create a private channel
     const chName = `priv-${uniqHandle()}`;

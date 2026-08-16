@@ -25,6 +25,7 @@ interface ApiOpts {
   token?: string;
   cookie?: string;
   csrf?: string;
+  headers?: Record<string, string>;
 }
 export interface ApiResult<T = any> {
   status: number;
@@ -38,7 +39,7 @@ function toCookieHeader(setCookie: string[]): string {
 }
 
 export async function api<T = any>(path: string, opts: ApiOpts = {}): Promise<ApiResult<T>> {
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = { ...(opts.headers || {}) };
   if (opts.body !== undefined) headers["content-type"] = "application/json";
   if (opts.cookie) headers["cookie"] = opts.cookie;
   // 纯 Cookie 鉴权：CSRF token 从 cookie 中自动提取（明确传 false/null 表跳过）

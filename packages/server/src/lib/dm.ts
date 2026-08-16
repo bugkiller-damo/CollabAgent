@@ -8,8 +8,14 @@ export interface Party {
   displayName?: string;
 }
 
-// 解析一个 handle（用户 handle 或 agent name）为对端实体
-export async function resolvePeer(app: FastifyInstance, rawHandle: string): Promise<Party | null> {
+// 解析一个 handle（用户 handle 或 agent name）为对端实体。
+// serverId（可选）：agent name 只在 server 内唯一（idx_agents_server_name），显式租户下
+// 必须带 serverId 解析，否则同名 agent 会跨社区串号（O3）。用户 handle 全局唯一，不受影响。
+export async function resolvePeer(
+  app: FastifyInstance,
+  rawHandle: string,
+  serverId?: string | null,
+): Promise<Party | null> {
   const clean = String(rawHandle).replace(/^@/, "");
   if (!clean) return null;
   const u = await app.pg.query<{ id: number; handle: string; display_name: string | null }>(
@@ -20,10 +26,15 @@ export async function resolvePeer(app: FastifyInstance, rawHandle: string): Prom
     const r = u.rows[0];
     return { id: String(r.id), type: "human", handle: r.handle, displayName: r.display_name ?? undefined };
   }
-  const a = await app.pg.query<{ id: number; name: string; display_name: string | null }>(
-    "SELECT id, name, display_name FROM agents WHERE name = $1",
-    [clean],
-  );
+  const a = serverId
+    ? await app.pg.query<{ id: number; name: string; display_name: string | null }>(
+        "SELECT id, name, display_name FROM agents WHERE name = $1 AND server_id = $2",
+        [clean, serverId],
+      )
+    : await app.pg.query<{ id: number; name: string; display_name: string | null }>(
+        "SELECT id, name, display_name FROM agents WHERE name = $1",
+        [clean],
+      );
   if (a.rows.length) {
     const r = a.rows[0];
     return { id: String(r.id), type: "agent", handle: r.name, displayName: r.display_name ?? undefined };
@@ -90,16 +101,18 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * 把一个 DM 目标串解析成频道 id（相对调用方 me）。
  * 支持：dm:@handle、dm:@handle:threadShortId、dm:<uuid>、dm:<uuid>:threadShortId
  * 返回 { channelId, peer? }；handle 解析不到对端时返回 null。
+ * serverId（可选）：显式租户下把 agent 对端解析限定在该社区（O3）。
  */
 export async function resolveDmTarget(
   app: FastifyInstance,
   me: Party,
   target: string,
+  serverId?: string | null,
 ): Promise<{ channelId: string; peer?: Party } | null> {
   const body = target.slice(3); // 去掉 "dm:"
   const first = body.split(":")[0];
   if (first.startsWith("@")) {
-    const peer = await resolvePeer(app, first);
+    const peer = await resolvePeer(app, first, serverId);
     if (!peer) return null;
     const channelId = await getOrCreateDmChannel(app, me, peer);
     return { channelId, peer };

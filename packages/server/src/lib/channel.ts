@@ -23,19 +23,33 @@ export interface ChannelRow {
 
 /**
  * 解析频道名（支持 "#general"、"general"、"#general:abc"）→ { id, ... }
- * 找不到返回 null
+ * 找不到返回 null。
+ *
+ * serverId（可选）：多租户作用域——频道名只在 server 内唯一（idx_channels_server_name），
+ * 显式租户下必须带 serverId 解析，否则同名频道会跨社区串号（O3）。
  */
-export async function resolveChannel(app: FastifyInstance, rawName: string, fields = "id"): Promise<ChannelRow | null> {
+export async function resolveChannel(
+  app: FastifyInstance,
+  rawName: string,
+  fields = "id",
+  serverId?: string | null,
+): Promise<ChannelRow | null> {
   const name = cleanChannelName(rawName);
   if (!name) return null;
-  const r = await app.pg.query(`SELECT ${fields} FROM channels WHERE name = $1`, [name]);
+  const r = serverId
+    ? await app.pg.query(`SELECT ${fields} FROM channels WHERE name = $1 AND server_id = $2 LIMIT 1`, [name, serverId])
+    : await app.pg.query(`SELECT ${fields} FROM channels WHERE name = $1 LIMIT 1`, [name]);
   return (r.rows[0] as ChannelRow) || null;
 }
 
 /**
  * 解析频道名 → 频道 id
  */
-export async function resolveChannelId(app: FastifyInstance, rawName: string): Promise<string | null> {
-  const ch = await resolveChannel(app, rawName);
+export async function resolveChannelId(
+  app: FastifyInstance,
+  rawName: string,
+  serverId?: string | null,
+): Promise<string | null> {
+  const ch = await resolveChannel(app, rawName, "id", serverId);
   return ch?.id ?? null;
 }

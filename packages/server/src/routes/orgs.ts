@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { getOrCreatePersonalOrg, isOrgOwner } from "../lib/orgs.js";
+import { isServerMember, resolveTenant } from "../lib/tenant.js";
 
 export async function orgRoutes(app: FastifyInstance) {
   // ---- 组织列表 ----
@@ -139,9 +140,15 @@ export async function orgRoutes(app: FastifyInstance) {
   });
 
   // ---- 工作区信息 ----
-  app.get("/server/info", { preHandler: [app.authenticate] }, async (req: any) => {
-    const { getDefaultServerId } = await import("../lib/server.js");
-    const serverId = await getDefaultServerId(app);
+  app.get("/server/info", { preHandler: [app.authenticate] }, async (req: any, reply: any) => {
+    // O3：请求级租户解析（显式 serverId/x-server-id/Host 映射），替代全局默认 server；
+    // 显式租户必须校验成员身份。单租户部署无显式声明时降级到默认 server，行为不变。
+    const { serverId: serverIdParam } = (req.query as Record<string, string | undefined>) || {};
+    const tenant = await resolveTenant(app, req, { serverId: serverIdParam });
+    if (tenant.explicit && !(await isServerMember(app, tenant.serverId, req.user.sub))) {
+      return reply.status(403).send({ error: "not a member of that server" });
+    }
+    const serverId = tenant.serverId;
     if (!serverId) return { channels: [], agents: [], humans: [] };
     const serverResult = await app.pg.query<{ name: string }>("SELECT id, name FROM servers WHERE id = $1", [serverId]);
     const userId = req.user?.sub;
@@ -153,7 +160,15 @@ export async function orgRoutes(app: FastifyInstance) {
           AND (c.type <> 'private' OR cm.role IS NOT NULL)`,
       [serverId, userId],
     );
-    const humans = await app.pg.query("SELECT id, handle, display_name, avatar_url FROM users ORDER BY handle");
+    // O3：显式租户下 humans 只列该社区成员（防跨社区用户枚举）；单租户降级保留全员列表
+    const humans = tenant.explicit
+      ? await app.pg.query(
+          `SELECT DISTINCT u.id, u.handle, u.display_name, u.avatar_url
+             FROM users u JOIN server_members sm ON sm.user_id = u.id
+            WHERE sm.server_id = $1 ORDER BY u.handle`,
+          [serverId],
+        )
+      : await app.pg.query("SELECT id, handle, display_name, avatar_url FROM users ORDER BY handle");
     return {
       serverId,
       serverName: serverResult.rows[0]?.name,
