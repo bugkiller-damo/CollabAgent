@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { canAccessChannel, canManageChannel } from "../lib/access.js";
+import { canAccessChannel, canManageChannel, invalidateChannel, invalidateMember } from "../lib/access.js";
 import { resolveChannel } from "../lib/channel.js";
 import { getOrCreateDmChannel, type Party, resolvePeer } from "../lib/dm.js";
 import { getStorage } from "../lib/storage.js";
@@ -88,6 +88,8 @@ export async function channelRoutes(app: FastifyInstance) {
     params.push(channelId);
     const result = await app.pg.query(`UPDATE channels SET ${sets.join(", ")} WHERE id = $${p} RETURNING *`, params);
     if (result.rows.length === 0) return reply.status(404).send({ error: "channel not found" });
+    // O7：类型/可见性变更立即失效权限缓存（下一次判定即新值，不等 TTL）
+    invalidateChannel(channelId);
     return { channel: result.rows[0] };
   });
 
@@ -124,6 +126,7 @@ export async function channelRoutes(app: FastifyInstance) {
        VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
       [channelId, req.user.sub, memberType || "human"],
     );
+    invalidateMember(channelId, req.user.sub); // O7：新成员角色立即生效
     return { ok: true };
   });
 
@@ -133,6 +136,7 @@ export async function channelRoutes(app: FastifyInstance) {
       channelId,
       req.user.sub,
     ]);
+    invalidateMember(channelId, req.user.sub); // O7：退出后立即失去访问权
     return { ok: true };
   });
 
@@ -184,6 +188,7 @@ export async function channelRoutes(app: FastifyInstance) {
        VALUES ($1, $2, $3, 'member') ON CONFLICT DO NOTHING`,
       [channelId, memberId, memberType],
     );
+    invalidateMember(channelId, memberId); // O7：受邀成员立即可访问
     return { ok: true, memberType };
   });
 
@@ -196,6 +201,7 @@ export async function channelRoutes(app: FastifyInstance) {
       return reply.status(403).send({ error: "only channel admins can remove members" });
     }
     await app.pg.query(`DELETE FROM channel_members WHERE channel_id = $1 AND member_id = $2`, [channelId, memberId]);
+    invalidateMember(channelId, memberId); // O7：被移除成员立即失去访问权
     return { ok: true };
   });
 
@@ -239,6 +245,7 @@ export async function channelRoutes(app: FastifyInstance) {
         throw err;
       }
     }
+    invalidateMember(channelId, memberId); // O7：角色变更立即生效（admin/owner 提升与撤销）
     return { ok: true };
   });
 
@@ -293,6 +300,9 @@ export async function channelRoutes(app: FastifyInstance) {
         req.log.warn({ err, key }, "attachment storage cleanup failed");
       }
     }
+    // O7：频道已删，失效其类型与全部成员角色缓存
+    invalidateChannel(channelId);
+    invalidateMember(channelId);
     return { ok: true };
   });
 

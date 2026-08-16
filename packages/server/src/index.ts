@@ -87,6 +87,11 @@ await server.register(pgPlugin);
 }
 // O1：注入跨实例 pub/sub —— 每个实例订阅同一 channel，广播经 Valkey 扇出到所有实例的本地 socket 表。
 setPubSub(pubsub);
+// O7：权限缓存主动失效经同一 pub/sub 扇出（跨实例一致；TTL 兜底）
+{
+  const { setAccessPubSub } = await import("./lib/access.js");
+  setAccessPubSub(pubsub);
+}
 await server.register(fastifyMultipart, { limits: { fileSize: config.MAX_UPLOAD_SIZE } });
 
 // Auth decorator — supports JWT (Bearer 或 httpOnly cookie), dev-token, and machine token

@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { invalidateMember } from "./access.js";
 import { getDefaultServerId } from "./server.js";
 
 export interface Party {
@@ -86,6 +87,7 @@ export async function getOrCreateDmChannel(app: FastifyInstance, me: Party, peer
       "INSERT INTO channel_members (channel_id, member_id, member_type, role) VALUES ($1, $2, $3, 'member') ON CONFLICT DO NOTHING",
       [channelId, m.id, m.type],
     );
+    invalidateMember(channelId, m.id); // O7：DM 双方立即可访问，不等 TTL
   }
   return channelId;
 }
