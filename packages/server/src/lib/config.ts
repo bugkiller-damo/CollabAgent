@@ -60,6 +60,9 @@ export const config = {
   S3_FORCE_PATH_STYLE: env("S3_FORCE_PATH_STYLE", ""),
   // 可选：公共桶/CDN 直链基地址（https://cdn.example.com）；不配置则经 /api/attachments/by-key 代理
   S3_PUBLIC_BASE_URL: env("S3_PUBLIC_BASE_URL", ""),
+  // O14：web 前端 dist 目录（生产静态托管）。空 = 按源码布局自动定位 ../web/dist；
+  // 目录不存在（本地 vite 开发 / 纯后端部署）时自动跳过 SPA 托管。
+  WEB_DIST_DIR: env("WEB_DIST_DIR", ""),
   LOGIN_MAX_ATTEMPTS: Number(process.env.LOGIN_MAX_ATTEMPTS) || 5,
   LOGIN_LOCK_MS: Number(process.env.LOGIN_LOCK_MS) || 15 * 60 * 1000,
   // IP 维度登录失败阈值（NAT 共享 IP，默认显著高于账号维度）

@@ -103,6 +103,11 @@ assert(
   dockerfile.includes("packages/server/dist"),
   "Dockerfile 必须显式补拷 dist（.gitignore 会使其被 deploy 包文件收集跳过）",
 );
+assert(dockerfile.includes("@collabagent/web build"), "Dockerfile 必须构建 web 前端（O14 SPA 托管）");
+assert(
+  dockerfile.includes("packages/web/dist") && dockerfile.includes("WEB_DIST_DIR=/app/web-dist"),
+  "Dockerfile 必须拷入 web dist 并设置 WEB_DIST_DIR=/app/web-dist",
+);
 assert(!/CMD \["pnpm"[^\]]*dev/.test(dockerfile), "Dockerfile CMD 禁止 pnpm dev（必须跑编译产物）");
 assert(dockerfile.includes('CMD ["node", "dist/index.js"]'), "Dockerfile CMD 必须是 node dist/index.js");
 assert(

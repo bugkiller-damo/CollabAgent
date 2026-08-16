@@ -1,4 +1,5 @@
-import { create } from "zustand";
+import { defineStore } from "pinia";
+import { ref } from "vue";
 
 export interface NotificationItem {
   id: string;
@@ -14,72 +15,70 @@ export interface NotificationItem {
   createdAt: string;
 }
 
-interface NotificationState {
-  notifications: NotificationItem[];
-  unreadCount: number;
-  hasMore: boolean;
-  loading: boolean;
-  setNotifications: (list: NotificationItem[]) => void;
-  setUnreadCount: (count: number) => void;
-  prependNotification: (n: NotificationItem) => void;
-  markAsRead: (id: string) => void;
-  markAllAsRead: () => void;
-  refresh: () => Promise<void>;
-  loadFromApi: () => Promise<void>;
-}
+export const useNotificationStore = defineStore("notifications", () => {
+  const notifications = ref<NotificationItem[]>([]);
+  const unreadCount = ref(0);
+  const hasMore = ref(false);
+  const loading = ref(false);
 
-export const useNotificationStore = create<NotificationState>((set, get) => ({
-  notifications: [],
-  unreadCount: 0,
-  hasMore: false,
-  loading: false,
+  function setNotifications(list: NotificationItem[]): void {
+    notifications.value = list;
+  }
 
-  setNotifications: (list) => set({ notifications: list }),
-  setUnreadCount: (count) => set({ unreadCount: count }),
+  function setUnreadCount(count: number): void {
+    unreadCount.value = count;
+  }
 
-  prependNotification: (n) =>
-    set((s) => ({
-      notifications: [n, ...s.notifications],
-      unreadCount: s.unreadCount + (n.read ? 0 : 1),
-    })),
+  function prependNotification(n: NotificationItem): void {
+    notifications.value = [n, ...notifications.value];
+    unreadCount.value = unreadCount.value + (n.read ? 0 : 1);
+  }
 
-  markAsRead: (id) =>
-    set((s) => {
-      const target = s.notifications.find((x) => x.id === id);
-      if (!target || target.read) return {};
-      return {
-        notifications: s.notifications.map((x) => (x.id === id ? { ...x, read: true } : x)),
-        unreadCount: Math.max(0, s.unreadCount - 1),
-      };
-    }),
+  function markAsRead(id: string): void {
+    const target = notifications.value.find((x) => x.id === id);
+    if (!target || target.read) return;
+    notifications.value = notifications.value.map((x) => (x.id === id ? { ...x, read: true } : x));
+    unreadCount.value = Math.max(0, unreadCount.value - 1);
+  }
 
-  markAllAsRead: () =>
-    set((s) => ({
-      notifications: s.notifications.map((x) => ({ ...x, read: true })),
-      unreadCount: 0,
-    })),
+  function markAllAsRead(): void {
+    notifications.value = notifications.value.map((x) => ({ ...x, read: true }));
+    unreadCount.value = 0;
+  }
 
-  loadFromApi: async () => {
-    set({ loading: true });
+  async function loadFromApi(): Promise<void> {
+    loading.value = true;
     try {
       const res = await fetch("/api/notifications?limit=50", { credentials: "include" });
       if (!res.ok) {
-        set({ loading: false });
+        loading.value = false;
         return;
       }
       const data = await res.json();
-      set({
-        notifications: data.notifications || [],
-        unreadCount: data.unreadCount || 0,
-        hasMore: data.hasMore || false,
-        loading: false,
-      });
+      notifications.value = data.notifications || [];
+      unreadCount.value = data.unreadCount || 0;
+      hasMore.value = data.hasMore || false;
+      loading.value = false;
     } catch {
-      set({ loading: false });
+      loading.value = false;
     }
-  },
+  }
 
-  refresh: async () => {
-    await get().loadFromApi();
-  },
-}));
+  async function refresh(): Promise<void> {
+    await loadFromApi();
+  }
+
+  return {
+    notifications,
+    unreadCount,
+    hasMore,
+    loading,
+    setNotifications,
+    setUnreadCount,
+    prependNotification,
+    markAsRead,
+    markAllAsRead,
+    refresh,
+    loadFromApi,
+  };
+});

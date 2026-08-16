@@ -279,6 +279,33 @@ server.get("/api/users", { preHandler: [server.authenticate] }, async () => {
   return { users: users.rows };
 });
 
+// O14 Phase G：生产静态托管 web 前端（SPA，vue-router history 模式）。
+// dist 存在才注册：本地开发由 vite 直出（5174，proxy 到本服务），纯后端部署跳过。
+{
+  const { existsSync, readFileSync } = await import("node:fs");
+  const { dirname, join, resolve } = await import("node:path");
+  const { fileURLToPath } = await import("node:url");
+  const webDist = config.WEB_DIST_DIR
+    ? resolve(config.WEB_DIST_DIR)
+    : resolve(dirname(fileURLToPath(import.meta.url)), "../../web/dist");
+  const indexHtmlPath = join(webDist, "index.html");
+  if (existsSync(indexHtmlPath)) {
+    const indexHtml = readFileSync(indexHtmlPath, "utf8");
+    await server.register(fastifyStatic, { root: webDist, prefix: "/", decorateReply: false });
+    // SPA 回退：非保留前缀的 GET 回 index.html；API/WS/文件等保留前缀维持 JSON 404 语义
+    const RESERVED_PREFIXES = ["/api", "/files", "/internal", "/ws", "/docs"];
+    server.setNotFoundHandler((req, reply) => {
+      const url = (req.raw.url || "").split("?")[0];
+      const reserved = RESERVED_PREFIXES.some((p) => url === p || url.startsWith(p + "/"));
+      if (req.method === "GET" && !reserved) {
+        return reply.type("text/html").send(indexHtml);
+      }
+      return reply.status(404).send({ error: "Not Found" });
+    });
+    server.log.info(`[Web] SPA static hosting enabled: ${webDist}`);
+  }
+}
+
 // Auto-migrate on startup
 await runMigrations();
 server.log.info("[DB] Schema migrated");

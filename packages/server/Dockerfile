@@ -10,10 +10,11 @@ WORKDIR /repo
 # pnpm 版本与 CI（pnpm/action-setup v9）保持一致
 RUN corepack enable && corepack prepare pnpm@9 --activate
 
-# 先拷清单与两个包的 package.json：依赖层缓存命中最大化
+# 先拷清单与三个包的 package.json：依赖层缓存命中最大化
 COPY pnpm-workspace.yaml package.json pnpm-lock.yaml ./
 COPY packages/server/package.json packages/server/
 COPY packages/shared/package.json packages/shared/
+COPY packages/web/package.json packages/web/
 
 RUN pnpm install --frozen-lockfile
 
@@ -22,7 +23,13 @@ COPY packages/server/tsconfig.json packages/server/
 COPY packages/shared/tsconfig.json packages/shared/
 COPY packages/shared/src packages/shared/src
 COPY packages/server/src packages/server/src
-RUN pnpm --filter @collabagent/shared build && pnpm --filter @collabagent/server build
+# O14：web 前端（Vue3）也在镜像内构建，生产由 server 静态托管（SPA）
+COPY packages/web/index.html packages/web/vite.config.ts packages/web/tsconfig.json packages/web/
+COPY packages/web/postcss.config.js packages/web/tailwind.config.js packages/web/
+COPY packages/web/src packages/web/src
+RUN pnpm --filter @collabagent/shared build && \
+    pnpm --filter @collabagent/web build && \
+    pnpm --filter @collabagent/server build
 
 # pnpm deploy：裁剪出 server 的生产依赖 + 构建产物（含内联 workspace 依赖）。
 # 注意：dist 在 .gitignore 中，deploy 的包文件收集会跳过它——单独补拷。
@@ -33,12 +40,15 @@ RUN pnpm --filter @collabagent/server deploy --prod /app && \
 # ---------- 运行阶段：精简、非 root、healthcheck ----------
 FROM node:22-alpine AS runtime
 ENV NODE_ENV=production \
-    PORT=3001
+    PORT=3001 \
+    WEB_DIST_DIR=/app/web-dist
 
 RUN addgroup -S slock && adduser -S slock -G slock
 
 WORKDIR /app
 COPY --from=build --chown=slock:slock /app ./
+# O14：web 前端产物（server 静态托管 SPA 用；dist 由构建阶段 vite build 产出）
+COPY --from=build --chown=slock:slock /repo/packages/web/dist ./web-dist
 # 本地存储后端的上传目录（生产建议挂卷 uploads-data）
 RUN mkdir -p /app/uploads && chown slock:slock /app/uploads
 

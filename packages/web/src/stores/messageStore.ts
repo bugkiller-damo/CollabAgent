@@ -1,6 +1,7 @@
 import type { Message } from "@collabagent/shared";
-import { create } from "zustand";
-import { apiClient, apiGet, apiPost } from "../api/client";
+import { defineStore } from "pinia";
+import { ref } from "vue";
+import { apiClient, apiGet, apiPost } from "../api";
 
 const CACHE_PREFIX = "msgs_";
 const CACHE_LIMIT = 50;
@@ -26,35 +27,18 @@ function saveCache(channel: string, msgs: Message[]) {
   }
 }
 
-interface MessageState {
-  messagesByTarget: Record<string, Message[]>;
-  lastSeenSeq: Record<string, number>;
-  loading: boolean;
-  fetchHistory: (channel: string, opts?: { before?: number; limit?: number }) => Promise<void>;
-  sendMessage: (channel: string, content: string, attachments?: string[]) => Promise<void>;
-  receiveMessage: (message: Message) => void;
-  editMessage: (messageId: string, content: string) => Promise<void>;
-  applyMessageUpdate: (messageId: string, content: string, editedAt?: string) => void;
-  applyMessageTask: (messageId: string, taskNumber: number) => void;
-  deleteMessage: (messageId: string) => Promise<void>;
-  applyMessageDelete: (messageId: string) => void;
-  addReaction: (messageId: string, emoji: string, userId: string) => Promise<void>;
-  removeReaction: (messageId: string, emoji: string, userId: string) => Promise<void>;
-  applyReaction: (messageId: string, emoji: string, userId: string, action: "add" | "remove") => void;
-}
+export const useMessageStore = defineStore("messages", () => {
+  const messagesByTarget = ref<Record<string, Message[]>>({});
+  const lastSeenSeq = ref<Record<string, number>>({});
+  const loading = ref(false);
 
-export const useMessageStore = create<MessageState>((set, get) => ({
-  messagesByTarget: {},
-  lastSeenSeq: {},
-  loading: false,
-
-  fetchHistory: async (channel, opts) => {
-    set({ loading: true });
+  async function fetchHistory(channel: string, opts?: { before?: number; limit?: number }): Promise<void> {
+    loading.value = true;
     // 先用本地缓存即时渲染（离线也能看到上次的消息）
-    if (!get().messagesByTarget[channel]) {
+    if (!messagesByTarget.value[channel]) {
       const cached = loadCache(channel);
       if (cached && cached.length) {
-        set((s) => ({ messagesByTarget: { ...s.messagesByTarget, [channel]: cached } }));
+        messagesByTarget.value = { ...messagesByTarget.value, [channel]: cached };
       }
     }
     const params: Record<string, string> = { channel };
@@ -64,17 +48,15 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       const data = await apiGet<{ messages: Message[] }>("/api/messages", params);
       const msgs = data.messages || [];
       saveCache(channel, msgs);
-      set((s) => ({
-        messagesByTarget: { ...s.messagesByTarget, [channel]: msgs },
-        loading: false,
-      }));
+      messagesByTarget.value = { ...messagesByTarget.value, [channel]: msgs };
+      loading.value = false;
     } catch {
       // 请求失败保留缓存内容
-      set({ loading: false });
+      loading.value = false;
     }
-  },
+  }
 
-  sendMessage: async (channel, content, attachments) => {
+  async function sendMessage(channel: string, content: string, attachments?: string[]): Promise<void> {
     const data = await apiPost<{ messageId: string; messageSeq: number }>("/api/messages/send", {
       target: channel,
       content,
@@ -90,116 +72,121 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       content,
       time: new Date().toISOString(),
     } as Message;
-    get().receiveMessage(newMsg);
-  },
+    receiveMessage(newMsg);
+  }
 
-  receiveMessage: (message) => {
+  function receiveMessage(message: Message): void {
     const target = message.channelId;
-    set((s) => {
-      const existing = s.messagesByTarget[target] || [];
-      if (existing.find((m) => m.id === message.id)) return s;
-      // Don't add thread replies to main channel view — they belong in thread view only
-      if ((message as any).threadId) return s;
-      const updated = [...existing, message];
-      saveCache(target, updated);
-      return {
-        messagesByTarget: {
-          ...s.messagesByTarget,
-          [target]: updated,
-        },
-        lastSeenSeq: {
-          ...s.lastSeenSeq,
-          [target]: Math.max(message.seq, s.lastSeenSeq[target] || 0),
-        },
-      };
-    });
-  },
+    const existing = messagesByTarget.value[target] || [];
+    if (existing.find((m) => m.id === message.id)) return;
+    // Don't add thread replies to main channel view — they belong in thread view only
+    if ((message as any).threadId) return;
+    const updated = [...existing, message];
+    saveCache(target, updated);
+    messagesByTarget.value = {
+      ...messagesByTarget.value,
+      [target]: updated,
+    };
+    lastSeenSeq.value = {
+      ...lastSeenSeq.value,
+      [target]: Math.max(message.seq, lastSeenSeq.value[target] || 0),
+    };
+  }
 
-  editMessage: async (messageId, content) => {
+  async function editMessage(messageId: string, content: string): Promise<void> {
     await apiClient(`/api/messages/${messageId}`, { method: "PUT", body: { content } });
-    get().applyMessageUpdate(messageId, content);
-  },
+    applyMessageUpdate(messageId, content);
+  }
 
-  applyMessageUpdate: (messageId, content, editedAt) => {
-    set((s) => {
-      const next: Record<string, Message[]> = {};
-      for (const k in s.messagesByTarget) {
-        next[k] = s.messagesByTarget[k].map((m: any) =>
-          m.id === messageId ? { ...m, content, editedAt: editedAt || new Date().toISOString() } : m,
-        );
-      }
-      return { messagesByTarget: next };
-    });
-  },
+  function applyMessageUpdate(messageId: string, content: string, editedAt?: string): void {
+    const next: Record<string, Message[]> = {};
+    for (const k in messagesByTarget.value) {
+      next[k] = messagesByTarget.value[k].map((m: any) =>
+        m.id === messageId ? { ...m, content, editedAt: editedAt || new Date().toISOString() } : m,
+      );
+    }
+    messagesByTarget.value = next;
+  }
 
-  applyMessageTask: (messageId, taskNumber) => {
-    set((s) => {
-      const next: Record<string, Message[]> = {};
-      for (const k in s.messagesByTarget) {
-        next[k] = s.messagesByTarget[k].map((m: any) =>
-          m.id === messageId ? { ...m, task_number: taskNumber, task_status: "todo" } : m,
-        );
-      }
-      return { messagesByTarget: next };
-    });
-  },
+  function applyMessageTask(messageId: string, taskNumber: number): void {
+    const next: Record<string, Message[]> = {};
+    for (const k in messagesByTarget.value) {
+      next[k] = messagesByTarget.value[k].map((m: any) =>
+        m.id === messageId ? { ...m, task_number: taskNumber, task_status: "todo" } : m,
+      );
+    }
+    messagesByTarget.value = next;
+  }
 
-  addReaction: async (messageId, emoji, userId) => {
+  async function addReaction(messageId: string, emoji: string, userId: string): Promise<void> {
     await apiPost(`/api/messages/${messageId}/reactions`, { emoji });
-    get().applyReaction(messageId, emoji, userId, "add");
-  },
+    applyReaction(messageId, emoji, userId, "add");
+  }
 
-  removeReaction: async (messageId, emoji, userId) => {
+  async function removeReaction(messageId: string, emoji: string, userId: string): Promise<void> {
     await apiClient(`/api/messages/${messageId}/reactions/${encodeURIComponent(emoji)}`, { method: "DELETE" });
-    get().applyReaction(messageId, emoji, userId, "remove");
-  },
+    applyReaction(messageId, emoji, userId, "remove");
+  }
 
-  deleteMessage: async (messageId) => {
+  async function deleteMessage(messageId: string): Promise<void> {
     await apiClient(`/api/messages/${messageId}`, { method: "DELETE" });
-    get().applyMessageDelete(messageId);
-  },
+    applyMessageDelete(messageId);
+  }
 
-  applyMessageDelete: (messageId) => {
-    set((s) => {
-      const next: Record<string, Message[]> = {};
-      for (const k in s.messagesByTarget) {
-        next[k] = s.messagesByTarget[k].map((m: any) =>
-          m.id === messageId ? { ...m, content: "", deleted: true } : m,
-        );
-      }
-      return { messagesByTarget: next };
-    });
-  },
+  function applyMessageDelete(messageId: string): void {
+    const next: Record<string, Message[]> = {};
+    for (const k in messagesByTarget.value) {
+      next[k] = messagesByTarget.value[k].map((m: any) =>
+        m.id === messageId ? { ...m, content: "", deleted: true } : m,
+      );
+    }
+    messagesByTarget.value = next;
+  }
 
-  applyReaction: (messageId, emoji, userId, action) => {
-    set((s) => {
-      const next: Record<string, Message[]> = {};
-      for (const k in s.messagesByTarget) {
-        next[k] = s.messagesByTarget[k].map((m: any) => {
-          if (m.id !== messageId) return m;
-          const reactions: { emoji: string; userIds: string[] }[] = m.reactions || [];
-          const idx = reactions.findIndex((r) => r.emoji === emoji);
-          let newReactions: typeof reactions;
-          if (action === "add") {
-            if (idx >= 0) {
-              if (reactions[idx].userIds.includes(userId)) return m;
-              newReactions = reactions.map((r, i) => (i === idx ? { ...r, userIds: [...r.userIds, userId] } : r));
-            } else {
-              newReactions = [...reactions, { emoji, userIds: [userId] }];
-            }
+  function applyReaction(messageId: string, emoji: string, userId: string, action: "add" | "remove"): void {
+    const next: Record<string, Message[]> = {};
+    for (const k in messagesByTarget.value) {
+      next[k] = messagesByTarget.value[k].map((m: any) => {
+        if (m.id !== messageId) return m;
+        const reactions: { emoji: string; userIds: string[] }[] = m.reactions || [];
+        const idx = reactions.findIndex((r) => r.emoji === emoji);
+        let newReactions: typeof reactions;
+        if (action === "add") {
+          if (idx >= 0) {
+            if (reactions[idx].userIds.includes(userId)) return m;
+            newReactions = reactions.map((r, i) => (i === idx ? { ...r, userIds: [...r.userIds, userId] } : r));
           } else {
-            if (idx < 0) return m;
-            const newUserIds = reactions[idx].userIds.filter((u) => u !== userId);
-            if (newUserIds.length === 0) {
-              newReactions = reactions.filter((_, i) => i !== idx);
-            } else {
-              newReactions = reactions.map((r, i) => (i === idx ? { ...r, userIds: newUserIds } : r));
-            }
+            newReactions = [...reactions, { emoji, userIds: [userId] }];
           }
-          return { ...m, reactions: newReactions };
-        });
-      }
-      return { messagesByTarget: next };
-    });
-  },
-}));
+        } else {
+          if (idx < 0) return m;
+          const newUserIds = reactions[idx].userIds.filter((u) => u !== userId);
+          if (newUserIds.length === 0) {
+            newReactions = reactions.filter((_, i) => i !== idx);
+          } else {
+            newReactions = reactions.map((r, i) => (i === idx ? { ...r, userIds: newUserIds } : r));
+          }
+        }
+        return { ...m, reactions: newReactions };
+      });
+    }
+    messagesByTarget.value = next;
+  }
+
+  return {
+    messagesByTarget,
+    lastSeenSeq,
+    loading,
+    fetchHistory,
+    sendMessage,
+    receiveMessage,
+    editMessage,
+    applyMessageUpdate,
+    applyMessageTask,
+    deleteMessage,
+    applyMessageDelete,
+    addReaction,
+    removeReaction,
+    applyReaction,
+  };
+});

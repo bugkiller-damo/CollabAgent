@@ -1,5 +1,6 @@
-import { create } from "zustand";
-import { readCsrf } from "../api/client";
+import { defineStore } from "pinia";
+import { ref } from "vue";
+import { readCsrf } from "../api";
 
 interface User {
   id: string;
@@ -7,14 +8,6 @@ interface User {
   displayName?: string;
   email?: string;
   description?: string;
-}
-
-interface AuthState {
-  user: User | null;
-  isAuthenticated: boolean;
-  login: (login: string, password: string, rememberMe?: boolean) => Promise<void>;
-  logout: () => void;
-  updateUser: (u: Partial<User>) => void;
 }
 
 // 纯 httpOnly Cookie 鉴权：用户信息可缓存（仅展示用），不再用 JWT 作 Bearer 头
@@ -27,24 +20,25 @@ const savedUser = (() => {
   }
 })();
 
-export const useAuthStore = create<AuthState>((set) => ({
-  user: savedUser,
-  isAuthenticated: !!savedUser,
+export const useAuthStore = defineStore("auth", () => {
+  const user = ref<User | null>(savedUser);
+  const isAuthenticated = ref(!!savedUser);
 
-  login: async (login, password, rememberMe = false) => {
+  async function login(loginName: string, password: string, rememberMe = false): Promise<void> {
     const res = await fetch("/api/auth/login", {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ handle: login, password, remember: rememberMe }),
+      body: JSON.stringify({ handle: loginName, password, remember: rememberMe }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "登录失败");
     localStorage.setItem("user", JSON.stringify(data.user));
-    set({ user: data.user, isAuthenticated: true });
-  },
+    user.value = data.user;
+    isAuthenticated.value = true;
+  }
 
-  logout: () => {
+  function logout(): void {
     const csrf = readCsrf();
     fetch("/api/auth/logout", {
       method: "POST",
@@ -52,14 +46,15 @@ export const useAuthStore = create<AuthState>((set) => ({
       headers: csrf ? { "X-CSRF-Token": csrf } : {},
     }).catch(() => {});
     localStorage.removeItem("user");
-    set({ user: null, isAuthenticated: false });
-  },
+    user.value = null;
+    isAuthenticated.value = false;
+  }
 
-  updateUser: (u) => {
-    set((s) => {
-      const updated = { ...s.user, ...u } as User;
-      localStorage.setItem("user", JSON.stringify(updated));
-      return { user: updated };
-    });
-  },
-}));
+  function updateUser(u: Partial<User>): void {
+    const updated = { ...user.value, ...u } as User;
+    localStorage.setItem("user", JSON.stringify(updated));
+    user.value = updated;
+  }
+
+  return { user, isAuthenticated, login, logout, updateUser };
+});

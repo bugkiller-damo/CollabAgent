@@ -297,7 +297,7 @@ O9 seq 并发测试 → O10/O11/O12/O13 daemon 收敛与安全 → O16 前端 WS
 | 9 | O7 权限缓存一致性方案 | AI | ☑ 2026-08-16 |
 | 10 | O8 bcrypt 兼容分支退役计划 | AI | ☑ 2026-08-16 |
 | 11 | O19 生产 Dockerfile + compose | AI | ☑ 2026-08-16 |
-| 12 | O14 Vue3 Phase G 收尾 | | ☐ |
+| 12 | O14 Vue3 Phase G 收尾 | AI | ☑ 2026-08-17 |
 | 13 | O15 断线增量补拉 + 乐观队列 | | ☐ |
 | 14 | O9 seq 并发测试 | | ☐ |
 | 15 | O10 daemon prod 启动路径 | | ☐ |
@@ -359,7 +359,7 @@ O9 seq 并发测试 → O10/O11/O12/O13 daemon 收敛与安全 → O16 前端 WS
 | O10 | daemon 生产启动路径 | 🟡 中 | ⏳ 待办 | |
 | O11 | MCP 凭据传递安全 | 🟡 中 | ⏳ 待办 | |
 | O12 | claude driver 权限收敛 | 🟡 中 | ⏳ 待办 | |
-| O14 | Vue3 Phase G 收尾 | 🟡 中 | ⏳ 待办 | |
+| O14 | Vue3 Phase G 收尾 | 🟡 中 | ✅ 完成 | server SPA 静态托管（WEB_DIST_DIR 可配、dist 存在才注册、fallback 排除 /api /files /internal /ws /docs，冒烟：/ 与 SPA 路由回 index.html、API 404 JSON、/docs 正常）；旧 `packages/web`（React）已删除 + `web-vue`→`web` 改名（lockfile 0 React 残留、CI 单包、vite 注释同步）；Dockerfile 并入前端构建与 web-dist（ENV WEB_DIST_DIR）；validate-compose 断言 +2；竞赛材料措辞：presentation-plan.md / gen-pptx.js（Zustand→Pinia）/ sharing 汇报文档 React 19→Vue 3；web build+typecheck 绿、SPA 冒烟绿、真 PG 全量 219/219 |
 | O15 | 前端离线增量同步 | 🟡 中 | ⏳ 待办 | |
 | O19 | 生产部署形态 | 🟡 中 | ✅ 完成 | `packages/server/Dockerfile` 多阶段（build: pnpm9 frozen install + 编译 → runtime: pnpm deploy --prod 裁剪纯生产依赖、非 root `slock` 用户、内置 HEALTHCHECK 探测 `/api/health` 的 db:true、`node dist/index.js`）；根 `.dockerignore`；`docker-compose.yml` 生产化（healthcheck×3、deploy 资源限制、`${JWT_SECRET:?}` 必选插值与 O5 双保险、depends_on 健康条件、uploads-data 卷、无源码挂载、minio profile 保留）；`pnpm-workspace.yaml` 开 `injectWorkspacePackages`（deploy 必需）；`scripts/validate-compose.mjs` 静态校验（compose 结构 + Dockerfile 约束，yaml 用仓库内传递依赖，无需 docker）+ CI L1 接入；本机 pnpm 11 模拟 deploy 验证 39.6MB 纯生产依赖；daemon 82/82 + server 219/219 + 全仓 typecheck 回归 |
 | O9 | messages.seq 竞态确认 | 🟢 低 | ⏳ 待办 | |

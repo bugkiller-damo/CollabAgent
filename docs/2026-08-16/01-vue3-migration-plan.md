@@ -63,7 +63,7 @@
 - **Phase D 应用壳层 + 聊天组件族** ✅（commit `44d5a88` + `b7cd3f2` + `1463906`）AppLayout(WS 分发)、Sidebar、MarkdownContent(markdown-it+DOMPurify)、MessageRow、VirtualMessageList(vue-virtual)、等
 - **Phase E 其余组件 + admin/settings 页族** ✅（commit `2986404` + `59f918f` + `344d829`）agent 面板族、MentionPopover、Channel 面板族、5 个 admin 页面、5 个 settings 页面、ConnectWizard
 - **Phase F 核心页面 + 路由接线** ✅（commit `b5fc9d9` + `48435cb` + `4f21250` + `1756635` + `c0c2240`）MessageComposer、AuthGuard、ChannelView、DmView、ThreadView、TaskBoard；路由表从占位页全部切换到真实组件（AuthGuard/AppLayout 嵌套守卫，lazy chunk）
-- **Phase G 收尾（待用户决策，未执行）**：server 静态目录切换/并存部署、旧 `packages/web` 下线、`web-vue` → `web` 改名、竞赛材料技术栈措辞全面更新（presentation-plan.md 与 gen-pptx.js 仍有 "React 19 前端" 字样）
+- **Phase G 收尾** ✅（2026-08-17）：server 静态托管 SPA（`WEB_DIST_DIR` 可配，dist 存在才注册，fallback 排除 API/WS/文件前缀）；旧 `packages/web` 已删除、`web-vue` 已改名 `web`（lockfile 无 React 依赖残留）；Dockerfile 生产镜像并入前端构建与 `web-dist`；CI web-build 单包；竞赛材料（presentation-plan.md / gen-pptx.js / sharing 汇报文档）技术栈措辞更新为 Vue 3（Zustand→Pinia）
 
 ### 迁移完成度核对（2026-08-16）
 

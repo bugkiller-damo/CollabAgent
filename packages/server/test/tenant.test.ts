@@ -111,7 +111,7 @@ describe("tenant: 多租户边界（双 server 数据互不串号）", () => {
   });
 
   it("兼容：前端把 /server/info 的默认 serverId 原样回传仍可建频道（单租户降级豁免）", async () => {
-    // 复刻 web/web-vue channelStore 的行为：fetchChannels 拿到的 serverId 原样回传建频道。
+    // 复刻 web channelStore 的行为：fetchChannels 拿到的 serverId 原样回传建频道。
     // 注册不自动加入默认 server，但单租户模式默认社区是开放社区，成员校验应豁免。
     const info = await api("/api/server/info", { cookie: outsider.cookie });
     expect(info.status).toBe(200);
