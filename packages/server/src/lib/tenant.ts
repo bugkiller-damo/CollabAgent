@@ -111,6 +111,15 @@ export async function resolveTenant(
 ): Promise<TenantContext> {
   const param = opts?.serverId ? String(opts.serverId).trim() : "";
   if (param) {
+    // O3 兼容豁免：单租户部署（未配置 SERVER_HOST_MAP）下，显式声明「默认 server」
+    // 与不声明走降级等价。前端 store 会把 /api/server/info 返回的默认 server id 原样
+    // 回传（web/web-vue 的 channelStore 建频道），而注册并不自动加入默认 server——
+    // 若强制成员校验会把存量前端的建频道打成 403。默认社区本就是开放社区（公开频道
+    // 对全体登录用户可见），豁免不增加暴露面。多租户部署（配置了 host 映射）不豁免。
+    const fallback = await getDefaultServerId(app);
+    if (getTenantHostMap().size === 0 && fallback && param === fallback) {
+      return { serverId: fallback, explicit: false, source: "default" };
+    }
     return { serverId: UUID_RE.test(param) ? param : null, explicit: true, source: "param" };
   }
   const header = firstHeaderValue(request.headers?.[TENANT_HEADER]).trim();

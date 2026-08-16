@@ -110,6 +110,23 @@ describe("tenant: 多租户边界（双 server 数据互不串号）", () => {
     expect(denied.status).toBe(403);
   });
 
+  it("兼容：前端把 /server/info 的默认 serverId 原样回传仍可建频道（单租户降级豁免）", async () => {
+    // 复刻 web/web-vue channelStore 的行为：fetchChannels 拿到的 serverId 原样回传建频道。
+    // 注册不自动加入默认 server，但单租户模式默认社区是开放社区，成员校验应豁免。
+    const info = await api("/api/server/info", { cookie: outsider.cookie });
+    expect(info.status).toBe(200);
+    const defaultServerId = String(info.data.serverId);
+    expect(defaultServerId).not.toBe(serverB);
+    const r = await api("/api/channels", {
+      method: "POST",
+      cookie: outsider.cookie,
+      csrf: outsider.csrf,
+      body: { serverId: defaultServerId, name: RUN + "_legacycompat" },
+    });
+    expect(r.status).toBe(200);
+    expect(String(r.data.channel.server_id)).toBe(defaultServerId);
+  });
+
   it("发消息：同名 #general 在显式租户下落进社区 B", async () => {
     const r = await api("/api/messages/send", {
       method: "POST",
