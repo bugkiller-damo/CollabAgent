@@ -4,6 +4,13 @@ import type { FastifyInstance } from "fastify";
 import jwt from "jsonwebtoken";
 import { config } from "../lib/config.js";
 import { clearAuthCookies, newCsrfToken, setAuthCookies } from "../lib/cookies.js";
+import {
+  clearLoginFailures,
+  clientIpOf,
+  loginLockRemainingMs,
+  normalizeAccount,
+  recordLoginFailure,
+} from "../lib/login-lock.js";
 import { validatePassword } from "../lib/validators.js";
 
 const REFRESH_SECRET = config.REFRESH_SECRET;
@@ -19,7 +26,7 @@ function sessionMaxAge(remember?: boolean): number {
 async function recordSession(app: FastifyInstance, req: any, userId: string): Promise<string> {
   const sid = randomUUID();
   const ua = String(req.headers["user-agent"] || "").slice(0, 500);
-  const ip = String((req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() || req.ip || "").slice(0, 64);
+  const ip = clientIpOf(req);
   await app.pg.query(
     "INSERT INTO user_sessions (id, user_id, refresh_id, user_agent, ip) VALUES ($1, $2, $1, $3, $4)",
     [sid, userId, ua, ip],
@@ -27,28 +34,7 @@ async function recordSession(app: FastifyInstance, req: any, userId: string): Pr
   return sid;
 }
 
-const MAX_LOGIN_ATTEMPTS = 5;
-const LOGIN_LOCK_MS = 15 * 60 * 1000;
-const loginAttempts = new Map<string, { count: number; lockedUntil: number }>();
-
-function checkLoginLock(key: string): number {
-  const rec = loginAttempts.get(key);
-  if (rec && rec.lockedUntil > Date.now()) {
-    return Math.ceil((rec.lockedUntil - Date.now()) / 60000);
-  }
-  return 0;
-}
-
-function recordLoginFail(key: string): void {
-  const now = Date.now();
-  const rec = loginAttempts.get(key) || { count: 0, lockedUntil: 0 };
-  rec.count++;
-  if (rec.count >= MAX_LOGIN_ATTEMPTS) {
-    rec.lockedUntil = now + LOGIN_LOCK_MS;
-    rec.count = 0;
-  }
-  loginAttempts.set(key, rec);
-}
+// 登录防爆破已迁移 lib/login-lock.ts（O6）：账号 + IP 双维度、共享存储、成功清除。
 
 export async function authRoutes(app: FastifyInstance) {
   // ---- Register ----
@@ -137,10 +123,13 @@ export async function authRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: "请输入用户名/邮箱和密码" });
     }
 
-    const lockKey = (login as string).toLowerCase();
-    const lockedMins = checkLoginLock(lockKey);
-    if (lockedMins > 0) {
-      return reply.status(429).send({ error: `登录失败次数过多，请 ${lockedMins} 分钟后再试` });
+    const lockKey = normalizeAccount(login as string);
+    const ip = clientIpOf(req);
+    // O6：账号 + IP 双维度锁定（任一命中即 429），状态在共享存储（多实例一致）
+    const lockedMs = await loginLockRemainingMs(lockKey, ip);
+    if (lockedMs > 0) {
+      const mins = Math.max(1, Math.ceil(lockedMs / 60000));
+      return reply.status(429).send({ error: `登录失败次数过多，请 ${mins} 分钟后再试` });
     }
 
     const result = await app.pg.query(
@@ -149,7 +138,7 @@ export async function authRoutes(app: FastifyInstance) {
     );
 
     if (result.rows.length === 0) {
-      recordLoginFail(lockKey);
+      await recordLoginFailure(lockKey, ip);
       return reply.status(401).send({ error: "用户不存在" });
     }
 
@@ -158,11 +147,11 @@ export async function authRoutes(app: FastifyInstance) {
       return reply.status(403).send({ error: "该账户已注销" });
     }
     if (!(await bcrypt.compare(password as string, user.password_hash as string))) {
-      recordLoginFail(lockKey);
+      await recordLoginFailure(lockKey, ip);
       return reply.status(401).send({ error: "密码错误" });
     }
 
-    loginAttempts.delete(lockKey);
+    await clearLoginFailures(lockKey, ip);
 
     const sid = await recordSession(app, req, String(user.id));
     const expiresIn = remember ? "30d" : "7d";

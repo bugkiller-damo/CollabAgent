@@ -62,6 +62,8 @@ export const config = {
   S3_PUBLIC_BASE_URL: env("S3_PUBLIC_BASE_URL", ""),
   LOGIN_MAX_ATTEMPTS: Number(process.env.LOGIN_MAX_ATTEMPTS) || 5,
   LOGIN_LOCK_MS: Number(process.env.LOGIN_LOCK_MS) || 15 * 60 * 1000,
+  // IP 维度登录失败阈值（NAT 共享 IP，默认显著高于账号维度）
+  LOGIN_IP_MAX_ATTEMPTS: Number(process.env.LOGIN_IP_MAX_ATTEMPTS) || 20,
 } as const;
 
 /**
