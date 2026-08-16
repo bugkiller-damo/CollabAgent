@@ -1,5 +1,5 @@
-import { ref } from "vue";
 import { defineStore } from "pinia";
+import { ref } from "vue";
 
 export interface NotificationItem {
   id: string;
@@ -37,7 +37,7 @@ export const useNotificationStore = defineStore("notifications", () => {
   function markAsRead(id: string): void {
     const target = notifications.value.find((x) => x.id === id);
     if (!target || target.read) return;
-    notifications.value = notifications.value.map((x) => x.id === id ? { ...x, read: true } : x);
+    notifications.value = notifications.value.map((x) => (x.id === id ? { ...x, read: true } : x));
     unreadCount.value = Math.max(0, unreadCount.value - 1);
   }
 

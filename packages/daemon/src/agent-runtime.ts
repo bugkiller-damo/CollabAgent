@@ -1,25 +1,25 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { PersistentClaude } from "./drivers/persistent-claude.js";
 import { createAgentManager } from "./agent-manager.js";
-import { createPostStartInputWriter, type PostStartInputWriter } from "./post-start-input-writer.js";
-import { createAgentStdinDispatcher } from "./agent-stdin-dispatcher.js";
-import { resolveCommandOnPath } from "./drivers/probe.js";
-import { resolveCommand } from "./command-resolver.js";
-import { createIdleReclaimer } from "./idle-reclaimer.js";
 import { createCredentialsClient } from "./agent-runtime-credentials.js";
-import { createAgentStateMachine } from "./agent-runtime-state.js";
-import { createTurnTracker, BUSY_MARKER_RE, PROMPT_RE } from "./agent-runtime-turn-tracker.js";
+import { createDispatch } from "./agent-runtime-dispatch.js";
 import { createExitChain } from "./agent-runtime-exit.js";
 import { createSpawnPtyForAgent } from "./agent-runtime-spawn.js";
-import { createDispatch } from "./agent-runtime-dispatch.js";
+import { createAgentStateMachine } from "./agent-runtime-state.js";
+import { BUSY_MARKER_RE, createTurnTracker, PROMPT_RE } from "./agent-runtime-turn-tracker.js";
+import { createAgentStdinDispatcher } from "./agent-stdin-dispatcher.js";
+import { resolveCommand } from "./command-resolver.js";
+import type { PersistentClaude } from "./drivers/persistent-claude.js";
+import { resolveCommandOnPath } from "./drivers/probe.js";
+import { createIdleReclaimer } from "./idle-reclaimer.js";
+import { createPostStartInputWriter, type PostStartInputWriter } from "./post-start-input-writer.js";
 import type {
-  IAgentTokenRegistry,
-  ILiveRunRegistry,
+  AgentStatus,
   IAgentManager,
   IAgentRunStore,
   IAgentStdinDispatcher,
-  AgentStatus,
+  IAgentTokenRegistry,
+  ILiveRunRegistry,
 } from "./types/index.js";
 
 // 重新导出，保持既有 import { BUSY_MARKER_RE, PROMPT_RE } from "./agent-runtime.js" 的调用方
@@ -58,7 +58,9 @@ const resolveCmdShimTarget = (cmdPath: string): string | null => {
       // 也有可能 %dp0% 已展开（绝对路径）
       if (existsSync(raw)) return raw;
     }
-  } catch { /* 解析失败，回退 */ }
+  } catch {
+    /* 解析失败，回退 */
+  }
   return null;
 };
 
@@ -103,7 +105,13 @@ export interface AgentRuntimeOptions {
 export interface IAgentRuntime {
   // 消息分发
   dispatchToAgent(agentName: string, channelName: string, userMsg: string): Promise<void>;
-  runAgent(agentName: string, channelName: string, replyTarget: string, senderName: string, content: string): Promise<void>;
+  runAgent(
+    agentName: string,
+    channelName: string,
+    replyTarget: string,
+    senderName: string,
+    content: string,
+  ): Promise<void>;
   runAgentDm(agentName: string, replyTarget: string, senderName: string, content: string): Promise<void>;
   runAgentReminder(agentName: string, reminder: { title?: string; channel?: string }): Promise<void>;
   // 注：原 autostartAgent（崩溃恢复主动拉起 + 注入"安静等待"恢复消息）已于
@@ -184,10 +192,7 @@ export const createAgentRuntime = (
   if (resolvedClaudePath !== "claude") {
     console.log(`[Runtime] Resolved claude binary: ${resolvedClaudePath}`);
   }
-  const postStartWriter: PostStartInputWriter = createPostStartInputWriter(
-    agentManager,
-    resolvedClaudePath,
-  );
+  const postStartWriter: PostStartInputWriter = createPostStartInputWriter(agentManager, resolvedClaudePath);
   const dispatcher: IAgentStdinDispatcher = createAgentStdinDispatcher(
     agentManager,
     (agentName: string) => runIdByAgent.get(agentName) ?? null,
@@ -214,9 +219,16 @@ export const createAgentRuntime = (
 
   // ---- 退出清理链（见 agent-runtime-exit.ts）----
   const exitChain = createExitChain({
-    tokenRegistry, runStore, liveRunRegistry, agentManager,
-    idleReclaimer, turnTracker, stateMachine, credentialsClient,
-    unsubByRunId, runIdByAgent,
+    tokenRegistry,
+    runStore,
+    liveRunRegistry,
+    agentManager,
+    idleReclaimer,
+    turnTracker,
+    stateMachine,
+    credentialsClient,
+    unsubByRunId,
+    runIdByAgent,
   });
 
   // ---- 内部方法 ----
@@ -270,8 +282,10 @@ export const createAgentRuntime = (
         // 静默兜底（先于 STUCK 警告）
         const lastOut = lastOutputAtByAgent.get(agentName) ?? 0;
         if (
-          turnTracker.hasPending(agentName) && run &&
-          lastOut > 0 && now - lastOut > QUIESCE_MS &&
+          turnTracker.hasPending(agentName) &&
+          run &&
+          lastOut > 0 &&
+          now - lastOut > QUIESCE_MS &&
           PROMPT_RE.test(run.screenText)
         ) {
           turnTracker.decPending(agentName);
@@ -280,7 +294,7 @@ export const createAgentRuntime = (
           idleReclaimer.touch(agentName);
           console.log(
             `[Runtime] @${agentName} round-end (quiescence fallback: no output for ${((now - lastOut) / 1000).toFixed(0)}s, ` +
-            `busyObserved was ${turnTracker.hasBeenBusy(agentName)})`,
+              `busyObserved was ${turnTracker.hasBeenBusy(agentName)})`,
           );
           continue;
         }
@@ -296,8 +310,8 @@ export const createAgentRuntime = (
           const screen = (run?.screenText ?? "").replace(/\s+/g, " ").trim().slice(-300);
           console.warn(
             `[Runtime] @${agentName} STUCK in 'working' for ${(elapsed / 1000).toFixed(1)}s ` +
-            `(outputLen=${run?.output.length ?? 0}, pending=${hasPending(agentName)}, ` +
-            `busyObserved=${hasBeenBusy(agentName)}); raw tail=...${tail} || screen=...${screen}`,
+              `(outputLen=${run?.output.length ?? 0}, pending=${hasPending(agentName)}, ` +
+              `busyObserved=${hasBeenBusy(agentName)}); raw tail=...${tail} || screen=...${screen}`,
           );
         }
       }
@@ -307,9 +321,16 @@ export const createAgentRuntime = (
 
   // ---- PTY 启动（见 agent-runtime-spawn.ts）----
   const spawnPtyForAgent = createSpawnPtyForAgent({
-    agentManager, resolvedClaudePath, runStore, exitChain,
-    stateMachine, turnTracker, idleReclaimer, postStartWriter,
-    runIdByAgent, unsubByRunId,
+    agentManager,
+    resolvedClaudePath,
+    runStore,
+    exitChain,
+    stateMachine,
+    turnTracker,
+    idleReclaimer,
+    postStartWriter,
+    runIdByAgent,
+    unsubByRunId,
     getAgentModel: (name) => agentInfo.get(name)?.model,
     lastOutputAtByAgent,
     getPreferredTermSize: (name) => preferredTermSize.get(name),
@@ -317,10 +338,21 @@ export const createAgentRuntime = (
 
   // ---- 消息分发核心（见 agent-runtime-dispatch.ts）----
   const { dispatchToAgent, runAgent, runAgentDm, runAgentReminder } = createDispatch({
-    options, stateMachine, turnTracker, exitChain, idleReclaimer,
-    credentialsClient, postStartWriter, spawnPtyForAgent, usePty,
-    resolveAgentId, agentInfo, runIdByAgent, persistentSessions,
-    agentSessions, dispatchPromises,
+    options,
+    stateMachine,
+    turnTracker,
+    exitChain,
+    idleReclaimer,
+    credentialsClient,
+    postStartWriter,
+    spawnPtyForAgent,
+    usePty,
+    resolveAgentId,
+    agentInfo,
+    runIdByAgent,
+    persistentSessions,
+    agentSessions,
+    dispatchPromises,
     onDeliveryQueued: options.onDeliveryQueued,
   });
 
@@ -332,7 +364,11 @@ export const createAgentRuntime = (
     runAgentDm,
     runAgentReminder,
 
-    registerAgent(id: string, name: string, info: { displayName?: string; description?: string; model?: string }): void {
+    registerAgent(
+      id: string,
+      name: string,
+      info: { displayName?: string; description?: string; model?: string },
+    ): void {
       agentDrivers.set(name, true);
       if (id) agentNameToId.set(name, id);
       // 合并而非覆盖：编辑 agent（PATCH → agent:start 重推）时某些字段可能缺省，
@@ -349,7 +385,10 @@ export const createAgentRuntime = (
       if (oldRunId) {
         agentManager.stopRun(oldRunId);
         const unsub = unsubByRunId.get(oldRunId);
-        if (unsub) { unsub(); unsubByRunId.delete(oldRunId); }
+        if (unsub) {
+          unsub();
+          unsubByRunId.delete(oldRunId);
+        }
         runIdByAgent.delete(name);
       }
       persistentSessions.get(name)?.stop();
@@ -367,7 +406,10 @@ export const createAgentRuntime = (
       if (runId) {
         agentManager.stopRun(runId);
         const unsub = unsubByRunId.get(runId);
-        if (unsub) { unsub(); unsubByRunId.delete(runId); }
+        if (unsub) {
+          unsub();
+          unsubByRunId.delete(runId);
+        }
         runIdByAgent.delete(name);
       }
       persistentSessions.get(name)?.stop();
@@ -385,8 +427,8 @@ export const createAgentRuntime = (
         const res = await fetch(options.serverUrl + "/api/agents?mine=1", {
           headers: { Authorization: `Bearer ${options.apiKey}` },
         });
-        const data = await res.json() as any;
-        for (const agent of (data.agents || [])) {
+        const data = (await res.json()) as any;
+        for (const agent of data.agents || []) {
           const name = agent.name as string;
           if (agent.id) agentNameToId.set(name, agent.id as string);
           agentInfo.set(name, { displayName: agent.display_name, description: agent.description, model: agent.model });
@@ -405,14 +447,19 @@ export const createAgentRuntime = (
     findMentionedAgent,
     mentionedAgentNames,
     listAgentNames: () => Array.from(agentDrivers.keys()),
-    setPreferredTermSize: (agentName, size) => { preferredTermSize.set(agentName, size); },
+    setPreferredTermSize: (agentName, size) => {
+      preferredTermSize.set(agentName, size);
+    },
 
     stopAgent(agentName: string): void {
       const runId = runIdByAgent.get(agentName);
       if (runId) {
         agentManager.stopRun(runId);
         const unsub = unsubByRunId.get(runId);
-        if (unsub) { unsub(); unsubByRunId.delete(runId); }
+        if (unsub) {
+          unsub();
+          unsubByRunId.delete(runId);
+        }
         runIdByAgent.delete(agentName);
       }
       persistentSessions.get(agentName)?.stop();
@@ -422,7 +469,8 @@ export const createAgentRuntime = (
 
     stopAll(): void {
       idleReclaimer.stop();
-      for (const unsub of unsubByRunId.values()) unsub();      unsubByRunId.clear();
+      for (const unsub of unsubByRunId.values()) unsub();
+      unsubByRunId.clear();
       for (const runId of runIdByAgent.values()) agentManager.stopRun(runId);
       runIdByAgent.clear();
       for (const s of persistentSessions.values()) s.stop();

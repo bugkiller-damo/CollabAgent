@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { apiGet } from "../../api/client";
 import { useTerminalStore } from "../../stores/terminalStore";
 import { wsSend } from "../../stores/wsSender";
-import { apiGet } from "../../api/client";
 
 interface AgentOption {
   name: string;
@@ -55,24 +55,30 @@ export function AgentTerminalPanel({ agentName, onSelectAgent, onClose }: AgentT
 
   // 拖拽调宽：按住面板左边缘拖动
   const dragState = useRef<{ startX: number; startW: number } | null>(null);
-  const onDragStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    dragState.current = { startX: e.clientX, startW: width };
-    const onMove = (ev: MouseEvent) => {
-      if (!dragState.current) return;
-      // 面板在屏幕右缘：鼠标越往左拖，面板越宽
-      const next = dragState.current.startW + (dragState.current.startX - ev.clientX);
-      setWidth(Math.min(MAX_W, Math.max(MIN_W, Math.round(next))));
-    };
-    const onUp = () => {
-      dragState.current = null;
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-      setWidth((w) => { localStorage.setItem("terminal_panel_w", String(w)); return w; });
-    };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-  }, [width]);
+  const onDragStart = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      dragState.current = { startX: e.clientX, startW: width };
+      const onMove = (ev: MouseEvent) => {
+        if (!dragState.current) return;
+        // 面板在屏幕右缘：鼠标越往左拖，面板越宽
+        const next = dragState.current.startW + (dragState.current.startX - ev.clientX);
+        setWidth(Math.min(MAX_W, Math.max(MIN_W, Math.round(next))));
+      };
+      const onUp = () => {
+        dragState.current = null;
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+        setWidth((w) => {
+          localStorage.setItem("terminal_panel_w", String(w));
+          return w;
+        });
+      };
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+    },
+    [width],
+  );
 
   const changeFontSize = (delta: number) => {
     setFontSize((fs) => {
@@ -96,8 +102,8 @@ export function AgentTerminalPanel({ agentName, onSelectAgent, onClose }: AgentT
     const el = livePreRef.current;
     if (!el) return;
     const t = setTimeout(() => {
-      const charW = fontSize * 0.6;   // 等宽字体近似字宽
-      const lineH = fontSize * 1.5;   // 与 pre 的 lineHeight 对齐
+      const charW = fontSize * 0.6; // 等宽字体近似字宽
+      const lineH = fontSize * 1.5; // 与 pre 的 lineHeight 对齐
       const cols = Math.max(20, Math.floor((el.clientWidth - 24) / charW));
       const rows = Math.max(5, Math.floor((el.clientHeight - 24) / lineH));
       wsSend({ type: "terminal:resize", agentName, cols, rows });
@@ -142,12 +148,19 @@ export function AgentTerminalPanel({ agentName, onSelectAgent, onClose }: AgentT
           {!agents.some((a) => a.name === agentName) && <option value={agentName}>@{agentName}</option>}
           {agents.map((a) => (
             <option key={a.name} value={a.name}>
-              {a.isOnline ? "🟢" : "⚪"} @{a.name}{a.display_name && a.display_name !== a.name ? `（${a.display_name}）` : ""}
+              {a.isOnline ? "🟢" : "⚪"} @{a.name}
+              {a.display_name && a.display_name !== a.name ? `（${a.display_name}）` : ""}
             </option>
           ))}
         </select>
         <span className={`shrink-0 rounded px-1.5 py-0.5 text-xs ${st.cls}`}>{st.text}</span>
-        <button onClick={onClose} className="shrink-0 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200" aria-label="关闭终端面板">✕</button>
+        <button
+          onClick={onClose}
+          className="shrink-0 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+          aria-label="关闭终端面板"
+        >
+          ✕
+        </button>
       </div>
 
       <div className="flex items-center border-b border-gray-200 text-sm dark:border-gray-700">

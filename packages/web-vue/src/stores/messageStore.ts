@@ -1,7 +1,7 @@
-import { ref } from "vue";
-import { defineStore } from "pinia";
-import { apiGet, apiPost, apiClient } from "../api";
 import type { Message } from "@collabagent/shared";
+import { defineStore } from "pinia";
+import { ref } from "vue";
+import { apiClient, apiGet, apiPost } from "../api";
 
 const CACHE_PREFIX = "msgs_";
 const CACHE_LIMIT = 50;
@@ -57,7 +57,11 @@ export const useMessageStore = defineStore("messages", () => {
   }
 
   async function sendMessage(channel: string, content: string, attachments?: string[]): Promise<void> {
-    const data = await apiPost<{ messageId: string; messageSeq: number }>("/api/messages/send", { target: channel, content, attachmentIds: attachments });
+    const data = await apiPost<{ messageId: string; messageSeq: number }>("/api/messages/send", {
+      target: channel,
+      content,
+      attachmentIds: attachments,
+    });
     const newMsg = {
       id: data.messageId,
       channelId: channel,
@@ -98,7 +102,7 @@ export const useMessageStore = defineStore("messages", () => {
     const next: Record<string, Message[]> = {};
     for (const k in messagesByTarget.value) {
       next[k] = messagesByTarget.value[k].map((m: any) =>
-        m.id === messageId ? { ...m, content, editedAt: editedAt || new Date().toISOString() } : m
+        m.id === messageId ? { ...m, content, editedAt: editedAt || new Date().toISOString() } : m,
       );
     }
     messagesByTarget.value = next;
@@ -108,7 +112,7 @@ export const useMessageStore = defineStore("messages", () => {
     const next: Record<string, Message[]> = {};
     for (const k in messagesByTarget.value) {
       next[k] = messagesByTarget.value[k].map((m: any) =>
-        m.id === messageId ? { ...m, task_number: taskNumber, task_status: "todo" } : m
+        m.id === messageId ? { ...m, task_number: taskNumber, task_status: "todo" } : m,
       );
     }
     messagesByTarget.value = next;
@@ -133,7 +137,7 @@ export const useMessageStore = defineStore("messages", () => {
     const next: Record<string, Message[]> = {};
     for (const k in messagesByTarget.value) {
       next[k] = messagesByTarget.value[k].map((m: any) =>
-        m.id === messageId ? { ...m, content: "", deleted: true } : m
+        m.id === messageId ? { ...m, content: "", deleted: true } : m,
       );
     }
     messagesByTarget.value = next;
@@ -150,7 +154,7 @@ export const useMessageStore = defineStore("messages", () => {
         if (action === "add") {
           if (idx >= 0) {
             if (reactions[idx].userIds.includes(userId)) return m;
-            newReactions = reactions.map((r, i) => i === idx ? { ...r, userIds: [...r.userIds, userId] } : r);
+            newReactions = reactions.map((r, i) => (i === idx ? { ...r, userIds: [...r.userIds, userId] } : r));
           } else {
             newReactions = [...reactions, { emoji, userIds: [userId] }];
           }
@@ -160,7 +164,7 @@ export const useMessageStore = defineStore("messages", () => {
           if (newUserIds.length === 0) {
             newReactions = reactions.filter((_, i) => i !== idx);
           } else {
-            newReactions = reactions.map((r, i) => i === idx ? { ...r, userIds: newUserIds } : r);
+            newReactions = reactions.map((r, i) => (i === idx ? { ...r, userIds: newUserIds } : r));
           }
         }
         return { ...m, reactions: newReactions };

@@ -7,7 +7,9 @@ const route = useRoute();
 const channelStore = useChannelStore();
 
 const activeChannelName = computed(() => channelStore.activeChannelName);
-const channelHref = computed(() => (activeChannelName.value ? `/channels/${activeChannelName.value}` : "/channels/general"));
+const channelHref = computed(() =>
+  activeChannelName.value ? `/channels/${activeChannelName.value}` : "/channels/general",
+);
 
 function isActive(path: string): boolean {
   if (path === "/dm") return route.path.startsWith("/dm");

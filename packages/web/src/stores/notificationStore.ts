@@ -37,24 +37,27 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
   setNotifications: (list) => set({ notifications: list }),
   setUnreadCount: (count) => set({ unreadCount: count }),
 
-  prependNotification: (n) => set((s) => ({
-    notifications: [n, ...s.notifications],
-    unreadCount: s.unreadCount + (n.read ? 0 : 1),
-  })),
+  prependNotification: (n) =>
+    set((s) => ({
+      notifications: [n, ...s.notifications],
+      unreadCount: s.unreadCount + (n.read ? 0 : 1),
+    })),
 
-  markAsRead: (id) => set((s) => {
-    const target = s.notifications.find((x) => x.id === id);
-    if (!target || target.read) return {};
-    return {
-      notifications: s.notifications.map((x) => x.id === id ? { ...x, read: true } : x),
-      unreadCount: Math.max(0, s.unreadCount - 1),
-    };
-  }),
+  markAsRead: (id) =>
+    set((s) => {
+      const target = s.notifications.find((x) => x.id === id);
+      if (!target || target.read) return {};
+      return {
+        notifications: s.notifications.map((x) => (x.id === id ? { ...x, read: true } : x)),
+        unreadCount: Math.max(0, s.unreadCount - 1),
+      };
+    }),
 
-  markAllAsRead: () => set((s) => ({
-    notifications: s.notifications.map((x) => ({ ...x, read: true })),
-    unreadCount: 0,
-  })),
+  markAllAsRead: () =>
+    set((s) => ({
+      notifications: s.notifications.map((x) => ({ ...x, read: true })),
+      unreadCount: 0,
+    })),
 
   loadFromApi: async () => {
     set({ loading: true });

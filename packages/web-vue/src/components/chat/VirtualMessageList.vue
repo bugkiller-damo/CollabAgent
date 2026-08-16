@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
 import { useVirtualizer } from "@tanstack/vue-virtual";
+import { computed, onMounted, ref, watch } from "vue";
 import MessageRow from "./MessageRow.vue";
 import PendingRow from "./PendingRow.vue";
 import type { ListItem } from "./types";

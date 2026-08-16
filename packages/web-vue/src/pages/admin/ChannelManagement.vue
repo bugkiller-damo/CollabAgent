@@ -1,15 +1,19 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
-import { apiGet, apiPost, apiPatch, apiClient } from "../../api";
+import { apiClient, apiGet, apiPatch, apiPost } from "../../api";
 import ConfirmDialog from "../../components/ConfirmDialog.vue";
 import PageHeader from "../../components/layout/PageHeader.vue";
+import Button from "../../components/ui/Button.vue";
 import Card from "../../components/ui/Card.vue";
 import Input from "../../components/ui/Input.vue";
-import Button from "../../components/ui/Button.vue";
 
 interface Channel {
-  id: string; name: string; description: string | null;
-  type: string; archived: boolean; role?: string | null;
+  id: string;
+  name: string;
+  description: string | null;
+  type: string;
+  archived: boolean;
+  role?: string | null;
 }
 
 const channels = ref<Channel[]>([]);
@@ -23,11 +27,18 @@ const confirmDelete = ref<Channel | null>(null);
 
 function load() {
   apiGet<{ channels: Channel[] }>("/api/channels")
-    .then((d) => { channels.value = d.channels || []; loading.value = false; })
-    .catch(() => { loading.value = false; });
+    .then((d) => {
+      channels.value = d.channels || [];
+      loading.value = false;
+    })
+    .catch(() => {
+      loading.value = false;
+    });
 }
 
-onMounted(() => { load(); });
+onMounted(() => {
+  load();
+});
 
 async function create() {
   const n = name.value.trim();

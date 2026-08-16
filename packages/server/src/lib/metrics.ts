@@ -23,15 +23,23 @@ export function metricsSnapshot(extra?: Record<string, unknown>) {
     uptimeSec: Math.round((Date.now() - startedAt) / 1000),
     startedAt: new Date(startedAt).toISOString(),
     counters: { ...counters },
-    memory: { rssMb: Math.round(mem.rss / 1048576), heapUsedMb: Math.round(mem.heapUsed / 1048576), heapTotalMb: Math.round(mem.heapTotal / 1048576) },
+    memory: {
+      rssMb: Math.round(mem.rss / 1048576),
+      heapUsedMb: Math.round(mem.heapUsed / 1048576),
+      heapTotalMb: Math.round(mem.heapTotal / 1048576),
+    },
     ...extra,
   };
 }
 
 /** 从 metrics_samples 最新行恢复计数器 */
-export async function restoreCounters(pg: { query: (sql: string, params?: unknown[]) => Promise<{ rows: any[] }> }): Promise<void> {
+export async function restoreCounters(pg: {
+  query: (sql: string, params?: unknown[]) => Promise<{ rows: any[] }>;
+}): Promise<void> {
   try {
-    const r = await pg.query("SELECT messages_sent, dm_sent, reminders_fired, errors, logins FROM metrics_samples ORDER BY sampled_at DESC LIMIT 1");
+    const r = await pg.query(
+      "SELECT messages_sent, dm_sent, reminders_fired, errors, logins FROM metrics_samples ORDER BY sampled_at DESC LIMIT 1",
+    );
     if (r.rows.length > 0) {
       const row = r.rows[0];
       counters.messagesSent = Number(row.messages_sent) || 0;
@@ -40,5 +48,7 @@ export async function restoreCounters(pg: { query: (sql: string, params?: unknow
       counters.errors = Number(row.errors) || 0;
       counters.logins = Number(row.logins) || 0;
     }
-  } catch { /* table may not exist yet */ }
+  } catch {
+    /* table may not exist yet */
+  }
 }

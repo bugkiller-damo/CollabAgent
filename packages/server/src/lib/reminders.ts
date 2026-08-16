@@ -13,7 +13,10 @@ export function parseDurationToMs(s: string): number | null {
 export function nextFireFromRepeat(repeat: string, from: Date): Date | null {
   const r = String(repeat).trim();
   let m = /^every:(\d+[smhd])$/.exec(r);
-  if (m) { const ms = parseDurationToMs(m[1]); return ms ? new Date(from.getTime() + ms) : null; }
+  if (m) {
+    const ms = parseDurationToMs(m[1]);
+    return ms ? new Date(from.getTime() + ms) : null;
+  }
   if (r === "hourly") return new Date(from.getTime() + 3600000);
   if (r === "daily") return new Date(from.getTime() + 86400000);
   m = /^daily@(\d{1,2}):(\d{2})$/.exec(r);
@@ -28,7 +31,10 @@ export function nextFireFromRepeat(repeat: string, from: Date): Date | null {
 
 // 由请求体算初始触发时间
 export function initialFireAt(body: { fireAt?: string; delaySeconds?: number; repeat?: string }): Date | null {
-  if (body.fireAt) { const d = new Date(body.fireAt); return isNaN(d.getTime()) ? null : d; }
+  if (body.fireAt) {
+    const d = new Date(body.fireAt);
+    return isNaN(d.getTime()) ? null : d;
+  }
   if (body.delaySeconds != null) return new Date(Date.now() + Number(body.delaySeconds) * 1000);
   if (body.repeat) return nextFireFromRepeat(body.repeat, new Date());
   return null;

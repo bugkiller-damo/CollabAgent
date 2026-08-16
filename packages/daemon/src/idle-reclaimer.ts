@@ -6,8 +6,8 @@
  */
 
 export interface IdleReclaimerOptions {
-  timeoutMs?: number;       // 默认 60000ms
-  scanIntervalMs?: number;  // 默认 30000ms
+  timeoutMs?: number; // 默认 60000ms
+  scanIntervalMs?: number; // 默认 30000ms
   onReclaim: (name: string, idleMs: number) => void;
 }
 
@@ -65,7 +65,10 @@ export const createIdleReclaimer = (opts: IdleReclaimerOptions): IIdleReclaimer 
       if (typeof timer.unref === "function") timer.unref();
     },
     stop(): void {
-      if (timer) { clearInterval(timer); timer = null; }
+      if (timer) {
+        clearInterval(timer);
+        timer = null;
+      }
     },
   };
 };

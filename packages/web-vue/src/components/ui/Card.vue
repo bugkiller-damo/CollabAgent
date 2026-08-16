@@ -1,11 +1,14 @@
 <script setup lang="ts">
 type CardPadding = "none" | "sm" | "md" | "lg";
 
-withDefaults(defineProps<{
-  padding?: CardPadding;
-}>(), {
-  padding: "md",
-});
+withDefaults(
+  defineProps<{
+    padding?: CardPadding;
+  }>(),
+  {
+    padding: "md",
+  },
+);
 
 const paddingStyles: Record<CardPadding, string> = {
   none: "",

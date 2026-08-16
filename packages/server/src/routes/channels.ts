@@ -1,8 +1,8 @@
 import type { FastifyInstance } from "fastify";
-import { canManageChannel, canAccessChannel } from "../lib/access.js";
-import { resolvePeer, getOrCreateDmChannel, type Party } from "../lib/dm.js";
-import { getDefaultServerId } from "../lib/server.js";
+import { canAccessChannel, canManageChannel } from "../lib/access.js";
 import { cleanChannelName, resolveChannel } from "../lib/channel.js";
+import { getOrCreateDmChannel, type Party, resolvePeer } from "../lib/dm.js";
+import { getDefaultServerId } from "../lib/server.js";
 
 export async function channelRoutes(app: FastifyInstance) {
   app.get("/", { preHandler: [app.authenticate] }, async (req) => {
@@ -15,7 +15,7 @@ export async function channelRoutes(app: FastifyInstance) {
        WHERE c.server_id = $2 AND c.archived = false AND c.type <> 'dm'
          AND (c.type <> 'private' OR cm.role IS NOT NULL)
        ORDER BY c.created_at`,
-      [req.user.sub, resolvedServerId]
+      [req.user.sub, resolvedServerId],
     );
     return { channels: result.rows };
   });
@@ -27,22 +27,23 @@ export async function channelRoutes(app: FastifyInstance) {
     if (!resolvedServerId) return reply.status(400).send({ error: "no server available" });
     const vis = visibility || type || "public";
     const userId = req.user.sub;
-    const exists = await app.pg.query(
-      "SELECT 1 FROM channels WHERE server_id = $1 AND name = $2", [resolvedServerId, name]
-    );
+    const exists = await app.pg.query("SELECT 1 FROM channels WHERE server_id = $1 AND name = $2", [
+      resolvedServerId,
+      name,
+    ]);
     if (exists.rows.length > 0) return reply.status(409).send({ error: "channel already exists" });
     // 频道创建 + 创建者入圈 必须同事务，否则第二步失败会留下无 owner 的频道
     const channel = await app.pg.transaction(async (tx) => {
       const result = await tx.query(
         `INSERT INTO channels (server_id, name, description, type, created_by)
          VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-        [resolvedServerId, name, description || null, vis, userId]
+        [resolvedServerId, name, description || null, vis, userId],
       );
       const ch = result.rows[0] as any;
       await tx.query(
         `INSERT INTO channel_members (channel_id, member_id, member_type, role)
          VALUES ($1, $2, 'human', 'owner') ON CONFLICT DO NOTHING`,
-        [ch.id, userId]
+        [ch.id, userId],
       );
       return ch;
     });
@@ -58,17 +59,23 @@ export async function channelRoutes(app: FastifyInstance) {
     const sets: string[] = [];
     const params: any[] = [];
     let p = 1;
-    if (description !== undefined) { sets.push(`description = $${p++}`); params.push(description || null); }
+    if (description !== undefined) {
+      sets.push(`description = $${p++}`);
+      params.push(description || null);
+    }
     const vis = visibility ?? type;
-    if (vis !== undefined) { sets.push(`type = $${p++}`); params.push(vis); }
-    if (archived !== undefined) { sets.push(`archived = $${p++}`); params.push(!!archived); }
+    if (vis !== undefined) {
+      sets.push(`type = $${p++}`);
+      params.push(vis);
+    }
+    if (archived !== undefined) {
+      sets.push(`archived = $${p++}`);
+      params.push(!!archived);
+    }
     if (sets.length === 0) return reply.status(400).send({ error: "no fields to update" });
     sets.push(`updated_at = now()`);
     params.push(channelId);
-    const result = await app.pg.query(
-      `UPDATE channels SET ${sets.join(", ")} WHERE id = $${p} RETURNING *`,
-      params
-    );
+    const result = await app.pg.query(`UPDATE channels SET ${sets.join(", ")} WHERE id = $${p} RETURNING *`, params);
     if (result.rows.length === 0) return reply.status(404).send({ error: "channel not found" });
     return { channel: result.rows[0] };
   });
@@ -86,7 +93,7 @@ export async function channelRoutes(app: FastifyInstance) {
        LEFT JOIN users u ON cm.member_type = 'human' AND cm.member_id = u.id
        LEFT JOIN agents a ON cm.member_type = 'agent' AND cm.member_id = a.id
        WHERE cm.channel_id = $1`,
-      [channelId]
+      [channelId],
     );
     return { members: result.rows };
   });
@@ -104,17 +111,17 @@ export async function channelRoutes(app: FastifyInstance) {
     await app.pg.query(
       `INSERT INTO channel_members (channel_id, member_id, member_type)
        VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
-      [channelId, req.user.sub, memberType || "human"]
+      [channelId, req.user.sub, memberType || "human"],
     );
     return { ok: true };
   });
 
   app.post("/:channelId/leave", { preHandler: [app.authenticate] }, async (req) => {
     const { channelId } = req.params as Record<string, string>;
-    await app.pg.query(
-      `DELETE FROM channel_members WHERE channel_id = $1 AND member_id = $2`,
-      [channelId, req.user.sub]
-    );
+    await app.pg.query(`DELETE FROM channel_members WHERE channel_id = $1 AND member_id = $2`, [
+      channelId,
+      req.user.sub,
+    ]);
     return { ok: true };
   });
 
@@ -132,35 +139,39 @@ export async function channelRoutes(app: FastifyInstance) {
     let memberId: string | null = null;
     let memberType: "human" | "agent" | null = null;
     if (user.rows.length > 0) {
-      memberId = String(user.rows[0].id); memberType = "human";
+      memberId = String(user.rows[0].id);
+      memberType = "human";
     } else {
       const ch = await app.pg.query<{ server_id: string }>("SELECT server_id FROM channels WHERE id = $1", [channelId]);
       // 先按频道所在 server 找（同 server 的团队 agent）；找不到再退回"当前用户自己名下的
       // agent"，不管它挂在哪个 server 下——agent 默认落在创建者的私有 server，跟频道所在
       // server 天然不一致（尤其是频道建在共享的 Default Server 时），邀请自己的 agent 不应
       // 该被这个边界卡住。
-      let agent = await app.pg.query<{ id: string }>(
-        "SELECT id FROM agents WHERE name = $1 AND server_id = $2",
-        [clean, ch.rows[0]?.server_id]
-      );
+      let agent = await app.pg.query<{ id: string }>("SELECT id FROM agents WHERE name = $1 AND server_id = $2", [
+        clean,
+        ch.rows[0]?.server_id,
+      ]);
       if (agent.rows.length === 0) {
-        agent = await app.pg.query<{ id: string }>(
-          "SELECT id FROM agents WHERE name = $1 AND user_id = $2",
-          [clean, req.user.sub]
-        );
+        agent = await app.pg.query<{ id: string }>("SELECT id FROM agents WHERE name = $1 AND user_id = $2", [
+          clean,
+          req.user.sub,
+        ]);
       }
-      if (agent.rows.length > 0) { memberId = String(agent.rows[0].id); memberType = "agent"; }
+      if (agent.rows.length > 0) {
+        memberId = String(agent.rows[0].id);
+        memberType = "agent";
+      }
     }
     if (!memberId || !memberType) return reply.status(404).send({ error: "user or agent not found" });
     const exists = await app.pg.query(
       "SELECT 1 FROM channel_members WHERE channel_id = $1 AND member_id = $2 AND member_type = $3",
-      [channelId, memberId, memberType]
+      [channelId, memberId, memberType],
     );
     if (exists.rows.length > 0) return reply.status(409).send({ error: "already a member" });
     await app.pg.query(
       `INSERT INTO channel_members (channel_id, member_id, member_type, role)
        VALUES ($1, $2, $3, 'member') ON CONFLICT DO NOTHING`,
-      [channelId, memberId, memberType]
+      [channelId, memberId, memberType],
     );
     return { ok: true, memberType };
   });
@@ -173,10 +184,7 @@ export async function channelRoutes(app: FastifyInstance) {
     if (memberId !== userId && !(await canManageChannel(app, channelId, userId))) {
       return reply.status(403).send({ error: "only channel admins can remove members" });
     }
-    await app.pg.query(
-      `DELETE FROM channel_members WHERE channel_id = $1 AND member_id = $2`,
-      [channelId, memberId]
-    );
+    await app.pg.query(`DELETE FROM channel_members WHERE channel_id = $1 AND member_id = $2`, [channelId, memberId]);
     return { ok: true };
   });
 
@@ -194,25 +202,27 @@ export async function channelRoutes(app: FastifyInstance) {
       if (!["admin", "member", "owner"].includes(role)) {
         return reply.status(400).send({ error: "invalid role" });
       }
-      await app.pg.query(
-        `UPDATE channel_members SET role = $1 WHERE channel_id = $2 AND member_id = $3`,
-        [role, channelId, memberId]
-      );
+      await app.pg.query(`UPDATE channel_members SET role = $1 WHERE channel_id = $2 AND member_id = $3`, [
+        role,
+        channelId,
+        memberId,
+      ]);
     }
     if (is_manager !== undefined) {
       const member = await app.pg.query<{ member_type: string }>(
         "SELECT member_type FROM channel_members WHERE channel_id = $1 AND member_id = $2",
-        [channelId, memberId]
+        [channelId, memberId],
       );
       if (member.rows.length === 0) return reply.status(404).send({ error: "member not found" });
       if (member.rows[0].member_type !== "agent") {
         return reply.status(400).send({ error: "only agents can be designated as channel manager" });
       }
       try {
-        await app.pg.query(
-          `UPDATE channel_members SET is_manager = $1 WHERE channel_id = $2 AND member_id = $3`,
-          [is_manager, channelId, memberId]
-        );
+        await app.pg.query(`UPDATE channel_members SET is_manager = $1 WHERE channel_id = $2 AND member_id = $3`, [
+          is_manager,
+          channelId,
+          memberId,
+        ]);
       } catch (err: any) {
         if (err?.code === "23505") return reply.status(409).send({ error: "channel already has a manager" });
         throw err;
@@ -231,10 +241,12 @@ export async function channelRoutes(app: FastifyInstance) {
     if (ch.rows.length === 0) return reply.status(404).send({ error: "channel not found" });
     await app.pg.transaction(async (tx) => {
       await tx.query(
-        "DELETE FROM message_reactions WHERE message_id IN (SELECT id FROM messages WHERE channel_id = $1)", [channelId]
+        "DELETE FROM message_reactions WHERE message_id IN (SELECT id FROM messages WHERE channel_id = $1)",
+        [channelId],
       );
       await tx.query(
-        "DELETE FROM message_attachments WHERE message_id IN (SELECT id FROM messages WHERE channel_id = $1)", [channelId]
+        "DELETE FROM message_attachments WHERE message_id IN (SELECT id FROM messages WHERE channel_id = $1)",
+        [channelId],
       );
       await tx.query("DELETE FROM action_cards WHERE channel_id = $1", [channelId]);
       await tx.query("DELETE FROM messages WHERE channel_id = $1", [channelId]);
@@ -283,7 +295,7 @@ export async function channelRoutes(app: FastifyInstance) {
          ) lm ON true
         WHERE c.type = 'dm'
         ORDER BY lm.seq DESC NULLS LAST`,
-      [userId]
+      [userId],
     );
     return { dms: r.rows };
   });
@@ -291,10 +303,10 @@ export async function channelRoutes(app: FastifyInstance) {
   app.get("/server", { preHandler: [app.authenticate] }, async (req, reply) => {
     const { serverId } = req.query as Record<string, string>;
     // 校验调用者是该 server 成员，否则任意 serverId 可枚举他人组织的频道/成员
-    const member = await app.pg.query(
-      "SELECT 1 FROM server_members WHERE server_id = $1 AND user_id::text = $2",
-      [serverId, req.user.sub]
-    );
+    const member = await app.pg.query("SELECT 1 FROM server_members WHERE server_id = $1 AND user_id::text = $2", [
+      serverId,
+      req.user.sub,
+    ]);
     if (member.rows.length === 0) return reply.status(403).send({ error: "not a member of that server" });
     const [channels, agents, humans] = await Promise.all([
       app.pg.query(
@@ -302,7 +314,7 @@ export async function channelRoutes(app: FastifyInstance) {
          FROM channels c
          LEFT JOIN channel_members cm ON cm.channel_id = c.id AND cm.member_id = $1
          WHERE c.server_id = $2 AND c.archived = false AND c.type <> 'dm'`,
-        [req.user.sub, serverId]
+        [req.user.sub, serverId],
       ),
       app.pg.query("SELECT * FROM agents WHERE server_id = $1", [serverId]),
       app.pg.query(
@@ -310,7 +322,7 @@ export async function channelRoutes(app: FastifyInstance) {
          FROM users u
          JOIN channel_members cm ON cm.member_id = u.id AND cm.member_type = 'human'
          JOIN channels c ON c.id = cm.channel_id WHERE c.server_id = $1`,
-        [serverId]
+        [serverId],
       ),
     ]);
     return { channels: channels.rows, agents: agents.rows, humans: humans.rows };

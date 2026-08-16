@@ -1,20 +1,27 @@
 import { useEffect, useState } from "react";
-import { apiGet, apiPost, apiPatch, apiClient } from "../../api/client";
-import { AgentCardSkeleton } from "../../components/Skeleton";
-import { EmptyState } from "../../components/EmptyState";
-import { ConfirmDialog } from "../../components/ConfirmDialog";
+import { apiClient, apiGet, apiPatch, apiPost } from "../../api/client";
 import { OrgMembersPanel } from "../../components/admin/OrgMembersPanel";
+import { ConfirmDialog } from "../../components/ConfirmDialog";
+import { EmptyState } from "../../components/EmptyState";
 import { PageHeader } from "../../components/layout/PageHeader";
+import { AgentCardSkeleton } from "../../components/Skeleton";
+import { Avatar } from "../../components/ui/Avatar";
+import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { Input } from "../../components/ui/Input";
-import { Button } from "../../components/ui/Button";
-import { Avatar } from "../../components/ui/Avatar";
 import { useUiStore } from "../../stores";
 import { toast } from "../../stores/toastStore";
 
 interface Agent {
-  id: string; name: string; display_name: string; description: string;
-  status: string; runtime: string; model: string; isOnline: boolean; avatar_url?: string;
+  id: string;
+  name: string;
+  display_name: string;
+  description: string;
+  status: string;
+  runtime: string;
+  model: string;
+  isOnline: boolean;
+  avatar_url?: string;
 }
 
 export function AgentManagement() {
@@ -107,10 +114,16 @@ export function AgentManagement() {
 
   return (
     <div className="mx-auto w-full max-w-7xl space-y-6 p-4 sm:p-6">
-      <PageHeader title="Agent 管理" backTo="/admin" breadcrumb={[{ label: "管理后台", to: "/admin" }, { label: "Agent 管理" }]} />
+      <PageHeader
+        title="Agent 管理"
+        backTo="/admin"
+        breadcrumb={[{ label: "管理后台", to: "/admin" }, { label: "Agent 管理" }]}
+      />
 
       <div className="flex items-center justify-end">
-        <Button onClick={openCreate} size="sm">+ 创建 Agent</Button>
+        <Button onClick={openCreate} size="sm">
+          + 创建 Agent
+        </Button>
       </div>
 
       <OrgMembersPanel />
@@ -118,10 +131,30 @@ export function AgentManagement() {
       {showForm && (
         <Card className="space-y-3">
           <h3 className="font-semibold text-gray-900 dark:text-white">{editId ? "编辑 Agent" : "创建新 Agent"}</h3>
-          <Input type="text" placeholder="Agent 名称 (如 slock-backend)" value={name} onChange={(e) => setName(e.target.value)} />
-          <Input type="text" placeholder="显示名称" value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
-          <Input type="text" placeholder="描述（也作为它的角色设定）" value={description} onChange={(e) => setDescription(e.target.value)} />
-          <Input type="text" placeholder="头像 URL（可选）" value={avatarUrl} onChange={(e) => setAvatarUrl(e.target.value)} />
+          <Input
+            type="text"
+            placeholder="Agent 名称 (如 slock-backend)"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+          <Input
+            type="text"
+            placeholder="显示名称"
+            value={displayName}
+            onChange={(e) => setDisplayName(e.target.value)}
+          />
+          <Input
+            type="text"
+            placeholder="描述（也作为它的角色设定）"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+          />
+          <Input
+            type="text"
+            placeholder="头像 URL（可选）"
+            value={avatarUrl}
+            onChange={(e) => setAvatarUrl(e.target.value)}
+          />
           <div className="flex gap-2">
             <select
               value={runtime}
@@ -141,8 +174,12 @@ export function AgentManagement() {
             </select>
           </div>
           <div className="flex gap-2">
-            <Button onClick={handleSubmit} size="sm">{editId ? "保存" : "创建"}</Button>
-            <Button onClick={resetForm} variant="secondary" size="sm">取消</Button>
+            <Button onClick={handleSubmit} size="sm">
+              {editId ? "保存" : "创建"}
+            </Button>
+            <Button onClick={resetForm} variant="secondary" size="sm">
+              取消
+            </Button>
           </div>
         </Card>
       )}
@@ -154,31 +191,52 @@ export function AgentManagement() {
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="font-semibold text-gray-900 dark:text-white">@{a.name}</span>
-                {a.display_name && a.display_name !== a.name && <span className="text-sm text-gray-500">{a.display_name}</span>}
-                <span className={[
-                  "rounded px-1.5 py-0.5 text-xs",
-                  a.isOnline
-                    ? "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300"
-                    : "bg-gray-200 text-gray-500 dark:bg-gray-700",
-                ].join(" ")}
+                {a.display_name && a.display_name !== a.name && (
+                  <span className="text-sm text-gray-500">{a.display_name}</span>
+                )}
+                <span
+                  className={[
+                    "rounded px-1.5 py-0.5 text-xs",
+                    a.isOnline
+                      ? "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300"
+                      : "bg-gray-200 text-gray-500 dark:bg-gray-700",
+                  ].join(" ")}
                 >
                   {a.isOnline ? "在线" : "离线"}
                 </span>
               </div>
               <p className="truncate text-sm text-gray-500 dark:text-gray-400">{a.description || "（无描述）"}</p>
-              <p className="text-xs text-gray-400 dark:text-gray-500">{a.runtime} / {a.model}</p>
+              <p className="text-xs text-gray-400 dark:text-gray-500">
+                {a.runtime} / {a.model}
+              </p>
             </div>
             <div className="flex shrink-0 gap-2">
-              <Button onClick={() => openTerminal(a.name)} variant="secondary" size="sm">终端</Button>
-              <Button onClick={() => openEdit(a)} variant="secondary" size="sm">编辑</Button>
-              <Button onClick={() => setConfirmDelete(a)} variant="ghost" size="sm" className="text-red-500 hover:text-red-600">删除</Button>
+              <Button onClick={() => openTerminal(a.name)} variant="secondary" size="sm">
+                终端
+              </Button>
+              <Button onClick={() => openEdit(a)} variant="secondary" size="sm">
+                编辑
+              </Button>
+              <Button
+                onClick={() => setConfirmDelete(a)}
+                variant="ghost"
+                size="sm"
+                className="text-red-500 hover:text-red-600"
+              >
+                删除
+              </Button>
             </div>
           </Card>
         ))}
         {loading && <AgentCardSkeleton />}
         {!loading && agents.length === 0 && (
-          <EmptyState icon="🤖" title="还没有 Agent" description="创建一个 AI Agent，让它加入频道协作"
-            actionLabel="+ 创建 Agent" onAction={openCreate} />
+          <EmptyState
+            icon="🤖"
+            title="还没有 Agent"
+            description="创建一个 AI Agent，让它加入频道协作"
+            actionLabel="+ 创建 Agent"
+            onAction={openCreate}
+          />
         )}
       </div>
 

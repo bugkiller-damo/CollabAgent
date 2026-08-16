@@ -65,7 +65,9 @@ export function captureSessionId(cliName: string, workspaceDir: string): string 
         latestMtime = s.mtimeMs;
         latest = f;
       }
-    } catch { /* skip */ }
+    } catch {
+      /* skip */
+    }
   }
   return extractSessionId(latest);
 }

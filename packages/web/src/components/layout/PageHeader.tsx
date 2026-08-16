@@ -1,4 +1,4 @@
-import { type ReactNode } from "react";
+import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { Breadcrumb } from "../ui/Breadcrumb";
 
@@ -18,7 +18,15 @@ const backIcon = (
   </svg>
 );
 
-export function PageHeader({ title, subtitle, breadcrumb, leading, backTo, children, className = "" }: PageHeaderProps) {
+export function PageHeader({
+  title,
+  subtitle,
+  breadcrumb,
+  leading,
+  backTo,
+  children,
+  className = "",
+}: PageHeaderProps) {
   return (
     <div className={`border-b border-gray-200 bg-white px-4 py-3 dark:border-gray-700 dark:bg-gray-800 ${className}`}>
       <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
@@ -34,7 +42,11 @@ export function PageHeader({ title, subtitle, breadcrumb, leading, backTo, child
           )}
           {leading && <div className="shrink-0">{leading}</div>}
           <div className="min-w-0">
-            {breadcrumb && breadcrumb.length > 0 && <div className="mb-1"><Breadcrumb items={breadcrumb} /></div>}
+            {breadcrumb && breadcrumb.length > 0 && (
+              <div className="mb-1">
+                <Breadcrumb items={breadcrumb} />
+              </div>
+            )}
             <div className="flex items-center gap-2">
               <h2 className="shrink-0 text-lg font-bold text-gray-900 dark:text-white">{title}</h2>
               {subtitle && (

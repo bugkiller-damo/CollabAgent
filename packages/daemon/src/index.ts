@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-import { DaemonCore } from "./daemon-core.js";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { DaemonCore } from "./daemon-core.js";
 
 /**
  * 单实例守卫：.slock/daemon.pid 里若躺着一个还活着的旧 daemon，先整树杀掉再
@@ -21,14 +21,30 @@ function enforceSingleInstance(): void {
       const oldPid = Number(readFileSync(pidFile, "utf-8").trim());
       if (oldPid && oldPid !== process.pid) {
         let alive = false;
-        try { process.kill(oldPid, 0); alive = true; } catch { /* 不存在 */ }
+        try {
+          process.kill(oldPid, 0);
+          alive = true;
+        } catch {
+          /* 不存在 */
+        }
         if (alive) {
           console.log(`[Daemon] Another daemon instance (pid ${oldPid}) is alive — killing it before start`);
           if (process.platform === "win32") {
-            try { spawn("taskkill", ["/pid", String(oldPid), "/T", "/F"], { stdio: "ignore", windowsHide: true }); }
-            catch { try { process.kill(oldPid); } catch { /* ignore */ } }
+            try {
+              spawn("taskkill", ["/pid", String(oldPid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+            } catch {
+              try {
+                process.kill(oldPid);
+              } catch {
+                /* ignore */
+              }
+            }
           } else {
-            try { process.kill(oldPid, "SIGTERM"); } catch { /* ignore */ }
+            try {
+              process.kill(oldPid, "SIGTERM");
+            } catch {
+              /* ignore */
+            }
           }
         }
       }

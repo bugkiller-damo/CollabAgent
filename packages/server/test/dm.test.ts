@@ -1,7 +1,10 @@
-import { describe, it, expect, afterAll } from "vitest";
-import { api, registerUser, cleanupTestData, closeSql } from "./helpers.js";
+import { afterAll, describe, expect, it } from "vitest";
+import { api, cleanupTestData, closeSql, registerUser } from "./helpers.js";
 
-afterAll(async () => { await cleanupTestData(); await closeSql(); });
+afterAll(async () => {
+  await cleanupTestData();
+  await closeSql();
+});
 
 describe("direct messages: 三向收发 + 成员隔离", () => {
   it("两个用户互发 DM 命中同一频道，双方可读", async () => {
@@ -9,14 +12,16 @@ describe("direct messages: 三向收发 + 成员隔离", () => {
     const b = await registerUser();
 
     const send1 = await api("/api/messages/send", {
-      method: "POST", cookie: a.cookie,
+      method: "POST",
+      cookie: a.cookie,
       body: { target: `dm:@${b.handle}`, content: "hi from a" },
     });
     expect(send1.status).toBe(200);
     expect(send1.data.channelId).toMatch(/^dm:/);
 
     const send2 = await api("/api/messages/send", {
-      method: "POST", cookie: b.cookie,
+      method: "POST",
+      cookie: b.cookie,
       body: { target: `dm:@${a.handle}`, content: "reply from b" },
     });
     expect(send2.status).toBe(200);
@@ -35,8 +40,14 @@ describe("direct messages: 三向收发 + 成员隔离", () => {
     const b = await registerUser();
     const c = await registerUser();
 
-    await api("/api/messages/send", { method: "POST", cookie: a.cookie, body: { target: `dm:@${b.handle}`, content: "secret" } });
-    const resolved = await api(`/api/channels/resolve?target=${encodeURIComponent("dm:@" + b.handle)}`, { cookie: a.cookie });
+    await api("/api/messages/send", {
+      method: "POST",
+      cookie: a.cookie,
+      body: { target: `dm:@${b.handle}`, content: "secret" },
+    });
+    const resolved = await api(`/api/channels/resolve?target=${encodeURIComponent("dm:@" + b.handle)}`, {
+      cookie: a.cookie,
+    });
     expect(resolved.status).toBe(200);
     const channelId: string = resolved.data.channelId;
 
@@ -47,7 +58,11 @@ describe("direct messages: 三向收发 + 成员隔离", () => {
   it("DM 频道不出现在常规频道列表", async () => {
     const a = await registerUser();
     const b = await registerUser();
-    await api("/api/messages/send", { method: "POST", cookie: a.cookie, body: { target: `dm:@${b.handle}`, content: "x" } });
+    await api("/api/messages/send", {
+      method: "POST",
+      cookie: a.cookie,
+      body: { target: `dm:@${b.handle}`, content: "x" },
+    });
     const chans = await api("/api/channels", { cookie: a.cookie });
     expect(chans.status).toBe(200);
     const hasDm = (chans.data.channels || []).some((c: any) => c.type === "dm");

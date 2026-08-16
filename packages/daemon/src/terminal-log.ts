@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync, appendFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { safeAgentDirName } from "./agent-dir-name.js";
 
@@ -28,7 +28,8 @@ export function appendTerminalLog(agentName: string, runId: string, exitCode: nu
   try {
     mkdirSync(LOG_DIR, { recursive: true });
     const path = logPath(agentName);
-    const header = `\n\n═══════════════════════════════════════════════════\n` +
+    const header =
+      `\n\n═══════════════════════════════════════════════════\n` +
       `run ${runId.slice(0, 8)} · 结束于 ${new Date().toLocaleString("zh-CN")} · exit=${exitCode ?? "?"}\n` +
       `═══════════════════════════════════════════════════\n\n`;
     appendFileSync(path, header + text, "utf-8");
@@ -38,7 +39,9 @@ export function appendTerminalLog(agentName: string, runId: string, exitCode: nu
       const content = readFileSync(path, "utf-8");
       writeFileSync(path, content.slice(-KEEP_FILE_BYTES), "utf-8");
     }
-  } catch { /* 日志落盘是 best-effort，不影响退出清理链 */ }
+  } catch {
+    /* 日志落盘是 best-effort，不影响退出清理链 */
+  }
 }
 
 /** 读日志尾部（默认最多 200KB 文本），文件不存在返回空串 */

@@ -1,16 +1,16 @@
-import { WebSocket } from "ws";
-import { existsSync, unlinkSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { WebSocket } from "ws";
+import { createJsonRunStore, defaultStorePath } from "./agent-run-store.js";
+import { createAgentRuntime, type IAgentRuntime } from "./agent-runtime.js";
+import { createAgentTokenRegistry } from "./agent-tokens.js";
 import type { AgentContext } from "./auth.js";
-import type { DaemonConfig } from "./types/index.js";
 import { ApiClient } from "./client.js";
 import { probeClaude } from "./drivers/probe.js";
-import { createAgentTokenRegistry } from "./agent-tokens.js";
 import { createLiveRunRegistry } from "./live-run-registry.js";
-import { createAgentRuntime, type IAgentRuntime } from "./agent-runtime.js";
 import { setupSlockWrapper } from "./setup-slock-wrapper.js";
-import { createJsonRunStore, defaultStorePath } from "./agent-run-store.js";
 import { readTerminalLogTail } from "./terminal-log.js";
+import type { DaemonConfig } from "./types/index.js";
 
 export class DaemonCore {
   private ws: WebSocket | null = null;
@@ -52,7 +52,11 @@ export class DaemonCore {
     const plannedMarker = join(process.cwd(), ".slock", "planned-restart");
     const isPlannedRestart = existsSync(plannedMarker);
     if (isPlannedRestart) {
-      try { unlinkSync(plannedMarker); } catch { /* ignore */ }
+      try {
+        unlinkSync(plannedMarker);
+      } catch {
+        /* ignore */
+      }
       console.log("[Daemon] Planned restart detected (marker file) — skipping autostart");
     }
     // 必须在 markUnfinishedRunsStale() 之前采集——那个方法会把这些记录的
@@ -118,17 +122,25 @@ export class DaemonCore {
           const lines = run.screenText.split("\n");
           for (let i = lines.length - 1; i >= 0; i--) {
             const t = lines[i]!.trim();
-            if (t) { lastLine = t.slice(0, 80); break; }
+            if (t) {
+              lastLine = t.slice(0, 80);
+              break;
+            }
           }
         }
         const key = status + "|" + lastLine;
         if (this.lastReportedByAgent.get(name) === key) continue;
         this.lastReportedByAgent.set(name, key);
         const agentId = this.runtime.resolveAgentId(name);
-        this.ws.send(JSON.stringify({
-          type: "agent:status", agentId: agentId || name, agentName: name,
-          status, detail: lastLine,
-        }));
+        this.ws.send(
+          JSON.stringify({
+            type: "agent:status",
+            agentId: agentId || name,
+            agentName: name,
+            status,
+            detail: lastLine,
+          }),
+        );
       }
     };
     this.statusReporter = setInterval(tick, 3000);
@@ -148,7 +160,7 @@ export class DaemonCore {
     if (!this.autostartCandidates.length) return;
     console.log(
       `[Daemon] ${this.autostartCandidates.length} agent(s) were active before last crash/restart — ` +
-      `skipping eager autostart (they will lazy-spawn with session resume on their next real message)`,
+        `skipping eager autostart (they will lazy-spawn with session resume on their next real message)`,
     );
   }
 
@@ -187,7 +199,7 @@ export class DaemonCore {
         "  完成后重启本 daemon 即可。",
         "──────────────────────────────────────────────",
         "",
-      ].join("\n")
+      ].join("\n"),
     );
   }
 
@@ -195,7 +207,7 @@ export class DaemonCore {
     this.slockDir = await setupSlockWrapper(this.agentId, this.serverUrl, this.apiKey);
   }
 
-private connect(): void {
+  private connect(): void {
     const url = new URL("/ws", this.config.serverUrl);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     this.ws = new WebSocket(url.toString(), {
@@ -204,15 +216,20 @@ private connect(): void {
     this.ws.on("open", () => {
       console.log("[Daemon] Connected to server");
       this.reconnectDelay = 1000;
-      this.ws?.send(JSON.stringify({
-        type: "ready", capabilities: ["send", "read"],
-        runtimes: ["daemon-cli"],
-        hostname: process.env.COMPUTERNAME || "unknown",
-        daemonVersion: "0.1.0",
-      }));
+      this.ws?.send(
+        JSON.stringify({
+          type: "ready",
+          capabilities: ["send", "read"],
+          runtimes: ["daemon-cli"],
+          hostname: process.env.COMPUTERNAME || "unknown",
+          daemonVersion: "0.1.0",
+        }),
+      );
     });
     this.ws.on("message", (data) => {
-      try { this.handleMessage(JSON.parse(data.toString())); } catch (err: any) {
+      try {
+        this.handleMessage(JSON.parse(data.toString()));
+      } catch (err: any) {
         console.error("[Daemon] WS message parse/handle error:", err?.message || String(err));
       }
     });
@@ -229,7 +246,7 @@ private connect(): void {
             "  用新的 --api-key 重启 daemon。",
             "──────────────────────────────────────────────",
             "",
-          ].join("\n")
+          ].join("\n"),
         );
         this.authFailed = true;
         void this.stop();
@@ -251,7 +268,6 @@ private connect(): void {
     }, this.reconnectDelay);
   }
 
-
   private async handleMessage(msg: Record<string, unknown>): Promise<void> {
     const type = msg.type as string | undefined;
     switch (type) {
@@ -267,7 +283,10 @@ private connect(): void {
         // 部分路径在 config.runtime_profile.model。三个位置都兜底。
         const rp = (config.runtime_profile ?? agent?.runtime_profile) as { model?: string } | undefined;
         const model = (agent?.model as string) || (config.model as string) || rp?.model || undefined;
-        if (!agentName) { console.log("[Daemon] agent:start without name, ignored"); break; }
+        if (!agentName) {
+          console.log("[Daemon] agent:start without name, ignored");
+          break;
+        }
         this.runtime.registerAgent(agentId, agentName, { displayName, description, model });
         break;
       }
@@ -290,8 +309,11 @@ private connect(): void {
             const replyTarget = threadId ? `#${channelName}:${threadId.slice(0, 8)}` : `#${channelName}`;
             const senderName = (m.senderName as string) || (m.senderId as string) || "unknown";
             console.log(`[Daemon] Dispatch message for @${forceTarget} in ${replyTarget}: ${content.slice(0, 50)}`);
-            try { await this.runtime.runAgent(forceTarget, channelName, replyTarget, senderName, content); }
-            catch (err: any) { console.error("[Daemon] Dispatch routing failed:", err?.message); }
+            try {
+              await this.runtime.runAgent(forceTarget, channelName, replyTarget, senderName, content);
+            } catch (err: any) {
+              console.error("[Daemon] Dispatch routing failed:", err?.message);
+            }
           }
           break;
         }
@@ -305,8 +327,11 @@ private connect(): void {
           for (const name of recipients) {
             if (!this.runtime.hasAgent(name)) continue;
             console.log(`[Daemon] DM -> @${name} (reply ${replyTarget})`);
-            try { await this.runtime.runAgentDm(name, replyTarget, senderHandle, content); }
-            catch (err: any) { console.error("[Daemon] DM dispatch failed:", err?.message); }
+            try {
+              await this.runtime.runAgentDm(name, replyTarget, senderHandle, content);
+            } catch (err: any) {
+              console.error("[Daemon] DM dispatch failed:", err?.message);
+            }
           }
           break;
         }
@@ -383,10 +408,15 @@ private connect(): void {
           const key = status + "|" + screen;
           if (this.terminalLastFrame.get(agentName) === key) return;
           this.terminalLastFrame.set(agentName, key);
-          this.ws?.send(JSON.stringify({
-            type: "terminal:frame", agentName, screen, status,
-            time: new Date().toISOString(),
-          }));
+          this.ws?.send(
+            JSON.stringify({
+              type: "terminal:frame",
+              agentName,
+              screen,
+              status,
+              time: new Date().toISOString(),
+            }),
+          );
         };
         tick(); // 立即推一帧，观众打开就能看到当前屏
         this.terminalWatchers.set(agentName, setInterval(tick, 400));
@@ -424,13 +454,18 @@ private connect(): void {
         }
         break;
       }
-      case "ping": this.ws?.send(JSON.stringify({ type: "pong" })); break;
+      case "ping":
+        this.ws?.send(JSON.stringify({ type: "pong" }));
+        break;
     }
   }
 
   async stop(): Promise<void> {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-    if (this.statusReporter) { clearInterval(this.statusReporter); this.statusReporter = null; }
+    if (this.statusReporter) {
+      clearInterval(this.statusReporter);
+      this.statusReporter = null;
+    }
     for (const timer of this.terminalWatchers.values()) clearInterval(timer);
     this.terminalWatchers.clear();
     this.terminalLastFrame.clear();
@@ -439,8 +474,13 @@ private connect(): void {
     try {
       mkdirSync(join(process.cwd(), ".slock"), { recursive: true });
       writeFileSync(join(process.cwd(), ".slock", "planned-restart"), String(Date.now()));
-    } catch { /* best-effort */ }
-    if (this.ws) { this.ws.close(); this.ws = null; }
+    } catch {
+      /* best-effort */
+    }
+    if (this.ws) {
+      this.ws.close();
+      this.ws = null;
+    }
     this.runtime.stopAll();
     console.log("[Daemon] Stopped");
   }

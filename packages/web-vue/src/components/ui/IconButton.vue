@@ -3,13 +3,16 @@ import Tooltip from "./Tooltip.vue";
 
 type TooltipPosition = "top" | "bottom" | "left" | "right";
 
-withDefaults(defineProps<{
-  label: string;
-  tooltip?: string;
-  tooltipPosition?: TooltipPosition;
-}>(), {
-  tooltipPosition: "bottom",
-});
+withDefaults(
+  defineProps<{
+    label: string;
+    tooltip?: string;
+    tooltipPosition?: TooltipPosition;
+  }>(),
+  {
+    tooltipPosition: "bottom",
+  },
+);
 
 // 无论是否被 Tooltip 包裹，fallthrough 属性（onClick / disabled / class 等）都必须落到内部 button 上，
 // 对齐 React 版 {...props} 只作用于 button 的行为

@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { computed, ref } from "vue";
 import { useChannelStore } from "../../stores";
-import Modal from "../ui/Modal.vue";
-import Input from "../ui/Input.vue";
 import Button from "../ui/Button.vue";
+import Input from "../ui/Input.vue";
+import Modal from "../ui/Modal.vue";
 
 const props = defineProps<{
   onClose: () => void;
@@ -38,7 +38,11 @@ async function handleSubmit() {
   saving.value = true;
   error.value = "";
   try {
-    await channelStore.createChannel({ name: formatted.value, description: description.value.trim() || undefined, type: visibility.value });
+    await channelStore.createChannel({
+      name: formatted.value,
+      description: description.value.trim() || undefined,
+      type: visibility.value,
+    });
     props.onCreated?.(formatted.value);
     props.onClose();
   } catch (err: any) {

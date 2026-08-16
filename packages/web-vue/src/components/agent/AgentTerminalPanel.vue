@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
+import { apiGet } from "../../api";
 import { useTerminalStore } from "../../stores/terminalStore";
 import { wsSend } from "../../stores/wsSender";
-import { apiGet } from "../../api";
 
 interface AgentOption {
   name: string;
@@ -80,7 +80,7 @@ watch(
     wsSend({ type: "terminal:history", agentName: name });
     onCleanup(() => wsSend({ type: "terminal:unwatch", agentName: name }));
   },
-  { immediate: true }
+  { immediate: true },
 );
 
 // 尺寸协商（真改比例）：面板宽度/字号变化时，按可视区算出期望的 cols/rows
@@ -109,7 +109,9 @@ onMounted(() => {
 // 面板顶部的 agent 选择器数据
 onMounted(() => {
   apiGet<{ agents: AgentOption[] }>("/api/agents")
-    .then((d) => { agents.value = d.agents || []; })
+    .then((d) => {
+      agents.value = d.agents || [];
+    })
     .catch(() => {});
 });
 

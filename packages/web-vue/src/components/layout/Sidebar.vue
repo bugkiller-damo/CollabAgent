@@ -1,16 +1,16 @@
 <script setup lang="ts">
-import { ref, computed, watch } from "vue";
-import { useRouter, useRoute } from "vue-router";
-import { useChannelStore, useAuthStore } from "../../stores";
+import { computed, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import { apiGet } from "../../api";
+import { useAuthStore, useChannelStore } from "../../stores";
+import CreateChannelModal from "../channel/CreateChannelModal.vue";
+import Avatar from "../ui/Avatar.vue";
+import IconButton from "../ui/IconButton.vue";
+import NavItem from "../ui/NavItem.vue";
 import AgentStatusBar from "./AgentStatusBar.vue";
 import ConnectionStatus from "./ConnectionStatus.vue";
-import UserProfileFooter from "./UserProfileFooter.vue";
-import CreateChannelModal from "../channel/CreateChannelModal.vue";
 import SidebarSection from "./SidebarSection.vue";
-import NavItem from "../ui/NavItem.vue";
-import IconButton from "../ui/IconButton.vue";
-import Avatar from "../ui/Avatar.vue";
+import UserProfileFooter from "./UserProfileFooter.vue";
 
 interface DmItem {
   channelId: string;
@@ -47,11 +47,17 @@ const unreadCounts = computed(() => channelStore.unreadCounts);
 
 function loadDms() {
   apiGet<{ dms: DmItem[] }>("/api/channels/dms")
-    .then((d) => { dms.value = d.dms || []; })
+    .then((d) => {
+      dms.value = d.dms || [];
+    })
     .catch(() => {});
 }
 
-watch(() => route.path, () => loadDms(), { immediate: true });
+watch(
+  () => route.path,
+  () => loadDms(),
+  { immediate: true },
+);
 
 async function openPeoplePicker() {
   showPeople.value = !showPeople.value;

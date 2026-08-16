@@ -1,5 +1,5 @@
-import { useEffect, useRef, useCallback, useState } from "react";
-import type { WsServerMessage, WsClientMessage } from "@collabagent/shared";
+import type { WsClientMessage, WsServerMessage } from "@collabagent/shared";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 interface UseWebSocketOptions {
   serverUrl: string;

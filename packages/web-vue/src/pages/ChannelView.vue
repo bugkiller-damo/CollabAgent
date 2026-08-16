@@ -1,21 +1,21 @@
 <script setup lang="ts">
+import type { Message } from "@collabagent/shared";
 import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { useMessageStore, useChannelStore, useUiStore, useAgentStore } from "../stores";
 import { apiClient, apiGet } from "../api";
-import { toast } from "../stores/toastStore";
-import MessageRow from "../components/chat/MessageRow.vue";
-import PendingRow from "../components/chat/PendingRow.vue";
-import VirtualMessageList from "../components/chat/VirtualMessageList.vue";
-import MessageComposer, { type ComposerAttachment } from "../components/chat/MessageComposer.vue";
 import ChannelMembersPanel from "../components/channel/ChannelMembersPanel.vue";
 import ChannelSettingsModal from "../components/channel/ChannelSettingsModal.vue";
-import EmptyState from "../components/EmptyState.vue";
-import MessageSkeleton from "../components/skeleton/MessageSkeleton.vue";
-import PageHeader from "../components/layout/PageHeader.vue";
-import IconButton from "../components/ui/IconButton.vue";
+import MessageComposer, { type ComposerAttachment } from "../components/chat/MessageComposer.vue";
+import MessageRow from "../components/chat/MessageRow.vue";
+import PendingRow from "../components/chat/PendingRow.vue";
 import type { ListItem, PendingItem } from "../components/chat/types";
-import type { Message } from "@collabagent/shared";
+import VirtualMessageList from "../components/chat/VirtualMessageList.vue";
+import EmptyState from "../components/EmptyState.vue";
+import PageHeader from "../components/layout/PageHeader.vue";
+import MessageSkeleton from "../components/skeleton/MessageSkeleton.vue";
+import IconButton from "../components/ui/IconButton.vue";
+import { useAgentStore, useChannelStore, useMessageStore, useUiStore } from "../stores";
+import { toast } from "../stores/toastStore";
 
 const VIRTUAL_THRESHOLD = 100;
 const EMPTY_MSGS: Message[] = [];
@@ -82,28 +82,25 @@ watch(
 );
 
 // ---- Effect 2：hash 高亮消息不在当前页时，按 id 前缀搜索并回填历史（React useEffect([highlightMsgId, messages, target, fetchHistory])）----
-watch(
-  [highlightMsgId, messages, target],
-  () => {
-    const hid = highlightMsgId.value;
-    if (!hid || highlightLoadedRef.value) return;
-    if (messages.value.length === 0) return;
-    const inPage = messages.value.find((m: any) => m.id === hid);
-    if (inPage) {
-      highlightLoadedRef.value = true;
-      return;
-    }
-    apiGet<{ results: { id: string; seq: number }[] }>("/api/messages/search", { q: hid.slice(0, 8) })
-      .then((r) => {
-        const hit = r.results.find((x) => x.id === hid);
-        if (hit) {
-          messageStore.fetchHistory(target.value, { before: hit.seq + 1, limit: 50 }).catch(() => {});
-          highlightLoadedRef.value = true;
-        }
-      })
-      .catch(() => {});
-  },
-);
+watch([highlightMsgId, messages, target], () => {
+  const hid = highlightMsgId.value;
+  if (!hid || highlightLoadedRef.value) return;
+  if (messages.value.length === 0) return;
+  const inPage = messages.value.find((m: any) => m.id === hid);
+  if (inPage) {
+    highlightLoadedRef.value = true;
+    return;
+  }
+  apiGet<{ results: { id: string; seq: number }[] }>("/api/messages/search", { q: hid.slice(0, 8) })
+    .then((r) => {
+      const hit = r.results.find((x) => x.id === hid);
+      if (hit) {
+        messageStore.fetchHistory(target.value, { before: hit.seq + 1, limit: 50 }).catch(() => {});
+        highlightLoadedRef.value = true;
+      }
+    })
+    .catch(() => {});
+});
 
 // ---- Effect 3：非虚拟列表新消息到达且接近底部时自动滚动到底（React useEffect([messages])）----
 watch(

@@ -1,22 +1,22 @@
-import { useEffect, useState, memo } from "react";
-import { Outlet, useLocation, Link } from "react-router-dom";
-import { Sidebar } from "./Sidebar";
+import type { WsServerMessage } from "@collabagent/shared";
+import { memo, useEffect, useState } from "react";
+import { Link, Outlet, useLocation } from "react-router-dom";
 import { useWebSocket } from "../../hooks/useWebSocket";
-import { useAuthStore, useMessageStore, useChannelStore, useAgentStore, useUiStore } from "../../stores";
-import type { WsServerMessage } from '@collabagent/shared';
-import { ThinkingIndicator } from '../agent/ThinkingIndicator';
-import { ErrorBoundary } from '../ErrorBoundary';
-import { OnboardingChecklist } from '../OnboardingChecklist';
-import { NotificationBell } from '../notifications/NotificationBell';
-import { SearchBar } from '../chat/SearchBar';
-import { ToastContainer } from '../Toast';
-import { toast } from '../../stores/toastStore';
-import { useNotificationStore } from '../../stores/notificationStore';
-import { useTerminalStore } from '../../stores/terminalStore';
-import { setWsSender } from '../../stores/wsSender';
+import { useAgentStore, useAuthStore, useChannelStore, useMessageStore, useUiStore } from "../../stores";
+import { useNotificationStore } from "../../stores/notificationStore";
+import { useTerminalStore } from "../../stores/terminalStore";
+import { toast } from "../../stores/toastStore";
+import { setWsSender } from "../../stores/wsSender";
+import { AgentTerminalPanel } from "../agent/AgentTerminalPanel";
+import { ThinkingIndicator } from "../agent/ThinkingIndicator";
+import { SearchBar } from "../chat/SearchBar";
+import { ErrorBoundary } from "../ErrorBoundary";
+import { NotificationBell } from "../notifications/NotificationBell";
+import { OnboardingChecklist } from "../OnboardingChecklist";
+import { ToastContainer } from "../Toast";
 import { IconButton } from "../ui/IconButton";
 import { MobileTabBar } from "./MobileTabBar";
-import { AgentTerminalPanel } from "../agent/AgentTerminalPanel";
+import { Sidebar } from "./Sidebar";
 
 function AgentThinkingBanner() {
   const agents = useAgentStore((s) => s.agents);
@@ -27,7 +27,11 @@ function AgentThinkingBanner() {
 
 function useRouteTitle(pathname: string) {
   const decode = (s: string | undefined) => {
-    try { return decodeURIComponent(s || ""); } catch { return s || ""; }
+    try {
+      return decodeURIComponent(s || "");
+    } catch {
+      return s || "";
+    }
   };
   if (pathname.startsWith("/channels/")) {
     const parts = pathname.split("/");
@@ -83,13 +87,16 @@ export function AppLayout() {
 
   useEffect(() => {
     const root = document.documentElement;
-    const isDark = theme === "dark" || (theme === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+    const isDark =
+      theme === "dark" || (theme === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
     root.classList.toggle("dark", isDark);
   }, [theme]);
 
   useEffect(() => {
     const load = async () => {
-      try { await fetchChannels(); } catch {}
+      try {
+        await fetchChannels();
+      } catch {}
     };
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -103,7 +110,8 @@ export function AppLayout() {
   // 顶部标题栏的私有频道标识：从频道列表里查当前频道类型
   // （server 返回的字段名是 type，shared 类型里叫 visibility，两个都兼容）
   const channels = useChannelStore((s) => s.channels);
-  const isPrivateChannel = location.pathname.startsWith("/channels/") &&
+  const isPrivateChannel =
+    location.pathname.startsWith("/channels/") &&
     channels.some((c: any) => c.name === activeChannelName && (c.type === "private" || c.visibility === "private"));
   // 终端观察面板（G3）：右侧常驻，边聊边看
   const terminalAgent = useUiStore((s) => s.terminalAgent);
@@ -113,21 +121,29 @@ export function AppLayout() {
     serverUrl: window.location.origin,
     token: "",
     onMessage: (msg: WsServerMessage) => {
-      if ((msg.type as string) === 'notification.new') {
+      if ((msg.type as string) === "notification.new") {
         useNotificationStore.getState().prependNotification((msg as any).notification);
       }
       // 终端观察（G3）：daemon 推来的终端帧写入 terminalStore
       if ((msg.type as string) === "terminal:frame") {
         const f = msg as any;
-        useTerminalStore.getState().setFrame(f.agentName, { screen: f.screen || "", status: f.status || "unknown", time: f.time });
+        useTerminalStore
+          .getState()
+          .setFrame(f.agentName, { screen: f.screen || "", status: f.status || "unknown", time: f.time });
       }
-      if (msg.type === 'agent:status' || (msg.type as string) === 'agent:activity') {
+      if (msg.type === "agent:status" || (msg.type as string) === "agent:activity") {
         const a = msg as any;
         // daemon 上报带 agentName（G7 last_pty_line）；旧消息只有 agentId，兜底
-        useAgentStore.getState().updateStatus(a.agentName || a.agentId || 'agent', msg.type === 'agent:status' ? (a.status || 'idle') : 'working', a.detail || '');
+        useAgentStore
+          .getState()
+          .updateStatus(
+            a.agentName || a.agentId || "agent",
+            msg.type === "agent:status" ? a.status || "idle" : "working",
+            a.detail || "",
+          );
       }
       // 门控投递反馈：daemon 把发给忙碌 agent 的消息排队了（agent 空闲后按序投递，不丢）
-      if ((msg.type as string) === 'agent:delivery-queued') {
+      if ((msg.type as string) === "agent:delivery-queued") {
         const q = msg as any;
         toast.info(`⏳ @${q.agentName} 正在工作，消息已缓冲，将在其空闲后自动投递`);
       }
@@ -143,7 +159,7 @@ export function AppLayout() {
         const hasThread = m.thread_id || m.threadId;
         const chs = useChannelStore.getState().channels;
         const ch = chs.find((c: any) => c.id === m.channelId);
-        const targetKey = ch ? '#' + ch.name : m.channelId;
+        const targetKey = ch ? "#" + ch.name : m.channelId;
         receiveMessage({
           id: m.id,
           seq: m.seq,
@@ -156,8 +172,18 @@ export function AppLayout() {
           attachments: m.attachments || [],
         } as any);
         if (hasThread) {
-          const threadKey = targetKey + ':' + (m.thread_id || m.threadId || '').substring(0, 8);
-          receiveMessage({ ...m, id: m.id, seq: m.seq, channelId: threadKey, senderId: m.senderId, senderName: m.senderName || 'unknown', senderType: m.senderType || 'human', content: m.content, time: m.time || new Date().toISOString() });
+          const threadKey = targetKey + ":" + (m.thread_id || m.threadId || "").substring(0, 8);
+          receiveMessage({
+            ...m,
+            id: m.id,
+            seq: m.seq,
+            channelId: threadKey,
+            senderId: m.senderId,
+            senderName: m.senderName || "unknown",
+            senderType: m.senderType || "human",
+            content: m.content,
+            time: m.time || new Date().toISOString(),
+          });
         }
         if (activeChannelName && ch?.name !== activeChannelName) {
           incrementUnread(targetKey);
@@ -183,7 +209,9 @@ export function AppLayout() {
       {sidebarOpen && (
         <div className="fixed inset-0 z-30 bg-black/40 lg:hidden" onClick={() => setSidebarOpen(false)} />
       )}
-      <div className={`fixed lg:static inset-y-0 left-0 z-40 w-60 transform transition-transform duration-200 ease-in-out ${sidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"}`}>
+      <div
+        className={`fixed lg:static inset-y-0 left-0 z-40 w-60 transform transition-transform duration-200 ease-in-out ${sidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"}`}
+      >
         <Sidebar />
       </div>
 
@@ -199,19 +227,34 @@ export function AppLayout() {
             {routeTitle.title && (
               <div className="flex flex-col">
                 <span className="truncate text-sm font-semibold text-gray-900 dark:text-white">{routeTitle.title}</span>
-                {routeTitle.subtitle && <span className="truncate text-xs text-gray-500 dark:text-gray-400">{routeTitle.subtitle}</span>}
+                {routeTitle.subtitle && (
+                  <span className="truncate text-xs text-gray-500 dark:text-gray-400">{routeTitle.subtitle}</span>
+                )}
               </div>
             )}
           </div>
 
           <div className="hidden lg:flex lg:flex-1 lg:items-center lg:gap-2">
-            {routeTitle.subtitle && <span className="text-sm text-gray-500 dark:text-gray-400">{routeTitle.subtitle}</span>}
+            {routeTitle.subtitle && (
+              <span className="text-sm text-gray-500 dark:text-gray-400">{routeTitle.subtitle}</span>
+            )}
             {routeTitle.subtitle && routeTitle.title && <span className="text-gray-300 dark:text-gray-600">/</span>}
             <span className="text-sm font-semibold text-gray-900 dark:text-white">{routeTitle.title}</span>
             {isPrivateChannel && (
-              <svg className="h-3.5 w-3.5 text-amber-500" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" aria-label="私有频道">
+              <svg
+                className="h-3.5 w-3.5 text-amber-500"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                viewBox="0 0 24 24"
+                aria-label="私有频道"
+              >
                 <title>私有频道</title>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 1 0-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 0 0 2.25-2.25v-6.75a2.25 2.25 0 0 0-2.25-2.25H6.75a2.25 2.25 0 0 0-2.25 2.25v6.75a2.25 2.25 0 0 0 2.25 2.25Z" />
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M16.5 10.5V6.75a4.5 4.5 0 1 0-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 0 0 2.25-2.25v-6.75a2.25 2.25 0 0 0-2.25-2.25H6.75a2.25 2.25 0 0 0-2.25 2.25v6.75a2.25 2.25 0 0 0 2.25 2.25Z"
+                />
               </svg>
             )}
           </div>

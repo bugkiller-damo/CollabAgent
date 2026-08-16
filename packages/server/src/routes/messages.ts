@@ -1,11 +1,11 @@
 import type { FastifyInstance } from "fastify";
-import { broadcast } from "../ws/handler.js";
 import { canAccessChannel, getChannelType } from "../lib/access.js";
-import { isDmTarget, resolveDmTarget, dmOtherMembers, type Party } from "../lib/dm.js";
-import { createNotification } from "../lib/notifications.js";
-import { inc } from "../lib/metrics.js";
 import { cleanChannelName, resolveChannel } from "../lib/channel.js";
-import { reactionsJson, attachmentsJson } from "../lib/query-fragments.js";
+import { dmOtherMembers, isDmTarget, type Party, resolveDmTarget } from "../lib/dm.js";
+import { inc } from "../lib/metrics.js";
+import { createNotification } from "../lib/notifications.js";
+import { attachmentsJson, reactionsJson } from "../lib/query-fragments.js";
+import { broadcast } from "../ws/handler.js";
 
 export async function messageRoutes(app: FastifyInstance) {
   // 从消息文本解析 @提及 的 handle（仅用于人类用户——handle 注册时限死 ASCII）
@@ -53,8 +53,12 @@ export async function messageRoutes(app: FastifyInstance) {
     }
     const lim = Number(limit) || 50;
     const result = await app.pg.query(
-      "SELECT m.id, m.channel_id, m.server_id, m.sender_id as \"senderId\", m.sender_type as \"senderType\", COALESCE(u.display_name, u.handle, ag.display_name, ag.name, 'User') as \"senderName\", m.content, m.seq, m.thread_id, m.task_number, m.task_status, m.task_assignee, m.created_at as \"time\", m.edited_at as \"editedAt\", (SELECT COUNT(*) FROM messages WHERE thread_id = m.id)::int as \"replyCount\", " + reactionsJson() + ", " + attachmentsJson() + " FROM messages m LEFT JOIN users u ON m.sender_id = u.id LEFT JOIN agents ag ON m.sender_id = ag.id WHERE m.channel_id = $1 AND m.thread_id IS NULL ORDER BY m.seq DESC LIMIT $2",
-      [channelId, lim + 1] // 多取一条判断 hasMore
+      'SELECT m.id, m.channel_id, m.server_id, m.sender_id as "senderId", m.sender_type as "senderType", COALESCE(u.display_name, u.handle, ag.display_name, ag.name, \'User\') as "senderName", m.content, m.seq, m.thread_id, m.task_number, m.task_status, m.task_assignee, m.created_at as "time", m.edited_at as "editedAt", (SELECT COUNT(*) FROM messages WHERE thread_id = m.id)::int as "replyCount", ' +
+        reactionsJson() +
+        ", " +
+        attachmentsJson() +
+        " FROM messages m LEFT JOIN users u ON m.sender_id = u.id LEFT JOIN agents ag ON m.sender_id = ag.id WHERE m.channel_id = $1 AND m.thread_id IS NULL ORDER BY m.seq DESC LIMIT $2",
+      [channelId, lim + 1], // 多取一条判断 hasMore
     );
     const hasMore = result.rows.length > lim;
     if (hasMore) result.rows.pop(); // 去掉多取的那条
@@ -65,22 +69,28 @@ export async function messageRoutes(app: FastifyInstance) {
   app.get("/thread/:messageId", { preHandler: [app.authenticate] }, async (req, reply) => {
     const { messageId } = req.params as Record<string, string>;
     const parent = await app.pg.query(
-      "SELECT m.id, m.channel_id, m.content, m.sender_id as \"senderId\", COALESCE(u.display_name, u.handle, 'User') as \"senderName\", m.created_at as \"time\" FROM messages m LEFT JOIN users u ON m.sender_id = u.id WHERE m.id = $1",
-      [messageId]
+      'SELECT m.id, m.channel_id, m.content, m.sender_id as "senderId", COALESCE(u.display_name, u.handle, \'User\') as "senderName", m.created_at as "time" FROM messages m LEFT JOIN users u ON m.sender_id = u.id WHERE m.id = $1',
+      [messageId],
     );
     if (parent.rows.length === 0) return reply.status(404).send({ error: "message not found" });
     if (!(await canAccessChannel(app, String(parent.rows[0].channel_id), req.user.sub))) {
       return reply.status(403).send({ error: "no access to this channel" });
     }
     const replies = await app.pg.query(
-      "SELECT m.id, m.channel_id, m.sender_id as \"senderId\", COALESCE(u.display_name, u.handle, 'User') as \"senderName\", m.content, m.seq, m.created_at as \"time\" FROM messages m LEFT JOIN users u ON m.sender_id = u.id WHERE m.thread_id = $1 ORDER BY m.seq ASC",
-      [messageId]
+      'SELECT m.id, m.channel_id, m.sender_id as "senderId", COALESCE(u.display_name, u.handle, \'User\') as "senderName", m.content, m.seq, m.created_at as "time" FROM messages m LEFT JOIN users u ON m.sender_id = u.id WHERE m.thread_id = $1 ORDER BY m.seq ASC',
+      [messageId],
     );
     return { parent: parent.rows[0], replies: replies.rows };
   });
 
   app.post("/send", { preHandler: [app.authenticate] }, async (req, reply) => {
-    const { channelId, content, target, threadId, attachmentIds } = req.body as { channelId?: string; content?: string; target?: string; threadId?: string; attachmentIds?: string[] };
+    const { channelId, content, target, threadId, attachmentIds } = req.body as {
+      channelId?: string;
+      content?: string;
+      target?: string;
+      threadId?: string;
+      attachmentIds?: string[];
+    };
     const ids: string[] = Array.isArray(attachmentIds) ? attachmentIds : [];
     if ((!content || !content.trim()) && ids.length === 0) {
       return reply.status(400).send({ error: "content or attachment required" });
@@ -110,7 +120,9 @@ export async function messageRoutes(app: FastifyInstance) {
       return reply.status(403).send({ error: "no access to this channel" });
     }
     if (!resolvedServerId) {
-      const sv = await app.pg.query<{ server_id: string }>("SELECT server_id FROM channels WHERE id = $1", [resolvedChannelId]);
+      const sv = await app.pg.query<{ server_id: string }>("SELECT server_id FROM channels WHERE id = $1", [
+        resolvedChannelId,
+      ]);
       resolvedServerId = sv.rows[0]?.server_id;
     }
     const channelType = await getChannelType(app, resolvedChannelId);
@@ -119,7 +131,7 @@ export async function messageRoutes(app: FastifyInstance) {
     const { msg, attachments, mentionAgents } = await app.pg.transaction(async (tx) => {
       const result = await tx.query(
         "INSERT INTO messages (channel_id, server_id, sender_id, sender_type, content, thread_id) VALUES ($1, $2, $3, 'human', $4, $5) RETURNING id, seq, created_at",
-        [resolvedChannelId, resolvedServerId, userId, content || "", threadId || null]
+        [resolvedChannelId, resolvedServerId, userId, content || "", threadId || null],
       );
       const msg = result.rows[0] as any;
       let mentionAgents: string[] | undefined;
@@ -131,7 +143,7 @@ export async function messageRoutes(app: FastifyInstance) {
           // 候选集：频道所在 server 的 agent + 发送者自己名下的 agent（与 /invite 回退一致）
           const candidates = await tx.query<{ name: string }>(
             "SELECT name FROM agents WHERE server_id = $1 OR user_id = $2",
-            [resolvedServerId, userId]
+            [resolvedServerId, userId],
           );
           const mentionedNames = candidates.rows.map((r) => r.name).filter((n) => n && contentMentions(content, n));
           if (mentionedNames.length > 0) {
@@ -141,7 +153,7 @@ export async function messageRoutes(app: FastifyInstance) {
                SELECT $1, a.id, 'agent', 'member' FROM agents a
                WHERE a.name = ANY($2) AND (a.server_id = $3 OR a.user_id = $4)
                ON CONFLICT DO NOTHING`,
-              [resolvedChannelId, mentionedNames, resolvedServerId, userId]
+              [resolvedChannelId, mentionedNames, resolvedServerId, userId],
             );
             mentionAgents = mentionedNames;
           } else {
@@ -153,7 +165,7 @@ export async function messageRoutes(app: FastifyInstance) {
           const members = await tx.query<{ name: string }>(
             `SELECT a.name FROM agents a
              JOIN channel_members cm ON cm.member_id = a.id AND cm.member_type = 'agent' AND cm.channel_id = $1`,
-            [resolvedChannelId]
+            [resolvedChannelId],
           );
           mentionAgents = members.rows.map((r) => r.name).filter((n) => n && contentMentions(content, n));
         }
@@ -161,9 +173,13 @@ export async function messageRoutes(app: FastifyInstance) {
       let attachments: any[] = [];
       if (ids.length > 0) {
         const values = ids.map((_, i) => `($1, $${i + 2})`).join(", ");
-        await tx.query(`INSERT INTO message_attachments (message_id, attachment_id) VALUES ${values} ON CONFLICT DO NOTHING`, [msg.id, ...ids]);
+        await tx.query(
+          `INSERT INTO message_attachments (message_id, attachment_id) VALUES ${values} ON CONFLICT DO NOTHING`,
+          [msg.id, ...ids],
+        );
         const att = await tx.query<{ id: string; filename: string; mimeType: string; sizeBytes: number; url: string }>(
-          "SELECT id, filename, mime_type as \"mimeType\", size_bytes as \"sizeBytes\", storage_url as url FROM attachments WHERE id = ANY($1)", [ids]
+          'SELECT id, filename, mime_type as "mimeType", size_bytes as "sizeBytes", storage_url as url FROM attachments WHERE id = ANY($1)',
+          [ids],
         );
         attachments = att.rows;
       }
@@ -176,14 +192,17 @@ export async function messageRoutes(app: FastifyInstance) {
       if (atNames.length > 0) {
         const users = await app.pg.query<{ id: string; handle: string; display_name: string }>(
           "SELECT id, handle, display_name FROM users WHERE handle = ANY($1)",
-          [atNames]
+          [atNames],
         );
         for (const u of users.rows) {
           if (String(u.id) !== userId) {
             await createNotification(app, {
-              userId: String(u.id), type: "@mention", actorId: String(userId),
+              userId: String(u.id),
+              type: "@mention",
+              actorId: String(userId),
               actorName: String(senderHandle),
-              channelId: resolvedChannelId, messageId: String(msg.id),
+              channelId: resolvedChannelId,
+              messageId: String(msg.id),
               title: `${senderHandle} 在消息中提到了你`,
               body: (content || "").slice(0, 200),
             });
@@ -201,11 +220,20 @@ export async function messageRoutes(app: FastifyInstance) {
     }
     const channelIdOut = dm ? "dm:" + resolvedChannelId : "#" + cleanChannelName(target);
     broadcast(resolvedChannelId, {
-      type: "agent:deliver", seq: msg.seq,
+      type: "agent:deliver",
+      seq: msg.seq,
       message: {
-        id: msg.id, seq: msg.seq, channelId: channelIdOut,
-        senderId: userId, senderName, senderHandle, senderType: "human",
-        content: content || "", time: msg.created_at, threadId: threadId || null, attachments,
+        id: msg.id,
+        seq: msg.seq,
+        channelId: channelIdOut,
+        senderId: userId,
+        senderName,
+        senderHandle,
+        senderType: "human",
+        content: content || "",
+        time: msg.created_at,
+        threadId: threadId || null,
+        attachments,
         // server 预过滤的「有权回应的 agent」列表：daemon 只 spawn 列表内的 agent，
         // 空数组 = 有人被 @ 但无人有权回应 → 不 spawn（避免 PTY 空转）。
         ...(mentionAgents !== undefined ? { mentionAgents } : {}),
@@ -214,7 +242,13 @@ export async function messageRoutes(app: FastifyInstance) {
     });
     inc("messagesSent");
     if (dm) inc("dmSent");
-    return { state: "sent", messageId: msg.id, messageSeq: msg.seq, attachments, channelId: dm ? "dm:" + resolvedChannelId : undefined };
+    return {
+      state: "sent",
+      messageId: msg.id,
+      messageSeq: msg.seq,
+      attachments,
+      channelId: dm ? "dm:" + resolvedChannelId : undefined,
+    };
   });
 
   app.get("/history", { preHandler: [app.authenticate] }, async (req, reply) => {
@@ -237,12 +271,26 @@ export async function messageRoutes(app: FastifyInstance) {
     if (!(await canAccessChannel(app, resolvedChannelId, userId))) {
       return reply.status(403).send({ error: "no access to this channel" });
     }
-    let query = "SELECT m.id, m.channel_id, m.server_id, m.sender_id as \"senderId\", m.sender_type as \"senderType\", COALESCE(u.display_name, u.handle, ag.display_name, ag.name, 'User') as \"senderName\", m.content, m.seq, m.thread_id, m.task_number, m.task_status, m.task_assignee, m.created_at as \"time\", m.edited_at as \"editedAt\", (SELECT COUNT(*) FROM messages WHERE thread_id = m.id)::int as \"replyCount\", " + reactionsJson() + ", " + attachmentsJson() + " FROM messages m LEFT JOIN users u ON m.sender_id = u.id LEFT JOIN agents ag ON m.sender_id = ag.id WHERE m.channel_id = $1 AND m.thread_id IS NULL";
+    let query =
+      'SELECT m.id, m.channel_id, m.server_id, m.sender_id as "senderId", m.sender_type as "senderType", COALESCE(u.display_name, u.handle, ag.display_name, ag.name, \'User\') as "senderName", m.content, m.seq, m.thread_id, m.task_number, m.task_status, m.task_assignee, m.created_at as "time", m.edited_at as "editedAt", (SELECT COUNT(*) FROM messages WHERE thread_id = m.id)::int as "replyCount", ' +
+      reactionsJson() +
+      ", " +
+      attachmentsJson() +
+      " FROM messages m LEFT JOIN users u ON m.sender_id = u.id LEFT JOIN agents ag ON m.sender_id = ag.id WHERE m.channel_id = $1 AND m.thread_id IS NULL";
     const params: (string | number)[] = [resolvedChannelId];
     let p = 2;
-    if (threadId) { query += " AND m.thread_id = $" + p++; params.push(threadId); }
-    if (before) { query += " AND seq < $" + p++; params.push(Number(before)); }
-    if (after)  { query += " AND seq > $" + p++; params.push(Number(after)); }
+    if (threadId) {
+      query += " AND m.thread_id = $" + p++;
+      params.push(threadId);
+    }
+    if (before) {
+      query += " AND seq < $" + p++;
+      params.push(Number(before));
+    }
+    if (after) {
+      query += " AND seq > $" + p++;
+      params.push(Number(after));
+    }
     query += " ORDER BY seq DESC LIMIT $" + p;
     params.push(Number(limit) || 50);
     const result = await app.pg.query(query, params);
@@ -262,7 +310,7 @@ export async function messageRoutes(app: FastifyInstance) {
         WHERE m.content_tsv @@ plainto_tsquery('simple', $1)
           AND (c.type NOT IN ('private','dm') OR cm.member_id IS NOT NULL)
         ORDER BY m.created_at DESC LIMIT $2`,
-      [q || "", 20, userId]
+      [q || "", 20, userId],
     );
     return { results: result.rows, total: result.rows.length };
   });
@@ -273,15 +321,28 @@ export async function messageRoutes(app: FastifyInstance) {
     const { content } = req.body as { content?: string };
     if (!content || !content.trim()) return reply.status(400).send({ error: "content required" });
     const userId = req.user.sub;
-    const m = await app.pg.query<{ sender_id: string; channel_id: string; content: string | null }>("SELECT sender_id, channel_id, content FROM messages WHERE id = $1", [messageId]);
+    const m = await app.pg.query<{ sender_id: string; channel_id: string; content: string | null }>(
+      "SELECT sender_id, channel_id, content FROM messages WHERE id = $1",
+      [messageId],
+    );
     if (m.rows.length === 0) return reply.status(404).send({ error: "message not found" });
     if (String(m.rows[0].sender_id) !== String(userId)) {
       return reply.status(403).send({ error: "can only edit your own messages" });
     }
     const oldContent = String(m.rows[0].content || "");
-    await app.pg.query("INSERT INTO message_edits (message_id, old_content, edited_by) VALUES ($1, $2, $3)", [messageId, oldContent, userId]);
-    const r = await app.pg.query("UPDATE messages SET content = $1, edited_at = now() WHERE id = $2 RETURNING id, content, edited_at as \"editedAt\"", [content, messageId]);
-    broadcast(String(m.rows[0].channel_id), { type: "message:update", message: { id: messageId, content, editedAt: r.rows[0].editedAt } });
+    await app.pg.query("INSERT INTO message_edits (message_id, old_content, edited_by) VALUES ($1, $2, $3)", [
+      messageId,
+      oldContent,
+      userId,
+    ]);
+    const r = await app.pg.query(
+      'UPDATE messages SET content = $1, edited_at = now() WHERE id = $2 RETURNING id, content, edited_at as "editedAt"',
+      [content, messageId],
+    );
+    broadcast(String(m.rows[0].channel_id), {
+      type: "message:update",
+      message: { id: messageId, content, editedAt: r.rows[0].editedAt },
+    });
     return { message: r.rows[0] };
   });
 
@@ -293,7 +354,10 @@ export async function messageRoutes(app: FastifyInstance) {
     if (!(await canAccessChannel(app, String(m.rows[0].channel_id), req.user.sub))) {
       return reply.status(403).send({ error: "no access to this channel" });
     }
-    const r = await app.pg.query("SELECT id, old_content, edited_by, edited_at FROM message_edits WHERE message_id = $1 ORDER BY edited_at ASC", [messageId]);
+    const r = await app.pg.query(
+      "SELECT id, old_content, edited_by, edited_at FROM message_edits WHERE message_id = $1 ORDER BY edited_at ASC",
+      [messageId],
+    );
     return { edits: r.rows };
   });
 
@@ -307,7 +371,7 @@ export async function messageRoutes(app: FastifyInstance) {
     }
     await app.pg.query(
       "INSERT INTO message_reactions (message_id, user_id, emoji) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
-      [messageId, req.user.sub, emoji as string]
+      [messageId, req.user.sub, emoji as string],
     );
     return { ok: true };
   });
@@ -320,10 +384,11 @@ export async function messageRoutes(app: FastifyInstance) {
     if (!(await canAccessChannel(app, String(m.rows[0].channel_id), req.user.sub))) {
       return reply.status(403).send({ error: "no access to this channel" });
     }
-    await app.pg.query(
-      "DELETE FROM message_reactions WHERE message_id = $1 AND user_id = $2 AND emoji = $3",
-      [messageId, req.user.sub, emoji]
-    );
+    await app.pg.query("DELETE FROM message_reactions WHERE message_id = $1 AND user_id = $2 AND emoji = $3", [
+      messageId,
+      req.user.sub,
+      emoji,
+    ]);
     return { ok: true };
   });
 
@@ -340,7 +405,10 @@ export async function messageRoutes(app: FastifyInstance) {
     await app.pg.query("DELETE FROM message_reactions WHERE message_id = $1", [messageId]);
     await app.pg.query("DELETE FROM message_attachments WHERE message_id = $1", [messageId]);
     // 不级联删 thread replies（保留历史），仅软删父消息内容
-    await app.pg.query("UPDATE messages SET content = '', task_number = NULL, task_status = NULL, task_assignee = NULL WHERE id = $1", [messageId]);
+    await app.pg.query(
+      "UPDATE messages SET content = '', task_number = NULL, task_status = NULL, task_assignee = NULL WHERE id = $1",
+      [messageId],
+    );
     broadcast(String(m.rows[0].channel_id), { type: "message:delete", message: { id: messageId } });
     return { ok: true };
   });

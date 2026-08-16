@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from "vue";
+import { onMounted, onUnmounted, ref } from "vue";
 import { useRouter } from "vue-router";
-import { useNotificationStore, type NotificationItem } from "../../stores/notificationStore";
 import { readCsrf } from "../../api";
+import { type NotificationItem, useNotificationStore } from "../../stores/notificationStore";
 
 function timeAgo(iso: string): string {
   const d = (Date.now() - new Date(iso).getTime()) / 1000;
@@ -46,7 +46,9 @@ async function handleClick(n: NotificationItem) {
         credentials: "include",
         headers: { "X-CSRF-Token": readCsrf() || "" },
       });
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   }
   if (n.channelId) {
     const meta = n.metadata || {};
@@ -69,7 +71,9 @@ async function handleMarkAll() {
         "X-CSRF-Token": readCsrf() || "",
       },
     });
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 }
 </script>
 

@@ -1,5 +1,5 @@
-import type { IAgentManager, IAgentStdinDispatcher } from "./types/index.js";
 import type { PostStartInputWriter } from "./post-start-input-writer.js";
+import type { IAgentManager, IAgentStdinDispatcher } from "./types/index.js";
 
 /**
  * Agent stdin 消息调度器。
@@ -23,7 +23,10 @@ export const createAgentStdinDispatcher = (
 
   const writeToRun = (agentName: string, payload: string): void => {
     const runId = getRunId(agentName);
-    if (!runId) { console.warn(`[Dispatcher] No runId for @${agentName}`); return; }
+    if (!runId) {
+      console.warn(`[Dispatcher] No runId for @${agentName}`);
+      return;
+    }
     writer(runId, payload);
   };
 

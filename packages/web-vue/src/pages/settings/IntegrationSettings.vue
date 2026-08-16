@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
-import { apiGet, apiClient } from "../../api";
-import { toast } from "../../stores/toastStore";
+import { computed, onMounted, ref } from "vue";
+import { apiClient, apiGet } from "../../api";
 import PageHeader from "../../components/layout/PageHeader.vue";
-import Card from "../../components/ui/Card.vue";
 import Button from "../../components/ui/Button.vue";
+import Card from "../../components/ui/Card.vue";
+import { toast } from "../../stores/toastStore";
 
 interface MachineToken {
   id: string;
@@ -29,7 +29,10 @@ onMounted(loadTokens);
 
 async function createToken() {
   try {
-    const data = await apiClient<{ token: string; prefix: string }>("/api/profile/machine-token", { method: "POST", body: {} });
+    const data = await apiClient<{ token: string; prefix: string }>("/api/profile/machine-token", {
+      method: "POST",
+      body: {},
+    });
     newToken.value = data.token;
     toast.success("令牌已生成，请立即复制保存（仅显示一次）");
     loadTokens();

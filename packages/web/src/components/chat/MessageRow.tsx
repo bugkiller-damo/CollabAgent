@@ -1,13 +1,13 @@
-import { useState, memo } from "react";
+import { memo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { apiClient } from "../../api/client";
+import { formatTime } from "../../lib/formatTime";
 import { useAuthStore, useMessageStore } from "../../stores";
 import { toast } from "../../stores/toastStore";
 import { ConfirmDialog } from "../ConfirmDialog";
-import { formatTime } from "../../lib/formatTime";
-import { MarkdownContent } from "./MarkdownContent";
 import { AttachmentView } from "./AttachmentView";
 import { LinkPreview } from "./LinkPreview";
+import { MarkdownContent } from "./MarkdownContent";
 
 const EMOJI_CHOICES = ["👍", "❤️", "😂", "🎉", "🤔", "👀"];
 
@@ -28,7 +28,17 @@ if (typeof document !== "undefined" && !document.getElementById(highlightStyleId
   document.head.appendChild(s);
 }
 
-function MessageRowBase({ msg, channelName, isHighlighted, prevMsg }: { msg: any; channelName?: string; isHighlighted?: boolean; prevMsg?: any }) {
+function MessageRowBase({
+  msg,
+  channelName,
+  isHighlighted,
+  prevMsg,
+}: {
+  msg: any;
+  channelName?: string;
+  isHighlighted?: boolean;
+  prevMsg?: any;
+}) {
   const navigate = useNavigate();
   const currentUserId = useAuthStore((s) => s.user?.id);
   const editMessage = useMessageStore((s) => s.editMessage);
@@ -42,11 +52,18 @@ function MessageRowBase({ msg, channelName, isHighlighted, prevMsg }: { msg: any
   const deleted = msg.deleted;
   const firstUrl = (msg.content?.match(/https?:\/\/[^\s<>()]+/) || [])[0];
   const reactions: { emoji: string; userIds: string[] }[] = msg.reactions || [];
-  const dispatchKind = msg.content?.startsWith("📋") ? "派发" : msg.content?.startsWith("✅") ? "回报" : msg.content?.startsWith("🚫") ? "撤回" : null;
+  const dispatchKind = msg.content?.startsWith("📋")
+    ? "派发"
+    : msg.content?.startsWith("✅")
+      ? "回报"
+      : msg.content?.startsWith("🚫")
+        ? "撤回"
+        : null;
 
   // 紧凑模式：与上一条为同一发送者，且时间差在 5 分钟内
   const timeDiffMin = prevMsg
-    ? Math.abs(new Date(msg.time || msg.createdAt).getTime() - new Date(prevMsg.time || prevMsg.createdAt).getTime()) / 60000
+    ? Math.abs(new Date(msg.time || msg.createdAt).getTime() - new Date(prevMsg.time || prevMsg.createdAt).getTime()) /
+      60000
     : Infinity;
   const compact = prevMsg && prevMsg.senderId === msg.senderId && timeDiffMin < 5 && !dispatchKind && !prevMsg.deleted;
 
@@ -62,7 +79,10 @@ function MessageRowBase({ msg, channelName, isHighlighted, prevMsg }: { msg: any
     if (converting) return;
     setConverting(true);
     try {
-      const data = await apiClient<{ task: { task_number: number } }>("/api/tasks/from-message", { method: "POST", body: { message_id: msg.id } });
+      const data = await apiClient<{ task: { task_number: number } }>("/api/tasks/from-message", {
+        method: "POST",
+        body: { message_id: msg.id },
+      });
       applyMessageTask(msg.id, data.task.task_number);
       toast.success(`已转为任务 #${data.task.task_number}，可在看板查看`);
     } catch (err: any) {
@@ -74,7 +94,10 @@ function MessageRowBase({ msg, channelName, isHighlighted, prevMsg }: { msg: any
 
   const saveEdit = async () => {
     const text = editText.trim();
-    if (!text || text === msg.content) { setEditing(false); return; }
+    if (!text || text === msg.content) {
+      setEditing(false);
+      return;
+    }
     try {
       await editMessage(msg.id, text);
       setEditing(false);
@@ -109,7 +132,9 @@ function MessageRowBase({ msg, channelName, isHighlighted, prevMsg }: { msg: any
   };
 
   return (
-    <div className={`group flex gap-3 hover:bg-gray-100 dark:hover:bg-gray-800/50 p-2 rounded relative ${isHighlighted ? "animate-highlight" : ""} ${dispatchKind ? "border-l-2 border-amber-400 dark:border-amber-600 bg-amber-50/40 dark:bg-amber-900/10" : ""}`}>
+    <div
+      className={`group flex gap-3 hover:bg-gray-100 dark:hover:bg-gray-800/50 p-2 rounded relative ${isHighlighted ? "animate-highlight" : ""} ${dispatchKind ? "border-l-2 border-amber-400 dark:border-amber-600 bg-amber-50/40 dark:bg-amber-900/10" : ""}`}
+    >
       {compact ? (
         <div className="w-8 shrink-0" />
       ) : (
@@ -120,7 +145,9 @@ function MessageRowBase({ msg, channelName, isHighlighted, prevMsg }: { msg: any
       <div className="min-w-0 flex-1">
         {!compact && (
           <div className="flex items-baseline gap-2">
-            <span className="font-semibold text-gray-900 dark:text-white text-sm">{msg.senderName || msg.senderId || "Unknown"}</span>
+            <span className="font-semibold text-gray-900 dark:text-white text-sm">
+              {msg.senderName || msg.senderId || "Unknown"}
+            </span>
             <span className="text-gray-500 text-xs" title={new Date(msg.time || msg.createdAt).toLocaleString()}>
               {formatTime(msg.time || msg.createdAt)}
             </span>
@@ -141,16 +168,32 @@ function MessageRowBase({ msg, channelName, isHighlighted, prevMsg }: { msg: any
               value={editText}
               onChange={(e) => setEditText(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); saveEdit(); }
-                if (e.key === "Escape") { setEditing(false); setEditText(msg.content || ""); }
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  saveEdit();
+                }
+                if (e.key === "Escape") {
+                  setEditing(false);
+                  setEditText(msg.content || "");
+                }
               }}
               rows={2}
               className="w-full p-2 rounded bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 text-sm resize-none"
             />
             <div className="text-xs text-gray-400 mt-0.5">
               Enter 保存 · Esc 取消
-              <button onClick={saveEdit} className="ml-2 text-blue-500 hover:underline">保存</button>
-              <button onClick={() => { setEditing(false); setEditText(msg.content || ""); }} className="ml-2 hover:underline">取消</button>
+              <button onClick={saveEdit} className="ml-2 text-blue-500 hover:underline">
+                保存
+              </button>
+              <button
+                onClick={() => {
+                  setEditing(false);
+                  setEditText(msg.content || "");
+                }}
+                className="ml-2 hover:underline"
+              >
+                取消
+              </button>
             </div>
           </div>
         ) : (
@@ -185,44 +228,60 @@ function MessageRowBase({ msg, channelName, isHighlighted, prevMsg }: { msg: any
             )}
 
             <div className="flex flex-wrap items-center gap-1 mt-1 relative">
-              <button onClick={() => navigate("/channels/" + channelName + "/" + msg.id)}
-                className="text-gray-500 hover:text-blue-400 text-xs px-1.5 py-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors">
+              <button
+                onClick={() => navigate("/channels/" + channelName + "/" + msg.id)}
+                className="text-gray-500 hover:text-blue-400 text-xs px-1.5 py-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+              >
                 💬 {replyCount > 0 ? replyCount + " 条回复" : "回复"}
               </button>
-              {isChannel && !deleted && (
-                msg.task_number != null ? (
+              {isChannel &&
+                !deleted &&
+                (msg.task_number != null ? (
                   <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300">
                     📋 任务 #{msg.task_number}
                   </span>
                 ) : (
-                  <button onClick={handleConvertToTask} disabled={converting}
+                  <button
+                    onClick={handleConvertToTask}
+                    disabled={converting}
                     className="text-gray-500 hover:text-blue-500 text-xs px-1.5 py-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity disabled:opacity-50"
-                    title="把这条消息转为看板任务">
+                    title="把这条消息转为看板任务"
+                  >
                     {converting ? "转换中…" : "📋 转任务"}
                   </button>
-                )
-              )}
-              <button onClick={() => navigator.clipboard.writeText(msg.content || "")}
-                className="text-gray-500 hover:text-gray-900 dark:hover:text-white text-xs px-1.5 py-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity">
+                ))}
+              <button
+                onClick={() => navigator.clipboard.writeText(msg.content || "")}
+                className="text-gray-500 hover:text-gray-900 dark:hover:text-white text-xs px-1.5 py-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity"
+              >
                 复制
               </button>
               {isOwn && !deleted && (
                 <>
-                  <button onClick={() => { setEditText(msg.content || ""); setEditing(true); }}
-                    className="text-gray-500 hover:text-gray-900 dark:hover:text-white text-xs px-1.5 py-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity">
+                  <button
+                    onClick={() => {
+                      setEditText(msg.content || "");
+                      setEditing(true);
+                    }}
+                    className="text-gray-500 hover:text-gray-900 dark:hover:text-white text-xs px-1.5 py-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity"
+                  >
                     编辑
                   </button>
-                  <button onClick={() => setConfirmDelete(true)}
+                  <button
+                    onClick={() => setConfirmDelete(true)}
                     className="text-red-500 hover:text-red-600 text-xs px-1.5 py-0.5 rounded hover:bg-red-50 dark:hover:bg-red-900/30 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity"
-                    title="删除消息">
+                    title="删除消息"
+                  >
                     🗑 删除
                   </button>
                 </>
               )}
               {!deleted && (
                 <>
-                  <button onClick={() => setEmojiPickerOpen((v) => !v)}
-                    className="text-gray-500 hover:text-yellow-400 text-xs px-1.5 py-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity">
+                  <button
+                    onClick={() => setEmojiPickerOpen((v) => !v)}
+                    className="text-gray-500 hover:text-yellow-400 text-xs px-1.5 py-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity"
+                  >
                     😀
                   </button>
                   {emojiPickerOpen && (
@@ -230,7 +289,10 @@ function MessageRowBase({ msg, channelName, isHighlighted, prevMsg }: { msg: any
                       {EMOJI_CHOICES.map((e) => (
                         <button
                           key={e}
-                          onClick={() => { handleReactionClick(e); setEmojiPickerOpen(false); }}
+                          onClick={() => {
+                            handleReactionClick(e);
+                            setEmojiPickerOpen(false);
+                          }}
                           className="text-lg w-7 h-7 rounded hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
                         >
                           {e}

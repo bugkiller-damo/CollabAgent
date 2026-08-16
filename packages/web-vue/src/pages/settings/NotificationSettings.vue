@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from "vue";
-import { toast } from "../../stores/toastStore";
 import PageHeader from "../../components/layout/PageHeader.vue";
+import { toast } from "../../stores/toastStore";
 
 /** 通知偏好（按类型设置接收渠道） */
 const NOTIF_TYPES = [
@@ -26,9 +26,7 @@ function savePrefs(prefs: NotifPrefs) {
 }
 
 const saved = loadPrefs();
-const prefs = ref<NotifPrefs>(
-  Object.fromEntries(NOTIF_TYPES.map((n) => [n.key, saved[n.key] ?? true])),
-);
+const prefs = ref<NotifPrefs>(Object.fromEntries(NOTIF_TYPES.map((n) => [n.key, saved[n.key] ?? true])));
 
 function toggle(key: string) {
   prefs.value = { ...prefs.value, [key]: !prefs.value[key] };

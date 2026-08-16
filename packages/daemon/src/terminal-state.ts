@@ -2,6 +2,7 @@
 // 静态分析识别不出具名导出，`import { Terminal }` 会在运行时报
 // "does not provide an export named 'Terminal'"——必须走默认导入再解构。
 import xtermHeadless from "@xterm/headless";
+
 const { Terminal } = xtermHeadless;
 
 /**

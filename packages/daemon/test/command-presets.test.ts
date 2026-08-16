@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import { COMMAND_PRESETS, getCommandPreset, renderResumeArgs } from "../src/command-presets.js";
 
 describe("command-presets", () => {

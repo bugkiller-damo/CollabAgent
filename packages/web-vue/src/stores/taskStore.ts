@@ -1,7 +1,7 @@
-import { ref } from "vue";
-import { defineStore } from "pinia";
-import { apiGet, apiPost } from "../api";
 import type { Message, TaskStatus } from "@collabagent/shared";
+import { defineStore } from "pinia";
+import { ref } from "vue";
+import { apiGet, apiPost } from "../api";
 
 export interface Task extends Message {
   taskNumber: number;
@@ -51,7 +51,7 @@ export const useTaskStore = defineStore("tasks", () => {
     const tasks = tasksByChannel.value[channel] || [];
     tasksByChannel.value = {
       ...tasksByChannel.value,
-      [channel]: tasks.map((t) => t.taskNumber === number ? { ...t, taskStatus: newStatus } : t),
+      [channel]: tasks.map((t) => (t.taskNumber === number ? { ...t, taskStatus: newStatus } : t)),
     };
     // 乐观更新后后台同步；失败则重新拉取回滚
     updateStatus(channel, number, newStatus).catch(() => fetchTasks(channel));

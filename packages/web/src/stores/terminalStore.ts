@@ -17,8 +17,6 @@ interface TerminalState {
 export const useTerminalStore = create<TerminalState>((set) => ({
   frames: {},
   histories: {},
-  setFrame: (agentName, frame) =>
-    set((s) => ({ frames: { ...s.frames, [agentName]: frame } })),
-  setHistory: (agentName, text) =>
-    set((s) => ({ histories: { ...s.histories, [agentName]: text } })),
+  setFrame: (agentName, frame) => set((s) => ({ frames: { ...s.frames, [agentName]: frame } })),
+  setHistory: (agentName, text) => set((s) => ({ histories: { ...s.histories, [agentName]: text } })),
 }));

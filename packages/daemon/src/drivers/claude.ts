@@ -1,12 +1,15 @@
 import { execFile } from "node:child_process";
-import { join } from "node:path";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { resolveCommandOnPath } from "./probe.js";
 
 export interface ClaudeEvent {
   kind: "thinking" | "text" | "tool_call" | "tool_output" | "session_init" | "error" | "turn_end";
-  text?: string; name?: string; input?: Record<string, unknown>;
-  sessionId?: string; message?: string;
+  text?: string;
+  name?: string;
+  input?: Record<string, unknown>;
+  sessionId?: string;
+  message?: string;
 }
 
 export interface ClaudeDriverOptions {
@@ -39,32 +42,42 @@ export class ClaudeDriver {
       if (this.promptFile) args.push("--append-system-prompt-file", this.promptFile);
       args.push(text);
 
-      execFile(claudeCmd, args, {
-        cwd: this.opts.workingDirectory,
-        maxBuffer: 10 * 1024 * 1024,
-        timeout: 120000,
-      }, (err, stdout, stderr) => {
-        if (stderr) console.error("[Claude]", stderr.slice(0, 200));
-        if (err) { resolve(null); return; }
+      execFile(
+        claudeCmd,
+        args,
+        {
+          cwd: this.opts.workingDirectory,
+          maxBuffer: 10 * 1024 * 1024,
+          timeout: 120000,
+        },
+        (err, stdout, stderr) => {
+          if (stderr) console.error("[Claude]", stderr.slice(0, 200));
+          if (err) {
+            resolve(null);
+            return;
+          }
 
-        let result = "";
-        for (const line of stdout.split("\n")) {
-          try {
-            const evt = JSON.parse(line.trim());
-            if (evt.type === "system" && evt.session_id && !this.sessionId) {
-              this.sessionId = evt.session_id;
-            }
-            if (evt.type === "assistant") {
-              for (const b of evt.message?.content || []) {
-                if (b.type === "text") result += b.text;
+          let result = "";
+          for (const line of stdout.split("\n")) {
+            try {
+              const evt = JSON.parse(line.trim());
+              if (evt.type === "system" && evt.session_id && !this.sessionId) {
+                this.sessionId = evt.session_id;
               }
-            }
-          } catch {}
-        }
-        resolve(result || null);
-      });
+              if (evt.type === "assistant") {
+                for (const b of evt.message?.content || []) {
+                  if (b.type === "text") result += b.text;
+                }
+              }
+            } catch {}
+          }
+          resolve(result || null);
+        },
+      );
     });
   }
 
-  async stop(): Promise<void> { this.sessionId = null; }
+  async stop(): Promise<void> {
+    this.sessionId = null;
+  }
 }

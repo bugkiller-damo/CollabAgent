@@ -49,7 +49,7 @@ export function AttachmentView({ attachments }: { attachments: Attachment[] }) {
               <span className="block text-xs text-gray-400">{formatSize(a.sizeBytes)} · 下载</span>
             </span>
           </a>
-        )
+        ),
       )}
 
       {lightbox && (

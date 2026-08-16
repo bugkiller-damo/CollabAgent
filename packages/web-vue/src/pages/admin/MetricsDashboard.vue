@@ -1,9 +1,14 @@
 <script setup lang="ts">
-import { defineComponent, h, onMounted, onUnmounted, ref, watch, type PropType, type Ref } from "vue";
+import { defineComponent, h, onMounted, onUnmounted, type PropType, type Ref, ref, watch } from "vue";
 import { apiGet } from "../../api";
 import PageHeader from "../../components/layout/PageHeader.vue";
 
-interface DaemonInfo { hostname: string; daemonVersion: string; runtimes: string[]; connectedAt: number; }
+interface DaemonInfo {
+  hostname: string;
+  daemonVersion: string;
+  runtimes: string[];
+  connectedAt: number;
+}
 interface Metrics {
   uptimeSec: number;
   startedAt: string;
@@ -17,7 +22,10 @@ const POLL_MS = 3000;
 const HISTORY = 30; // sparkline 保留最近 30 个采样点
 
 function fmtDuration(sec: number): string {
-  const d = Math.floor(sec / 86400), hh = Math.floor((sec % 86400) / 3600), mm = Math.floor((sec % 3600) / 60), s = sec % 60;
+  const d = Math.floor(sec / 86400),
+    hh = Math.floor((sec % 86400) / 3600),
+    mm = Math.floor((sec % 3600) / 60),
+    s = sec % 60;
   if (d > 0) return `${d}天 ${hh}时`;
   if (hh > 0) return `${hh}时 ${mm}分`;
   if (mm > 0) return `${mm}分 ${s}秒`;
@@ -34,7 +42,7 @@ function useCountUp(targetFn: () => number, duration = 600): Ref<number> {
     const start = performance.now();
     const tick = (now: number) => {
       const t = Math.min(1, (now - start) / duration);
-      const eased = 1 - Math.pow(1 - t, 3); // easeOutCubic
+      const eased = 1 - (1 - t) ** 3; // easeOutCubic
       val.value = Math.round(from + (target - from) * eased);
       if (t < 1) rafId = requestAnimationFrame(tick);
       else from = target;
@@ -42,7 +50,9 @@ function useCountUp(targetFn: () => number, duration = 600): Ref<number> {
     if (rafId !== undefined) cancelAnimationFrame(rafId);
     rafId = requestAnimationFrame(tick);
   });
-  onUnmounted(() => { if (rafId !== undefined) cancelAnimationFrame(rafId); });
+  onUnmounted(() => {
+    if (rafId !== undefined) cancelAnimationFrame(rafId);
+  });
   return val;
 }
 
@@ -56,9 +66,11 @@ const Sparkline = defineComponent({
     return () => {
       const { data, color } = props;
       if (data.length < 2) return h("div", { class: "h-8" });
-      const max = Math.max(...data, 1), min = Math.min(...data);
+      const max = Math.max(...data, 1),
+        min = Math.min(...data);
       const range = max - min || 1;
-      const w = 100, hh = 32;
+      const w = 100,
+        hh = 32;
       const pts = data.map((v, i) => {
         const x = (i / (data.length - 1)) * w;
         const y = hh - ((v - min) / range) * (hh - 4) - 2;
@@ -105,12 +117,25 @@ const MetricCard = defineComponent({
   setup(props) {
     const animated = useCountUp(() => props.value);
     return () =>
-      h("div", { class: "relative bg-gray-50 dark:bg-gray-800 rounded-xl p-4 overflow-hidden border border-gray-100 dark:border-gray-700/50" }, [
-        h("p", { class: "text-gray-500 text-xs" }, props.label),
-        h("p", { class: "text-gray-900 dark:text-white text-3xl font-bold mt-1 tabular-nums" }, animated.value.toLocaleString()),
-        props.sub ? h("p", { class: "text-gray-400 text-xs mt-0.5" }, props.sub) : null,
-        props.history ? h("div", { class: "mt-2 -mx-1" }, [h(Sparkline, { data: props.history, color: props.color })]) : null,
-      ]);
+      h(
+        "div",
+        {
+          class:
+            "relative bg-gray-50 dark:bg-gray-800 rounded-xl p-4 overflow-hidden border border-gray-100 dark:border-gray-700/50",
+        },
+        [
+          h("p", { class: "text-gray-500 text-xs" }, props.label),
+          h(
+            "p",
+            { class: "text-gray-900 dark:text-white text-3xl font-bold mt-1 tabular-nums" },
+            animated.value.toLocaleString(),
+          ),
+          props.sub ? h("p", { class: "text-gray-400 text-xs mt-0.5" }, props.sub) : null,
+          props.history
+            ? h("div", { class: "mt-2 -mx-1" }, [h(Sparkline, { data: props.history, color: props.color })])
+            : null,
+        ],
+      );
   },
 });
 
@@ -126,20 +151,27 @@ const MemoryBar = defineComponent({
     return () => {
       const pct = props.total > 0 ? Math.min(100, Math.round((props.used / props.total) * 100)) : 0;
       const barColor = pct > 85 ? "bg-red-500" : pct > 60 ? "bg-amber-500" : "bg-emerald-500";
-      return h("div", { class: "bg-gray-50 dark:bg-gray-800 rounded-xl p-4 border border-gray-100 dark:border-gray-700/50" }, [
-        h("div", { class: "flex items-baseline justify-between" }, [
-          h("p", { class: "text-gray-500 text-xs" }, "堆内存使用"),
-          h("p", { class: "text-gray-400 text-xs tabular-nums" }, `${pct}%`),
-        ]),
-        h("p", { class: "text-gray-900 dark:text-white text-2xl font-bold mt-1 tabular-nums" }, [
-          String(animatedUsed.value),
-          h("span", { class: "text-gray-400 text-base font-normal" }, ` / ${props.total} MB`),
-        ]),
-        h("div", { class: "mt-2 h-2 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden" }, [
-          h("div", { class: `h-full rounded-full transition-all duration-700 ease-out ${barColor}`, style: { width: `${pct}%` } }),
-        ]),
-        h("p", { class: "text-gray-400 text-xs mt-1.5" }, `RSS 常驻 ${props.rss} MB`),
-      ]);
+      return h(
+        "div",
+        { class: "bg-gray-50 dark:bg-gray-800 rounded-xl p-4 border border-gray-100 dark:border-gray-700/50" },
+        [
+          h("div", { class: "flex items-baseline justify-between" }, [
+            h("p", { class: "text-gray-500 text-xs" }, "堆内存使用"),
+            h("p", { class: "text-gray-400 text-xs tabular-nums" }, `${pct}%`),
+          ]),
+          h("p", { class: "text-gray-900 dark:text-white text-2xl font-bold mt-1 tabular-nums" }, [
+            String(animatedUsed.value),
+            h("span", { class: "text-gray-400 text-base font-normal" }, ` / ${props.total} MB`),
+          ]),
+          h("div", { class: "mt-2 h-2 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden" }, [
+            h("div", {
+              class: `h-full rounded-full transition-all duration-700 ease-out ${barColor}`,
+              style: { width: `${pct}%` },
+            }),
+          ]),
+          h("p", { class: "text-gray-400 text-xs mt-1.5" }, `RSS 常驻 ${props.rss} MB`),
+        ],
+      );
     };
   },
 });
@@ -162,11 +194,21 @@ const ConnectedFor = defineComponent({
   setup(props) {
     const tick = ref(0);
     let timer: ReturnType<typeof setInterval> | undefined;
-    onMounted(() => { timer = setInterval(() => { tick.value += 1; }, 1000); });
-    onUnmounted(() => { if (timer) clearInterval(timer); });
+    onMounted(() => {
+      timer = setInterval(() => {
+        tick.value += 1;
+      }, 1000);
+    });
+    onUnmounted(() => {
+      if (timer) clearInterval(timer);
+    });
     return () => {
       void tick.value; // 每秒触发重渲染
-      return h("span", { class: "tabular-nums" }, fmtDuration(Math.max(0, Math.floor((Date.now() - props.since) / 1000))));
+      return h(
+        "span",
+        { class: "tabular-nums" },
+        fmtDuration(Math.max(0, Math.floor((Date.now() - props.since) / 1000))),
+      );
     };
   },
 });
@@ -190,17 +232,24 @@ onMounted(() => {
         errors: d.samples.map((s) => s.errors).slice(-HISTORY),
       };
     })
-    .catch(() => { /* 历史数据非关键，静默 */ });
+    .catch(() => {
+      /* 历史数据非关键，静默 */
+    });
 
-  const load = () => apiGet<Metrics>("/api/metrics").then((d) => {
-    if (!alive) return;
-    m.value = d;
-    hist.value = {
-      messages: [...hist.value.messages, d.counters.messagesSent].slice(-HISTORY),
-      dm: [...hist.value.dm, d.counters.dmSent].slice(-HISTORY),
-      errors: [...hist.value.errors, d.counters.errors].slice(-HISTORY),
-    };
-  }).catch((e) => { if (alive) err.value = e?.message || "加载失败"; });
+  const load = () =>
+    apiGet<Metrics>("/api/metrics")
+      .then((d) => {
+        if (!alive) return;
+        m.value = d;
+        hist.value = {
+          messages: [...hist.value.messages, d.counters.messagesSent].slice(-HISTORY),
+          dm: [...hist.value.dm, d.counters.dmSent].slice(-HISTORY),
+          errors: [...hist.value.errors, d.counters.errors].slice(-HISTORY),
+        };
+      })
+      .catch((e) => {
+        if (alive) err.value = e?.message || "加载失败";
+      });
 
   load();
   pollTimer = setInterval(load, POLL_MS);

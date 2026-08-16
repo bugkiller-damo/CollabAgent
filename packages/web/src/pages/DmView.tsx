@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
-import { apiGet, apiClient } from "../api/client";
-import { useMessageStore, useUiStore } from "../stores";
+import { apiClient, apiGet } from "../api/client";
+import { type ComposerAttachment, MessageComposer } from "../components/chat/MessageComposer";
 import { MessageRow } from "../components/chat/MessageRow";
 import { EmptyState } from "../components/EmptyState";
-import { MessageSkeleton } from "../components/Skeleton";
 import { PageHeader } from "../components/layout/PageHeader";
-import { MessageComposer, type ComposerAttachment } from "../components/chat/MessageComposer";
+import { MessageSkeleton } from "../components/Skeleton";
 import { Avatar } from "../components/ui/Avatar";
+import { useMessageStore, useUiStore } from "../stores";
 
 const EMPTY: never[] = [];
 
@@ -50,10 +50,11 @@ export function DmView() {
     if (isNearBottom) el.scrollTop = el.scrollHeight;
   }, [messages]);
 
-  const scrollToBottom = () => setTimeout(() => {
-    const el = containerRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, 50);
+  const scrollToBottom = () =>
+    setTimeout(() => {
+      const el = containerRef.current;
+      if (el) el.scrollTop = el.scrollHeight;
+    }, 50);
 
   const handleSend = async (content: string, attachmentIds: string[]) => {
     if (!convKey) return;
@@ -73,11 +74,7 @@ export function DmView() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <PageHeader
-        title={title}
-        subtitle={`@${peer?.handle || peerName}`}
-        leading={<Avatar name={title} size="md" />}
-      >
+      <PageHeader title={title} subtitle={`@${peer?.handle || peerName}`} leading={<Avatar name={title} size="md" />}>
         {peer?.type === "agent" && (
           <span className="rounded bg-purple-100 px-2 py-0.5 text-xs font-medium text-purple-600 dark:bg-purple-900/40 dark:text-purple-300">
             Agent
@@ -91,7 +88,9 @@ export function DmView() {
         </div>
       ) : messages.length === 0 ? (
         <div className="min-h-0 flex-1 overflow-y-auto p-4">
-          {loading ? <MessageSkeleton /> : (
+          {loading ? (
+            <MessageSkeleton />
+          ) : (
             <EmptyState icon="✉️" title="还没有私信" description={`发送第一条消息，开始和 ${title} 的私聊`} />
           )}
         </div>

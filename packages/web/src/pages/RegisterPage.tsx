@@ -1,11 +1,11 @@
-import { useState, useEffect } from "react";
-import { useNavigate, Link, useSearchParams } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { apiGet, apiPost } from "../api/client";
-import { useAuthStore } from "../stores/authStore";
 import { PasswordStrength } from "../components/PasswordStrength";
+import { Button } from "../components/ui/Button";
 import { Card } from "../components/ui/Card";
 import { Input } from "../components/ui/Input";
-import { Button } from "../components/ui/Button";
+import { useAuthStore } from "../stores/authStore";
 
 export function RegisterPage() {
   const [handle, setHandle] = useState("");
@@ -48,7 +48,7 @@ export function RegisterPage() {
     try {
       const data = await apiPost<{ token: string; user: { id: string; handle: string; displayName: string } }>(
         "/api/auth/register",
-        { handle, password, email, displayName: handle, invite: invite || undefined }
+        { handle, password, email, displayName: handle, invite: invite || undefined },
       );
       localStorage.setItem("user", JSON.stringify(data.user));
       useAuthStore.setState({ user: data.user as any, isAuthenticated: true });
@@ -119,12 +119,17 @@ export function RegisterPage() {
             value={confirmPwd}
             onChange={(e) => setConfirmPwd(e.target.value)}
           />
-          <Button type="submit" loading={loading} className="w-full">注册</Button>
+          <Button type="submit" loading={loading} className="w-full">
+            注册
+          </Button>
           {error && <p className="text-center text-sm text-red-500">{error}</p>}
         </form>
 
         <p className="text-center text-sm text-gray-500 dark:text-gray-400">
-          已有账号？<Link to="/login" className="text-blue-500 hover:underline">登录</Link>
+          已有账号？
+          <Link to="/login" className="text-blue-500 hover:underline">
+            登录
+          </Link>
         </p>
       </Card>
     </div>

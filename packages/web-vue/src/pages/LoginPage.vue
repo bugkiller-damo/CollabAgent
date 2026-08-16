@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { ref } from "vue";
-import { useRouter, RouterLink } from "vue-router";
-import { useAuthStore } from "../stores/authStore";
+import { RouterLink, useRouter } from "vue-router";
+import Button from "../components/ui/Button.vue";
 import Card from "../components/ui/Card.vue";
 import Input from "../components/ui/Input.vue";
-import Button from "../components/ui/Button.vue";
+import { useAuthStore } from "../stores/authStore";
 
 const authStore = useAuthStore();
 const router = useRouter();

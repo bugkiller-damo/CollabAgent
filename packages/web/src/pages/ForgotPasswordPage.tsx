@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { apiPost } from "../api/client";
+import { Button } from "../components/ui/Button";
 import { Card } from "../components/ui/Card";
 import { Input } from "../components/ui/Input";
-import { Button } from "../components/ui/Button";
 
 export function ForgotPasswordPage() {
   const [email, setEmail] = useState("");
@@ -15,8 +15,12 @@ export function ForgotPasswordPage() {
   const [loading, setLoading] = useState(false);
 
   const handleSendCode = async () => {
-    setErr(""); setMsg("");
-    if (!email.includes("@")) { setErr("请输入有效邮箱"); return; }
+    setErr("");
+    setMsg("");
+    if (!email.includes("@")) {
+      setErr("请输入有效邮箱");
+      return;
+    }
     setLoading(true);
     try {
       const data = await apiPost<{ message: string; devCode?: string }>("/api/auth/forgot-password", { email });
@@ -30,8 +34,12 @@ export function ForgotPasswordPage() {
   };
 
   const handleReset = async () => {
-    setErr(""); setMsg("");
-    if (newPw.length < 6) { setErr("新密码至少 6 位"); return; }
+    setErr("");
+    setMsg("");
+    if (newPw.length < 6) {
+      setErr("新密码至少 6 位");
+      return;
+    }
     setLoading(true);
     try {
       await apiPost("/api/auth/reset-password", { email, code, password: newPw });
@@ -54,20 +62,37 @@ export function ForgotPasswordPage() {
         {step === "email" ? (
           <div className="space-y-4">
             <Input type="email" placeholder="注册邮箱" value={email} onChange={(e) => setEmail(e.target.value)} />
-            <Button onClick={handleSendCode} loading={loading} className="w-full">发送验证码</Button>
+            <Button onClick={handleSendCode} loading={loading} className="w-full">
+              发送验证码
+            </Button>
           </div>
         ) : (
           <div className="space-y-4">
-            <Input type="text" placeholder="6 位验证码" value={code} onChange={(e) => setCode(e.target.value)} maxLength={6} />
-            <Input type="password" placeholder="新密码（至少6位）" value={newPw} onChange={(e) => setNewPw(e.target.value)} />
-            <Button onClick={handleReset} loading={loading} className="w-full">重置密码</Button>
+            <Input
+              type="text"
+              placeholder="6 位验证码"
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              maxLength={6}
+            />
+            <Input
+              type="password"
+              placeholder="新密码（至少6位）"
+              value={newPw}
+              onChange={(e) => setNewPw(e.target.value)}
+            />
+            <Button onClick={handleReset} loading={loading} className="w-full">
+              重置密码
+            </Button>
           </div>
         )}
 
         {msg && <p className="text-center text-sm text-green-600 dark:text-green-400">{msg}</p>}
         {err && <p className="text-center text-sm text-red-500">{err}</p>}
         <p className="text-center text-sm text-gray-500 dark:text-gray-400">
-          <Link to="/login" className="text-blue-500 hover:underline">返回登录</Link>
+          <Link to="/login" className="text-blue-500 hover:underline">
+            返回登录
+          </Link>
         </p>
       </Card>
     </div>

@@ -1,6 +1,6 @@
+import type { Message, TaskStatus } from "@collabagent/shared";
 import { create } from "zustand";
 import { apiGet, apiPost } from "../api/client";
-import type { Message, TaskStatus } from "@collabagent/shared";
 
 export interface Task extends Message {
   taskNumber: number;
@@ -31,7 +31,9 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     try {
       const data = await apiGet<{ tasks: Task[] }>("/api/tasks", params);
       set((s) => ({ tasksByChannel: { ...s.tasksByChannel, [channel]: data.tasks || [] }, loading: false }));
-    } catch { set({ loading: false }); }
+    } catch {
+      set({ loading: false });
+    }
   },
 
   createTasks: async (channel, titles) => {
@@ -57,8 +59,15 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   moveTask: (channel, number, newStatus) => {
     set((s) => {
       const tasks = s.tasksByChannel[channel] || [];
-      return { tasksByChannel: { ...s.tasksByChannel, [channel]: tasks.map((t) => t.taskNumber === number ? { ...t, taskStatus: newStatus } : t) } };
+      return {
+        tasksByChannel: {
+          ...s.tasksByChannel,
+          [channel]: tasks.map((t) => (t.taskNumber === number ? { ...t, taskStatus: newStatus } : t)),
+        },
+      };
     });
-    get().updateStatus(channel, number, newStatus).catch(() => get().fetchTasks(channel));
+    get()
+      .updateStatus(channel, number, newStatus)
+      .catch(() => get().fetchTasks(channel));
   },
 }));

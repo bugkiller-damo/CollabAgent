@@ -1,14 +1,33 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
-import { apiGet, apiPost, apiClient } from "../../api";
+import { apiClient, apiGet, apiPost } from "../../api";
 import PageHeader from "../../components/layout/PageHeader.vue";
-import Card from "../../components/ui/Card.vue";
-import Button from "../../components/ui/Button.vue";
 import Avatar from "../../components/ui/Avatar.vue";
+import Button from "../../components/ui/Button.vue";
+import Card from "../../components/ui/Card.vue";
 
-interface Org { id: string; name: string; personal: boolean; role: string; memberCount: number; agentCount: number; }
-interface Member { user_id: string; role: string; handle: string; display_name?: string; }
-interface Invite { token: string; role: string; max_uses: number | null; uses: number; expires_at: string | null; revoked_at: string | null; }
+interface Org {
+  id: string;
+  name: string;
+  personal: boolean;
+  role: string;
+  memberCount: number;
+  agentCount: number;
+}
+interface Member {
+  user_id: string;
+  role: string;
+  handle: string;
+  display_name?: string;
+}
+interface Invite {
+  token: string;
+  role: string;
+  max_uses: number | null;
+  uses: number;
+  expires_at: string | null;
+  revoked_at: string | null;
+}
 
 const orgs = ref<Org[]>([]);
 const org = ref<Org | null>(null);
@@ -20,20 +39,32 @@ const copied = ref("");
 const isOwner = computed(() => org.value?.role === "owner");
 
 function loadMembers(orgId: string) {
-  apiGet<{ members: Member[] }>(`/api/orgs/${orgId}/members`).then((d) => { members.value = d.members || []; }).catch(() => {});
+  apiGet<{ members: Member[] }>(`/api/orgs/${orgId}/members`)
+    .then((d) => {
+      members.value = d.members || [];
+    })
+    .catch(() => {});
 }
 
 function loadInvites(orgId: string) {
-  apiGet<{ invites: Invite[] }>(`/api/orgs/${orgId}/invites`).then((d) => { invites.value = d.invites || []; }).catch(() => { invites.value = []; });
+  apiGet<{ invites: Invite[] }>(`/api/orgs/${orgId}/invites`)
+    .then((d) => {
+      invites.value = d.invites || [];
+    })
+    .catch(() => {
+      invites.value = [];
+    });
 }
 
 onMounted(() => {
-  apiGet<{ orgs: Org[] }>("/api/orgs").then((d) => {
-    const list = d.orgs || [];
-    orgs.value = list;
-    const def = list.find((o) => !o.personal) || list[0] || null;
-    org.value = def;
-  }).catch(() => {});
+  apiGet<{ orgs: Org[] }>("/api/orgs")
+    .then((d) => {
+      const list = d.orgs || [];
+      orgs.value = list;
+      const def = list.find((o) => !o.personal) || list[0] || null;
+      org.value = def;
+    })
+    .catch(() => {});
 });
 
 // 对齐 React 第二个 useEffect([org])：org 变化时加载成员/邀请（org 为 null 时跳过）
@@ -92,7 +123,9 @@ async function copyInvite(token: string) {
   try {
     await navigator.clipboard.writeText(inviteUrl(token));
     copied.value = token;
-    setTimeout(() => { copied.value = ""; }, 2000);
+    setTimeout(() => {
+      copied.value = "";
+    }, 2000);
   } catch {
     msg.value = "复制失败";
   }

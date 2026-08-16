@@ -8,9 +8,7 @@ export async function integrationRoutes(app: FastifyInstance) {
 
   app.post("/login", { preHandler: [app.authenticate] }, async (req) => {
     const { service } = req.body as { service?: string };
-    const result = await app.pg.query(
-      "SELECT * FROM integrations WHERE service_id = $1 OR name = $1", [service]
-    );
+    const result = await app.pg.query("SELECT * FROM integrations WHERE service_id = $1 OR name = $1", [service]);
     if (result.rows.length === 0) return { error: "service not found" };
     return { status: "Agent login ready", service: result.rows[0].name };
   });

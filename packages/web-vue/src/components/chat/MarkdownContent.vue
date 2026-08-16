@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed } from "vue";
-import MarkdownIt from "markdown-it";
-import hljs from "highlight.js";
 import DOMPurify from "dompurify";
+import hljs from "highlight.js";
+import MarkdownIt from "markdown-it";
+import { computed } from "vue";
 
 const props = defineProps<{
   content: string;
@@ -17,11 +17,7 @@ const props = defineProps<{
  */
 // 与 markdown-it 的 utils.escapeHtml 等价（& < > " 四个字符），独立实现以避免在 md 初始化闭包内自引用
 function escapeHtml(str: string): string {
-  return str
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+  return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
 const md: MarkdownIt = new MarkdownIt({
@@ -45,8 +41,7 @@ const md: MarkdownIt = new MarkdownIt({
 
 // a 标签统一新窗口打开（对齐 React components.a 的 target/rel 覆写），并保留其蓝色样式
 const defaultLinkOpen: NonNullable<typeof md.renderer.rules.link_open> =
-  md.renderer.rules.link_open ||
-  ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options));
+  md.renderer.rules.link_open || ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options));
 
 md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
   tokens[idx].attrSet("target", "_blank");

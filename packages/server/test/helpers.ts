@@ -3,8 +3,11 @@ import postgres from "postgres";
 // 注意：BASE_URL 是 Vite/Vitest 的保留变量——vitest worker 会把它覆盖成 "/"（base 配置），
 // 导致测试静默打到默认 3001。本地指定非默认端口请用 SLOCK_TEST_BASE_URL（2026-07-29 实测踩坑）。
 const RAW_BASE = process.env.SLOCK_TEST_BASE_URL || process.env.BASE_URL;
-export const BASE = (RAW_BASE && /^https?:\/\//.test(RAW_BASE) ? RAW_BASE : "http://localhost:3001").replace(/\/+$/, "");
-const DB_URL = process.env.DATABASE_URL || "postgresql://postgres:P@ssw0rd@localhost:5432/collabagent";
+export const BASE = (RAW_BASE && /^https?:\/\//.test(RAW_BASE) ? RAW_BASE : "http://localhost:3001").replace(
+  /\/+$/,
+  "",
+);
+const DB_URL = process.env.DATABASE_URL || "postgresql://postgres:postgres@localhost:5432/collabagent";
 
 // 所有测试用户/数据用此前缀，便于精准清理
 export const TEST_PREFIX = "zz_test_";
@@ -56,10 +59,17 @@ export async function api<T = any>(path: string, opts: ApiOpts = {}): Promise<Ap
     body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
   });
   let data: any = null;
-  try { data = await res.json(); } catch { /* non-json */ }
-  const setCookie = typeof (res.headers as any).getSetCookie === "function"
-    ? (res.headers as any).getSetCookie()
-    : (res.headers.get("set-cookie") ? [res.headers.get("set-cookie") as string] : []);
+  try {
+    data = await res.json();
+  } catch {
+    /* non-json */
+  }
+  const setCookie =
+    typeof (res.headers as any).getSetCookie === "function"
+      ? (res.headers as any).getSetCookie()
+      : res.headers.get("set-cookie")
+        ? [res.headers.get("set-cookie") as string]
+        : [];
   return { status: res.status, data, setCookie, cookieHeader: toCookieHeader(setCookie) };
 }
 

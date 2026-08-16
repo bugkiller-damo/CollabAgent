@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { toast } from "../../stores/toastStore";
 import { PageHeader } from "../../components/layout/PageHeader";
+import { toast } from "../../stores/toastStore";
 
 /** 通知偏好（按类型设置接收渠道） */
 const NOTIF_TYPES = [
@@ -16,7 +16,9 @@ type NotifPrefs = Record<string, boolean>;
 function loadPrefs(): NotifPrefs {
   try {
     return JSON.parse(localStorage.getItem("notif_prefs") || "{}");
-  } catch { return {}; }
+  } catch {
+    return {};
+  }
 }
 function savePrefs(prefs: NotifPrefs) {
   localStorage.setItem("notif_prefs", JSON.stringify(prefs));

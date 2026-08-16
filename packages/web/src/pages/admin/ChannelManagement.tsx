@@ -1,14 +1,18 @@
-import { useEffect, useState, useCallback } from "react";
-import { apiGet, apiPost, apiPatch, apiClient } from "../../api/client";
+import { useCallback, useEffect, useState } from "react";
+import { apiClient, apiGet, apiPatch, apiPost } from "../../api/client";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { PageHeader } from "../../components/layout/PageHeader";
+import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { Input } from "../../components/ui/Input";
-import { Button } from "../../components/ui/Button";
 
 interface Channel {
-  id: string; name: string; description: string | null;
-  type: string; archived: boolean; role?: string | null;
+  id: string;
+  name: string;
+  description: string | null;
+  type: string;
+  archived: boolean;
+  role?: string | null;
 }
 
 export function ChannelManagement() {
@@ -23,11 +27,16 @@ export function ChannelManagement() {
 
   const load = useCallback(() => {
     apiGet<{ channels: Channel[] }>("/api/channels")
-      .then((d) => { setChannels(d.channels || []); setLoading(false); })
+      .then((d) => {
+        setChannels(d.channels || []);
+        setLoading(false);
+      })
       .catch(() => setLoading(false));
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+  }, [load]);
 
   const create = async () => {
     const n = name.trim();
@@ -67,17 +76,28 @@ export function ChannelManagement() {
 
   return (
     <div className="mx-auto w-full max-w-7xl space-y-4 p-4 sm:p-6">
-      <PageHeader title="频道管理" backTo="/admin" breadcrumb={[{ label: "管理后台", to: "/admin" }, { label: "频道管理" }]} />
+      <PageHeader
+        title="频道管理"
+        backTo="/admin"
+        breadcrumb={[{ label: "管理后台", to: "/admin" }, { label: "频道管理" }]}
+      />
 
       <div className="flex items-center justify-end">
-        <Button onClick={() => setShowForm((v) => !v)} size="sm">{showForm ? "取消" : "+ 新建频道"}</Button>
+        <Button onClick={() => setShowForm((v) => !v)} size="sm">
+          {showForm ? "取消" : "+ 新建频道"}
+        </Button>
       </div>
 
       {msg && <p className="text-sm text-red-500">{msg}</p>}
 
       {showForm && (
         <Card className="space-y-3">
-          <Input placeholder="频道名称（如 product）" value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && create()} />
+          <Input
+            placeholder="频道名称（如 product）"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && create()}
+          />
           <Input placeholder="描述（可选）" value={description} onChange={(e) => setDescription(e.target.value)} />
           <select
             value={visibility}
@@ -87,7 +107,9 @@ export function ChannelManagement() {
             <option value="public">公开（所有成员可见）</option>
             <option value="private">私有（仅受邀成员）</option>
           </select>
-          <Button onClick={create} disabled={!name.trim()} size="sm">创建</Button>
+          <Button onClick={create} disabled={!name.trim()} size="sm">
+            创建
+          </Button>
         </Card>
       )}
 
@@ -105,8 +127,17 @@ export function ChannelManagement() {
                 </p>
                 {c.description && <p className="truncate text-xs text-gray-500">{c.description}</p>}
               </div>
-              <Button onClick={() => toggleArchive(c)} variant="ghost" size="sm">{c.archived ? "取消归档" : "归档"}</Button>
-              <Button onClick={() => setConfirmDelete(c)} variant="ghost" size="sm" className="text-red-500 hover:text-red-600">删除</Button>
+              <Button onClick={() => toggleArchive(c)} variant="ghost" size="sm">
+                {c.archived ? "取消归档" : "归档"}
+              </Button>
+              <Button
+                onClick={() => setConfirmDelete(c)}
+                variant="ghost"
+                size="sm"
+                className="text-red-500 hover:text-red-600"
+              >
+                删除
+              </Button>
             </div>
           ))}
           {channels.length === 0 && <p className="p-4 text-sm text-gray-500">暂无频道</p>}

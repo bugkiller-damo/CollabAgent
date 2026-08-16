@@ -1,9 +1,9 @@
-import { useRef, useState, useCallback, useEffect } from "react";
-import { uploadAttachment, type UploadedAttachment } from "../../api/client";
-import { useMentionSuggest, type MentionScope } from "../../hooks/useMentionSuggest";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { type UploadedAttachment, uploadAttachment } from "../../api/client";
+import { type MentionScope, useMentionSuggest } from "../../hooks/useMentionSuggest";
 import { MentionPopup } from "../chat/MentionPopup";
-import { Textarea } from "../ui/Textarea";
 import { IconButton } from "../ui/IconButton";
+import { Textarea } from "../ui/Textarea";
 
 export interface ComposerAttachment {
   tempId: string;
@@ -44,7 +44,7 @@ export function MessageComposer({
         setInternalAttachments(next);
       }
     },
-    [isControlled, onAttachmentsChange, controlledAttachments]
+    [isControlled, onAttachmentsChange, controlledAttachments],
   );
 
   const [draft, setDraft] = useState("");
@@ -53,8 +53,14 @@ export function MessageComposer({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const { filtered, selectedIdx, visible, handleInput, handleKeyDown: mentionKD, insertMention: rawInsert } =
-    useMentionSuggest(textareaRef, mentionScope);
+  const {
+    filtered,
+    selectedIdx,
+    visible,
+    handleInput,
+    handleKeyDown: mentionKD,
+    insertMention: rawInsert,
+  } = useMentionSuggest(textareaRef, mentionScope);
 
   const insertMention = (handle: string) => {
     const newText = rawInsert(handle);
@@ -76,10 +82,12 @@ export function MessageComposer({
       const tempId = "att-" + Date.now() + "-" + Math.random().toString(36).slice(2, 7);
       setAttachments((a) => [...a, { tempId, name: file.name, status: "uploading" }]);
       uploadAttachment(file)
-        .then((uploaded) => setAttachments((a) => a.map((x) => (x.tempId === tempId ? { ...x, status: "done", uploaded } : x))))
+        .then((uploaded) =>
+          setAttachments((a) => a.map((x) => (x.tempId === tempId ? { ...x, status: "done", uploaded } : x))),
+        )
         .catch(() => setAttachments((a) => a.map((x) => (x.tempId === tempId ? { ...x, status: "error" } : x))));
     },
-    [setAttachments]
+    [setAttachments],
   );
 
   useEffect(() => {
@@ -92,7 +100,7 @@ export function MessageComposer({
       if (!files) return;
       for (const file of Array.from(files)) addAttachment(file);
     },
-    [addAttachment]
+    [addAttachment],
   );
 
   const removeAttachment = (tempId: string) => setAttachments((a) => a.filter((x) => x.tempId !== tempId));
@@ -140,9 +148,18 @@ export function MessageComposer({
   return (
     <div
       className="relative"
-      onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-      onDragLeave={(e) => { if (e.currentTarget === e.target) setDragOver(false); }}
-      onDrop={(e) => { e.preventDefault(); setDragOver(false); handleFiles(e.dataTransfer.files); }}
+      onDragOver={(e) => {
+        e.preventDefault();
+        setDragOver(true);
+      }}
+      onDragLeave={(e) => {
+        if (e.currentTarget === e.target) setDragOver(false);
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        setDragOver(false);
+        handleFiles(e.dataTransfer.files);
+      }}
     >
       {dragOver && (
         <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-lg border-2 border-dashed border-blue-400 bg-blue-500/10">
@@ -178,11 +195,23 @@ export function MessageComposer({
           type="file"
           multiple
           className="hidden"
-          onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }}
+          onChange={(e) => {
+            handleFiles(e.target.files);
+            e.target.value = "";
+          }}
         />
-        <IconButton label="上传文件" tooltip="上传文件" onClick={() => fileInputRef.current?.click()} disabled={disabled || sending}>
+        <IconButton
+          label="上传文件"
+          tooltip="上传文件"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={disabled || sending}
+        >
           <svg className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" d="m15.75 10.5 4.72-4.72a.75.75 0 0 1 1.28.53v11.38a.75.75 0 0 1-1.28.53l-4.72-4.72M12 18.75H4.5a2.25 2.25 0 0 1-2.25-2.25V9m12.841 2.091a2.25 2.25 0 0 1 3.18 0l2.87 2.87" />
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="m15.75 10.5 4.72-4.72a.75.75 0 0 1 1.28.53v11.38a.75.75 0 0 1-1.28.53l-4.72-4.72M12 18.75H4.5a2.25 2.25 0 0 1-2.25-2.25V9m12.841 2.091a2.25 2.25 0 0 1 3.18 0l2.87 2.87"
+            />
           </svg>
         </IconButton>
         <Textarea
@@ -190,7 +219,13 @@ export function MessageComposer({
           value={draft}
           onChange={onChange}
           onKeyDown={onKeyDown}
-          onPaste={(e) => { const files = Array.from(e.clipboardData.files); if (files.length) { e.preventDefault(); handleFiles(files); } }}
+          onPaste={(e) => {
+            const files = Array.from(e.clipboardData.files);
+            if (files.length) {
+              e.preventDefault();
+              handleFiles(files);
+            }
+          }}
           placeholder={placeholder}
           rows={1}
           disabled={disabled || sending}
@@ -209,7 +244,11 @@ export function MessageComposer({
           ].join(" ")}
         >
           <svg className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5" />
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5"
+            />
           </svg>
         </button>
       </div>

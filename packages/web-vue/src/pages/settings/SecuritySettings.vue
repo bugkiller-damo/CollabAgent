@@ -1,13 +1,13 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
-import { apiGet, apiClient } from "../../api";
-import { useAuthStore } from "../../stores/authStore";
-import { toast } from "../../stores/toastStore";
+import { apiClient, apiGet } from "../../api";
 import PageHeader from "../../components/layout/PageHeader.vue";
+import Button from "../../components/ui/Button.vue";
 import Card from "../../components/ui/Card.vue";
 import Input from "../../components/ui/Input.vue";
-import Button from "../../components/ui/Button.vue";
+import { useAuthStore } from "../../stores/authStore";
+import { toast } from "../../stores/toastStore";
 
 interface Session {
   id: string;
@@ -21,8 +21,26 @@ interface Session {
 function deviceLabel(ua: string | null): string {
   if (!ua) return "未知设备";
   const s = ua.toLowerCase();
-  const os = s.includes("windows") ? "Windows" : s.includes("mac") ? "macOS" : s.includes("android") ? "Android" : s.includes("iphone") || s.includes("ipad") ? "iOS" : s.includes("linux") ? "Linux" : "其他";
-  const br = s.includes("edg/") ? "Edge" : s.includes("chrome") ? "Chrome" : s.includes("firefox") ? "Firefox" : s.includes("safari") ? "Safari" : "浏览器";
+  const os = s.includes("windows")
+    ? "Windows"
+    : s.includes("mac")
+      ? "macOS"
+      : s.includes("android")
+        ? "Android"
+        : s.includes("iphone") || s.includes("ipad")
+          ? "iOS"
+          : s.includes("linux")
+            ? "Linux"
+            : "其他";
+  const br = s.includes("edg/")
+    ? "Edge"
+    : s.includes("chrome")
+      ? "Chrome"
+      : s.includes("firefox")
+        ? "Firefox"
+        : s.includes("safari")
+          ? "Safari"
+          : "浏览器";
   return `${br} · ${os}`;
 }
 

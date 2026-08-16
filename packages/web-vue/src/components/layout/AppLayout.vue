@@ -1,21 +1,21 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from "vue";
-import { useRoute, RouterLink } from "vue-router";
-import Sidebar from "./Sidebar.vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { RouterLink, useRoute } from "vue-router";
 import { useWebSocket } from "../../composables";
-import { useAuthStore, useMessageStore, useChannelStore, useAgentStore, useUiStore } from "../../stores";
+import { useAgentStore, useAuthStore, useChannelStore, useMessageStore, useUiStore } from "../../stores";
+import type { AgentActivity } from "../../stores/agentStore";
 import { useNotificationStore } from "../../stores/notificationStore";
 import { useTerminalStore } from "../../stores/terminalStore";
 import { toast } from "../../stores/toastStore";
 import { setWsSender } from "../../stores/wsSender";
+import type { AgentStatusEvent, WsServerEvent } from "../../types";
+import ErrorBoundary from "../ErrorBoundary.vue";
+import NotificationBell from "../notifications/NotificationBell.vue";
+import OnboardingChecklist from "../OnboardingChecklist.vue";
+import ToastContainer from "../Toast.vue";
 import IconButton from "../ui/IconButton.vue";
 import MobileTabBar from "./MobileTabBar.vue";
-import OnboardingChecklist from "../OnboardingChecklist.vue";
-import NotificationBell from "../notifications/NotificationBell.vue";
-import ToastContainer from "../Toast.vue";
-import ErrorBoundary from "../ErrorBoundary.vue";
-import type { WsServerEvent, AgentStatusEvent } from "../../types";
-import type { AgentActivity } from "../../stores/agentStore";
+import Sidebar from "./Sidebar.vue";
 
 const route = useRoute();
 const authStore = useAuthStore();
@@ -101,7 +101,8 @@ watch(
   () => uiStore.theme,
   (theme) => {
     const root = document.documentElement;
-    const isDark = theme === "dark" || (theme === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+    const isDark =
+      theme === "dark" || (theme === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
     root.classList.toggle("dark", isDark);
   },
   { immediate: true },
@@ -124,7 +125,11 @@ const onMessage = (msg: WsServerEvent) => {
   }
   // 终端观察（G3）：daemon 推来的终端帧写入 terminalStore
   if (msg.type === "terminal:frame") {
-    terminalStore.setFrame(msg.agentName, { screen: msg.screen || "", status: msg.status || "unknown", time: msg.time });
+    terminalStore.setFrame(msg.agentName, {
+      screen: msg.screen || "",
+      status: msg.status || "unknown",
+      time: msg.time,
+    });
   }
   if (msg.type === "agent:status" || msg.type === "agent:activity") {
     const a = msg as unknown as AgentStatusEvent;

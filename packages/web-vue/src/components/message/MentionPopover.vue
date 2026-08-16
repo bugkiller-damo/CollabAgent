@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { apiGet } from "../../api";
 
 interface Member {
@@ -21,14 +21,14 @@ const idx = ref(0);
 
 onMounted(() => {
   apiGet<{ users: Member[]; agents: Member[] }>("/api/server/info")
-    .then((d) => { members.value = [...(d.users || []), ...(d.agents || [])]; })
+    .then((d) => {
+      members.value = [...(d.users || []), ...(d.agents || [])];
+    })
     .catch(() => {});
 });
 
 const list = computed(() =>
-  props.query
-    ? members.value.filter((m) => m.handle.toLowerCase().includes(props.query.toLowerCase()))
-    : members.value
+  props.query ? members.value.filter((m) => m.handle.toLowerCase().includes(props.query.toLowerCase())) : members.value,
 );
 
 function handleKey(e: KeyboardEvent) {

@@ -1,6 +1,6 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { createServer, type Server } from "node:http";
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { bundleSlockMcpServer } from "../src/mcp-bundle.js";
 
 /**
@@ -100,8 +100,7 @@ async function spawnMcpClient() {
   notify("notifications/initialized");
 
   return {
-    callTool: (name: string, args: Record<string, unknown>) =>
-      send("tools/call", { name, arguments: args }),
+    callTool: (name: string, args: Record<string, unknown>) => send("tools/call", { name, arguments: args }),
     listTools: () => send("tools/list"),
     close: () => proc.kill(),
   };
@@ -114,91 +113,111 @@ async function spawnMcpClient() {
 const SPAWN_TEST_TIMEOUT = 15_000;
 
 describe("slock-mcp-server (bundled, spawned as a real child process)", () => {
-  it("bundles and boots without throwing, registering all 17 tools", async () => {
-    const client = await spawnMcpClient();
-    try {
-      const res = await client.listTools();
-      const names = res.result.tools.map((t: any) => t.name).sort();
-      expect(names).toEqual(
-        [
-          "cancel_dispatch",
-          "cancel_reminder",
-          "check_messages",
-          "claim_tasks",
-          "create_tasks",
-          "dispatch_task",
-          "list_dispatches",
-          "list_reminders",
-          "list_tasks",
-          "read_history",
-          "report_task",
-          "schedule_reminder",
-          "search_messages",
-          "send_message",
-          "unclaim_task",
-          "update_task_status",
-          "upload_attachment",
-        ].sort(),
-      );
-    } finally {
-      client.close();
-    }
-  }, SPAWN_TEST_TIMEOUT);
+  it(
+    "bundles and boots without throwing, registering all 17 tools",
+    async () => {
+      const client = await spawnMcpClient();
+      try {
+        const res = await client.listTools();
+        const names = res.result.tools.map((t: any) => t.name).sort();
+        expect(names).toEqual(
+          [
+            "cancel_dispatch",
+            "cancel_reminder",
+            "check_messages",
+            "claim_tasks",
+            "create_tasks",
+            "dispatch_task",
+            "list_dispatches",
+            "list_reminders",
+            "list_tasks",
+            "read_history",
+            "report_task",
+            "schedule_reminder",
+            "search_messages",
+            "send_message",
+            "unclaim_task",
+            "update_task_status",
+            "upload_attachment",
+          ].sort(),
+        );
+      } finally {
+        client.close();
+      }
+    },
+    SPAWN_TEST_TIMEOUT,
+  );
 
-  it("send_message hits POST /internal/agent/:id/send with Bearer token + body, returns structured result", async () => {
-    nextStatus = 200;
-    nextBody = { state: "sent", messageId: "m1", messageSeq: 1, attachments: [] };
-    const client = await spawnMcpClient();
-    try {
-      const res = await client.callTool("send_message", { target: "#general", content: "hi" });
-      expect(lastRequest?.method).toBe("POST");
-      expect(lastRequest?.path).toBe("/internal/agent/agent-under-test/send");
-      expect(lastRequest?.auth).toBe("Bearer sk_agent_test_token");
-      expect(lastRequest?.body).toEqual({ target: "#general", content: "hi", threadId: undefined });
-      expect(res.result.isError).toBeFalsy();
-      expect(JSON.parse(res.result.content[0].text)).toEqual(nextBody);
-    } finally {
-      client.close();
-    }
-  }, SPAWN_TEST_TIMEOUT);
+  it(
+    "send_message hits POST /internal/agent/:id/send with Bearer token + body, returns structured result",
+    async () => {
+      nextStatus = 200;
+      nextBody = { state: "sent", messageId: "m1", messageSeq: 1, attachments: [] };
+      const client = await spawnMcpClient();
+      try {
+        const res = await client.callTool("send_message", { target: "#general", content: "hi" });
+        expect(lastRequest?.method).toBe("POST");
+        expect(lastRequest?.path).toBe("/internal/agent/agent-under-test/send");
+        expect(lastRequest?.auth).toBe("Bearer sk_agent_test_token");
+        expect(lastRequest?.body).toEqual({ target: "#general", content: "hi", threadId: undefined });
+        expect(res.result.isError).toBeFalsy();
+        expect(JSON.parse(res.result.content[0].text)).toEqual(nextBody);
+      } finally {
+        client.close();
+      }
+    },
+    SPAWN_TEST_TIMEOUT,
+  );
 
-  it("list_tasks issues a GET with the channel/status as query params", async () => {
-    nextStatus = 200;
-    nextBody = { tasks: [{ id: "t1", task_number: 1, content: "do thing", task_status: "todo" }] };
-    const client = await spawnMcpClient();
-    try {
-      const res = await client.callTool("list_tasks", { channel: "#general", status: "todo" });
-      expect(lastRequest?.method).toBe("GET");
-      expect(lastRequest?.path).toBe("/internal/agent/agent-under-test/tasks?channel=%23general&status=todo");
-      expect(res.result.isError).toBeFalsy();
-      expect(JSON.parse(res.result.content[0].text)).toEqual(nextBody);
-    } finally {
-      client.close();
-    }
-  }, SPAWN_TEST_TIMEOUT);
+  it(
+    "list_tasks issues a GET with the channel/status as query params",
+    async () => {
+      nextStatus = 200;
+      nextBody = { tasks: [{ id: "t1", task_number: 1, content: "do thing", task_status: "todo" }] };
+      const client = await spawnMcpClient();
+      try {
+        const res = await client.callTool("list_tasks", { channel: "#general", status: "todo" });
+        expect(lastRequest?.method).toBe("GET");
+        expect(lastRequest?.path).toBe("/internal/agent/agent-under-test/tasks?channel=%23general&status=todo");
+        expect(res.result.isError).toBeFalsy();
+        expect(JSON.parse(res.result.content[0].text)).toEqual(nextBody);
+      } finally {
+        client.close();
+      }
+    },
+    SPAWN_TEST_TIMEOUT,
+  );
 
-  it("create_tasks maps titles[] into {tasks: [{title}]} on the wire", async () => {
-    nextStatus = 200;
-    nextBody = { tasks: [{ id: "t2", task_number: 2, content: "a" }] };
-    const client = await spawnMcpClient();
-    try {
-      await client.callTool("create_tasks", { channel: "#general", titles: ["a", "b"] });
-      expect(lastRequest?.body).toEqual({ channel: "#general", tasks: [{ title: "a" }, { title: "b" }] });
-    } finally {
-      client.close();
-    }
-  }, SPAWN_TEST_TIMEOUT);
+  it(
+    "create_tasks maps titles[] into {tasks: [{title}]} on the wire",
+    async () => {
+      nextStatus = 200;
+      nextBody = { tasks: [{ id: "t2", task_number: 2, content: "a" }] };
+      const client = await spawnMcpClient();
+      try {
+        await client.callTool("create_tasks", { channel: "#general", titles: ["a", "b"] });
+        expect(lastRequest?.body).toEqual({ channel: "#general", tasks: [{ title: "a" }, { title: "b" }] });
+      } finally {
+        client.close();
+      }
+    },
+    SPAWN_TEST_TIMEOUT,
+  );
 
-  it("surfaces a non-2xx HTTP response as isError:true with the server's error text, not a crash", async () => {
-    nextStatus = 403;
-    nextBody = { error: "no channel access" };
-    const client = await spawnMcpClient();
-    try {
-      const res = await client.callTool("send_message", { target: "#secret", content: "hi" });
-      expect(res.result.isError).toBe(true);
-      expect(res.result.content[0].text).toContain("no channel access");
-    } finally {
-      client.close();
-    }
-  }, SPAWN_TEST_TIMEOUT);
+  it(
+    "surfaces a non-2xx HTTP response as isError:true with the server's error text, not a crash",
+    async () => {
+      nextStatus = 403;
+      nextBody = { error: "no channel access" };
+      const client = await spawnMcpClient();
+      try {
+        const res = await client.callTool("send_message", { target: "#secret", content: "hi" });
+        expect(res.result.isError).toBe(true);
+        expect(res.result.content[0].text).toContain("no channel access");
+      } finally {
+        client.close();
+      }
+    },
+    SPAWN_TEST_TIMEOUT,
+  );
 });

@@ -1,10 +1,10 @@
 import { useState } from "react";
-import { useChannelStore } from "../../stores";
 import { apiClient } from "../../api/client";
+import { useChannelStore } from "../../stores";
 import { ConfirmDialog } from "../ConfirmDialog";
-import { Modal } from "../ui/Modal";
-import { Input } from "../ui/Input";
 import { Button } from "../ui/Button";
+import { Input } from "../ui/Input";
+import { Modal } from "../ui/Modal";
 
 interface Props {
   channel: any;
@@ -113,12 +113,32 @@ export function ChannelSettingsModal({ channel, onClose, onArchived, onDeleted }
 
           <div className="flex items-center justify-between pt-2">
             <div className="flex gap-3">
-              <Button onClick={() => setConfirm("archive")} disabled={saving} variant="ghost" size="sm" className="text-amber-500 hover:text-amber-400">归档</Button>
-              <Button onClick={() => setConfirm("delete")} disabled={saving} variant="ghost" size="sm" className="text-red-500 hover:text-red-400">删除频道</Button>
+              <Button
+                onClick={() => setConfirm("archive")}
+                disabled={saving}
+                variant="ghost"
+                size="sm"
+                className="text-amber-500 hover:text-amber-400"
+              >
+                归档
+              </Button>
+              <Button
+                onClick={() => setConfirm("delete")}
+                disabled={saving}
+                variant="ghost"
+                size="sm"
+                className="text-red-500 hover:text-red-400"
+              >
+                删除频道
+              </Button>
             </div>
             <div className="flex gap-2">
-              <Button onClick={onClose} variant="secondary" size="sm">取消</Button>
-              <Button onClick={handleSave} disabled={saving} loading={saving} size="sm">{saving ? "保存中…" : "保存"}</Button>
+              <Button onClick={onClose} variant="secondary" size="sm">
+                取消
+              </Button>
+              <Button onClick={handleSave} disabled={saving} loading={saving} size="sm">
+                {saving ? "保存中…" : "保存"}
+              </Button>
             </div>
           </div>
         </div>

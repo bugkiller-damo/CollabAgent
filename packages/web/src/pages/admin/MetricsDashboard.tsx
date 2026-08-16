@@ -2,7 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import { apiGet } from "../../api/client";
 import { PageHeader } from "../../components/layout/PageHeader";
 
-interface DaemonInfo { hostname: string; daemonVersion: string; runtimes: string[]; connectedAt: number; }
+interface DaemonInfo {
+  hostname: string;
+  daemonVersion: string;
+  runtimes: string[];
+  connectedAt: number;
+}
 interface Metrics {
   uptimeSec: number;
   startedAt: string;
@@ -16,7 +21,10 @@ const POLL_MS = 3000;
 const HISTORY = 30; // sparkline 保留最近 30 个采样点
 
 function fmtDuration(sec: number): string {
-  const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  const d = Math.floor(sec / 86400),
+    h = Math.floor((sec % 86400) / 3600),
+    m = Math.floor((sec % 3600) / 60),
+    s = sec % 60;
   if (d > 0) return `${d}天 ${h}时`;
   if (h > 0) return `${h}时 ${m}分`;
   if (m > 0) return `${m}分 ${s}秒`;
@@ -34,22 +42,26 @@ function useCountUp(target: number, duration = 600): number {
     const start = performance.now();
     const tick = (now: number) => {
       const t = Math.min(1, (now - start) / duration);
-      const eased = 1 - Math.pow(1 - t, 3); // easeOutCubic
+      const eased = 1 - (1 - t) ** 3; // easeOutCubic
       setVal(Math.round(from + (target - from) * eased));
       if (t < 1) rafRef.current = requestAnimationFrame(tick);
       else fromRef.current = target;
     };
     rafRef.current = requestAnimationFrame(tick);
-    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
+    return () => {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    };
   }, [target, duration]);
   return val;
 }
 
 function Sparkline({ data, color }: { data: number[]; color: string }) {
   if (data.length < 2) return <div className="h-8" />;
-  const max = Math.max(...data, 1), min = Math.min(...data);
+  const max = Math.max(...data, 1),
+    min = Math.min(...data);
   const range = max - min || 1;
-  const w = 100, h = 32;
+  const w = 100,
+    h = 32;
   const pts = data.map((v, i) => {
     const x = (i / (data.length - 1)) * w;
     const y = h - ((v - min) / range) * (h - 4) - 2;
@@ -59,8 +71,15 @@ function Sparkline({ data, color }: { data: number[]; color: string }) {
   return (
     <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" className="w-full h-8">
       <polygon points={area} fill={color} opacity={0.12} />
-      <polyline points={pts.join(" ")} fill="none" stroke={color} strokeWidth={1.5}
-        strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+      <polyline
+        points={pts.join(" ")}
+        fill="none"
+        stroke={color}
+        strokeWidth={1.5}
+        strokeLinejoin="round"
+        strokeLinecap="round"
+        vectorEffect="non-scaling-stroke"
+      />
     </svg>
   );
 }
@@ -70,7 +89,18 @@ function CountUpText({ value, className }: { value: number; className?: string }
   return <span className={className}>{animated.toLocaleString()}</span>;
 }
 
-function MetricCard({ label, value, sub, history, color }: {  label: string; value: number; sub?: string; history?: number[]; color: string;
+function MetricCard({
+  label,
+  value,
+  sub,
+  history,
+  color,
+}: {
+  label: string;
+  value: number;
+  sub?: string;
+  history?: number[];
+  color: string;
 }) {
   const animated = useCountUp(value);
   return (
@@ -78,7 +108,11 @@ function MetricCard({ label, value, sub, history, color }: {  label: string; val
       <p className="text-gray-500 text-xs">{label}</p>
       <p className="text-gray-900 dark:text-white text-3xl font-bold mt-1 tabular-nums">{animated.toLocaleString()}</p>
       {sub && <p className="text-gray-400 text-xs mt-0.5">{sub}</p>}
-      {history && <div className="mt-2 -mx-1"><Sparkline data={history} color={color} /></div>}
+      {history && (
+        <div className="mt-2 -mx-1">
+          <Sparkline data={history} color={color} />
+        </div>
+      )}
     </div>
   );
 }
@@ -94,10 +128,14 @@ function MemoryBar({ used, total, rss }: { used: number; total: number; rss: num
         <p className="text-gray-400 text-xs tabular-nums">{pct}%</p>
       </div>
       <p className="text-gray-900 dark:text-white text-2xl font-bold mt-1 tabular-nums">
-        {animatedUsed}<span className="text-gray-400 text-base font-normal"> / {total} MB</span>
+        {animatedUsed}
+        <span className="text-gray-400 text-base font-normal"> / {total} MB</span>
       </p>
       <div className="mt-2 h-2 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
-        <div className={"h-full rounded-full transition-all duration-700 ease-out " + barColor} style={{ width: `${pct}%` }} />
+        <div
+          className={"h-full rounded-full transition-all duration-700 ease-out " + barColor}
+          style={{ width: `${pct}%` }}
+        />
       </div>
       <p className="text-gray-400 text-xs mt-1.5">RSS 常驻 {rss} MB</p>
     </div>
@@ -116,7 +154,10 @@ function LivePulse() {
 // 实时跳秒的连接时长
 function ConnectedFor({ since }: { since: number }) {
   const [, force] = useState(0);
-  useEffect(() => { const t = setInterval(() => force((n) => n + 1), 1000); return () => clearInterval(t); }, []);
+  useEffect(() => {
+    const t = setInterval(() => force((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, []);
   return <span className="tabular-nums">{fmtDuration(Math.max(0, Math.floor((Date.now() - since) / 1000)))}</span>;
 }
 
@@ -124,7 +165,11 @@ export function MetricsDashboard() {
   const [m, setM] = useState<Metrics | null>(null);
   const [err, setErr] = useState("");
   // 客户端累积采样，驱动 sparkline；首次加载从 DB 历史初始化，之后实时追加
-  const [hist, setHist] = useState<{ messages: number[]; dm: number[]; errors: number[] }>({ messages: [], dm: [], errors: [] });
+  const [hist, setHist] = useState<{ messages: number[]; dm: number[]; errors: number[] }>({
+    messages: [],
+    dm: [],
+    errors: [],
+  });
 
   useEffect(() => {
     let alive = true;
@@ -138,35 +183,51 @@ export function MetricsDashboard() {
           dm: d.samples.map((s) => s.dm_sent).slice(-HISTORY),
           errors: d.samples.map((s) => s.errors).slice(-HISTORY),
         });
-      }).catch(() => { /* 历史数据非关键，静默 */ });
+      })
+      .catch(() => {
+        /* 历史数据非关键，静默 */
+      });
 
-    const load = () => apiGet<Metrics>("/api/metrics").then((d) => {
-      if (!alive) return;
-      setM(d);
-      setHist((h) => ({
-        messages: [...h.messages, d.counters.messagesSent].slice(-HISTORY),
-        dm: [...h.dm, d.counters.dmSent].slice(-HISTORY),
-        errors: [...h.errors, d.counters.errors].slice(-HISTORY),
-      }));
-    }).catch((e) => alive && setErr(e?.message || "加载失败"));
+    const load = () =>
+      apiGet<Metrics>("/api/metrics")
+        .then((d) => {
+          if (!alive) return;
+          setM(d);
+          setHist((h) => ({
+            messages: [...h.messages, d.counters.messagesSent].slice(-HISTORY),
+            dm: [...h.dm, d.counters.dmSent].slice(-HISTORY),
+            errors: [...h.errors, d.counters.errors].slice(-HISTORY),
+          }));
+        })
+        .catch((e) => alive && setErr(e?.message || "加载失败"));
     load();
     const t = setInterval(load, POLL_MS);
-    return () => { alive = false; clearInterval(t); };
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
   }, []);
 
   if (err) return <div className="p-6 text-red-400 text-sm">{err}</div>;
-  if (!m) return (
-    <div className="p-6 space-y-3 animate-pulse">
-      <div className="h-6 w-32 bg-gray-200 dark:bg-gray-700 rounded" />
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        {[0, 1, 2, 3].map((i) => <div key={i} className="h-28 bg-gray-100 dark:bg-gray-800 rounded-xl" />)}
+  if (!m)
+    return (
+      <div className="p-6 space-y-3 animate-pulse">
+        <div className="h-6 w-32 bg-gray-200 dark:bg-gray-700 rounded" />
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {[0, 1, 2, 3].map((i) => (
+            <div key={i} className="h-28 bg-gray-100 dark:bg-gray-800 rounded-xl" />
+          ))}
+        </div>
       </div>
-    </div>
-  );
+    );
 
   return (
     <div className="mx-auto w-full max-w-7xl space-y-6 p-4 sm:p-6">
-      <PageHeader title="运行指标" backTo="/admin" breadcrumb={[{ label: "管理后台", to: "/admin" }, { label: "运行指标" }]}>
+      <PageHeader
+        title="运行指标"
+        backTo="/admin"
+        breadcrumb={[{ label: "管理后台", to: "/admin" }, { label: "运行指标" }]}
+      >
         <div className="flex items-center gap-2 text-xs text-emerald-600 dark:text-emerald-400">
           <LivePulse /> 实时 · 每 {POLL_MS / 1000} 秒刷新
         </div>
@@ -183,9 +244,17 @@ export function MetricsDashboard() {
             {m.online.daemons > 0 && <LivePulse />}
             <p className="text-gray-600 dark:text-gray-300 text-xs">在线 Daemon</p>
           </div>
-          <CountUpText value={m.online.daemons} className="text-gray-900 dark:text-white text-3xl font-bold mt-1 tabular-nums block" />
+          <CountUpText
+            value={m.online.daemons}
+            className="text-gray-900 dark:text-white text-3xl font-bold mt-1 tabular-nums block"
+          />
         </div>
-        <MetricCard label="在线 Agent" value={m.online.agentsOnline} sub={`共 ${m.online.agents} 个注册`} color="#3b82f6" />
+        <MetricCard
+          label="在线 Agent"
+          value={m.online.agentsOnline}
+          sub={`共 ${m.online.agents} 个注册`}
+          color="#3b82f6"
+        />
         <div className="bg-gray-50 dark:bg-gray-800 rounded-xl p-4 border border-gray-100 dark:border-gray-700/50">
           <p className="text-gray-500 text-xs">运行时长</p>
           <p className="text-gray-900 dark:text-white text-2xl font-bold mt-1">{fmtDuration(m.uptimeSec)}</p>
@@ -215,15 +284,25 @@ export function MetricsDashboard() {
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {m.daemons.map((d, i) => (
-              <div key={d.hostname + i} className="bg-gray-50 dark:bg-gray-800 rounded-xl p-4 border border-gray-100 dark:border-gray-700/50 flex items-center gap-3">
+              <div
+                key={d.hostname + i}
+                className="bg-gray-50 dark:bg-gray-800 rounded-xl p-4 border border-gray-100 dark:border-gray-700/50 flex items-center gap-3"
+              >
                 <LivePulse />
                 <div className="flex-1 min-w-0">
                   <p className="text-gray-900 dark:text-white text-sm font-medium truncate">💻 {d.hostname}</p>
-                  <p className="text-gray-400 text-xs mt-0.5">已连接 <ConnectedFor since={d.connectedAt} /> · v{d.daemonVersion}</p>
+                  <p className="text-gray-400 text-xs mt-0.5">
+                    已连接 <ConnectedFor since={d.connectedAt} /> · v{d.daemonVersion}
+                  </p>
                 </div>
                 <div className="flex flex-wrap gap-1 justify-end">
                   {d.runtimes.map((r) => (
-                    <span key={r} className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300">{r}</span>
+                    <span
+                      key={r}
+                      className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300"
+                    >
+                      {r}
+                    </span>
                   ))}
                 </div>
               </div>
@@ -232,7 +311,9 @@ export function MetricsDashboard() {
         )}
       </div>
 
-      <p className="text-gray-400 text-xs">注：计数器为单进程内存值，进程重启后归零；多实例部署下各进程独立计数。走势图基于本页打开后的采样。</p>
+      <p className="text-gray-400 text-xs">
+        注：计数器为单进程内存值，进程重启后归零；多实例部署下各进程独立计数。走势图基于本页打开后的采样。
+      </p>
     </div>
   );
 }

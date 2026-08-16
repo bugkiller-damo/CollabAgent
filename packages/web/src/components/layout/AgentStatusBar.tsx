@@ -1,10 +1,14 @@
 import { useEffect, useState } from "react";
 import { apiGet } from "../../api/client";
+import { useAgentStore, useUiStore } from "../../stores";
 import { Avatar } from "../ui/Avatar";
-import { useUiStore, useAgentStore } from "../../stores";
 
 interface Agent {
-  id: string; name: string; display_name: string; isOnline: boolean; avatar_url?: string;
+  id: string;
+  name: string;
+  display_name: string;
+  isOnline: boolean;
+  avatar_url?: string;
 }
 
 const LIVE_STATUS_LABEL: Record<string, { text: string; cls: string }> = {
@@ -39,13 +43,11 @@ export function AgentStatusBar() {
         Agent 状态
       </div>
       {agents.length === 0 ? (
-        <div className="px-2 py-1.5 text-xs text-gray-400 dark:text-gray-500">
-          暂无 Agent，去「接入 Agent」创建一个
-        </div>
+        <div className="px-2 py-1.5 text-xs text-gray-400 dark:text-gray-500">暂无 Agent，去「接入 Agent」创建一个</div>
       ) : (
         agents.map((a) => {
           const live = liveAgents[a.name];
-          const statusKey = live?.status && live.status !== "online" ? live.status : (a.isOnline ? "idle" : "offline");
+          const statusKey = live?.status && live.status !== "online" ? live.status : a.isOnline ? "idle" : "offline";
           const st = LIVE_STATUS_LABEL[statusKey] || LIVE_STATUS_LABEL.offline;
           return (
             <button
@@ -80,5 +82,3 @@ export function AgentStatusBar() {
     </div>
   );
 }
-
-

@@ -14,9 +14,12 @@ export function ConnectionStatus() {
   const cfg = CONFIG[status] || CONFIG.disconnected;
 
   // 连续重连多次仍失败 → 给出诊断提示
-  const diagnostic = status !== "connected" && (attempt >= 2 || status === "disconnected")
-    ? (!online ? "网络已断开，请检查本地网络" : "无法连接到服务器，请确认后端服务是否运行")
-    : null;
+  const diagnostic =
+    status !== "connected" && (attempt >= 2 || status === "disconnected")
+      ? !online
+        ? "网络已断开，请检查本地网络"
+        : "无法连接到服务器，请确认后端服务是否运行"
+      : null;
 
   return (
     <div className="px-3 py-1.5 text-xs text-gray-500 dark:text-gray-400">

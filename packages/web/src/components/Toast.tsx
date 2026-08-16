@@ -1,4 +1,4 @@
-import { useToastStore, type ToastKind } from "../stores/toastStore";
+import { type ToastKind, useToastStore } from "../stores/toastStore";
 
 const kindStyles: Record<ToastKind, { bg: string; icon: string; border: string }> = {
   info: { bg: "bg-blue-600", icon: "ℹ️", border: "border-blue-500" },
@@ -35,11 +35,7 @@ export function ToastContainer() {
           >
             <span className="text-lg shrink-0">{s.icon}</span>
             <p className="text-sm flex-1 break-words">{t.message}</p>
-            <button
-              onClick={() => dismiss(t.id)}
-              className="text-white/70 hover:text-white shrink-0"
-              aria-label="关闭"
-            >
+            <button onClick={() => dismiss(t.id)} className="text-white/70 hover:text-white shrink-0" aria-label="关闭">
               ✕
             </button>
           </div>

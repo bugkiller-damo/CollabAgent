@@ -1,13 +1,13 @@
-import { useParams, useNavigate } from "react-router-dom";
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
 import { apiClient } from "../api/client";
-import { useMessageStore, useChannelStore } from "../stores";
 import { MarkdownContent } from "../components/chat/MarkdownContent";
 import { MessageComposer } from "../components/chat/MessageComposer";
+import { EmptyState } from "../components/EmptyState";
 import { PageHeader } from "../components/layout/PageHeader";
 import { Avatar } from "../components/ui/Avatar";
-import { EmptyState } from "../components/EmptyState";
 import { formatTime } from "../lib/formatTime";
+import { useChannelStore, useMessageStore } from "../stores";
 
 interface ThreadMsg {
   id: string;
@@ -33,7 +33,9 @@ export function ThreadView() {
   const loadThread = async () => {
     if (!threadId) return;
     try {
-      const data = await apiClient<{ parent: ThreadMsg; replies: ThreadMsg[] }>(`/api/messages/thread/${threadId}`, { method: "GET" });
+      const data = await apiClient<{ parent: ThreadMsg; replies: ThreadMsg[] }>(`/api/messages/thread/${threadId}`, {
+        method: "GET",
+      });
       setParent(data.parent);
       setReplies(data.replies || []);
     } catch {
@@ -54,15 +56,18 @@ export function ThreadView() {
       const known = new Set(prev.map((r) => r.id));
       const live = liveReplies
         .filter((m: any) => !known.has(m.id))
-        .map((m: any) => ({
-          id: m.id,
-          channel_id: m.channelId,
-          sender_id: m.senderId,
-          senderName: m.senderName,
-          content: m.content,
-          seq: m.seq,
-          time: m.time,
-        } as ThreadMsg));
+        .map(
+          (m: any) =>
+            ({
+              id: m.id,
+              channel_id: m.channelId,
+              sender_id: m.senderId,
+              senderName: m.senderName,
+              content: m.content,
+              seq: m.seq,
+              time: m.time,
+            }) as ThreadMsg,
+        );
       return live.length > 0 ? [...prev, ...live] : prev;
     });
   }, [liveReplies]);
@@ -86,8 +91,13 @@ export function ThreadView() {
       <div className="flex flex-1 flex-col">
         <PageHeader title="线程" breadcrumb={[{ label: "频道", to: `/channels/${channelName}` }, { label: "线程" }]} />
         <div className="flex flex-1 items-center justify-center p-4">
-          <EmptyState icon="⚠️" title="加载失败" description={error}
-            actionLabel="返回频道" onAction={() => navigate(`/channels/${channelName}`)} />
+          <EmptyState
+            icon="⚠️"
+            title="加载失败"
+            description={error}
+            actionLabel="返回频道"
+            onAction={() => navigate(`/channels/${channelName}`)}
+          />
         </div>
       </div>
     );
@@ -106,7 +116,9 @@ export function ThreadView() {
           <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-800">
             <div className="mb-2 flex items-center gap-2">
               <Avatar name={parent.senderName || parent.sender_id} size="md" />
-              <span className="text-sm font-semibold text-gray-900 dark:text-white">{parent.senderName || parent.sender_id}</span>
+              <span className="text-sm font-semibold text-gray-900 dark:text-white">
+                {parent.senderName || parent.sender_id}
+              </span>
               <span className="text-xs text-gray-500 dark:text-gray-400" title={new Date(parent.time).toLocaleString()}>
                 {formatTime(parent.time)}
               </span>
@@ -128,7 +140,9 @@ export function ThreadView() {
             <Avatar name={msg.senderName || msg.sender_id} size="md" />
             <div className="min-w-0">
               <div className="flex items-baseline gap-2">
-                <span className="text-sm font-semibold text-gray-900 dark:text-white">{msg.senderName || msg.sender_id}</span>
+                <span className="text-sm font-semibold text-gray-900 dark:text-white">
+                  {msg.senderName || msg.sender_id}
+                </span>
                 <span className="text-xs text-gray-500 dark:text-gray-400" title={new Date(msg.time).toLocaleString()}>
                   {formatTime(msg.time)}
                 </span>
@@ -147,7 +161,10 @@ export function ThreadView() {
         <MessageComposer
           placeholder="回复线程... (Enter 发送, Shift+Enter 换行, @ 提及)"
           onSend={handleSend}
-          mentionScope={{ channelId: parent?.channel_id ?? (currentChannel as any)?.id, channelType: (currentChannel as any)?.type }}
+          mentionScope={{
+            channelId: parent?.channel_id ?? (currentChannel as any)?.id,
+            channelType: (currentChannel as any)?.type,
+          }}
         />
       </div>
     </div>

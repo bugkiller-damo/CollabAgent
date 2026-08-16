@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
@@ -9,13 +9,15 @@ function findClaudeCmd(): string {
   for (const c of candidates) if (existsSync(c)) return c;
   return "claude.cmd";
 }
-function q(s: string): string { return /\s/.test(s) ? `"${s}"` : s; }
+function q(s: string): string {
+  return /\s/.test(s) ? `"${s}"` : s;
+}
 
 export interface PersistentClaudeOpts {
   cwd: string;
   systemPromptFile?: string;
   env: Record<string, string>;
-  label?: string;        // 日志用
+  label?: string; // 日志用
   turnTimeoutMs?: number; // 单回合卡死保护
   startupDelayMs?: number; // 启动后等待时间（默认 1s）
 }
@@ -36,9 +38,12 @@ export class PersistentClaude {
   private spawnProc(): boolean {
     const cmd = findClaudeCmd();
     const args = [
-      "--input-format", "stream-json",
-      "--output-format", "stream-json",
-      "--verbose", "--dangerously-skip-permissions",
+      "--input-format",
+      "stream-json",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--dangerously-skip-permissions",
     ];
     if (this.opts.systemPromptFile && existsSync(this.opts.systemPromptFile)) {
       args.push("--append-system-prompt-file", this.opts.systemPromptFile);
@@ -74,7 +79,10 @@ export class PersistentClaude {
   }
 
   private cleanup() {
-    if (this.turnTimer) { clearTimeout(this.turnTimer); this.turnTimer = null; }
+    if (this.turnTimer) {
+      clearTimeout(this.turnTimer);
+      this.turnTimer = null;
+    }
     this.proc = null;
     this.alive = false;
     this.busy = false;
@@ -92,7 +100,10 @@ export class PersistentClaude {
     const next = this.queue.shift();
     if (next === undefined) return;
     if (!this.proc || !this.alive) {
-      if (!this.spawnProc()) { console.error(`[Persistent${this.opts.label ? " " + this.opts.label : ""}] cannot spawn, dropping turn`); return; }
+      if (!this.spawnProc()) {
+        console.error(`[Persistent${this.opts.label ? " " + this.opts.label : ""}] cannot spawn, dropping turn`);
+        return;
+      }
       this.starting = true;
       this.queue.unshift(next); // 放回队列，启动就绪后重试
       setTimeout(() => {
@@ -102,7 +113,10 @@ export class PersistentClaude {
       return;
     }
     const stdin = this.proc?.stdin;
-    if (!stdin) { console.error(`[Persistent${this.opts.label ? " " + this.opts.label : ""}] no stdin`); return; }
+    if (!stdin) {
+      console.error(`[Persistent${this.opts.label ? " " + this.opts.label : ""}] no stdin`);
+      return;
+    }
     this.busy = true;
     const payload = JSON.stringify({ type: "user", message: { role: "user", content: next } }) + "\n";
     stdin.write(payload);
@@ -110,7 +124,11 @@ export class PersistentClaude {
     const timeout = this.opts.turnTimeoutMs ?? 60000;
     this.turnTimer = setTimeout(() => {
       console.warn(`[Persistent${this.opts.label ? " " + this.opts.label : ""}] turn timeout, killing process`);
-      try { this.proc?.kill(); } catch { /* ignore */ }
+      try {
+        this.proc?.kill();
+      } catch {
+        /* ignore */
+      }
       this.cleanup();
       this.pump();
     }, timeout);
@@ -133,16 +151,25 @@ export class PersistentClaude {
         const ev = JSON.parse(line);
         if (ev.type === "result") {
           // 一个用户回合结束
-          if (this.turnTimer) { clearTimeout(this.turnTimer); this.turnTimer = null; }
+          if (this.turnTimer) {
+            clearTimeout(this.turnTimer);
+            this.turnTimer = null;
+          }
           this.busy = false;
           this.pump();
         }
-      } catch { /* 非 JSON 行忽略 */ }
+      } catch {
+        /* 非 JSON 行忽略 */
+      }
     }
   }
 
   stop(): void {
-    try { this.proc?.kill(); } catch { /* ignore */ }
+    try {
+      this.proc?.kill();
+    } catch {
+      /* ignore */
+    }
     this.cleanup();
     this.queue = [];
   }

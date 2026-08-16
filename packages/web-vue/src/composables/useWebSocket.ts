@@ -1,5 +1,5 @@
-import { ref, onMounted, onUnmounted, type Ref } from "vue";
-import type { WsServerMessage, WsClientMessage } from "@collabagent/shared";
+import type { WsClientMessage, WsServerMessage } from "@collabagent/shared";
+import { onMounted, onUnmounted, type Ref, ref } from "vue";
 
 interface UseWebSocketOptions {
   serverUrl: string;

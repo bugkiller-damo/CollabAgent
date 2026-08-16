@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { ref } from "vue";
-import { useChannelStore } from "../../stores";
 import { apiClient } from "../../api";
+import { useChannelStore } from "../../stores";
 import ConfirmDialog from "../ConfirmDialog.vue";
-import Modal from "../ui/Modal.vue";
-import Input from "../ui/Input.vue";
 import Button from "../ui/Button.vue";
+import Input from "../ui/Input.vue";
+import Modal from "../ui/Modal.vue";
 
 const props = defineProps<{
   channel: any;
@@ -26,7 +26,10 @@ async function handleSave() {
   saving.value = true;
   error.value = "";
   try {
-    await channelStore.updateChannel(props.channel.id, { description: description.value.trim(), type: visibility.value });
+    await channelStore.updateChannel(props.channel.id, {
+      description: description.value.trim(),
+      type: visibility.value,
+    });
     props.onClose();
   } catch (err: any) {
     error.value = err?.message || "保存失败";

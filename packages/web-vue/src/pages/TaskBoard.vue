@@ -2,11 +2,11 @@
 import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { apiGet, apiPost } from "../api";
-import { useChannelStore } from "../stores";
-import { toast } from "../stores/toastStore";
 import PageHeader from "../components/layout/PageHeader.vue";
 import Button from "../components/ui/Button.vue";
 import Input from "../components/ui/Input.vue";
+import { useChannelStore } from "../stores";
+import { toast } from "../stores/toastStore";
 
 interface Task {
   id: string;

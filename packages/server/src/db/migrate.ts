@@ -1,5 +1,5 @@
-import { readFileSync, readdirSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { readdirSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { sql } from "./connection.js";
 
@@ -16,9 +16,7 @@ export async function runMigrations() {
   `);
 
   // Get already applied migrations
-  const applied = new Set(
-    (await sql`SELECT name FROM _migrations`).map((r: any) => r.name)
-  );
+  const applied = new Set((await sql`SELECT name FROM _migrations`).map((r: any) => r.name));
 
   // Find and sort migration files
   const files = readdirSync(migrationsDir)
@@ -47,6 +45,18 @@ export async function runMigrations() {
 // 作为脚本直接运行时（pnpm db:migrate / CI）：执行迁移后退出
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   runMigrations()
-    .then(async () => { await sql.end(); console.log("[DB] migrate done"); process.exit(0); })
-    .catch(async (e) => { console.error("[DB] migrate failed:", e); try { await sql.end(); } catch { /* ignore */ } process.exit(1); });
+    .then(async () => {
+      await sql.end();
+      console.log("[DB] migrate done");
+      process.exit(0);
+    })
+    .catch(async (e) => {
+      console.error("[DB] migrate failed:", e);
+      try {
+        await sql.end();
+      } catch {
+        /* ignore */
+      }
+      process.exit(1);
+    });
 }

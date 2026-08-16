@@ -26,10 +26,22 @@ export function PasswordStrength({ password }: { password: string }) {
     <div className="mt-1">
       <div className="flex gap-1">
         {[0, 1, 2].map((i) => (
-          <div key={i} className={"h-1 flex-1 rounded " + (i < cfg.bars ? cfg.color : "bg-gray-300 dark:bg-gray-600")} />
+          <div
+            key={i}
+            className={"h-1 flex-1 rounded " + (i < cfg.bars ? cfg.color : "bg-gray-300 dark:bg-gray-600")}
+          />
         ))}
       </div>
-      <div className={"text-xs mt-0.5 " + (s === "weak" ? "text-red-500" : s === "medium" ? "text-yellow-600 dark:text-yellow-500" : "text-green-600 dark:text-green-500")}>
+      <div
+        className={
+          "text-xs mt-0.5 " +
+          (s === "weak"
+            ? "text-red-500"
+            : s === "medium"
+              ? "text-yellow-600 dark:text-yellow-500"
+              : "text-green-600 dark:text-green-500")
+        }
+      >
         密码强度：{cfg.label}
         {s === "weak" && <span className="text-gray-400"> · 建议至少 8 位且含字母和数字</span>}
       </div>

@@ -1,0 +1,9 @@
+{
+  "plan": "docs/2026-08-16/02-buzz-vs-slock-optimization-plan.md",
+  "startedAt": "2026-08-16",
+  "completedItems": ["O5"],
+  "currentItem": "O17",
+  "notes": {
+    "O5": "config.ts 硬校验：collectInsecureConfig 纯函数（可单测）+ 生产命中默认值 process.exit(1)；ALLOW_INSECURE_DEV_SECRETS=1 仅限本地调试逃生门；DATABASE_URL 默认值移除 P@ssw0rd；新增 packages/server/.env.example + test/config.test.ts（6 通过）"
+  }
+}

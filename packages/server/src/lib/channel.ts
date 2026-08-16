@@ -25,11 +25,7 @@ export interface ChannelRow {
  * 解析频道名（支持 "#general"、"general"、"#general:abc"）→ { id, ... }
  * 找不到返回 null
  */
-export async function resolveChannel(
-  app: FastifyInstance,
-  rawName: string,
-  fields = "id"
-): Promise<ChannelRow | null> {
+export async function resolveChannel(app: FastifyInstance, rawName: string, fields = "id"): Promise<ChannelRow | null> {
   const name = cleanChannelName(rawName);
   if (!name) return null;
   const r = await app.pg.query(`SELECT ${fields} FROM channels WHERE name = $1`, [name]);
@@ -39,10 +35,7 @@ export async function resolveChannel(
 /**
  * 解析频道名 → 频道 id
  */
-export async function resolveChannelId(
-  app: FastifyInstance,
-  rawName: string
-): Promise<string | null> {
+export async function resolveChannelId(app: FastifyInstance, rawName: string): Promise<string | null> {
   const ch = await resolveChannel(app, rawName);
   return ch?.id ?? null;
 }

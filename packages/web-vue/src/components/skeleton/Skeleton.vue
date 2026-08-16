@@ -1,9 +1,12 @@
 <script setup lang="ts">
-withDefaults(defineProps<{
-  shimmer?: boolean;
-}>(), {
-  shimmer: true,
-});
+withDefaults(
+  defineProps<{
+    shimmer?: boolean;
+  }>(),
+  {
+    shimmer: true,
+  },
+);
 </script>
 
 <template>

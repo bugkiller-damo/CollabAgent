@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { scorePassword, type Strength } from "../lib/passwordStrength";
+import { type Strength, scorePassword } from "../lib/passwordStrength";
 
 const props = defineProps<{
   password: string;

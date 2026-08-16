@@ -1,11 +1,9 @@
-import { useRef, useEffect } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
+import { useEffect, useRef } from "react";
 import { MessageRow } from "./MessageRow";
-import { PendingRow, type PendingItem } from "./PendingRow";
+import { type PendingItem, PendingRow } from "./PendingRow";
 
-export type ListItem =
-  | { kind: "msg"; data: any }
-  | { kind: "pending"; data: PendingItem };
+export type ListItem = { kind: "msg"; data: any } | { kind: "pending"; data: PendingItem };
 
 interface Props {
   items: ListItem[];
@@ -76,9 +74,20 @@ export function VirtualMessageList({ items, channelName, highlightMsgId, onRetry
               style={{ position: "absolute", top: 0, left: 0, width: "100%", transform: `translateY(${vi.start}px)` }}
               className="px-4 py-0.5"
             >
-              {it.kind === "msg"
-                ? <MessageRow msg={it.data} channelName={channelName} prevMsg={prevMsg} isHighlighted={highlightMsgId !== undefined && it.data.id === highlightMsgId && didHighlight.current === highlightMsgId} />
-                : <PendingRow item={it.data} onRetry={onRetry} onDiscard={onDiscard} />}
+              {it.kind === "msg" ? (
+                <MessageRow
+                  msg={it.data}
+                  channelName={channelName}
+                  prevMsg={prevMsg}
+                  isHighlighted={
+                    highlightMsgId !== undefined &&
+                    it.data.id === highlightMsgId &&
+                    didHighlight.current === highlightMsgId
+                  }
+                />
+              ) : (
+                <PendingRow item={it.data} onRetry={onRetry} onDiscard={onDiscard} />
+              )}
             </div>
           );
         })}

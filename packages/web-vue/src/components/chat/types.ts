@@ -16,6 +16,4 @@ export interface PendingItem {
   status: "sending" | "failed" | "queued";
 }
 
-export type ListItem =
-  | { kind: "msg"; data: any }
-  | { kind: "pending"; data: PendingItem };
+export type ListItem = { kind: "msg"; data: any } | { kind: "pending"; data: PendingItem };

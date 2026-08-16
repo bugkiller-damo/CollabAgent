@@ -1,18 +1,24 @@
-import { PersistentClaude } from "./drivers/persistent-claude.js";
-import { claudePrint } from "./claude-print.js";
-import { writeSystemPromptFile, createWorkspaceDir, fetchDispatchContext } from "./agent-startup.js";
 import type { AgentRuntimeOptions } from "./agent-runtime.js";
+import type { ICredentialsClient } from "./agent-runtime-credentials.js";
+import type { IExitChain } from "./agent-runtime-exit.js";
+import type { SpawnPtyForAgent } from "./agent-runtime-spawn.js";
 import type { IAgentStateMachine } from "./agent-runtime-state.js";
 import type { ITurnTracker } from "./agent-runtime-turn-tracker.js";
-import type { IExitChain } from "./agent-runtime-exit.js";
+import { createWorkspaceDir, fetchDispatchContext, writeSystemPromptFile } from "./agent-startup.js";
+import { claudePrint } from "./claude-print.js";
+import { PersistentClaude } from "./drivers/persistent-claude.js";
 import type { IIdleReclaimer } from "./idle-reclaimer.js";
 import type { PostStartInputWriter } from "./post-start-input-writer.js";
-import type { SpawnPtyForAgent } from "./agent-runtime-spawn.js";
-import type { ICredentialsClient } from "./agent-runtime-credentials.js";
 
 export interface IDispatch {
   dispatchToAgent(agentName: string, channelName: string, userMsg: string): Promise<void>;
-  runAgent(agentName: string, channelName: string, replyTarget: string, senderName: string, content: string): Promise<void>;
+  runAgent(
+    agentName: string,
+    channelName: string,
+    replyTarget: string,
+    senderName: string,
+    content: string,
+  ): Promise<void>;
   runAgentDm(agentName: string, replyTarget: string, senderName: string, content: string): Promise<void>;
   runAgentReminder(agentName: string, reminder: { title?: string; channel?: string }): Promise<void>;
 }
@@ -51,17 +57,31 @@ export interface DispatchDeps {
  */
 export const createDispatch = (deps: DispatchDeps): IDispatch => {
   const {
-    options, stateMachine, turnTracker, exitChain, idleReclaimer,
-    credentialsClient, postStartWriter, spawnPtyForAgent, usePty,
-    resolveAgentId, agentInfo, runIdByAgent, persistentSessions,
-    agentSessions, dispatchPromises,
+    options,
+    stateMachine,
+    turnTracker,
+    exitChain,
+    idleReclaimer,
+    credentialsClient,
+    postStartWriter,
+    spawnPtyForAgent,
+    usePty,
+    resolveAgentId,
+    agentInfo,
+    runIdByAgent,
+    persistentSessions,
+    agentSessions,
+    dispatchPromises,
   } = deps;
   const { transitionState, clearStartupTimer } = stateMachine;
   const { mintAgentCredential } = credentialsClient;
 
   const doDispatch = async (agentName: string, channelName: string, userMsg: string): Promise<void> => {
     const agentId = resolveAgentId(agentName);
-    if (!agentId) { console.error(`[Daemon] No agent id for @${agentName}, skip`); return; }
+    if (!agentId) {
+      console.error(`[Daemon] No agent id for @${agentName}, skip`);
+      return;
+    }
 
     if (stateMachine.getState(agentName) === "stopped") {
       console.log(`[Daemon] @${agentName} is stopped, skipping dispatch`);
@@ -215,7 +235,11 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
     const inFlight = dispatchPromises.get(agentName);
     if (inFlight) {
       console.log(`[Daemon] @${agentName} busy — message queued (gated delivery)`);
-      try { deps.onDeliveryQueued?.(agentName, channelName); } catch { /* 回调失败不阻塞排队 */ }
+      try {
+        deps.onDeliveryQueued?.(agentName, channelName);
+      } catch {
+        /* 回调失败不阻塞排队 */
+      }
     }
     const next = (inFlight ?? Promise.resolve())
       .catch(() => {}) // 上一条失败不阻断队列后续消息
@@ -230,8 +254,11 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
   };
 
   const runAgent = async (
-    agentName: string, channelName: string, replyTarget: string,
-    senderName: string, content: string,
+    agentName: string,
+    channelName: string,
+    replyTarget: string,
+    senderName: string,
+    content: string,
   ): Promise<void> => {
     const inThread = replyTarget.includes(":");
     const where = inThread ? `#${channelName} 的一个线程里` : `#${channelName} 频道`;
@@ -247,8 +274,10 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
   };
 
   const runAgentDm = async (
-    agentName: string, replyTarget: string,
-    senderName: string, content: string,
+    agentName: string,
+    replyTarget: string,
+    senderName: string,
+    content: string,
   ): Promise<void> => {
     const userMsg = [
       `你收到了一条来自 @${senderName} 的私信（DM）：${content}`,
@@ -261,10 +290,7 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
     await dispatchToAgent(agentName, replyTarget, userMsg);
   };
 
-  const runAgentReminder = async (
-    agentName: string,
-    reminder: { title?: string; channel?: string },
-  ): Promise<void> => {
+  const runAgentReminder = async (agentName: string, reminder: { title?: string; channel?: string }): Promise<void> => {
     const channelName = (reminder.channel || "").replace(/^#/, "").split(":")[0] || "general";
     const where = reminder.channel
       ? `相关频道：${reminder.channel}。如需发消息，用 \`send_message\` 工具（target="${reminder.channel}"），没有该工具时退回` +

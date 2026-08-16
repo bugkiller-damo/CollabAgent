@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import { BUSY_MARKER_RE, PROMPT_RE } from "../src/agent-runtime.js";
 
 /**
@@ -9,7 +9,9 @@ import { BUSY_MARKER_RE, PROMPT_RE } from "../src/agent-runtime.js";
 
 describe("BUSY_MARKER_RE", () => {
   it("matches the standard 'esc to interrupt' busy footer", () => {
-    expect(BUSY_MARKER_RE.test("⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ← for ag…")).toBe(true);
+    expect(BUSY_MARKER_RE.test("⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ← for ag…")).toBe(
+      true,
+    );
   });
 
   it("is case-insensitive and tolerates extra whitespace", () => {
@@ -17,7 +19,9 @@ describe("BUSY_MARKER_RE", () => {
   });
 
   it("does not match the idle footer", () => {
-    expect(BUSY_MARKER_RE.test("⏵⏵ bypass permissions on (shift+tab to cycle)  ctrl+g to edit in Notepad.exe")).toBe(false);
+    expect(BUSY_MARKER_RE.test("⏵⏵ bypass permissions on (shift+tab to cycle)  ctrl+g to edit in Notepad.exe")).toBe(
+      false,
+    );
   });
 });
 

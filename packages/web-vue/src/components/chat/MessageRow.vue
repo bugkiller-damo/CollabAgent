@@ -2,13 +2,13 @@
 import { computed, nextTick, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { apiClient } from "../../api";
+import { formatTime } from "../../lib/formatTime";
 import { useAuthStore, useMessageStore } from "../../stores";
 import { toast } from "../../stores/toastStore";
-import { formatTime } from "../../lib/formatTime";
 import ConfirmDialog from "../ConfirmDialog.vue";
-import MarkdownContent from "./MarkdownContent.vue";
 import AttachmentView from "./AttachmentView.vue";
 import LinkPreview from "./LinkPreview.vue";
+import MarkdownContent from "./MarkdownContent.vue";
 
 const EMOJI_CHOICES = ["👍", "❤️", "😂", "🎉", "🤔", "👀"];
 
@@ -73,8 +73,7 @@ const timeDiffMin = computed(() => {
   if (!prev) return Infinity;
   return (
     Math.abs(
-      new Date(props.msg.time || props.msg.createdAt).getTime() -
-        new Date(prev.time || prev.createdAt).getTime(),
+      new Date(props.msg.time || props.msg.createdAt).getTime() - new Date(prev.time || prev.createdAt).getTime(),
     ) / 60000
   );
 });

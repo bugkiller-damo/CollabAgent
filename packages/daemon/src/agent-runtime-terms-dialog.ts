@@ -66,22 +66,43 @@ export const installTermsAcceptHandler = (
 
       if (!acceptSent) {
         acceptSent = true;
-        try { agentManager.writeInput(runId, "2"); } catch { /* */ }
+        try {
+          agentManager.writeInput(runId, "2");
+        } catch {
+          /* */
+        }
         setTimeout(() => {
           try {
             agentManager.writeInput(runId, "\r");
             console.log(`[Runtime] @${agentName} accepted permissions`);
-          } catch { /* */ }
+          } catch {
+            /* */
+          }
           // 再等 300ms 让 Claude 把界面从对话框切到真正的聊天输入框
           setTimeout(settle, 300);
         }, 200);
-        setTimeout(() => { try { unsub(); } catch { /* */ } }, 1000);
+        setTimeout(() => {
+          try {
+            unsub();
+          } catch {
+            /* */
+          }
+        }, 1000);
       }
     });
 
     // 1.5s 内没检测到对话框 → 判定本次不会出现（已接受过 terms），放行
-    setTimeout(() => { if (!detected) settle(); }, 1500);
+    setTimeout(() => {
+      if (!detected) settle();
+    }, 1500);
     // 兜底：即便检测到对话框但卡住，最多等 10s 也要放行，避免 bootstrap 永久卡死
-    setTimeout(() => { try { unsub(); } catch { /* */ } settle(); }, 10000);
+    setTimeout(() => {
+      try {
+        unsub();
+      } catch {
+        /* */
+      }
+      settle();
+    }, 10000);
   });
 };

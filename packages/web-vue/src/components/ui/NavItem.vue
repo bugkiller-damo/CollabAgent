@@ -2,12 +2,15 @@
 import { computed } from "vue";
 import { RouterLink, useRoute } from "vue-router";
 
-const props = withDefaults(defineProps<{
-  to: string;
-  end?: boolean;
-}>(), {
-  end: false,
-});
+const props = withDefaults(
+  defineProps<{
+    to: string;
+    end?: boolean;
+  }>(),
+  {
+    end: false,
+  },
+);
 
 const route = useRoute();
 // 对齐 React 版：end 时精确匹配，否则前缀匹配 location.pathname（Vue 对应 route.path）

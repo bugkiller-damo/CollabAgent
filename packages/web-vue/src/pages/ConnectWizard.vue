@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { ref, computed, watch, onUnmounted } from "vue";
+import { computed, onUnmounted, ref, watch } from "vue";
 import { RouterLink } from "vue-router";
 import { apiGet, apiPost } from "../api";
+import Button from "../components/ui/Button.vue";
 import Card from "../components/ui/Card.vue";
 import Input from "../components/ui/Input.vue";
-import Button from "../components/ui/Button.vue";
 
 interface Agent {
   id: string;
@@ -36,9 +36,7 @@ const agentOnline = ref(false);
 const serverUrl = window.location.origin;
 
 const command = computed(() =>
-  token.value
-    ? `pnpm --filter @collabagent/daemon dev -- --server-url ${serverUrl} --api-key ${token.value}`
-    : "",
+  token.value ? `pnpm --filter @collabagent/daemon dev -- --server-url ${serverUrl} --api-key ${token.value}` : "",
 );
 
 async function generateToken() {

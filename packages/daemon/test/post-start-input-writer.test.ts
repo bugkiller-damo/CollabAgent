@@ -1,5 +1,10 @@
-import { describe, it, expect } from "vitest";
-import { hasInteractivePromptReady, hasPasteAck, commandBaseName, toBracketedPasteSubmission } from "../src/post-start-input-writer.js";
+import { describe, expect, it } from "vitest";
+import {
+  commandBaseName,
+  hasInteractivePromptReady,
+  hasPasteAck,
+  toBracketedPasteSubmission,
+} from "../src/post-start-input-writer.js";
 
 describe("hasInteractivePromptReady", () => {
   it("detects the standard boxed empty-input prompt", () => {
@@ -52,7 +57,11 @@ describe("hasPasteAck", () => {
 
 describe("commandBaseName (live bug 12 regression)", () => {
   it("extracts the bare name from an absolute Windows path with .exe", () => {
-    expect(commandBaseName(String.raw`C:\Users\14431\AppData\Roaming\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe`)).toBe("claude");
+    expect(
+      commandBaseName(
+        String.raw`C:\Users\14431\AppData\Roaming\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe`,
+      ),
+    ).toBe("claude");
   });
 
   it("extracts the bare name from an absolute posix path", () => {

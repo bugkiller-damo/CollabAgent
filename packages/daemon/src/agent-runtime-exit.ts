@@ -1,17 +1,17 @@
-import { createExitCoordinator } from "./exit-coordinator.js";
-import { createExitHandler, createMinimalExitHandler } from "./exit-handler.js";
-import { appendTerminalLog } from "./terminal-log.js";
-import type {
-  IAgentTokenRegistry,
-  ILiveRunRegistry,
-  IAgentManager,
-  IAgentRunStore,
-  LiveAgentRun,
-} from "./types/index.js";
+import type { ICredentialsClient } from "./agent-runtime-credentials.js";
 import type { IAgentStateMachine } from "./agent-runtime-state.js";
 import type { ITurnTracker } from "./agent-runtime-turn-tracker.js";
+import { createExitCoordinator } from "./exit-coordinator.js";
+import { createExitHandler, createMinimalExitHandler } from "./exit-handler.js";
 import type { IIdleReclaimer } from "./idle-reclaimer.js";
-import type { ICredentialsClient } from "./agent-runtime-credentials.js";
+import { appendTerminalLog } from "./terminal-log.js";
+import type {
+  IAgentManager,
+  IAgentRunStore,
+  IAgentTokenRegistry,
+  ILiveRunRegistry,
+  LiveAgentRun,
+} from "./types/index.js";
 
 /**
  * PTY 退出清理链（仿照 Hive `agent-run-exit-handler.ts`）。
@@ -60,9 +60,16 @@ export interface ExitChainDeps {
 
 export const createExitChain = (deps: ExitChainDeps): IExitChain => {
   const {
-    tokenRegistry, runStore, liveRunRegistry, agentManager,
-    idleReclaimer, turnTracker, stateMachine, credentialsClient,
-    unsubByRunId, runIdByAgent,
+    tokenRegistry,
+    runStore,
+    liveRunRegistry,
+    agentManager,
+    idleReclaimer,
+    turnTracker,
+    stateMachine,
+    credentialsClient,
+    unsubByRunId,
+    runIdByAgent,
   } = deps;
 
   const runContext = new Map<string, RunContextEntry>();
@@ -83,15 +90,22 @@ export const createExitChain = (deps: ExitChainDeps): IExitChain => {
     // 1) 吊销本地 token 记录（仅在仍匹配时——防止新 run 已重新签发的 token 被误删）
     //    +（若有 runStore）落盘最终状态
     exitHandler({
-      runId, agentId: ctx.agentId, token: ctx.token, exitCode,
-      startedAt: ctx.startedAt, messagesProcessed,
+      runId,
+      agentId: ctx.agentId,
+      token: ctx.token,
+      exitCode,
+      startedAt: ctx.startedAt,
+      messagesProcessed,
     });
     // 1b) 撤销服务端那份 scoped runtime token（best-effort，不阻塞/不影响退出流程）
     void credentialsClient.revokeAgentCredential(ctx.agentId);
 
     // 2) 取消输出订阅
     const unsub = unsubByRunId.get(runId);
-    if (unsub) { unsub(); unsubByRunId.delete(runId); }
+    if (unsub) {
+      unsub();
+      unsubByRunId.delete(runId);
+    }
 
     idleReclaimer.untrack(ctx.agentName);
     // pending/busyObserved 是按 agentName（不是 runId）存的；这个 run 已经死了，
@@ -110,7 +124,11 @@ export const createExitChain = (deps: ExitChainDeps): IExitChain => {
       // "stopped" 只应由显式 unregisterAgent 设置；崩溃退出转回 "idle"，
       // 让下一条消息能重新拉起 PTY，而不是被 doDispatch 的 stopped 检查拦截。
       if (currentStatus && currentStatus !== "stopped") {
-        try { stateMachine.transitionState(ctx.agentName, "idle"); } catch { /* 无效迁移已在内部吞掉 */ }
+        try {
+          stateMachine.transitionState(ctx.agentName, "idle");
+        } catch {
+          /* 无效迁移已在内部吞掉 */
+        }
       }
     }
 
@@ -125,14 +143,13 @@ export const createExitChain = (deps: ExitChainDeps): IExitChain => {
     // 4) 清理 agent-manager 内部的 processes Map + outputBus 订阅
     agentManager.removeRun(runId);
 
-    console.warn(
-      `[Runtime] @${ctx.agentName} PTY exited (code=${exitCode}); cleaned up runId=${runId.slice(0, 8)}`,
-    );
+    console.warn(`[Runtime] @${ctx.agentName} PTY exited (code=${exitCode}); cleaned up runId=${runId.slice(0, 8)}`);
   });
 
   return {
     registerRunContext: (runId, ctx) => runContext.set(runId, ctx),
-    incrementMessagesProcessed: (runId) => messagesProcessedByRun.set(runId, (messagesProcessedByRun.get(runId) ?? 0) + 1),
+    incrementMessagesProcessed: (runId) =>
+      messagesProcessedByRun.set(runId, (messagesProcessedByRun.get(runId) ?? 0) + 1),
     onExit: (runId, exitCode) => exitCoordinator.onExit(runId, exitCode),
     preSpawn: (runId) => exitCoordinator.preSpawn(runId),
     register: (run) => exitCoordinator.register(run),

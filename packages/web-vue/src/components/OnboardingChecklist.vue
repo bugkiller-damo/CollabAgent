@@ -1,12 +1,17 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { RouterLink } from "vue-router";
 import { apiGet } from "../api";
 import { usePolling } from "../composables";
 
 const DISMISS_KEY = "onboarding_dismissed";
 
-interface Step { label: string; done: boolean; to: string; cta: string; }
+interface Step {
+  label: string;
+  done: boolean;
+  to: string;
+  cta: string;
+}
 
 // 首登轻量引导：检测真实状态（daemon 是否连上、是否有 Agent），给出下一步清单。
 // 全部完成或用户手动关闭后不再出现（localStorage 记忆）。
@@ -17,14 +22,24 @@ const hasAgent = ref<boolean | null>(null);
 function load() {
   if (dismissed.value) return;
   apiGet<{ connected: boolean }>("/api/daemon/status")
-    .then((d) => { daemonOn.value = !!d.connected; })
-    .catch(() => { daemonOn.value = false; });
+    .then((d) => {
+      daemonOn.value = !!d.connected;
+    })
+    .catch(() => {
+      daemonOn.value = false;
+    });
   apiGet<{ agents: any[] }>("/api/agents")
-    .then((d) => { hasAgent.value = (d.agents || []).length > 0; })
-    .catch(() => { hasAgent.value = false; });
+    .then((d) => {
+      hasAgent.value = (d.agents || []).length > 0;
+    })
+    .catch(() => {
+      hasAgent.value = false;
+    });
 }
 
-onMounted(() => { load(); });
+onMounted(() => {
+  load();
+});
 usePolling(load, 8000);
 
 const steps = computed<Step[]>(() => [

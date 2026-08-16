@@ -1,6 +1,6 @@
-import { create } from "zustand";
-import { apiGet, apiPost, apiClient } from "../api/client";
 import type { Message } from "@collabagent/shared";
+import { create } from "zustand";
+import { apiClient, apiGet, apiPost } from "../api/client";
 
 const CACHE_PREFIX = "msgs_";
 const CACHE_LIMIT = 50;
@@ -75,7 +75,11 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   },
 
   sendMessage: async (channel, content, attachments) => {
-    const data = await apiPost<{ messageId: string; messageSeq: number }>("/api/messages/send", { target: channel, content, attachmentIds: attachments });
+    const data = await apiPost<{ messageId: string; messageSeq: number }>("/api/messages/send", {
+      target: channel,
+      content,
+      attachmentIds: attachments,
+    });
     const newMsg = {
       id: data.messageId,
       channelId: channel,
@@ -121,7 +125,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       const next: Record<string, Message[]> = {};
       for (const k in s.messagesByTarget) {
         next[k] = s.messagesByTarget[k].map((m: any) =>
-          m.id === messageId ? { ...m, content, editedAt: editedAt || new Date().toISOString() } : m
+          m.id === messageId ? { ...m, content, editedAt: editedAt || new Date().toISOString() } : m,
         );
       }
       return { messagesByTarget: next };
@@ -133,7 +137,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       const next: Record<string, Message[]> = {};
       for (const k in s.messagesByTarget) {
         next[k] = s.messagesByTarget[k].map((m: any) =>
-          m.id === messageId ? { ...m, task_number: taskNumber, task_status: "todo" } : m
+          m.id === messageId ? { ...m, task_number: taskNumber, task_status: "todo" } : m,
         );
       }
       return { messagesByTarget: next };
@@ -160,7 +164,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       const next: Record<string, Message[]> = {};
       for (const k in s.messagesByTarget) {
         next[k] = s.messagesByTarget[k].map((m: any) =>
-          m.id === messageId ? { ...m, content: "", deleted: true } : m
+          m.id === messageId ? { ...m, content: "", deleted: true } : m,
         );
       }
       return { messagesByTarget: next };
@@ -179,7 +183,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
           if (action === "add") {
             if (idx >= 0) {
               if (reactions[idx].userIds.includes(userId)) return m;
-              newReactions = reactions.map((r, i) => i === idx ? { ...r, userIds: [...r.userIds, userId] } : r);
+              newReactions = reactions.map((r, i) => (i === idx ? { ...r, userIds: [...r.userIds, userId] } : r));
             } else {
               newReactions = [...reactions, { emoji, userIds: [userId] }];
             }
@@ -189,7 +193,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
             if (newUserIds.length === 0) {
               newReactions = reactions.filter((_, i) => i !== idx);
             } else {
-              newReactions = reactions.map((r, i) => i === idx ? { ...r, userIds: newUserIds } : r);
+              newReactions = reactions.map((r, i) => (i === idx ? { ...r, userIds: newUserIds } : r));
             }
           }
           return { ...m, reactions: newReactions };

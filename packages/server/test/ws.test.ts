@@ -1,6 +1,6 @@
-import { describe, it, expect, afterAll } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
-import { api, registerUser, cleanupTestData, closeSql, uniqHandle, BASE } from "./helpers.js";
+import { api, BASE, cleanupTestData, closeSql, registerUser, uniqHandle } from "./helpers.js";
 
 const WS_BASE = BASE.replace(/^http/, "ws") + "/ws";
 
@@ -35,7 +35,11 @@ function nextMessage(ws: WebSocket, timeout = 8000): Promise<any> {
     }, timeout);
     ws.once("message", (raw) => {
       clearTimeout(timer);
-      try { resolve(JSON.parse(raw.toString())); } catch { resolve(raw.toString()); }
+      try {
+        resolve(JSON.parse(raw.toString()));
+      } catch {
+        resolve(raw.toString());
+      }
     });
     ws.once("close", (code) => {
       clearTimeout(timer);
@@ -51,7 +55,10 @@ function nextMessage(ws: WebSocket, timeout = 8000): Promise<any> {
 function closeCode(ws: WebSocket, timeout = 8000): Promise<number> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("WS close timeout")), timeout);
-    ws.once("close", (code) => { clearTimeout(timer); resolve(code); });
+    ws.once("close", (code) => {
+      clearTimeout(timer);
+      resolve(code);
+    });
     ws.once("error", () => {});
   });
 }
@@ -93,7 +100,10 @@ describe("WS: connection auth", () => {
   it("daemon with valid machine token connects and receives serverTime", async () => {
     const u = await registerUser();
     const tr = await api("/api/profile/machine-token", {
-      method: "POST", cookie: u.cookie, csrf: u.csrf, body: {},
+      method: "POST",
+      cookie: u.cookie,
+      csrf: u.csrf,
+      body: {},
     });
     expect(tr.status).toBe(200);
     const machineToken: string = tr.data.token;
@@ -127,18 +137,23 @@ describe("WS: daemon ready & status", () => {
   it("daemon ready message is accepted; /api/daemon/status returns connected", async () => {
     const u = await registerUser();
     const tr = await api("/api/profile/machine-token", {
-      method: "POST", cookie: u.cookie, csrf: u.csrf, body: {},
+      method: "POST",
+      cookie: u.cookie,
+      csrf: u.csrf,
+      body: {},
     });
     const { ws, connected } = connectWs({ Authorization: `Bearer ${tr.data.token}` });
     await connected; // "connected"
 
     // Send ready metadata
-    ws.send(JSON.stringify({
-      type: "ready",
-      hostname: "ws-test-host",
-      daemonVersion: "0.1.0-ws-test",
-      runtimes: ["node:20"],
-    }));
+    ws.send(
+      JSON.stringify({
+        type: "ready",
+        hostname: "ws-test-host",
+        daemonVersion: "0.1.0-ws-test",
+        runtimes: ["node:20"],
+      }),
+    );
 
     // Give the server a tick to process
     await tick(100);
@@ -153,26 +168,28 @@ describe("WS: daemon ready & status", () => {
   it("daemon disconnect clears status", async () => {
     const u = await registerUser();
     const tr = await api("/api/profile/machine-token", {
-      method: "POST", cookie: u.cookie, csrf: u.csrf, body: {},
+      method: "POST",
+      cookie: u.cookie,
+      csrf: u.csrf,
+      body: {},
     });
     const { ws, connected } = connectWs({ Authorization: `Bearer ${tr.data.token}` });
     await connected;
-    expect(
-      (await api("/api/daemon/status", { cookie: u.cookie })).data.connected,
-    ).toBe(true);
+    expect((await api("/api/daemon/status", { cookie: u.cookie })).data.connected).toBe(true);
 
     ws.close();
     await tick(300); // Give cleanup time
 
-    expect(
-      (await api("/api/daemon/status", { cookie: u.cookie })).data.connected,
-    ).toBe(false);
+    expect((await api("/api/daemon/status", { cookie: u.cookie })).data.connected).toBe(false);
   });
 
   it("daemon sends agent:status / agent:activity without errors", async () => {
     const u = await registerUser();
     const tr = await api("/api/profile/machine-token", {
-      method: "POST", cookie: u.cookie, csrf: u.csrf, body: {},
+      method: "POST",
+      cookie: u.cookie,
+      csrf: u.csrf,
+      body: {},
     });
     const { ws, connected } = connectWs({ Authorization: `Bearer ${tr.data.token}` });
     await connected;
@@ -199,12 +216,8 @@ describe("WS: daemon ready & status", () => {
     const { ws: ws2, connected: c2 } = connectWs({ Authorization: `Bearer ${t2.data.token}` });
     await c2;
 
-    expect(
-      (await api("/api/daemon/status", { cookie: u1.cookie })).data.connected,
-    ).toBe(true);
-    expect(
-      (await api("/api/daemon/status", { cookie: u2.cookie })).data.connected,
-    ).toBe(true);
+    expect((await api("/api/daemon/status", { cookie: u1.cookie })).data.connected).toBe(true);
+    expect((await api("/api/daemon/status", { cookie: u2.cookie })).data.connected).toBe(true);
 
     ws1.close();
     ws2.close();
@@ -222,7 +235,8 @@ describe("WS: browser connections", () => {
     const p1 = nextMessage(ws1);
     const p2 = nextMessage(ws2);
     await api("/api/messages/send", {
-      method: "POST", cookie: u.cookie,
+      method: "POST",
+      cookie: u.cookie,
       body: { target: "#general", content: `multi-browser-${Date.now()}` },
     });
     const [m1, m2] = await Promise.all([p1, p2]);
@@ -244,7 +258,8 @@ describe("WS: broadcast delivery", () => {
     const content = `public-${Date.now()}`;
     const msgPromise = nextMessage(ws);
     const send = await api("/api/messages/send", {
-      method: "POST", cookie: u.cookie,
+      method: "POST",
+      cookie: u.cookie,
       body: { target: "#general", content },
     });
     expect(send.status).toBe(200);
@@ -271,7 +286,8 @@ describe("WS: broadcast delivery", () => {
     // Create a private channel
     const chName = `priv-${uniqHandle()}`;
     const create = await api("/api/channels", {
-      method: "POST", cookie: owner.cookie,
+      method: "POST",
+      cookie: owner.cookie,
       body: { serverId, name: chName, type: "private" },
     });
     expect(create.status).toBe(200);
@@ -279,7 +295,9 @@ describe("WS: broadcast delivery", () => {
 
     // Invite member
     const invite = await api(`/api/channels/${channelId}/invite`, {
-      method: "POST", cookie: owner.cookie, csrf: owner.csrf,
+      method: "POST",
+      cookie: owner.cookie,
+      csrf: owner.csrf,
       body: { handle: member.handle },
     });
     expect(invite.status).toBe(200);
@@ -296,7 +314,8 @@ describe("WS: broadcast delivery", () => {
     const outsiderMsg = nextMessage(wsOutsider);
 
     await api("/api/messages/send", {
-      method: "POST", cookie: owner.cookie,
+      method: "POST",
+      cookie: owner.cookie,
       body: { target: `#${chName}`, content },
     });
 
@@ -311,7 +330,9 @@ describe("WS: broadcast delivery", () => {
     });
     await expect(outsiderMsg).rejects.toThrow(/timeout/);
 
-    wsOwner.close(); wsMember.close(); wsOutsider.close();
+    wsOwner.close();
+    wsMember.close();
+    wsOutsider.close();
   });
 
   it("DM channel message reaches both participants only", async () => {
@@ -330,7 +351,8 @@ describe("WS: broadcast delivery", () => {
     const msgC = nextMessage(wsC);
 
     await api("/api/messages/send", {
-      method: "POST", cookie: a.cookie,
+      method: "POST",
+      cookie: a.cookie,
       body: { target: `dm:@${b.handle}`, content },
     });
 
@@ -345,6 +367,8 @@ describe("WS: broadcast delivery", () => {
     });
     await expect(msgC).rejects.toThrow(/timeout/);
 
-    wsA.close(); wsB.close(); wsC.close();
+    wsA.close();
+    wsB.close();
+    wsC.close();
   });
 });

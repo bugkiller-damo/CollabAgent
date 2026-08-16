@@ -1,16 +1,19 @@
 <script setup lang="ts">
 import Modal from "./ui/Modal.vue";
 
-withDefaults(defineProps<{
-  title: string;
-  message?: string;
-  confirmLabel?: string;
-  cancelLabel?: string;
-  danger?: boolean;
-}>(), {
-  confirmLabel: "确定",
-  cancelLabel: "取消",
-});
+withDefaults(
+  defineProps<{
+    title: string;
+    message?: string;
+    confirmLabel?: string;
+    cancelLabel?: string;
+    danger?: boolean;
+  }>(),
+  {
+    confirmLabel: "确定",
+    cancelLabel: "取消",
+  },
+);
 
 const emit = defineEmits<{
   confirm: [];

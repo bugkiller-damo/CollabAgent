@@ -1,5 +1,5 @@
-import type { WebSocket } from "ws";
 import jwt from "jsonwebtoken";
+import type { WebSocket } from "ws";
 import { config } from "../lib/config.js";
 
 // 必须与 fastify-jwt 注册时的默认一致，否则浏览器 token 验不过 → 都变 "anon"
@@ -10,7 +10,13 @@ export const browserClients = new Map<string, Set<WebSocket>>();
 // Daemon connections (keyed by userId — one per user machine)
 export const daemonClients = new Map<string, WebSocket>();
 // Daemon 元数据（握手 ready 上报）：用于运维仪表盘展示逐个 daemon 明细
-export interface DaemonMeta { userId: string; hostname: string; daemonVersion: string; runtimes: string[]; connectedAt: number; }
+export interface DaemonMeta {
+  userId: string;
+  hostname: string;
+  daemonVersion: string;
+  runtimes: string[];
+  connectedAt: number;
+}
 export const daemonMeta = new Map<string, DaemonMeta>();
 
 // 终端观察（G3）：userId -> agentName -> 观众 socket 集合。
@@ -20,9 +26,15 @@ const terminalWatchers = new Map<string, Map<string, Set<WebSocket>>>();
 
 function addTerminalWatcher(userId: string, agentName: string, ws: WebSocket): void {
   let byAgent = terminalWatchers.get(userId);
-  if (!byAgent) { byAgent = new Map(); terminalWatchers.set(userId, byAgent); }
+  if (!byAgent) {
+    byAgent = new Map();
+    terminalWatchers.set(userId, byAgent);
+  }
   let set = byAgent.get(agentName);
-  if (!set) { set = new Set(); byAgent.set(agentName, set); }
+  if (!set) {
+    set = new Set();
+    byAgent.set(agentName, set);
+  }
   const wasEmpty = set.size === 0;
   set.add(ws);
   if (wasEmpty) sendToDaemon(userId, { type: "terminal:watch", agentName });
@@ -76,29 +88,45 @@ export function wsHandler(connection: WebSocket, req: any) {
   // resolveUserId 是异步的（daemon 要 bcrypt 比对令牌），但客户端在 open 后立刻发 ready。
   // 先缓冲早到的消息，注册完成后回放，避免 ready 元数据丢失。
   const earlyBuffer: Buffer[] = [];
-  const bufferEarly = (raw: Buffer) => { earlyBuffer.push(raw); };
+  const bufferEarly = (raw: Buffer) => {
+    earlyBuffer.push(raw);
+  };
   connection.on("message", bufferEarly);
 
-  void resolveUserId(token, isDaemon).then((userId) => {
-    connection.off("message", bufferEarly);
-    // daemon 令牌无效/被吊销 → resolveUserId 返回 "anon"。明确用 4001 关闭，
-    // 而不是把它当匿名 daemon 登记，否则 daemon 会误以为已连上并无限重连。
-    if (isDaemon && userId === "anon") {
-      console.warn("[WS] Daemon auth failed (invalid/revoked machine token); closing with 4001");
-      try { connection.close(4001, "unauthorized"); } catch { /* ignore */ }
-      return;
-    }
-    // 浏览器 token 无效同样拒绝：此前降级为 "anon" 登记，导致未登录连接也能
-    // 收到所有公开频道的消息广播（内容泄露）。统一按未授权关闭。
-    if (!isDaemon && userId === "anon") {
-      try { connection.close(4001, "unauthorized"); } catch { /* ignore */ }
-      return;
-    }
-    registerConnection(connection, userId, isDaemon);
-    for (const raw of earlyBuffer) connection.emit("message", raw);
-  }).catch(() => {
-    try { connection.close(1011, "internal error"); } catch { /* ignore */ }
-  });
+  void resolveUserId(token, isDaemon)
+    .then((userId) => {
+      connection.off("message", bufferEarly);
+      // daemon 令牌无效/被吊销 → resolveUserId 返回 "anon"。明确用 4001 关闭，
+      // 而不是把它当匿名 daemon 登记，否则 daemon 会误以为已连上并无限重连。
+      if (isDaemon && userId === "anon") {
+        console.warn("[WS] Daemon auth failed (invalid/revoked machine token); closing with 4001");
+        try {
+          connection.close(4001, "unauthorized");
+        } catch {
+          /* ignore */
+        }
+        return;
+      }
+      // 浏览器 token 无效同样拒绝：此前降级为 "anon" 登记，导致未登录连接也能
+      // 收到所有公开频道的消息广播（内容泄露）。统一按未授权关闭。
+      if (!isDaemon && userId === "anon") {
+        try {
+          connection.close(4001, "unauthorized");
+        } catch {
+          /* ignore */
+        }
+        return;
+      }
+      registerConnection(connection, userId, isDaemon);
+      for (const raw of earlyBuffer) connection.emit("message", raw);
+    })
+    .catch(() => {
+      try {
+        connection.close(1011, "internal error");
+      } catch {
+        /* ignore */
+      }
+    });
 }
 
 async function resolveUserId(token: string | null, isDaemon: boolean): Promise<string> {
@@ -110,18 +138,20 @@ async function resolveUserId(token: string | null, isDaemon: boolean): Promise<s
       // 快路径：sha256 直接索引命中（新令牌）
       const fast = await wsPg.query<{ user_id: string }>(
         "SELECT user_id FROM machine_tokens WHERE token_hash = $1 AND revoked_at IS NULL",
-        [sha256Token(token)]
+        [sha256Token(token)],
       );
       if (fast.rows.length > 0) return String(fast.rows[0].user_id);
       // 兼容路径：历史 bcrypt 令牌逐行比对（轮换后可删除）
       const bcrypt = (await import("bcryptjs")).default;
       const result = await wsPg.query<{ user_id: string; token_hash: string }>(
-        "SELECT user_id, token_hash FROM machine_tokens WHERE revoked_at IS NULL"
+        "SELECT user_id, token_hash FROM machine_tokens WHERE revoked_at IS NULL",
       );
       for (const row of result.rows) {
         if (isBcryptHash(row.token_hash) && (await bcrypt.compare(token, row.token_hash))) return String(row.user_id);
       }
-    } catch { /* fall through to anon */ }
+    } catch {
+      /* fall through to anon */
+    }
     return "anon";
   }
   try {
@@ -169,7 +199,13 @@ function registerConnection(connection: WebSocket, userId: string, isDaemon: boo
             const set = agentName ? terminalWatchers.get(userId)?.get(agentName) : undefined;
             if (set) {
               const payload = JSON.stringify(msg);
-              for (const ws of set) { try { ws.send(payload); } catch { /* ignore */ } }
+              for (const ws of set) {
+                try {
+                  ws.send(payload);
+                } catch {
+                  /* ignore */
+                }
+              }
             }
             break;
           }
@@ -182,7 +218,9 @@ function registerConnection(connection: WebSocket, userId: string, isDaemon: boo
           case "pong":
             break;
         }
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     });
 
     connection.on("close", () => {
@@ -214,7 +252,9 @@ function registerConnection(connection: WebSocket, userId: string, isDaemon: boo
           // 面板尺寸协商：浏览器把期望的 cols/rows 转发给 daemon（实时 resize PTY）
           sendToDaemon(userId, { type: "terminal:resize", agentName: msg.agentName, cols: msg.cols, rows: msg.rows });
         }
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     });
 
     connection.on("close", () => {
@@ -229,7 +269,9 @@ function registerConnection(connection: WebSocket, userId: string, isDaemon: boo
 
 // pg 引用，用于按频道成员定向投递（在 index.ts 启动时注入）
 let wsPg: { query: <T = any>(text: string, params?: unknown[]) => Promise<{ rows: T[] }> } | null = null;
-export function setWsPg(pg: typeof wsPg) { wsPg = pg; }
+export function setWsPg(pg: typeof wsPg) {
+  wsPg = pg;
+}
 
 /**
  * 按频道定向广播：
@@ -248,21 +290,31 @@ export async function broadcast(channelId: string, event: any) {
       if (t === "private" || t === "dm") {
         const m = await wsPg.query<{ member_id: string }>(
           "SELECT member_id FROM channel_members WHERE channel_id = $1 AND member_type = 'human'",
-          [channelId]
+          [channelId],
         );
         allowedHumanIds = new Set(m.rows.map((r) => String(r.member_id)));
       }
     }
-  } catch { /* 解析失败：allowedHumanIds 保持 null，退回全发 */ }
+  } catch {
+    /* 解析失败：allowedHumanIds 保持 null，退回全发 */
+  }
 
   for (const [userId, sockets] of browserClients) {
     if (allowedHumanIds && !allowedHumanIds.has(userId)) continue; // 私有频道：非成员浏览器不投递
     for (const ws of sockets) {
-      try { ws.send(payload); } catch { /* ignore */ }
+      try {
+        ws.send(payload);
+      } catch {
+        /* ignore */
+      }
     }
   }
   for (const [, ws] of daemonClients) {
-    try { ws.send(payload); } catch { /* ignore */ }
+    try {
+      ws.send(payload);
+    } catch {
+      /* ignore */
+    }
   }
 }
 
@@ -270,7 +322,11 @@ export async function broadcast(channelId: string, event: any) {
 export function sendToDaemon(userId: string, event: any) {
   const daemon = daemonClients.get(userId);
   if (daemon) {
-    try { daemon.send(JSON.stringify(event)); } catch { /* ignore */ }
+    try {
+      daemon.send(JSON.stringify(event));
+    } catch {
+      /* ignore */
+    }
   }
 }
 
@@ -278,7 +334,11 @@ export function sendToDaemon(userId: string, event: any) {
 export function broadcastToDaemons(event: any) {
   const payload = JSON.stringify(event);
   for (const [, ws] of daemonClients) {
-    try { ws.send(payload); } catch { /* ignore */ }
+    try {
+      ws.send(payload);
+    } catch {
+      /* ignore */
+    }
   }
 }
 
@@ -288,7 +348,11 @@ export function sendToUser(userId: string, event: any) {
   if (!sockets) return;
   const payload = JSON.stringify(event);
   for (const ws of sockets) {
-    try { ws.send(payload); } catch { /* ignore */ }
+    try {
+      ws.send(payload);
+    } catch {
+      /* ignore */
+    }
   }
 }
 
@@ -296,9 +360,12 @@ export function sendToUser(userId: string, event: any) {
 
 // ---- 心跳检测（周期性 ping，清理死连接）----
 const HEARTBEAT_INTERVAL = 30_000; // 30s
-const HEARTBEAT_TIMEOUT = 10_000;  // 10s 无 pong 视为断开
+const HEARTBEAT_TIMEOUT = 10_000; // 10s 无 pong 视为断开
 
-interface ConnMeta { alive: boolean; pingTimer?: NodeJS.Timeout }
+interface ConnMeta {
+  alive: boolean;
+  pingTimer?: NodeJS.Timeout;
+}
 
 const connMeta = new WeakMap<WebSocket, ConnMeta>();
 
@@ -306,13 +373,21 @@ function heartbeatPing(ws: WebSocket) {
   const meta = connMeta.get(ws) || { alive: true };
   if (!meta.alive) {
     // 上次 ping 没回 pong → 断开
-    try { ws.close(1001, "heartbeat timeout"); } catch { /* ignore */ }
+    try {
+      ws.close(1001, "heartbeat timeout");
+    } catch {
+      /* ignore */
+    }
     return;
   }
   meta.alive = false;
   meta.pingTimer = setTimeout(() => heartbeatPing(ws), HEARTBEAT_TIMEOUT);
   connMeta.set(ws, meta);
-  try { ws.ping(); } catch { /* ignore */ }
+  try {
+    ws.ping();
+  } catch {
+    /* ignore */
+  }
 }
 
 function heartbeatPong(ws: WebSocket) {

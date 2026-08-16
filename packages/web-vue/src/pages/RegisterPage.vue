@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
-import { useRouter, useRoute, RouterLink } from "vue-router";
+import { onMounted, ref } from "vue";
+import { RouterLink, useRoute, useRouter } from "vue-router";
 import { apiGet, apiPost } from "../api";
-import { useAuthStore } from "../stores/authStore";
 import PasswordStrength from "../components/PasswordStrength.vue";
+import Button from "../components/ui/Button.vue";
 import Card from "../components/ui/Card.vue";
 import Input from "../components/ui/Input.vue";
-import Button from "../components/ui/Button.vue";
+import { useAuthStore } from "../stores/authStore";
 
 const authStore = useAuthStore();
 const router = useRouter();
@@ -26,8 +26,12 @@ const inviteInfo = ref<{ serverName?: string; error?: string } | null>(null);
 onMounted(() => {
   if (!invite) return;
   apiGet<{ valid: boolean; serverName: string }>(`/api/invites/${invite}`)
-    .then((d) => { inviteInfo.value = { serverName: d.serverName }; })
-    .catch((e) => { inviteInfo.value = { error: e?.message || "邀请链接无效" }; });
+    .then((d) => {
+      inviteInfo.value = { serverName: d.serverName };
+    })
+    .catch((e) => {
+      inviteInfo.value = { error: e?.message || "邀请链接无效" };
+    });
 });
 
 async function handleRegister() {
@@ -50,7 +54,13 @@ async function handleRegister() {
   try {
     const data = await apiPost<{ token: string; user: { id: string; handle: string; displayName: string } }>(
       "/api/auth/register",
-      { handle: handle.value, password: password.value, email: email.value, displayName: handle.value, invite: invite || undefined },
+      {
+        handle: handle.value,
+        password: password.value,
+        email: email.value,
+        displayName: handle.value,
+        invite: invite || undefined,
+      },
     );
     localStorage.setItem("user", JSON.stringify(data.user));
     authStore.user = data.user as any;

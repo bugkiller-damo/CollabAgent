@@ -39,14 +39,22 @@ export const createExitCoordinator = (
         registry.setPendingExitCode(runId, exitCode);
       }
       if (onExit) {
-        try { onExit(runId, exitCode); } catch { /* ignore */ }
+        try {
+          onExit(runId, exitCode);
+        } catch {
+          /* ignore */
+        }
       }
     },
 
     onSpawnError(runId: string, _error: Error): void {
       registry.setPendingExitCode(runId, -1);
       if (onExit) {
-        try { onExit(runId, -1); } catch { /* ignore */ }
+        try {
+          onExit(runId, -1);
+        } catch {
+          /* ignore */
+        }
       }
     },
   };

@@ -1,13 +1,16 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 
-const props = withDefaults(defineProps<{
-  open: boolean;
-  /** 内容区宽度类（默认 max-w-md；终端查看器等宽弹窗传 "max-w-4xl" 之类） */
-  widthClass?: string;
-}>(), {
-  widthClass: "max-w-md",
-});
+const props = withDefaults(
+  defineProps<{
+    open: boolean;
+    /** 内容区宽度类（默认 max-w-md；终端查看器等宽弹窗传 "max-w-4xl" 之类） */
+    widthClass?: string;
+  }>(),
+  {
+    widthClass: "max-w-md",
+  },
+);
 
 const emit = defineEmits<{
   close: [];
@@ -38,7 +41,7 @@ watch(
         exitTimer = undefined;
       }, 150);
     }
-  }
+  },
 );
 
 function close() {

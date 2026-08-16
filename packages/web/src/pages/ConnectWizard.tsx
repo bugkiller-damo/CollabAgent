@@ -1,9 +1,9 @@
-import { useEffect, useState, useCallback } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { apiGet, apiPost } from "../api/client";
+import { Button } from "../components/ui/Button";
 import { Card } from "../components/ui/Card";
 import { Input } from "../components/ui/Input";
-import { Button } from "../components/ui/Button";
 
 interface Agent {
   id: string;
@@ -48,9 +48,7 @@ export function ConnectWizard() {
     }
   };
 
-  const command = token
-    ? `pnpm --filter @collabagent/daemon dev -- --server-url ${serverUrl} --api-key ${token}`
-    : "";
+  const command = token ? `pnpm --filter @collabagent/daemon dev -- --server-url ${serverUrl} --api-key ${token}` : "";
 
   const copyCommand = async () => {
     if (!command) return;
@@ -67,7 +65,9 @@ export function ConnectWizard() {
     try {
       const d = await apiGet<{ connected: boolean }>("/api/daemon/status");
       if (d.connected) setDaemonConnected(true);
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   }, []);
 
   useEffect(() => {
@@ -105,7 +105,9 @@ export function ConnectWizard() {
       const d = await apiGet<{ agents: Agent[] }>("/api/agents");
       const me = (d.agents || []).find((a) => a.id === createdAgent.id);
       if (me?.isOnline) setAgentOnline(true);
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   }, [createdAgent]);
 
   useEffect(() => {
@@ -135,7 +137,12 @@ export function ConnectWizard() {
               {step > (s as Step) ? "✓" : s}
             </div>
             {s < 3 && (
-              <div className={["h-0.5 flex-1 rounded", step > (s as Step) ? "bg-blue-600" : "bg-gray-200 dark:bg-gray-700"].join(" ")} />
+              <div
+                className={[
+                  "h-0.5 flex-1 rounded",
+                  step > (s as Step) ? "bg-blue-600" : "bg-gray-200 dark:bg-gray-700",
+                ].join(" ")}
+              />
             )}
           </div>
         ))}
@@ -149,22 +156,37 @@ export function ConnectWizard() {
         <Card className="space-y-4">
           <div>
             <h2 className="font-semibold text-gray-900 dark:text-white">第 1 步 · 连接本机 Claude</h2>
-            <p className="mt-1 text-xs text-gray-500">生成接入令牌，复制命令到终端运行，把本机 Claude 守护进程连上来。</p>
+            <p className="mt-1 text-xs text-gray-500">
+              生成接入令牌，复制命令到终端运行，把本机 Claude 守护进程连上来。
+            </p>
           </div>
 
           <div className="space-y-1 rounded bg-amber-50 p-3 text-xs text-amber-700 dark:bg-amber-900/20 dark:text-amber-300">
             <p className="font-semibold">运行前确保本机已装好 Claude Code：</p>
-            <p><code className="rounded bg-black/10 px-1 dark:bg-white/10">npm install -g @anthropic-ai/claude-code</code> 安装</p>
-            <p><code className="rounded bg-black/10 px-1 dark:bg-white/10">claude</code> 首次运行登录</p>
+            <p>
+              <code className="rounded bg-black/10 px-1 dark:bg-white/10">
+                npm install -g @anthropic-ai/claude-code
+              </code>{" "}
+              安装
+            </p>
+            <p>
+              <code className="rounded bg-black/10 px-1 dark:bg-white/10">claude</code> 首次运行登录
+            </p>
           </div>
 
           {!token ? (
-            <Button onClick={generateToken} loading={generating}>生成接入令牌</Button>
+            <Button onClick={generateToken} loading={generating}>
+              生成接入令牌
+            </Button>
           ) : (
             <div className="space-y-3">
-              <div className="break-all rounded bg-gray-900 p-3 font-mono text-xs text-green-400 dark:bg-black">{command}</div>
+              <div className="break-all rounded bg-gray-900 p-3 font-mono text-xs text-green-400 dark:bg-black">
+                {command}
+              </div>
               <div className="flex items-center gap-2">
-                <Button onClick={copyCommand} variant="secondary" size="sm">{copied ? "已复制 ✓" : "复制命令"}</Button>
+                <Button onClick={copyCommand} variant="secondary" size="sm">
+                  {copied ? "已复制 ✓" : "复制命令"}
+                </Button>
               </div>
               <p className="text-xs text-gray-400">⚠️ 令牌只显示这一次，请妥善保存。它等同于你的机器访问凭证。</p>
 
@@ -173,7 +195,9 @@ export function ConnectWizard() {
                   <>
                     <span className="text-lg text-green-500">✅</span>
                     <span className="text-sm font-medium text-gray-900 dark:text-white">本机 Claude 已连上</span>
-                    <Button onClick={() => setStep(2)} size="sm" className="ml-auto">下一步：创建 Agent →</Button>
+                    <Button onClick={() => setStep(2)} size="sm" className="ml-auto">
+                      下一步：创建 Agent →
+                    </Button>
                   </>
                 ) : (
                   <>
@@ -190,10 +214,21 @@ export function ConnectWizard() {
       {step === 2 && (
         <Card className="space-y-3">
           <h2 className="font-semibold text-gray-900 dark:text-white">第 2 步 · 创建你的 Agent</h2>
-          <p className="text-xs text-gray-500">本机已连上。给你的 AI 同事起个名字（仅你可见，直到把别人加进协作空间）。</p>
-          <Input placeholder="Agent 名称，如 my-helper" value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && createAgent()} />
+          <p className="text-xs text-gray-500">
+            本机已连上。给你的 AI 同事起个名字（仅你可见，直到把别人加进协作空间）。
+          </p>
+          <Input
+            placeholder="Agent 名称，如 my-helper"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && createAgent()}
+          />
           <Input placeholder="显示名称（可选）" value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
-          <Input placeholder="描述 / 角色设定（可选）" value={description} onChange={(e) => setDescription(e.target.value)} />
+          <Input
+            placeholder="描述 / 角色设定（可选）"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+          />
           <select
             value={model}
             onChange={(e) => setModel(e.target.value)}
@@ -203,7 +238,9 @@ export function ConnectWizard() {
             <option value="opus">Claude Opus</option>
             <option value="haiku">Claude Haiku</option>
           </select>
-          <Button onClick={createAgent} disabled={creating || !name.trim()} loading={creating}>创建并继续</Button>
+          <Button onClick={createAgent} disabled={creating || !name.trim()} loading={creating}>
+            创建并继续
+          </Button>
         </Card>
       )}
 
@@ -219,8 +256,11 @@ export function ConnectWizard() {
             <>
               <div className="text-5xl">✅</div>
               <h2 className="font-semibold text-gray-900 dark:text-white">@{createdAgent.name} 已上线！</h2>
-              <p className="text-xs text-gray-500">现在可以在任意频道里 @{createdAgent.name} 与它协作，或给它发私信。</p>
-              <Link to="/channels/general"
+              <p className="text-xs text-gray-500">
+                现在可以在任意频道里 @{createdAgent.name} 与它协作，或给它发私信。
+              </p>
+              <Link
+                to="/channels/general"
                 className="inline-block rounded-md bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-500"
               >
                 进入频道开始协作 →

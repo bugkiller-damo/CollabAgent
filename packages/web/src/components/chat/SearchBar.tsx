@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { apiGet } from "../../api/client";
 import { formatTime } from "../../lib/formatTime";
@@ -23,7 +23,10 @@ export function SearchBar() {
   const debounceRef = useRef<number>(undefined as unknown as number);
 
   const doSearch = useCallback(async (q: string) => {
-    if (!q.trim()) { setResults([]); return; }
+    if (!q.trim()) {
+      setResults([]);
+      return;
+    }
     setLoading(true);
     try {
       const data = await apiGet<{ results: SearchResult[] }>("/api/messages/search", { q });
@@ -44,8 +47,12 @@ export function SearchBar() {
 
   useEffect(() => {
     const handleClick = (e: MouseEvent) => {
-      if (panelRef.current && !panelRef.current.contains(e.target as Node) &&
-          inputRef.current && !inputRef.current.contains(e.target as Node)) {
+      if (
+        panelRef.current &&
+        !panelRef.current.contains(e.target as Node) &&
+        inputRef.current &&
+        !inputRef.current.contains(e.target as Node)
+      ) {
         setOpen(false);
       }
     };
@@ -69,8 +76,15 @@ export function SearchBar() {
           type="text"
           value={query}
           onChange={(e) => handleInput(e.target.value)}
-          onFocus={() => { if (results.length > 0) setOpen(true); }}
-          onKeyDown={(e) => { if (e.key === "Escape") { setOpen(false); inputRef.current?.blur(); } }}
+          onFocus={() => {
+            if (results.length > 0) setOpen(true);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              setOpen(false);
+              inputRef.current?.blur();
+            }
+          }}
           placeholder="搜索消息..."
           className="w-full pl-8 pr-3 py-1.5 rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white text-sm border border-transparent focus:outline-none focus:border-blue-500 placeholder-gray-400"
         />
@@ -105,7 +119,10 @@ export function SearchBar() {
       )}
 
       {open && query && !loading && results.length === 0 && (
-        <div ref={panelRef} className="absolute top-full mt-1 left-0 right-0 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl z-50 p-4 text-center text-gray-500 text-sm animate-slide-in-up origin-top">
+        <div
+          ref={panelRef}
+          className="absolute top-full mt-1 left-0 right-0 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl z-50 p-4 text-center text-gray-500 text-sm animate-slide-in-up origin-top"
+        >
           没有找到匹配的消息
         </div>
       )}

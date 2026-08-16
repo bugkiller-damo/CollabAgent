@@ -1,11 +1,11 @@
-import { useEffect, useState, useCallback } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useCallback, useEffect, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
 import { apiGet, apiPost } from "../api/client";
-import { useChannelStore } from "../stores";
-import { toast } from "../stores/toastStore";
 import { PageHeader } from "../components/layout/PageHeader";
 import { Button } from "../components/ui/Button";
 import { Input } from "../components/ui/Input";
+import { useChannelStore } from "../stores";
+import { toast } from "../stores/toastStore";
 
 interface Task {
   id: string;
@@ -46,11 +46,19 @@ export function TaskBoard() {
     if (!channel) return;
     setLoading(true);
     apiGet<{ tasks: Task[] }>("/api/tasks", { channel: "#" + channel })
-      .then((d) => { setTasks(d.tasks || []); setLoading(false); })
-      .catch(() => { setTasks([]); setLoading(false); });
+      .then((d) => {
+        setTasks(d.tasks || []);
+        setLoading(false);
+      })
+      .catch(() => {
+        setTasks([]);
+        setLoading(false);
+      });
   }, [channel]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+  }, [load]);
 
   const createTask = async () => {
     const t = newTitle.trim();
@@ -92,25 +100,38 @@ export function TaskBoard() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <PageHeader title="任务看板" backTo={`/channels/${channel}`}
+      <PageHeader
+        title="任务看板"
+        backTo={`/channels/${channel}`}
         breadcrumb={channel ? [{ label: `#${channel}`, to: `/channels/${channel}` }, { label: "任务看板" }] : undefined}
       >
         <div className="flex flex-wrap items-center gap-2">
           <select
             value={channel}
-            onChange={(e) => { setChannel(e.target.value); navigate("/tasks/" + e.target.value); }}
+            onChange={(e) => {
+              setChannel(e.target.value);
+              navigate("/tasks/" + e.target.value);
+            }}
             className="rounded-md border border-gray-300 bg-gray-100 px-2 py-1.5 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
           >
-            {channels.map((c: any) => <option key={c.id} value={c.name}>#{c.name}</option>)}
+            {channels.map((c: any) => (
+              <option key={c.id} value={c.name}>
+                #{c.name}
+              </option>
+            ))}
           </select>
           <Input
             value={newTitle}
             onChange={(e) => setNewTitle(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") createTask(); }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") createTask();
+            }}
             placeholder="新建任务标题…"
             className="w-56"
           />
-          <Button onClick={createTask} disabled={!newTitle.trim()} size="sm">+ 新建</Button>
+          <Button onClick={createTask} disabled={!newTitle.trim()} size="sm">
+            + 新建
+          </Button>
         </div>
       </PageHeader>
 
@@ -120,8 +141,13 @@ export function TaskBoard() {
           return (
             <div
               key={col.status}
-              onDragOver={(e) => { e.preventDefault(); setDragOverCol(col.status); }}
-              onDragLeave={(e) => { if (e.currentTarget === e.target) setDragOverCol(null); }}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDragOverCol(col.status);
+              }}
+              onDragLeave={(e) => {
+                if (e.currentTarget === e.target) setDragOverCol(null);
+              }}
               onDrop={() => onDrop(col.status)}
               className={[
                 "min-w-0 rounded-lg border-t-4 bg-gray-100 p-3 dark:bg-gray-800",
@@ -139,7 +165,10 @@ export function TaskBoard() {
                     key={t.id}
                     draggable
                     onDragStart={() => setDragNum(t.task_number)}
-                    onDragEnd={() => { setDragNum(null); setDragOverCol(null); }}
+                    onDragEnd={() => {
+                      setDragNum(null);
+                      setDragOverCol(null);
+                    }}
                     className="cursor-grab rounded border border-gray-200 bg-white p-2.5 shadow-sm active:cursor-grabbing dark:border-gray-600 dark:bg-gray-700"
                   >
                     <div className="flex items-start gap-2">
@@ -147,15 +176,26 @@ export function TaskBoard() {
                       <p className="flex-1 text-sm text-gray-800 dark:text-gray-200">{t.content}</p>
                     </div>
                     <div className="mt-2 flex items-center justify-between">
-                      {t.assignee_handle
-                        ? <span className="text-[11px] text-blue-600 dark:text-blue-400">@{t.assignee_handle}</span>
-                        : <button onClick={() => claim(t.task_number)} className="text-[11px] text-gray-500 hover:text-blue-500">认领</button>}
+                      {t.assignee_handle ? (
+                        <span className="text-[11px] text-blue-600 dark:text-blue-400">@{t.assignee_handle}</span>
+                      ) : (
+                        <button
+                          onClick={() => claim(t.task_number)}
+                          className="text-[11px] text-gray-500 hover:text-blue-500"
+                        >
+                          认领
+                        </button>
+                      )}
                       <select
                         value={t.task_status}
                         onChange={(e) => moveTo(t.task_number, e.target.value)}
                         className="rounded border border-gray-200 bg-transparent px-1 text-[11px] text-gray-500 dark:border-gray-600 dark:text-gray-400"
                       >
-                        {COLUMNS.map((c) => <option key={c.status} value={c.status}>{c.label}</option>)}
+                        {COLUMNS.map((c) => (
+                          <option key={c.status} value={c.status}>
+                            {c.label}
+                          </option>
+                        ))}
                         <option value="closed">已关闭</option>
                       </select>
                     </div>

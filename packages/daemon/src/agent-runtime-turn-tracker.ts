@@ -35,11 +35,19 @@ export const createTurnTracker = (): ITurnTracker => {
   const busyObservedByAgent = new Map<string, true>();
 
   return {
-    incPending: (name: string) => { pendingMsgCount.set(name, true); },
-    decPending: (name: string) => { pendingMsgCount.delete(name); },
+    incPending: (name: string) => {
+      pendingMsgCount.set(name, true);
+    },
+    decPending: (name: string) => {
+      pendingMsgCount.delete(name);
+    },
     hasPending: (name: string): boolean => pendingMsgCount.has(name),
-    markBusyObserved: (name: string) => { busyObservedByAgent.set(name, true); },
+    markBusyObserved: (name: string) => {
+      busyObservedByAgent.set(name, true);
+    },
     hasBeenBusy: (name: string): boolean => busyObservedByAgent.has(name),
-    clearBusyObserved: (name: string) => { busyObservedByAgent.delete(name); },
+    clearBusyObserved: (name: string) => {
+      busyObservedByAgent.delete(name);
+    },
   };
 };

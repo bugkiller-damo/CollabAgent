@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { apiGet } from "../../api";
+import { useAgentStore, useUiStore } from "../../stores";
 import Avatar from "../ui/Avatar.vue";
-import { useUiStore, useAgentStore } from "../../stores";
 
 interface Agent {
   id: string;
@@ -32,7 +32,9 @@ onMounted(() => {
       agents.value = (d.agents || []).slice(0, 5);
       loaded.value = true;
     })
-    .catch(() => { loaded.value = true; });
+    .catch(() => {
+      loaded.value = true;
+    });
 });
 
 const liveAgents = computed(() => agentStore.agents);
@@ -40,7 +42,7 @@ const terminalAgent = computed(() => uiStore.terminalAgent);
 
 function statusFor(a: Agent): { text: string; cls: string } {
   const live = liveAgents.value[a.name];
-  const statusKey = live?.status && live.status !== "online" ? live.status : (a.isOnline ? "idle" : "offline");
+  const statusKey = live?.status && live.status !== "online" ? live.status : a.isOnline ? "idle" : "offline";
   return LIVE_STATUS_LABEL[statusKey] || LIVE_STATUS_LABEL.offline;
 }
 

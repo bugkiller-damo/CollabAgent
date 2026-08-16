@@ -1,5 +1,5 @@
-import type { FastifyInstance } from "fastify";
 import bcrypt from "bcryptjs";
+import type { FastifyInstance } from "fastify";
 import { clearAuthCookies } from "../lib/cookies.js";
 import { validatePassword } from "../lib/validators.js";
 
@@ -12,7 +12,7 @@ export async function profileRoutes(app: FastifyInstance) {
     const id = target || req.user.sub;
     const result = await app.pg.query(
       "SELECT id, handle, display_name, description, avatar_url, created_at FROM users WHERE handle = $1 OR id = $2",
-      [target, id]
+      [target, id],
     );
     if (result.rows.length === 0) return { error: "not found" };
     return result.rows[0];
@@ -25,17 +25,39 @@ export async function profileRoutes(app: FastifyInstance) {
     const sets: string[] = [];
     const params: unknown[] = [];
     let p = 1;
-    if (displayName) { sets.push("display_name = $" + p++); params.push(displayName); }
-    if (description !== undefined) { sets.push("description = $" + p++); params.push(description); }
-    if (avatarUrl) { sets.push("avatar_url = $" + p++); params.push(avatarUrl); }
+    if (displayName) {
+      sets.push("display_name = $" + p++);
+      params.push(displayName);
+    }
+    if (description !== undefined) {
+      sets.push("description = $" + p++);
+      params.push(description);
+    }
+    if (avatarUrl) {
+      sets.push("avatar_url = $" + p++);
+      params.push(avatarUrl);
+    }
     if (sets.length === 0) return reply.status(400).send({ error: "no fields to update" });
     params.push(userId);
     const result = await app.pg.query(
-      "UPDATE users SET " + sets.join(", ") + ", updated_at = now() WHERE id = $" + p + " RETURNING id, handle, display_name, description, avatar_url, email",
-      params
+      "UPDATE users SET " +
+        sets.join(", ") +
+        ", updated_at = now() WHERE id = $" +
+        p +
+        " RETURNING id, handle, display_name, description, avatar_url, email",
+      params,
     );
     const u = result.rows[0] as Record<string, unknown>;
-    return { user: { id: u.id, handle: u.handle, displayName: u.display_name, description: u.description, avatarUrl: u.avatar_url, email: u.email } };
+    return {
+      user: {
+        id: u.id,
+        handle: u.handle,
+        displayName: u.display_name,
+        description: u.description,
+        avatarUrl: u.avatar_url,
+        email: u.email,
+      },
+    };
   });
 
   // ===== 密码管理 =====
@@ -47,12 +69,17 @@ export async function profileRoutes(app: FastifyInstance) {
     const pwErr = validatePassword(newPassword as string);
     if (pwErr) return reply.status(400).send({ error: pwErr });
 
-    const user = await app.pg.query<{ password_hash: string }>("SELECT password_hash FROM users WHERE id = $1", [req.user.sub]);
+    const user = await app.pg.query<{ password_hash: string }>("SELECT password_hash FROM users WHERE id = $1", [
+      req.user.sub,
+    ]);
     if (!(await bcrypt.compare(oldPassword as string, user.rows[0]!.password_hash))) {
       return reply.status(401).send({ error: "旧密码不正确" });
     }
     const hash = await bcrypt.hash(newPassword as string, 12);
-    await app.pg.query("UPDATE users SET password_hash = $1, token_version = gen_random_uuid()::text, updated_at = now() WHERE id = $2", [hash, req.user.sub]);
+    await app.pg.query(
+      "UPDATE users SET password_hash = $1, token_version = gen_random_uuid()::text, updated_at = now() WHERE id = $2",
+      [hash, req.user.sub],
+    );
     // token_version 已滚动 → 让会话校验缓存立即失效，旧 access token 即刻不可用
     const { clearSessionCache } = await import("../lib/session-check.js");
     clearSessionCache();
@@ -65,7 +92,7 @@ export async function profileRoutes(app: FastifyInstance) {
   app.get("/me", { preHandler: [app.authenticate] }, async (req) => {
     const result = await app.pg.query(
       "SELECT id, handle, display_name, description, avatar_url, email FROM users WHERE id = $1",
-      [req.user.sub]
+      [req.user.sub],
     );
     return { user: result.rows[0] };
   });
@@ -76,11 +103,26 @@ export async function profileRoutes(app: FastifyInstance) {
   app.get("/export", { preHandler: [app.authenticate] }, async (req) => {
     const userId = req.user.sub;
     const [profile, messages, memberships, reminders, sessions] = await Promise.all([
-      app.pg.query("SELECT id, handle, display_name, email, description, avatar_url, created_at FROM users WHERE id = $1", [userId]),
-      app.pg.query("SELECT id, channel_id, content, created_at FROM messages WHERE sender_id = $1 ORDER BY created_at", [userId]),
-      app.pg.query("SELECT cm.channel_id, c.name as channel_name, cm.role, cm.joined_at FROM channel_members cm JOIN channels c ON c.id = cm.channel_id WHERE cm.member_id = $1 AND cm.member_type = 'human'", [userId]),
-      app.pg.query("SELECT id, title, fire_at, repeat_rule, status, created_at FROM reminders WHERE owner_id = $1 ORDER BY created_at", [userId]),
-      app.pg.query("SELECT id, user_agent, ip, created_at, last_seen_at FROM user_sessions WHERE user_id = $1 ORDER BY created_at", [userId]),
+      app.pg.query(
+        "SELECT id, handle, display_name, email, description, avatar_url, created_at FROM users WHERE id = $1",
+        [userId],
+      ),
+      app.pg.query(
+        "SELECT id, channel_id, content, created_at FROM messages WHERE sender_id = $1 ORDER BY created_at",
+        [userId],
+      ),
+      app.pg.query(
+        "SELECT cm.channel_id, c.name as channel_name, cm.role, cm.joined_at FROM channel_members cm JOIN channels c ON c.id = cm.channel_id WHERE cm.member_id = $1 AND cm.member_type = 'human'",
+        [userId],
+      ),
+      app.pg.query(
+        "SELECT id, title, fire_at, repeat_rule, status, created_at FROM reminders WHERE owner_id = $1 ORDER BY created_at",
+        [userId],
+      ),
+      app.pg.query(
+        "SELECT id, user_agent, ip, created_at, last_seen_at FROM user_sessions WHERE user_id = $1 ORDER BY created_at",
+        [userId],
+      ),
     ]);
     return {
       exportedAt: new Date().toISOString(),
@@ -108,10 +150,14 @@ export async function profileRoutes(app: FastifyInstance) {
       `UPDATE users SET deactivated_at = now(), email = NULL,
               token_version = gen_random_uuid()::text, updated_at = now()
         WHERE id = $1`,
-      [userId]
+      [userId],
     );
-    await app.pg.query("UPDATE user_sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL", [userId]);
-    await app.pg.query("UPDATE machine_tokens SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL", [userId]);
+    await app.pg.query("UPDATE user_sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL", [
+      userId,
+    ]);
+    await app.pg.query("UPDATE machine_tokens SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL", [
+      userId,
+    ]);
     const { clearSessionCache } = await import("../lib/session-check.js");
     clearSessionCache();
     clearAuthCookies(reply);
@@ -125,7 +171,7 @@ export async function profileRoutes(app: FastifyInstance) {
     const userId = req.user.sub;
     const result = await app.pg.query(
       "SELECT id, token_prefix, expires_at, revoked_at, created_at FROM machine_tokens WHERE user_id = $1 ORDER BY created_at DESC",
-      [userId]
+      [userId],
     );
     return { tokens: result.rows };
   });
@@ -136,7 +182,7 @@ export async function profileRoutes(app: FastifyInstance) {
     const userId = req.user.sub;
     const r = await app.pg.query(
       "UPDATE machine_tokens SET revoked_at = now() WHERE id = $1 AND user_id = $2 RETURNING id",
-      [id, userId]
+      [id, userId],
     );
     if (r.rows.length === 0) return reply.status(404).send({ error: "token not found" });
     return { ok: true };
@@ -158,8 +204,9 @@ export async function profileRoutes(app: FastifyInstance) {
     }
 
     const prefix = "sk_machine_";
-    const randomPart = Array.from({ length: 32 }, () =>
-      "abcdefghijklmnopqrstuvwxyz0123456789"[Math.floor(Math.random() * 36)]
+    const randomPart = Array.from(
+      { length: 32 },
+      () => "abcdefghijklmnopqrstuvwxyz0123456789"[Math.floor(Math.random() * 36)],
     ).join("");
     const tokenValue = prefix + randomPart;
     // 高熵随机令牌用 sha256 落库（见 lib/token-hash.ts）——认证走唯一索引 O(1)，
@@ -169,7 +216,7 @@ export async function profileRoutes(app: FastifyInstance) {
 
     await app.pg.query(
       "INSERT INTO machine_tokens (user_id, server_id, token_hash, token_prefix, scope) VALUES ($1, $2, $3, $4, $5)",
-      [userId, orgId, hash, prefix, JSON.stringify({ send: true, read: true, tasks: true })]
+      [userId, orgId, hash, prefix, JSON.stringify({ send: true, read: true, tasks: true })],
     );
     return { token: tokenValue, prefix, serverId: orgId, message: "Save this token — it won't be shown again" };
   });

@@ -7,15 +7,18 @@ interface BreadcrumbItem {
   to?: string;
 }
 
-withDefaults(defineProps<{
-  title: string;
-  subtitle?: string;
-  breadcrumb?: BreadcrumbItem[];
-  backTo?: string;
-  className?: string;
-}>(), {
-  className: "",
-});
+withDefaults(
+  defineProps<{
+    title: string;
+    subtitle?: string;
+    breadcrumb?: BreadcrumbItem[];
+    backTo?: string;
+    className?: string;
+  }>(),
+  {
+    className: "",
+  },
+);
 </script>
 
 <template>

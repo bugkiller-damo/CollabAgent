@@ -20,15 +20,24 @@ export function MentionPopup({ items, selectedIdx, onSelect }: Props) {
     <div
       data-mention-popup
       className="absolute z-50 bg-gray-800 border border-gray-600 rounded-lg shadow-xl overflow-hidden"
-      style={{ bottom: "100%", left: "1rem", minWidth: "14rem", maxHeight: "15rem", overflowY: "auto", marginBottom: "4px" }}
-      
+      style={{
+        bottom: "100%",
+        left: "1rem",
+        minWidth: "14rem",
+        maxHeight: "15rem",
+        overflowY: "auto",
+        marginBottom: "4px",
+      }}
     >
       {items.map((item, i) => (
         <button
           key={item.handle}
-          className={"w-full text-left px-3 py-1.5 text-sm flex items-center gap-2 " +
-            (i === selectedIdx ? "bg-blue-600 text-white" : "text-gray-300 hover:bg-gray-700")}
-          type="button" onClick={() => onSelect(item.handle)}
+          className={
+            "w-full text-left px-3 py-1.5 text-sm flex items-center gap-2 " +
+            (i === selectedIdx ? "bg-blue-600 text-white" : "text-gray-300 hover:bg-gray-700")
+          }
+          type="button"
+          onClick={() => onSelect(item.handle)}
         >
           <span className="w-5 h-5 rounded-full bg-gray-600 flex items-center justify-center text-[10px] shrink-0">
             {(item.displayName || item.handle)[0]}
@@ -37,9 +46,7 @@ export function MentionPopup({ items, selectedIdx, onSelect }: Props) {
           {item.displayName && item.displayName !== item.handle && (
             <span className="text-gray-500 text-xs truncate">{item.displayName}</span>
           )}
-          <span className="ml-auto text-[10px] opacity-50 shrink-0">
-            {item.type === "agent" ? "Agent" : ""}
-          </span>
+          <span className="ml-auto text-[10px] opacity-50 shrink-0">{item.type === "agent" ? "Agent" : ""}</span>
         </button>
       ))}
     </div>

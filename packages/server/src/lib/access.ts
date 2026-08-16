@@ -11,7 +11,10 @@ async function cached<T>(key: string, fn: () => Promise<T>): Promise<T> {
   return v;
 }
 
-setInterval(() => { const n = Date.now(); for (const [k, v] of cache) if (v.expiresAt < n) cache.delete(k); }, 10_000);
+setInterval(() => {
+  const n = Date.now();
+  for (const [k, v] of cache) if (v.expiresAt < n) cache.delete(k);
+}, 10_000);
 
 export async function getChannelType(app: FastifyInstance, channelId: string): Promise<string | null> {
   return cached(`t:${channelId}`, async () => {
@@ -22,7 +25,10 @@ export async function getChannelType(app: FastifyInstance, channelId: string): P
 
 export async function getMemberRole(app: FastifyInstance, channelId: string, userId: string): Promise<string | null> {
   return cached(`r:${channelId}:${userId}`, async () => {
-    const r = await app.pg.query<{ role: string }>("SELECT role FROM channel_members WHERE channel_id = $1 AND member_id::text = $2 AND member_type = 'human'", [channelId, userId]);
+    const r = await app.pg.query<{ role: string }>(
+      "SELECT role FROM channel_members WHERE channel_id = $1 AND member_id::text = $2 AND member_type = 'human'",
+      [channelId, userId],
+    );
     return r.rows[0]?.role ?? null;
   });
 }

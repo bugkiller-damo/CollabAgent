@@ -1,5 +1,5 @@
-import { ref } from "vue";
 import { defineStore } from "pinia";
+import { ref } from "vue";
 import { readCsrf } from "../api";
 
 interface User {
@@ -13,7 +13,11 @@ interface User {
 // 纯 httpOnly Cookie 鉴权：用户信息可缓存（仅展示用），不再用 JWT 作 Bearer 头
 const store = typeof window !== "undefined" ? localStorage : null;
 const savedUser = (() => {
-  try { return JSON.parse(store?.getItem("user") || "null"); } catch { return null; }
+  try {
+    return JSON.parse(store?.getItem("user") || "null");
+  } catch {
+    return null;
+  }
 })();
 
 export const useAuthStore = defineStore("auth", () => {

@@ -1,4 +1,3 @@
-
 type FetchOptions = Omit<RequestInit, "body"> & { body?: unknown };
 
 // 从可读的 csrf_token cookie 取值，用于 double-submit 校验
@@ -13,9 +12,9 @@ export function readCsrf(): string | null {
 }
 
 export async function apiClient<T = unknown>(url: string, options: FetchOptions = {}): Promise<T> {
-    const headers: Record<string, string> = {};
+  const headers: Record<string, string> = {};
   if (options.body !== undefined) headers["Content-Type"] = "application/json";
-  
+
   const method = (options.method || "GET").toUpperCase();
   if (["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
     const csrf = readCsrf();
@@ -58,10 +57,10 @@ export interface UploadedAttachment {
 }
 
 export async function uploadAttachment(file: File): Promise<UploadedAttachment> {
-    const fd = new FormData();
+  const fd = new FormData();
   fd.append("file", file);
   const headers: Record<string, string> = {};
-  
+
   const csrf = readCsrf();
   if (csrf) headers["X-CSRF-Token"] = csrf;
   const res = await fetch("/api/attachments/upload", {

@@ -15,7 +15,9 @@ export function usePolling(fn: () => void | Promise<void>, ms: number): { stop: 
   };
 
   onMounted(() => {
-    timer = setInterval(() => { void fn(); }, ms);
+    timer = setInterval(() => {
+      void fn();
+    }, ms);
   });
   onUnmounted(stop);
 

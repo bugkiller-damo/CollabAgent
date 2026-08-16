@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { join, delimiter, sep } from "node:path";
+import { delimiter, join, sep } from "node:path";
 
 /**
  * 跨平台命令解析器。
@@ -11,10 +11,7 @@ import { join, delimiter, sep } from "node:path";
 const WINDOWS_EXTS = [".cmd", ".bat", ".exe", ".com"];
 
 const WINDOWS_KNOWN_PATHS: Record<string, string[]> = {
-  claude: [
-    "C:/Program Files/Claude Code/claude.cmd",
-    "C:/Program Files (x86)/Claude Code/claude.cmd",
-  ],
+  claude: ["C:/Program Files/Claude Code/claude.cmd", "C:/Program Files (x86)/Claude Code/claude.cmd"],
   codex: [],
   gemini: [],
   opencode: [],
@@ -28,7 +25,10 @@ export function getPathDirs(): string[] {
 export function getPathExtensions(): string[] {
   const ext = process.env.PATHEXT || "";
   if (!ext) return [];
-  return ext.split(";").map((e) => e.toLowerCase()).filter(Boolean);
+  return ext
+    .split(";")
+    .map((e) => e.toLowerCase())
+    .filter(Boolean);
 }
 
 export function findInDir(dir: string, name: string): string | null {

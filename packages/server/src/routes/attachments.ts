@@ -1,7 +1,7 @@
-import type { FastifyInstance } from "fastify";
 import { randomUUID } from "node:crypto";
-import { getStorage, isAllowedMimeType } from "../lib/storage.js";
+import type { FastifyInstance } from "fastify";
 import { canAccessChannel } from "../lib/access.js";
+import { getStorage, isAllowedMimeType } from "../lib/storage.js";
 
 export async function attachmentRoutes(app: FastifyInstance) {
   app.post("/upload", { preHandler: [app.authenticate] }, async (req, reply) => {
@@ -27,7 +27,7 @@ export async function attachmentRoutes(app: FastifyInstance) {
     const url = storage.publicUrl(storageKey);
     const result = await app.pg.query(
       "INSERT INTO attachments (uploader_id, uploader_type, filename, mime_type, size_bytes, storage_key, storage_url) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, filename, mime_type, size_bytes, storage_url",
-      [req.user.sub, "human", filename, data.mimetype, buf.length, storageKey, url]
+      [req.user.sub, "human", filename, data.mimetype, buf.length, storageKey, url],
     );
     const row = result.rows[0];
     return {
@@ -42,10 +42,13 @@ export async function attachmentRoutes(app: FastifyInstance) {
   app.get("/:id", { preHandler: [app.authenticate] }, async (req, reply) => {
     const attachmentId = (req.params as Record<string, string>).id;
     const userId = req.user.sub;
-    const result = await app.pg.query<{ id: string; storage_key: string; mime_type: string; filename: string; uploader_id: string }>(
-      "SELECT * FROM attachments WHERE id = $1",
-      [attachmentId]
-    );
+    const result = await app.pg.query<{
+      id: string;
+      storage_key: string;
+      mime_type: string;
+      filename: string;
+      uploader_id: string;
+    }>("SELECT * FROM attachments WHERE id = $1", [attachmentId]);
     if (result.rows.length === 0) return reply.status(404).send({ error: "not found" });
     const row = result.rows[0];
 
@@ -57,11 +60,14 @@ export async function attachmentRoutes(app: FastifyInstance) {
         `SELECT m.channel_id FROM message_attachments ma
           JOIN messages m ON m.id = ma.message_id
          WHERE ma.attachment_id = $1 LIMIT 5`,
-        [attachmentId]
+        [attachmentId],
       );
       let allowed = false;
       for (const link of links.rows) {
-        if (await canAccessChannel(app, String(link.channel_id), userId)) { allowed = true; break; }
+        if (await canAccessChannel(app, String(link.channel_id), userId)) {
+          allowed = true;
+          break;
+        }
       }
       if (!allowed) return reply.status(403).send({ error: "no access to this attachment" });
     }

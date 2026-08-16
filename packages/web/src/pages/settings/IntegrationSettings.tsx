@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
-import { apiGet, apiClient } from "../../api/client";
-import { toast } from "../../stores/toastStore";
+import { apiClient, apiGet } from "../../api/client";
 import { PageHeader } from "../../components/layout/PageHeader";
-import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
+import { Card } from "../../components/ui/Card";
+import { toast } from "../../stores/toastStore";
 
 interface MachineToken {
   id: string;
@@ -21,14 +21,21 @@ export function IntegrationSettings() {
     try {
       const data = await apiGet<{ tokens: MachineToken[] }>("/api/profile/tokens");
       setTokens(data.tokens || []);
-    } catch { /* silent */ }
+    } catch {
+      /* silent */
+    }
   };
 
-  useEffect(() => { loadTokens(); }, []);
+  useEffect(() => {
+    loadTokens();
+  }, []);
 
   const createToken = async () => {
     try {
-      const data = await apiClient<{ token: string; prefix: string }>("/api/profile/machine-token", { method: "POST", body: {} });
+      const data = await apiClient<{ token: string; prefix: string }>("/api/profile/machine-token", {
+        method: "POST",
+        body: {},
+      });
       setNewToken(data.token);
       toast.success("令牌已生成，请立即复制保存（仅显示一次）");
       loadTokens();
@@ -57,15 +64,30 @@ export function IntegrationSettings() {
       <Card className="space-y-3">
         <h3 className="text-sm font-semibold text-gray-900 dark:text-white">机器令牌</h3>
         <p className="text-xs text-gray-500">令牌用于 daemon 鉴权。创建后请立即复制——令牌仅显示一次。</p>
-        <Button onClick={createToken} size="sm">+ 生成新令牌</Button>
+        <Button onClick={createToken} size="sm">
+          + 生成新令牌
+        </Button>
 
         {newToken && (
           <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-900/20">
             <p className="mb-1 text-xs font-bold text-amber-800 dark:text-amber-300">⚠️ 新令牌（仅显示一次）</p>
-            <code className="block break-all rounded bg-white p-2 font-mono text-sm text-gray-900 dark:bg-gray-900 dark:text-white">{newToken}</code>
+            <code className="block break-all rounded bg-white p-2 font-mono text-sm text-gray-900 dark:bg-gray-900 dark:text-white">
+              {newToken}
+            </code>
             <div className="mt-2 flex gap-2">
-              <Button onClick={() => { navigator.clipboard.writeText(newToken); toast.success("已复制"); }} size="sm" variant="secondary">📋 复制</Button>
-              <Button onClick={() => setNewToken(null)} size="sm" variant="ghost">关闭</Button>
+              <Button
+                onClick={() => {
+                  navigator.clipboard.writeText(newToken);
+                  toast.success("已复制");
+                }}
+                size="sm"
+                variant="secondary"
+              >
+                📋 复制
+              </Button>
+              <Button onClick={() => setNewToken(null)} size="sm" variant="ghost">
+                关闭
+              </Button>
             </div>
           </div>
         )}
@@ -81,9 +103,18 @@ export function IntegrationSettings() {
               <Card key={t.id} padding="sm" className="flex items-center justify-between">
                 <div>
                   <code className="font-mono text-sm text-gray-900 dark:text-white">{t.prefix}...****</code>
-                  <p className="mt-0.5 text-xs text-gray-500">创建于 {new Date(t.created_at).toLocaleDateString("zh-CN")}</p>
+                  <p className="mt-0.5 text-xs text-gray-500">
+                    创建于 {new Date(t.created_at).toLocaleDateString("zh-CN")}
+                  </p>
                 </div>
-                <Button onClick={() => revokeToken(t.id)} variant="ghost" size="sm" className="text-red-500 hover:text-red-600">撤销</Button>
+                <Button
+                  onClick={() => revokeToken(t.id)}
+                  variant="ghost"
+                  size="sm"
+                  className="text-red-500 hover:text-red-600"
+                >
+                  撤销
+                </Button>
               </Card>
             ))}
           </div>

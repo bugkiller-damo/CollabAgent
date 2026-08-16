@@ -16,12 +16,7 @@ import type { IAgentManager } from "./types/index.js";
  */
 
 /** 支持交互式提示符检测的 CLI 命令 */
-export const INTERACTIVE_COMMANDS = new Set([
-  "claude",
-  "codex",
-  "gemini",
-  "opencode",
-]);
+export const INTERACTIVE_COMMANDS = new Set(["claude", "codex", "gemini", "opencode"]);
 
 /** 轮询间隔 */
 const READY_CHECK_INTERVAL_MS = 50;
@@ -30,11 +25,7 @@ const READY_CHECK_INTERVAL_MS = 50;
 const READY_TIMEOUT_MS = 8000;
 
 /** 支持 bracketed paste 的 CLI（多行内容用 ANSI 转义包装） */
-const COMMANDS_WITH_BRACKETED_PASTE = new Set([
-  "claude",
-  "codex",
-  "opencode",
-]);
+const COMMANDS_WITH_BRACKETED_PASTE = new Set(["claude", "codex", "opencode"]);
 
 /**
  * 从 command 里提取可比对的裸名字——调用方传进来的往往是 resolveClaudeBinary()
@@ -45,7 +36,9 @@ const COMMANDS_WITH_BRACKETED_PASTE = new Set([
  * 写入"的旧行为，只是靠运气大部分时候没炸。
  */
 export const commandBaseName = (command: string): string =>
-  basename(command).replace(/\.(exe|cmd|bat)$/i, "").toLowerCase();
+  basename(command)
+    .replace(/\.(exe|cmd|bat)$/i, "")
+    .toLowerCase();
 
 /**
  * 检测当前屏幕是否出现交互式提示符 `❯`/`›`。screenText 已经是终端模拟器
@@ -88,19 +81,14 @@ const PASTE_ACK_MAX_TIMEOUT_MS = 3000;
  * 永久停在那，output 长度冻结不再变化。这正是 Hive 的 `post-start-input-writer.ts`
  * 用 paste-ack 等待解决的问题；本文件之前的版本把这段逻辑简化掉了。
  */
-const submitPastedInteractiveInput = (
-  agentManager: IAgentManager,
-  runId: string,
-  text: string,
-): void => {
+const submitPastedInteractiveInput = (agentManager: IAgentManager, runId: string, text: string): void => {
   const wrapped = toBracketedPasteSubmission(text);
   agentManager.writeInput(runId, wrapped);
-  console.log(`[PostStart] ${runId} wrote bracketed paste (${text.length} chars), waiting for ack/timeout before Enter`);
-
-  const timeoutMs = Math.min(
-    PASTE_ACK_MAX_TIMEOUT_MS,
-    Math.max(PASTE_ACK_MIN_TIMEOUT_MS, text.length * 2),
+  console.log(
+    `[PostStart] ${runId} wrote bracketed paste (${text.length} chars), waiting for ack/timeout before Enter`,
   );
+
+  const timeoutMs = Math.min(PASTE_ACK_MAX_TIMEOUT_MS, Math.max(PASTE_ACK_MIN_TIMEOUT_MS, text.length * 2));
   const startedAt = Date.now();
 
   const trySubmit = (): void => {
@@ -120,10 +108,12 @@ const submitPastedInteractiveInput = (
     if (acked || timedOut) {
       console.log(
         `[PostStart] ${runId} sending Enter now (acked=${acked}, timedOut=${timedOut}, ` +
-        `elapsed=${Date.now() - startedAt}ms) screen=...${run.screenText.replace(/\s+/g, " ").trim().slice(-300)}`,
+          `elapsed=${Date.now() - startedAt}ms) screen=...${run.screenText.replace(/\s+/g, " ").trim().slice(-300)}`,
       );
       setTimeout(() => {
-        try { agentManager.writeInput(runId, "\r"); } catch (err: any) {
+        try {
+          agentManager.writeInput(runId, "\r");
+        } catch (err: any) {
           console.warn(`[PostStart] ${runId} writeInput("\\r") threw:`, err?.message ?? err);
         }
       }, PASTE_SETTLE_DELAY_MS);
@@ -144,10 +134,7 @@ export type PostStartInputWriter = (runId: string, text: string) => void;
  * @param command      - 启动的 CLI 命令名（如 "claude"），决定是否用 bracketed paste
  * @returns writer 函数
  */
-export const createPostStartInputWriter = (
-  agentManager: IAgentManager,
-  command: string,
-): PostStartInputWriter => {
+export const createPostStartInputWriter = (agentManager: IAgentManager, command: string): PostStartInputWriter => {
   return (runId: string, text: string): void => {
     const startedAt = Date.now();
     let attempts = 0;
@@ -179,8 +166,8 @@ export const createPostStartInputWriter = (
         if (timedOut && !promptReady) {
           console.warn(
             `[PostStart] ${runId} prompt not ready after ${READY_TIMEOUT_MS}ms ` +
-            `(command=${basename(command)}, outputLen=${run.output.length}); ` +
-            `writing anyway. screen=...${run.screenText.replace(/\s+/g, " ").trim().slice(-300)}`,
+              `(command=${basename(command)}, outputLen=${run.output.length}); ` +
+              `writing anyway. screen=...${run.screenText.replace(/\s+/g, " ").trim().slice(-300)}`,
           );
         }
         return;

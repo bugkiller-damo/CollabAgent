@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { apiClient, apiGet } from "../../api";
 import { useAuthStore } from "../../stores";
 import { toast } from "../../stores/toastStore";
@@ -32,8 +32,13 @@ const busy = ref(false);
 function load() {
   loading.value = true;
   apiGet<{ members: Member[] }>(`/api/channels/${props.channelId}/members`)
-    .then((d) => { members.value = d.members || []; loading.value = false; })
-    .catch(() => { loading.value = false; });
+    .then((d) => {
+      members.value = d.members || [];
+      loading.value = false;
+    })
+    .catch(() => {
+      loading.value = false;
+    });
 }
 
 onMounted(load);
@@ -50,9 +55,15 @@ async function handleInvite() {
     inviteMsg.value = "已邀请";
     load();
   } catch (err: any) {
-    inviteMsg.value = err?.message === "user or agent not found" ? "用户/Agent 不存在"
-      : err?.message === "already a member" ? "已是成员" : (err?.message || "邀请失败");
-  } finally { busy.value = false; }
+    inviteMsg.value =
+      err?.message === "user or agent not found"
+        ? "用户/Agent 不存在"
+        : err?.message === "already a member"
+          ? "已是成员"
+          : err?.message || "邀请失败";
+  } finally {
+    busy.value = false;
+  }
 }
 
 async function handleRemove(m: Member) {
@@ -60,22 +71,31 @@ async function handleRemove(m: Member) {
   try {
     await apiClient(`/api/channels/${props.channelId}/members/${m.member_id}`, { method: "DELETE" });
     load();
-  } catch (err: any) { toast.error(err?.message || "移除失败"); }
+  } catch (err: any) {
+    toast.error(err?.message || "移除失败");
+  }
 }
 
 async function handleRole(m: Member, role: string) {
   try {
     await apiClient(`/api/channels/${props.channelId}/members/${m.member_id}`, { method: "PATCH", body: { role } });
     load();
-  } catch (err: any) { toast.error(err?.message || "修改失败"); }
+  } catch (err: any) {
+    toast.error(err?.message || "修改失败");
+  }
 }
 
 async function handleManager(m: Member, is_manager: boolean) {
   try {
-    await apiClient(`/api/channels/${props.channelId}/members/${m.member_id}`, { method: "PATCH", body: { is_manager } });
+    await apiClient(`/api/channels/${props.channelId}/members/${m.member_id}`, {
+      method: "PATCH",
+      body: { is_manager },
+    });
     load();
   } catch (err: any) {
-    toast.error(err?.message === "channel already has a manager" ? "该频道已有经理，请先取消原经理" : (err?.message || "设置失败"));
+    toast.error(
+      err?.message === "channel already has a manager" ? "该频道已有经理，请先取消原经理" : err?.message || "设置失败",
+    );
   }
 }
 

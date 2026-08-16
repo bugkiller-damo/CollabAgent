@@ -1,5 +1,5 @@
-import postgres from "postgres";
 import bcrypt from "bcryptjs";
+import postgres from "postgres";
 import { config } from "../lib/config.js";
 
 const sql = postgres(config.DATABASE_URL);

@@ -10,7 +10,15 @@ interface Props {
   onCancel: () => void;
 }
 
-export function ConfirmDialog({ title, message, confirmLabel = "确定", cancelLabel = "取消", danger, onConfirm, onCancel }: Props) {
+export function ConfirmDialog({
+  title,
+  message,
+  confirmLabel = "确定",
+  cancelLabel = "取消",
+  danger,
+  onConfirm,
+  onCancel,
+}: Props) {
   return (
     <Modal open onClose={onCancel}>
       <h3 className="text-base font-bold text-gray-900 dark:text-white">{title}</h3>

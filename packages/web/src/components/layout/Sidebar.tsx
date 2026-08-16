@@ -1,15 +1,15 @@
-import { useState, useEffect } from "react";
-import { useNavigate, useLocation } from "react-router-dom";
-import { useChannelStore, useAuthStore } from "../../stores";
+import { useEffect, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { apiGet } from "../../api/client";
+import { useAuthStore, useChannelStore } from "../../stores";
+import { CreateChannelModal } from "../channel/CreateChannelModal";
+import { Avatar } from "../ui/Avatar";
+import { IconButton } from "../ui/IconButton";
+import { NavItem } from "../ui/NavItem";
 import { AgentStatusBar } from "./AgentStatusBar";
 import { ConnectionStatus } from "./ConnectionStatus";
-import { UserProfileFooter } from "./UserProfileFooter";
-import { CreateChannelModal } from "../channel/CreateChannelModal";
 import { SidebarSection } from "./SidebarSection";
-import { NavItem } from "../ui/NavItem";
-import { IconButton } from "../ui/IconButton";
-import { Avatar } from "../ui/Avatar";
+import { UserProfileFooter } from "./UserProfileFooter";
 
 interface DmItem {
   channelId: string;
@@ -33,25 +33,41 @@ const channelIcon = (
 
 const dmIcon = (
   <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-    <path strokeLinecap="round" strokeLinejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 0 1-2.25 2.25h-15a2.25 2.25 0 0 1-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0 0 19.5 4.5h-15a2.25 2.25 0 0 0-2.25 2.25m19.5 0v.243a2.25 2.25 0 0 1-1.07 1.916l-7.5 4.615a2.25 2.25 0 0 1-2.36 0L3.32 8.91a2.25 2.25 0 0 1-1.07-1.916V6.75" />
+    <path
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      d="M21.75 6.75v10.5a2.25 2.25 0 0 1-2.25 2.25h-15a2.25 2.25 0 0 1-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0 0 19.5 4.5h-15a2.25 2.25 0 0 0-2.25 2.25m19.5 0v.243a2.25 2.25 0 0 1-1.07 1.916l-7.5 4.615a2.25 2.25 0 0 1-2.36 0L3.32 8.91a2.25 2.25 0 0 1-1.07-1.916V6.75"
+    />
   </svg>
 );
 
 const taskIcon = (
   <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-    <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 0 0 2.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 0 0-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 0 0 .75-.75 2.25 2.25 0 0 0-.1-.664m-5.8 0A2.251 2.251 0 0 1 13.5 2.25H15c1.012 0 1.867.668 2.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m0 0H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25ZM6.75 12h.008v.008H6.75V12Zm0 3h.008v.008H6.75V15Zm0 3h.008v.008H6.75V18Z" />
+    <path
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      d="M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 0 0 2.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 0 0-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 0 0 .75-.75 2.25 2.25 0 0 0-.1-.664m-5.8 0A2.251 2.251 0 0 1 13.5 2.25H15c1.012 0 1.867.668 2.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m0 0H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25ZM6.75 12h.008v.008H6.75V12Zm0 3h.008v.008H6.75V15Zm0 3h.008v.008H6.75V18Z"
+    />
   </svg>
 );
 
 const agentIcon = (
   <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-    <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 0 0-2.456 2.456ZM16.894 20.567 16.5 21.75l-.394-1.183a2.25 2.25 0 0 0-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 0 0 1.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 0 0 1.423 1.423l1.183.394-1.183.394a2.25 2.25 0 0 0-1.423 1.423Z" />
+    <path
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 0 0-2.456 2.456ZM16.894 20.567 16.5 21.75l-.394-1.183a2.25 2.25 0 0 0-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 0 0 1.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 0 0 1.423 1.423l1.183.394-1.183.394a2.25 2.25 0 0 0-1.423 1.423Z"
+    />
   </svg>
 );
 
 const adminIcon = (
   <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-    <path strokeLinecap="round" strokeLinejoin="round" d="M10.343 3.94c.09-.542.56-.94 1.11-.94h1.093c.55 0 1.02.398 1.11.94l.149.894c.07.424.384.764.78.93.398.164.855.142 1.205-.108l.737-.527a1.125 1.125 0 0 1 1.45.12l.773.774c.39.389.44 1.002.12 1.45l-.527.737c-.25.35-.272.806-.107 1.204.165.397.505.71.93.78l.893.15c.543.09.94.56.94 1.109v1.094c0 .55-.397 1.02-.94 1.11l-.893.149c-.425.07-.765.383-.93.78-.165.398-.143.854.107 1.204l.527.738c.32.447.27 1.06-.12 1.45l-.774.773a1.125 1.125 0 0 1-1.449.12l-.738-.527c-.35-.25-.806-.272-1.203-.107-.397.165-.71.505-.781.929l-.149.894c-.09.542-.56.94-1.11.94h-1.094c-.55 0-1.019-.398-1.11-.94l-.148-.894c-.071-.424-.384-.764-.781-.93-.398-.164-.854-.142-1.204.108l-.738.527c-.447.32-1.06.269-1.45-.12l-.773-.774a1.125 1.125 0 0 1-.12-1.45l.527-.737c.25-.35.273-.806.108-1.204-.165-.397-.505-.71-.93-.78l-.894-.15c-.542-.09-.94-.56-.94-1.109v-1.094c0-.55.398-1.02.94-1.11l.894-.149c.424-.07.765-.383.93-.78.165-.398.143-.854-.107-1.204l-.527-.738a1.125 1.125 0 0 1 .12-1.45l.773-.773a1.125 1.125 0 0 1 1.45-.12l.737.527c.35.25.807.272 1.204.107.397-.165.71-.505.78-.929l.15-.894Z" />
+    <path
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      d="M10.343 3.94c.09-.542.56-.94 1.11-.94h1.093c.55 0 1.02.398 1.11.94l.149.894c.07.424.384.764.78.93.398.164.855.142 1.205-.108l.737-.527a1.125 1.125 0 0 1 1.45.12l.773.774c.39.389.44 1.002.12 1.45l-.527.737c-.25.35-.272.806-.107 1.204.165.397.505.71.93.78l.893.15c.543.09.94.56.94 1.109v1.094c0 .55-.397 1.02-.94 1.11l-.893.149c-.425.07-.765.383-.93.78-.165.398-.143.854.107 1.204l.527.738c.32.447.27 1.06-.12 1.45l-.774.773a1.125 1.125 0 0 1-1.449.12l-.738-.527c-.35-.25-.806-.272-1.203-.107-.397.165-.71.505-.781.929l-.149.894c-.09.542-.56.94-1.11.94h-1.094c-.55 0-1.019-.398-1.11-.94l-.148-.894c-.071-.424-.384-.764-.781-.93-.398-.164-.854-.142-1.204.108l-.738.527c-.447.32-1.06.269-1.45-.12l-.773-.774a1.125 1.125 0 0 1-.12-1.45l.527-.737c.25-.35.273-.806.108-1.204-.165-.397-.505-.71-.93-.78l-.894-.15c-.542-.09-.94-.56-.94-1.109v-1.094c0-.55.398-1.02.94-1.11l.894-.149c.424-.07.765-.383.93-.78.165-.398.143-.854-.107-1.204l-.527-.738a1.125 1.125 0 0 1 .12-1.45l.773-.773a1.125 1.125 0 0 1 1.45-.12l.737.527c.35.25.807.272 1.204.107.397-.165.71-.505.78-.929l.15-.894Z"
+    />
     <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
   </svg>
 );
@@ -64,7 +80,11 @@ const plusIcon = (
 
 const lockIcon = (
   <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-    <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 1 0-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 0 0 2.25-2.25v-6.75a2.25 2.25 0 0 0-2.25-2.25H6.75a2.25 2.25 0 0 0-2.25 2.25v6.75a2.25 2.25 0 0 0 2.25 2.25Z" />
+    <path
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      d="M16.5 10.5V6.75a4.5 4.5 0 1 0-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 0 0 2.25-2.25v-6.75a2.25 2.25 0 0 0-2.25-2.25H6.75a2.25 2.25 0 0 0-2.25 2.25v6.75a2.25 2.25 0 0 0 2.25 2.25Z"
+    />
   </svg>
 );
 
@@ -93,7 +113,9 @@ export function Sidebar() {
       .catch(() => {});
   };
 
-  useEffect(() => { loadDms(); }, [location.pathname]);
+  useEffect(() => {
+    loadDms();
+  }, [location.pathname]);
 
   const openPeoplePicker = async () => {
     setShowPeople((v) => !v);
@@ -131,7 +153,10 @@ export function Sidebar() {
     return (
       <button
         key={ch.id}
-        onClick={() => { setActiveChannel(ch.name); navigate("/channels/" + ch.name); }}
+        onClick={() => {
+          setActiveChannel(ch.name);
+          navigate("/channels/" + ch.name);
+        }}
         className={[
           "flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-sm transition-colors",
           active
@@ -141,7 +166,9 @@ export function Sidebar() {
       >
         <span className="flex items-center gap-2 truncate">
           {isPrivate ? (
-            <span className="shrink-0 text-amber-500" title="私有频道">{lockIcon}</span>
+            <span className="shrink-0 text-amber-500" title="私有频道">
+              {lockIcon}
+            </span>
           ) : (
             <span className="text-gray-400">#</span>
           )}
@@ -165,7 +192,9 @@ export function Sidebar() {
           </div>
           <div className="min-w-0">
             <h1 className="truncate text-base font-bold text-gray-900 dark:text-white">CollabAgent</h1>
-            <p className="truncate text-xs text-gray-500 dark:text-gray-400">{user?.handle ? `@${user.handle}` : "Workspace"}</p>
+            <p className="truncate text-xs text-gray-500 dark:text-gray-400">
+              {user?.handle ? `@${user.handle}` : "Workspace"}
+            </p>
           </div>
         </button>
       </div>
@@ -174,7 +203,12 @@ export function Sidebar() {
         <SidebarSection
           title="频道"
           action={
-            <IconButton label="创建频道" tooltip="创建频道" onClick={() => setShowCreateChannel(true)} className="h-6 w-6">
+            <IconButton
+              label="创建频道"
+              tooltip="创建频道"
+              onClick={() => setShowCreateChannel(true)}
+              className="h-6 w-6"
+            >
               {plusIcon}
             </IconButton>
           }
@@ -183,9 +217,7 @@ export function Sidebar() {
         </SidebarSection>
 
         {privateChannels.length > 0 && (
-          <SidebarSection title="私有频道">
-            {privateChannels.map((ch: any) => renderChannel(ch, true))}
-          </SidebarSection>
+          <SidebarSection title="私有频道">{privateChannels.map((ch: any) => renderChannel(ch, true))}</SidebarSection>
         )}
 
         <SidebarSection
@@ -196,8 +228,7 @@ export function Sidebar() {
                 {plusIcon}
               </IconButton>
               {showPeople && (
-                <div className="absolute right-0 top-7 z-30 w-52 max-h-72 overflow-y-auto rounded-lg border border-gray-200 bg-white py-1 shadow-lg animate-scale-in origin-top-right dark:border-gray-700 dark:bg-gray-800"
-                >
+                <div className="absolute right-0 top-7 z-30 w-52 max-h-72 overflow-y-auto rounded-lg border border-gray-200 bg-white py-1 shadow-lg animate-scale-in origin-top-right dark:border-gray-700 dark:bg-gray-800">
                   {people.length === 0 && <div className="px-3 py-2 text-xs text-gray-400">没有可私信的对象</div>}
                   {people.map((p) => (
                     <button
@@ -234,13 +265,21 @@ export function Sidebar() {
         </SidebarSection>
 
         <SidebarSection title="应用">
-          <NavItem to="/tasks" icon={taskIcon}>任务看板</NavItem>
-          <NavItem to="/connect" icon={agentIcon}>接入 Agent</NavItem>
+          <NavItem to="/tasks" icon={taskIcon}>
+            任务看板
+          </NavItem>
+          <NavItem to="/connect" icon={agentIcon}>
+            接入 Agent
+          </NavItem>
         </SidebarSection>
 
         <SidebarSection title="系统">
-          <NavItem to="/admin" icon={adminIcon}>管理后台</NavItem>
-          <NavItem to="/connect" icon={agentIcon}>接入 Agent</NavItem>
+          <NavItem to="/admin" icon={adminIcon}>
+            管理后台
+          </NavItem>
+          <NavItem to="/connect" icon={agentIcon}>
+            接入 Agent
+          </NavItem>
         </SidebarSection>
       </nav>
 
@@ -253,7 +292,10 @@ export function Sidebar() {
       {showCreateChannel && (
         <CreateChannelModal
           onClose={() => setShowCreateChannel(false)}
-          onCreated={(name) => { setActiveChannel(name); navigate("/channels/" + name); }}
+          onCreated={(name) => {
+            setActiveChannel(name);
+            navigate("/channels/" + name);
+          }}
         />
       )}
     </aside>

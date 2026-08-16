@@ -1,9 +1,9 @@
 import { useState } from "react";
-import { useNavigate, Link } from "react-router-dom";
-import { useAuthStore } from "../stores/authStore";
+import { Link, useNavigate } from "react-router-dom";
+import { Button } from "../components/ui/Button";
 import { Card } from "../components/ui/Card";
 import { Input } from "../components/ui/Input";
-import { Button } from "../components/ui/Button";
+import { useAuthStore } from "../stores/authStore";
 
 export function LoginPage() {
   const [login, setLogin] = useState("");
@@ -34,13 +34,16 @@ export function LoginPage() {
       credentials: "include",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ handle: "dev", password: "dev", remember: true }),
-    }).then((r) => r.json()).then((d) => {
-      if (d.user) {
-        localStorage.setItem("user", JSON.stringify(d.user));
-        useAuthStore.setState({ user: d.user as any, isAuthenticated: true });
-        navigate("/channels/general");
-      }
-    }).catch(() => {});
+    })
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.user) {
+          localStorage.setItem("user", JSON.stringify(d.user));
+          useAuthStore.setState({ user: d.user as any, isAuthenticated: true });
+          navigate("/channels/general");
+        }
+      })
+      .catch(() => {});
   };
 
   return (
@@ -78,14 +81,20 @@ export function LoginPage() {
             />
             记住我（30 天免登录）
           </label>
-          <Button type="submit" loading={loading} className="w-full">登录</Button>
+          <Button type="submit" loading={loading} className="w-full">
+            登录
+          </Button>
           {error && <p className="text-center text-sm text-red-500">{error}</p>}
         </form>
 
         <p className="text-center text-sm text-gray-500 dark:text-gray-400">
-          <Link to="/forgot-password" className="text-blue-500 hover:underline">忘记密码</Link>
+          <Link to="/forgot-password" className="text-blue-500 hover:underline">
+            忘记密码
+          </Link>
           <span className="mx-2">·</span>
-          <Link to="/register" className="text-blue-500 hover:underline">注册</Link>
+          <Link to="/register" className="text-blue-500 hover:underline">
+            注册
+          </Link>
         </p>
 
         <Button type="button" variant="secondary" onClick={handleDevBypass} className="w-full">

@@ -2,14 +2,14 @@
 import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { apiClient } from "../api";
-import { useMessageStore, useChannelStore } from "../stores";
-import type { MentionScope } from "../composables";
 import MarkdownContent from "../components/chat/MarkdownContent.vue";
 import MessageComposer from "../components/chat/MessageComposer.vue";
+import EmptyState from "../components/EmptyState.vue";
 import PageHeader from "../components/layout/PageHeader.vue";
 import Avatar from "../components/ui/Avatar.vue";
-import EmptyState from "../components/EmptyState.vue";
+import type { MentionScope } from "../composables";
 import { formatTime } from "../lib/formatTime";
+import { useChannelStore, useMessageStore } from "../stores";
 
 interface ThreadMsg {
   id: string;

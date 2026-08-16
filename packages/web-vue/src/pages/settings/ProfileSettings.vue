@@ -1,14 +1,14 @@
 <script setup lang="ts">
 import { ref } from "vue";
-import { useAuthStore } from "../../stores/authStore";
 import { apiPatch, apiPost, uploadAttachment } from "../../api";
-import PasswordStrength from "../../components/PasswordStrength.vue";
 import PageHeader from "../../components/layout/PageHeader.vue";
+import PasswordStrength from "../../components/PasswordStrength.vue";
+import Avatar from "../../components/ui/Avatar.vue";
+import Button from "../../components/ui/Button.vue";
 import Card from "../../components/ui/Card.vue";
 import Input from "../../components/ui/Input.vue";
-import Button from "../../components/ui/Button.vue";
-import Avatar from "../../components/ui/Avatar.vue";
 import Textarea from "../../components/ui/Textarea.vue";
+import { useAuthStore } from "../../stores/authStore";
 
 const authStore = useAuthStore();
 

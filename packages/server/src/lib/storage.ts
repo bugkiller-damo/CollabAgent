@@ -1,4 +1,4 @@
-import { mkdir, writeFile, readFile, unlink } from "node:fs/promises";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { config } from "./config.js";
 
@@ -10,7 +10,10 @@ export interface Storage {
 }
 
 class LocalDiskStorage implements Storage {
-  constructor(private baseDir: string, private publicPrefix = "/files") {}
+  constructor(
+    private baseDir: string,
+    private publicPrefix = "/files",
+  ) {}
 
   private pathFor(key: string): string {
     const full = resolve(this.baseDir, key);
@@ -24,9 +27,13 @@ class LocalDiskStorage implements Storage {
     await writeFile(full, data);
   }
 
-  async read(key: string): Promise<Buffer> { return readFile(this.pathFor(key)); }
+  async read(key: string): Promise<Buffer> {
+    return readFile(this.pathFor(key));
+  }
 
-  async remove(key: string): Promise<void> { await unlink(this.pathFor(key)).catch(() => {}); }
+  async remove(key: string): Promise<void> {
+    await unlink(this.pathFor(key)).catch(() => {});
+  }
 
   publicUrl(key: string): string {
     return this.publicPrefix + "/" + key.split("/").map(encodeURIComponent).join("/");

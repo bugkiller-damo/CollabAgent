@@ -1,8 +1,11 @@
-import { ref, computed, watch, onMounted, toValue, type Ref, type MaybeRefOrGetter } from "vue";
+import { computed, type MaybeRefOrGetter, onMounted, type Ref, ref, toValue, watch } from "vue";
 import { apiGet } from "../api";
 
 interface MentionCandidate {
-  handle: string; displayName: string; type: "user" | "agent"; id: string;
+  handle: string;
+  displayName: string;
+  type: "user" | "agent";
+  id: string;
 }
 
 /** 提及候选的作用域：私有/DM 频道只列出已加入的成员（与服务端唤醒规则一致），
@@ -42,10 +45,13 @@ export function useMentionSuggest(
     if (memberScoped) {
       // 私有/DM：频道信息还没加载完时先不给候选（避免短暂展示全量 agent）；
       // 加载完成后只列已加入成员。
-      if (!scopeChannelId.value) { candidates.value = []; return; }
+      if (!scopeChannelId.value) {
+        candidates.value = [];
+        return;
+      }
       try {
         const data = await apiGet<{ members: any[] }>(`/api/channels/${scopeChannelId.value}/members`);
-        for (const m of (data.members || [])) {
+        for (const m of data.members || []) {
           if (!m.handle) continue;
           list.push({
             handle: m.handle,
@@ -61,15 +67,20 @@ export function useMentionSuggest(
     // Fetch agents
     try {
       const agentData = await apiGet<{ agents: any[] }>("/api/agents");
-      for (const a of (agentData.agents || [])) {
+      for (const a of agentData.agents || []) {
         list.push({ handle: a.name, displayName: a.display_name, type: "agent", id: a.id });
       }
     } catch {}
     // Fetch server info (has humans) —— 需带鉴权
     try {
       const data = await apiGet<any>("/api/server/info");
-      for (const h of (data.humans || [])) {
-        list.push({ handle: h.handle, displayName: h.display_name || h.displayName || h.handle, type: "user", id: h.id });
+      for (const h of data.humans || []) {
+        list.push({
+          handle: h.handle,
+          displayName: h.display_name || h.displayName || h.handle,
+          type: "user",
+          id: h.id,
+        });
       }
     } catch {}
     // Fallback if nothing loaded
@@ -82,26 +93,34 @@ export function useMentionSuggest(
   };
 
   // 进频道 / 切换频道时加载一次；scope 为响应式来源时随 channelId/channelType 变化重载
-  onMounted(() => { loadCandidates(); });
-  watch([scopeChannelId, scopeChannelType], () => { loadCandidates(); });
+  onMounted(() => {
+    loadCandidates();
+  });
+  watch([scopeChannelId, scopeChannelType], () => {
+    loadCandidates();
+  });
 
   // filtered/visible 由 mentionActive + query + candidates 派生：
   // 候选刷新（例如频道刚加了成员、新 @ 会话触发重拉）时弹窗内容同步更新；
   // mentionActive 变 false（删掉 @ / 点击外部 / 完成插入）时弹窗立即关闭。
-  watch([mentionActive, query, candidates], () => {
-    if (!mentionActive.value) {
-      filtered.value = [];
-      visible.value = false;
-      return;
-    }
-    const lower = query.value.toLowerCase();
-    const matches = candidates.value.filter(c =>
-      c.handle.toLowerCase().includes(lower) || c.displayName.toLowerCase().includes(lower)
-    );
-    filtered.value = matches;
-    selectedIdx.value = 0;
-    visible.value = matches.length > 0;
-  }, { immediate: true });
+  watch(
+    [mentionActive, query, candidates],
+    () => {
+      if (!mentionActive.value) {
+        filtered.value = [];
+        visible.value = false;
+        return;
+      }
+      const lower = query.value.toLowerCase();
+      const matches = candidates.value.filter(
+        (c) => c.handle.toLowerCase().includes(lower) || c.displayName.toLowerCase().includes(lower),
+      );
+      filtered.value = matches;
+      selectedIdx.value = 0;
+      visible.value = matches.length > 0;
+    },
+    { immediate: true },
+  );
 
   // 点击输入框和弹窗以外的地方 → 关闭弹窗
   watch(mentionActive, (active, _prev, onCleanup) => {
@@ -126,7 +145,10 @@ export function useMentionSuggest(
     // Find the @ before cursor
     let atIdx = -1;
     for (let i = cursorPos - 1; i >= 0; i--) {
-      if (text[i] === "@") { atIdx = i; break; }
+      if (text[i] === "@") {
+        atIdx = i;
+        break;
+      }
       if (text[i] === " " || text[i] === "\n") break;
     }
     if (atIdx >= 0) {
@@ -152,7 +174,10 @@ export function useMentionSuggest(
     const text = el.value;
     let atIdx = -1;
     for (let i = cursorPos - 1; i >= 0; i--) {
-      if (text[i] === "@") { atIdx = i; break; }
+      if (text[i] === "@") {
+        atIdx = i;
+        break;
+      }
       if (text[i] === " " || text[i] === "\n") break;
     }
     if (atIdx >= 0) {
@@ -176,16 +201,24 @@ export function useMentionSuggest(
 
   const handleKeyDown = (e: KeyboardEvent) => {
     if (!visible.value) return;
-    if (e.key === "ArrowDown") { e.preventDefault(); selectedIdx.value = Math.min(selectedIdx.value + 1, filtered.value.length - 1); }
-    else if (e.key === "ArrowUp") { e.preventDefault(); selectedIdx.value = Math.max(selectedIdx.value - 1, 0); }
-    else if (e.key === "Enter" || e.key === "Tab") {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      selectedIdx.value = Math.min(selectedIdx.value + 1, filtered.value.length - 1);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      selectedIdx.value = Math.max(selectedIdx.value - 1, 0);
+    } else if (e.key === "Enter" || e.key === "Tab") {
       e.preventDefault();
       const sel = filtered.value[selectedIdx.value];
       if (sel) insertMention(sel.handle);
-    } else if (e.key === "Escape") { mentionActive.value = false; }
+    } else if (e.key === "Escape") {
+      mentionActive.value = false;
+    }
   };
 
-  const setVisible = (v: boolean) => { visible.value = v; };
+  const setVisible = (v: boolean) => {
+    visible.value = v;
+  };
 
   return { visible, filtered, selectedIdx, handleInput, handleKeyDown, insertMention, setVisible };
 }

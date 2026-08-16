@@ -1,5 +1,5 @@
-import { writeFileSync, mkdirSync, existsSync } from "node:fs";
-import { join, resolve, dirname } from "node:path";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -48,18 +48,19 @@ export function writeSlockWrapper(
   slockCliPath: string,
   agentId: string,
   serverUrl: string,
-  token: string
+  token: string,
 ): void {
   mkdirSync(slockDir, { recursive: true });
 
-  const cmdContent = [
-    "@echo off",
-    `set "SLOCK_AGENT_ID=${agentId}"`,
-    `set "SLOCK_SERVER_URL=${serverUrl}"`,
-    `set "SLOCK_AGENT_TOKEN=${token}"`,
-    `"${process.execPath}" "${slockCliPath}" %*`,
-    "",
-  ].join("\r\n") + "\r\n";
+  const cmdContent =
+    [
+      "@echo off",
+      `set "SLOCK_AGENT_ID=${agentId}"`,
+      `set "SLOCK_SERVER_URL=${serverUrl}"`,
+      `set "SLOCK_AGENT_TOKEN=${token}"`,
+      `"${process.execPath}" "${slockCliPath}" %*`,
+      "",
+    ].join("\r\n") + "\r\n";
 
   writeFileSync(join(slockDir, "slock.cmd"), cmdContent);
 }

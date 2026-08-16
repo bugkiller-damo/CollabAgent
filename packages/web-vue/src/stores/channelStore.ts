@@ -1,8 +1,8 @@
-import { ref } from "vue";
-import { defineStore } from "pinia";
-import { apiGet, apiPost, apiPatch } from "../api";
-import { toast } from "./toastStore";
 import type { Channel } from "@collabagent/shared";
+import { defineStore } from "pinia";
+import { ref } from "vue";
+import { apiGet, apiPatch, apiPost } from "../api";
+import { toast } from "./toastStore";
 
 export const useChannelStore = defineStore("channels", () => {
   const channels = ref<Channel[]>([]);
@@ -23,7 +23,11 @@ export const useChannelStore = defineStore("channels", () => {
     }
   }
 
-  async function createChannel(input: { name: string; description?: string; type?: "public" | "private" }): Promise<Channel> {
+  async function createChannel(input: {
+    name: string;
+    description?: string;
+    type?: "public" | "private";
+  }): Promise<Channel> {
     const { name, description, type } = input;
     const data = await apiPost<{ channel: Channel }>("/api/channels", {
       serverId: serverId.value,
@@ -35,7 +39,10 @@ export const useChannelStore = defineStore("channels", () => {
     return data.channel;
   }
 
-  async function updateChannel(channelId: string, patch: { description?: string; type?: "public" | "private"; archived?: boolean }): Promise<void> {
+  async function updateChannel(
+    channelId: string,
+    patch: { description?: string; type?: "public" | "private"; archived?: boolean },
+  ): Promise<void> {
     await apiPatch(`/api/channels/${channelId}`, patch);
     await fetchChannels();
   }

@@ -1,7 +1,7 @@
-import React, { useEffect, useState, useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { useNotificationStore, type NotificationItem } from "../../stores/notificationStore";
 import { readCsrf } from "../../api/client";
+import { type NotificationItem, useNotificationStore } from "../../stores/notificationStore";
 
 function timeAgo(iso: string): string {
   const d = (Date.now() - new Date(iso).getTime()) / 1000;
@@ -22,14 +22,7 @@ export function NotificationBell() {
   const [open, setOpen] = useState(false);
   const navigate = useNavigate();
   const panelRef = useRef<HTMLDivElement>(null);
-  const {
-    notifications,
-    unreadCount,
-    loading,
-    loadFromApi,
-    markAsRead,
-    markAllAsRead,
-  } = useNotificationStore();
+  const { notifications, unreadCount, loading, loadFromApi, markAsRead, markAllAsRead } = useNotificationStore();
 
   useEffect(() => {
     loadFromApi();
@@ -55,7 +48,9 @@ export function NotificationBell() {
           credentials: "include",
           headers: { "X-CSRF-Token": readCsrf() || "" },
         });
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     }
     if (n.channelId) {
       const meta = n.metadata || {};
@@ -78,7 +73,9 @@ export function NotificationBell() {
           "X-CSRF-Token": readCsrf() || "",
         },
       });
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   };
 
   return (
@@ -101,23 +98,16 @@ export function NotificationBell() {
           <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700">
             <h3 className="font-semibold text-gray-900 dark:text-gray-100">通知</h3>
             {unreadCount > 0 && (
-              <button
-                onClick={handleMarkAll}
-                className="text-xs text-blue-500 hover:text-blue-600 dark:text-blue-400"
-              >
+              <button onClick={handleMarkAll} className="text-xs text-blue-500 hover:text-blue-600 dark:text-blue-400">
                 全部已读
               </button>
             )}
           </div>
           <div className="overflow-y-auto flex-1">
             {loading && notifications.length === 0 ? (
-              <div className="px-4 py-8 text-center text-gray-500 dark:text-gray-400 text-sm">
-                加载中…
-              </div>
+              <div className="px-4 py-8 text-center text-gray-500 dark:text-gray-400 text-sm">加载中…</div>
             ) : notifications.length === 0 ? (
-              <div className="px-4 py-8 text-center text-gray-500 dark:text-gray-400 text-sm">
-                暂无通知
-              </div>
+              <div className="px-4 py-8 text-center text-gray-500 dark:text-gray-400 text-sm">暂无通知</div>
             ) : (
               notifications.map((n) => (
                 <button
@@ -130,19 +120,11 @@ export function NotificationBell() {
                   <span className="text-2xl flex-shrink-0">{TYPE_ICON[n.type] || "📌"}</span>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-start justify-between gap-2">
-                      <p className="font-medium text-sm text-gray-900 dark:text-gray-100 truncate">
-                        {n.title}
-                      </p>
+                      <p className="font-medium text-sm text-gray-900 dark:text-gray-100 truncate">{n.title}</p>
                       {!n.read && <span className="w-2 h-2 rounded-full bg-blue-500 mt-1 flex-shrink-0" />}
                     </div>
-                    {n.body && (
-                      <p className="text-xs text-gray-600 dark:text-gray-400 mt-1 line-clamp-2">
-                        {n.body}
-                      </p>
-                    )}
-                    <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
-                      {timeAgo(n.createdAt)}
-                    </p>
+                    {n.body && <p className="text-xs text-gray-600 dark:text-gray-400 mt-1 line-clamp-2">{n.body}</p>}
+                    <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">{timeAgo(n.createdAt)}</p>
                   </div>
                 </button>
               ))
@@ -153,4 +135,3 @@ export function NotificationBell() {
     </div>
   );
 }
-

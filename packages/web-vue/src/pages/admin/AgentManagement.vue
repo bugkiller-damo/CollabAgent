@@ -1,21 +1,28 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from "vue";
-import { apiGet, apiPost, apiPatch, apiClient } from "../../api";
-import AgentCardSkeleton from "../../components/skeleton/AgentCardSkeleton.vue";
-import EmptyState from "../../components/EmptyState.vue";
-import ConfirmDialog from "../../components/ConfirmDialog.vue";
+import { apiClient, apiGet, apiPatch, apiPost } from "../../api";
 import OrgMembersPanel from "../../components/admin/OrgMembersPanel.vue";
+import ConfirmDialog from "../../components/ConfirmDialog.vue";
+import EmptyState from "../../components/EmptyState.vue";
 import PageHeader from "../../components/layout/PageHeader.vue";
+import AgentCardSkeleton from "../../components/skeleton/AgentCardSkeleton.vue";
+import Avatar from "../../components/ui/Avatar.vue";
+import Button from "../../components/ui/Button.vue";
 import Card from "../../components/ui/Card.vue";
 import Input from "../../components/ui/Input.vue";
-import Button from "../../components/ui/Button.vue";
-import Avatar from "../../components/ui/Avatar.vue";
 import { useUiStore } from "../../stores";
 import { toast } from "../../stores/toastStore";
 
 interface Agent {
-  id: string; name: string; display_name: string; description: string;
-  status: string; runtime: string; model: string; isOnline: boolean; avatar_url?: string;
+  id: string;
+  name: string;
+  display_name: string;
+  description: string;
+  status: string;
+  runtime: string;
+  model: string;
+  isOnline: boolean;
+  avatar_url?: string;
 }
 
 const uiStore = useUiStore();

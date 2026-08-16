@@ -2,22 +2,27 @@
 type ButtonVariant = "primary" | "secondary" | "ghost" | "danger";
 type ButtonSize = "sm" | "md" | "lg";
 
-withDefaults(defineProps<{
-  variant?: ButtonVariant;
-  size?: ButtonSize;
-  loading?: boolean;
-  disabled?: boolean;
-}>(), {
-  variant: "primary",
-  size: "md",
-  loading: false,
-  disabled: false,
-});
+withDefaults(
+  defineProps<{
+    variant?: ButtonVariant;
+    size?: ButtonSize;
+    loading?: boolean;
+    disabled?: boolean;
+  }>(),
+  {
+    variant: "primary",
+    size: "md",
+    loading: false,
+    disabled: false,
+  },
+);
 
 const variantStyles: Record<ButtonVariant, string> = {
   primary: "bg-blue-600 text-white hover:bg-blue-500 focus:ring-blue-300 disabled:bg-blue-300",
-  secondary: "bg-gray-200 text-gray-900 hover:bg-gray-300 dark:bg-gray-700 dark:text-white dark:hover:bg-gray-600 focus:ring-gray-300",
-  ghost: "bg-transparent text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white focus:ring-gray-300",
+  secondary:
+    "bg-gray-200 text-gray-900 hover:bg-gray-300 dark:bg-gray-700 dark:text-white dark:hover:bg-gray-600 focus:ring-gray-300",
+  ghost:
+    "bg-transparent text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white focus:ring-gray-300",
   danger: "bg-red-600 text-white hover:bg-red-500 focus:ring-red-300 disabled:bg-red-300",
 };
 

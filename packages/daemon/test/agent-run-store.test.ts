@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { randomUUID } from "node:crypto";
 import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createJsonRunStore } from "../src/agent-run-store.js";
 import type { IAgentRunStore } from "../src/types/index.js";
 
@@ -23,8 +23,16 @@ describe("agent-run-store.ts", () => {
   });
 
   afterEach(() => {
-    try { rmSync(storePath, { force: true }); } catch { /* best-effort */ }
-    try { rmSync(storePath + ".tmp", { force: true }); } catch { /* best-effort */ }
+    try {
+      rmSync(storePath, { force: true });
+    } catch {
+      /* best-effort */
+    }
+    try {
+      rmSync(storePath + ".tmp", { force: true });
+    } catch {
+      /* best-effort */
+    }
   });
 
   describe("loadRuntimeState(agentId)", () => {
@@ -32,13 +40,25 @@ describe("agent-run-store.ts", () => {
       const agentA = randomUUID();
       const agentB = randomUUID();
       store.saveRuntimeState({
-        agentId: agentA, agentName: "agent-a", status: "working", lastTransitionAt: 1,
-        totalRuns: 3, currentRunId: "run-a", lastSessionId: "session-a", lastSessionUpdatedAt: 1,
+        agentId: agentA,
+        agentName: "agent-a",
+        status: "working",
+        lastTransitionAt: 1,
+        totalRuns: 3,
+        currentRunId: "run-a",
+        lastSessionId: "session-a",
+        lastSessionUpdatedAt: 1,
       });
       // B 保存得比 A 晚——如果实现退化成"数组最后一条"，查 A 会错误地拿到 B 的数据
       store.saveRuntimeState({
-        agentId: agentB, agentName: "agent-b", status: "idle", lastTransitionAt: 2,
-        totalRuns: 1, currentRunId: null, lastSessionId: "session-b", lastSessionUpdatedAt: 2,
+        agentId: agentB,
+        agentName: "agent-b",
+        status: "idle",
+        lastTransitionAt: 2,
+        totalRuns: 1,
+        currentRunId: null,
+        lastSessionId: "session-b",
+        lastSessionUpdatedAt: 2,
       });
 
       expect(store.loadRuntimeState(agentA)?.lastSessionId).toBe("session-a");
@@ -52,12 +72,24 @@ describe("agent-run-store.ts", () => {
     it("saveRuntimeState overwrites (not appends) the prior state for the same agentId", () => {
       const agentId = randomUUID();
       store.saveRuntimeState({
-        agentId, agentName: "agent-a", status: "working", lastTransitionAt: 1,
-        totalRuns: 1, currentRunId: "run-1", lastSessionId: "session-1", lastSessionUpdatedAt: 1,
+        agentId,
+        agentName: "agent-a",
+        status: "working",
+        lastTransitionAt: 1,
+        totalRuns: 1,
+        currentRunId: "run-1",
+        lastSessionId: "session-1",
+        lastSessionUpdatedAt: 1,
       });
       store.saveRuntimeState({
-        agentId, agentName: "agent-a", status: "idle", lastTransitionAt: 2,
-        totalRuns: 2, currentRunId: null, lastSessionId: "session-2", lastSessionUpdatedAt: 2,
+        agentId,
+        agentName: "agent-a",
+        status: "idle",
+        lastTransitionAt: 2,
+        totalRuns: 2,
+        currentRunId: null,
+        lastSessionId: "session-2",
+        lastSessionUpdatedAt: 2,
       });
       const state = store.loadRuntimeState(agentId);
       expect(state?.totalRuns).toBe(2);
@@ -72,22 +104,50 @@ describe("agent-run-store.ts", () => {
       const agentC = randomUUID();
       // A: 两条 running/starting 记录（同一个 agent 崩溃前连续重启过）——应该只算一次
       store.insertAgentRun({
-        runId: "a-1", agentId: agentA, agentName: "agent-a", status: "running",
-        exitCode: null, startedAt: 1, endedAt: null, messagesProcessed: 0, lastTurnDuration: null,
+        runId: "a-1",
+        agentId: agentA,
+        agentName: "agent-a",
+        status: "running",
+        exitCode: null,
+        startedAt: 1,
+        endedAt: null,
+        messagesProcessed: 0,
+        lastTurnDuration: null,
       });
       store.insertAgentRun({
-        runId: "a-2", agentId: agentA, agentName: "agent-a", status: "starting",
-        exitCode: null, startedAt: 2, endedAt: null, messagesProcessed: 0, lastTurnDuration: null,
+        runId: "a-2",
+        agentId: agentA,
+        agentName: "agent-a",
+        status: "starting",
+        exitCode: null,
+        startedAt: 2,
+        endedAt: null,
+        messagesProcessed: 0,
+        lastTurnDuration: null,
       });
       // B: 已经正常退出的记录——不应该出现在 active 列表里
       store.insertAgentRun({
-        runId: "b-1", agentId: agentB, agentName: "agent-b", status: "exited",
-        exitCode: 0, startedAt: 1, endedAt: 2, messagesProcessed: 1, lastTurnDuration: 100,
+        runId: "b-1",
+        agentId: agentB,
+        agentName: "agent-b",
+        status: "exited",
+        exitCode: 0,
+        startedAt: 1,
+        endedAt: 2,
+        messagesProcessed: 1,
+        lastTurnDuration: 100,
       });
       // C: 崩溃前正在运行——应该出现
       store.insertAgentRun({
-        runId: "c-1", agentId: agentC, agentName: "agent-c", status: "running",
-        exitCode: null, startedAt: 1, endedAt: null, messagesProcessed: 0, lastTurnDuration: null,
+        runId: "c-1",
+        agentId: agentC,
+        agentName: "agent-c",
+        status: "running",
+        exitCode: null,
+        startedAt: 1,
+        endedAt: null,
+        messagesProcessed: 0,
+        lastTurnDuration: null,
       });
 
       const active = store.listActiveAgents();
@@ -102,8 +162,15 @@ describe("agent-run-store.ts", () => {
 
     it("returns an empty list when nothing was starting/running (the common, non-crash case)", () => {
       store.insertAgentRun({
-        runId: "x-1", agentId: randomUUID(), agentName: "agent-x", status: "exited",
-        exitCode: 0, startedAt: 1, endedAt: 2, messagesProcessed: 1, lastTurnDuration: 100,
+        runId: "x-1",
+        agentId: randomUUID(),
+        agentName: "agent-x",
+        status: "exited",
+        exitCode: 0,
+        startedAt: 1,
+        endedAt: 2,
+        messagesProcessed: 1,
+        lastTurnDuration: 100,
       });
       expect(store.listActiveAgents()).toEqual([]);
     });

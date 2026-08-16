@@ -1,7 +1,10 @@
-import { describe, it, expect, afterAll } from "vitest";
-import { api, registerUser, cleanupTestData, closeSql, uniqHandle } from "./helpers.js";
+import { afterAll, describe, expect, it } from "vitest";
+import { api, cleanupTestData, closeSql, registerUser, uniqHandle } from "./helpers.js";
 
-afterAll(async () => { await cleanupTestData(); await closeSql(); });
+afterAll(async () => {
+  await cleanupTestData();
+  await closeSql();
+});
 
 describe("auth: register / login / cookie / csrf / sessions / deactivate", () => {
   it("register sets httpOnly access_token + csrf cookies and returns token", async () => {
@@ -55,9 +58,19 @@ describe("auth: register / login / cookie / csrf / sessions / deactivate", () =>
 
   it("deactivate requires correct password, then blocks login", async () => {
     const u = await registerUser();
-    const wrong = await api("/api/profile/deactivate", { method: "POST", cookie: u.cookie, csrf: u.csrf, body: { password: "nope" } });
+    const wrong = await api("/api/profile/deactivate", {
+      method: "POST",
+      cookie: u.cookie,
+      csrf: u.csrf,
+      body: { password: "nope" },
+    });
     expect(wrong.status).toBe(401);
-    const ok = await api("/api/profile/deactivate", { method: "POST", cookie: u.cookie, csrf: u.csrf, body: { password: "Test1234" } });
+    const ok = await api("/api/profile/deactivate", {
+      method: "POST",
+      cookie: u.cookie,
+      csrf: u.csrf,
+      body: { password: "Test1234" },
+    });
     expect(ok.status).toBe(200);
     const relog = await api("/api/auth/login", { method: "POST", body: { handle: u.handle, password: "Test1234" } });
     expect(relog.status).toBe(403);

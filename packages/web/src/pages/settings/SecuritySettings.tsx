@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { apiGet, apiClient } from "../../api/client";
-import { useAuthStore } from "../../stores";
-import { toast } from "../../stores/toastStore";
+import { apiClient, apiGet } from "../../api/client";
 import { PageHeader } from "../../components/layout/PageHeader";
+import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { Input } from "../../components/ui/Input";
-import { Button } from "../../components/ui/Button";
+import { useAuthStore } from "../../stores";
+import { toast } from "../../stores/toastStore";
 
 interface Session {
   id: string;
@@ -20,8 +20,26 @@ interface Session {
 function deviceLabel(ua: string | null): string {
   if (!ua) return "未知设备";
   const s = ua.toLowerCase();
-  const os = s.includes("windows") ? "Windows" : s.includes("mac") ? "macOS" : s.includes("android") ? "Android" : s.includes("iphone") || s.includes("ipad") ? "iOS" : s.includes("linux") ? "Linux" : "其他";
-  const br = s.includes("edg/") ? "Edge" : s.includes("chrome") ? "Chrome" : s.includes("firefox") ? "Firefox" : s.includes("safari") ? "Safari" : "浏览器";
+  const os = s.includes("windows")
+    ? "Windows"
+    : s.includes("mac")
+      ? "macOS"
+      : s.includes("android")
+        ? "Android"
+        : s.includes("iphone") || s.includes("ipad")
+          ? "iOS"
+          : s.includes("linux")
+            ? "Linux"
+            : "其他";
+  const br = s.includes("edg/")
+    ? "Edge"
+    : s.includes("chrome")
+      ? "Chrome"
+      : s.includes("firefox")
+        ? "Firefox"
+        : s.includes("safari")
+          ? "Safari"
+          : "浏览器";
   return `${br} · ${os}`;
 }
 
@@ -41,7 +59,9 @@ export function SecuritySettings() {
       .catch(() => setSessions([]))
       .finally(() => setLoading(false));
   };
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+  }, []);
 
   const revoke = async (id: string) => {
     try {
@@ -79,8 +99,14 @@ export function SecuritySettings() {
   };
 
   const deactivate = async () => {
-    if (confirmText !== "注销") { toast.warning('请在输入框中输入「注销」以确认'); return; }
-    if (!pwd) { toast.warning("请输入密码确认"); return; }
+    if (confirmText !== "注销") {
+      toast.warning("请在输入框中输入「注销」以确认");
+      return;
+    }
+    if (!pwd) {
+      toast.warning("请输入密码确认");
+      return;
+    }
     setBusy(true);
     try {
       await apiClient("/api/profile/deactivate", { method: "POST", body: { password: pwd } });
@@ -101,7 +127,9 @@ export function SecuritySettings() {
       <section>
         <div className="mb-3 flex items-center justify-between">
           <h3 className="font-bold text-gray-900 dark:text-white">登录设备</h3>
-          <Button onClick={logoutAll} variant="ghost" size="sm" className="text-red-500 hover:text-red-600">退出所有设备</Button>
+          <Button onClick={logoutAll} variant="ghost" size="sm" className="text-red-500 hover:text-red-600">
+            退出所有设备
+          </Button>
         </div>
         {loading ? (
           <p className="text-sm text-gray-400">加载中…</p>
@@ -114,14 +142,25 @@ export function SecuritySettings() {
                 <div className="min-w-0">
                   <div className="flex items-center gap-2 text-sm text-gray-900 dark:text-white">
                     {deviceLabel(s.user_agent)}
-                    {s.current && <span className="rounded bg-green-100 px-1.5 py-0.5 text-[11px] text-green-600 dark:bg-green-900/40 dark:text-green-300">当前设备</span>}
+                    {s.current && (
+                      <span className="rounded bg-green-100 px-1.5 py-0.5 text-[11px] text-green-600 dark:bg-green-900/40 dark:text-green-300">
+                        当前设备
+                      </span>
+                    )}
                   </div>
                   <div className="truncate text-xs text-gray-500">
                     {s.ip || "—"} · 最近活跃 {new Date(s.last_seen_at).toLocaleString("zh-CN")}
                   </div>
                 </div>
                 {!s.current && (
-                  <Button onClick={() => revoke(s.id)} variant="ghost" size="sm" className="shrink-0 text-red-500 hover:text-red-600">下线</Button>
+                  <Button
+                    onClick={() => revoke(s.id)}
+                    variant="ghost"
+                    size="sm"
+                    className="shrink-0 text-red-500 hover:text-red-600"
+                  >
+                    下线
+                  </Button>
                 )}
               </Card>
             ))}
@@ -132,16 +171,26 @@ export function SecuritySettings() {
       <section>
         <h3 className="mb-3 font-bold text-gray-900 dark:text-white">数据导出</h3>
         <p className="mb-3 text-sm text-gray-500">导出你的资料、消息、频道成员关系、提醒与会话为 JSON 文件。</p>
-        <Button onClick={exportData} size="sm">导出我的数据</Button>
+        <Button onClick={exportData} size="sm">
+          导出我的数据
+        </Button>
       </section>
 
       <section className="rounded-lg border border-red-300 p-4 dark:border-red-900/50">
         <h3 className="mb-2 font-bold text-red-600 dark:text-red-400">注销账户</h3>
-        <p className="mb-3 text-sm text-gray-500">注销后将无法登录，个人信息会被清除（历史消息保留）。此操作不可轻易撤销。</p>
+        <p className="mb-3 text-sm text-gray-500">
+          注销后将无法登录，个人信息会被清除（历史消息保留）。此操作不可轻易撤销。
+        </p>
         <div className="max-w-sm space-y-2">
           <Input type="password" value={pwd} onChange={(e) => setPwd(e.target.value)} placeholder="输入密码确认" />
-          <Input value={confirmText} onChange={(e) => setConfirmText(e.target.value)} placeholder='输入「注销」二字确认' />
-          <Button onClick={deactivate} disabled={busy} variant="danger" size="sm">{busy ? "处理中…" : "确认注销账户"}</Button>
+          <Input
+            value={confirmText}
+            onChange={(e) => setConfirmText(e.target.value)}
+            placeholder="输入「注销」二字确认"
+          />
+          <Button onClick={deactivate} disabled={busy} variant="danger" size="sm">
+            {busy ? "处理中…" : "确认注销账户"}
+          </Button>
         </div>
       </section>
     </div>

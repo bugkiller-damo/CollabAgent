@@ -1,8 +1,8 @@
+import { readFile } from "node:fs/promises";
+import { basename } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { readFile } from "node:fs/promises";
-import { basename } from "node:path";
 
 /**
  * Slock 平台的 MCP server（独立进程，由 Claude Code 通过 `.mcp.json` 以 stdio
@@ -29,9 +29,7 @@ const AGENT_TOKEN = process.env.SLOCK_AGENT_TOKEN;
 const SERVER_URL = process.env.SLOCK_SERVER_URL;
 
 if (!AGENT_ID || !AGENT_TOKEN || !SERVER_URL) {
-  console.error(
-    "[slock-mcp] missing SLOCK_AGENT_ID / SLOCK_AGENT_TOKEN / SLOCK_SERVER_URL env, cannot start",
-  );
+  console.error("[slock-mcp] missing SLOCK_AGENT_ID / SLOCK_AGENT_TOKEN / SLOCK_SERVER_URL env, cannot start");
   process.exit(1);
 }
 
@@ -56,7 +54,9 @@ async function callSlock(path: string, init?: RequestInit): Promise<unknown> {
     try {
       const parsed = JSON.parse(text) as { error?: string };
       if (parsed?.error) detail = parsed.error;
-    } catch { /* 非 JSON 错误体，原样使用 */ }
+    } catch {
+      /* 非 JSON 错误体，原样使用 */
+    }
     throw new Error(`${res.status} ${detail}`);
   }
   return text ? JSON.parse(text) : {};
@@ -75,7 +75,9 @@ async function callSlockUpload(path: string, form: FormData): Promise<unknown> {
     try {
       const parsed = JSON.parse(text) as { error?: string };
       if (parsed?.error) detail = parsed.error;
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
     throw new Error(`${res.status} ${detail}`);
   }
   return text ? JSON.parse(text) : {};
@@ -98,10 +100,15 @@ server.registerTool(
     title: "发送消息",
     description: "在指定频道/线程/私信里发一条消息",
     inputSchema: {
-      target: z.string().describe('目标：频道（如 "#general"）、频道内线程（如 "#general:threadId"）、或私信（如 "dm:@handle"）'),
+      target: z
+        .string()
+        .describe('目标：频道（如 "#general"）、频道内线程（如 "#general:threadId"）、或私信（如 "dm:@handle"）'),
       content: z.string().describe("消息正文"),
       threadId: z.string().optional().describe("可选：显式指定线程 id"),
-      attachmentIds: z.array(z.string()).optional().describe("可选：随消息附带的附件 id 列表（先用 upload_attachment 上传获得）"),
+      attachmentIds: z
+        .array(z.string())
+        .optional()
+        .describe("可选：随消息附带的附件 id 列表（先用 upload_attachment 上传获得）"),
     },
   },
   async ({ target, content, threadId, attachmentIds }) => {
@@ -396,7 +403,11 @@ server.registerTool(
   },
   async ({ query, channel, limit }) => {
     try {
-      const qs = new URLSearchParams({ q: query, ...(channel ? { channel } : {}), ...(limit ? { limit: String(limit) } : {}) });
+      const qs = new URLSearchParams({
+        q: query,
+        ...(channel ? { channel } : {}),
+        ...(limit ? { limit: String(limit) } : {}),
+      });
       const result = await callSlock(`/search?${qs.toString()}`);
       return ok(result);
     } catch (err) {

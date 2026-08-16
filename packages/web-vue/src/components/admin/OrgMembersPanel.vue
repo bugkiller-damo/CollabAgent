@@ -1,10 +1,22 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
-import { apiGet, apiClient } from "../../api";
+import { apiClient, apiGet } from "../../api";
 import { toast } from "../../stores/toastStore";
 
-interface Org { id: string; name: string; personal: boolean; role: string; memberCount: number; agentCount: number; }
-interface Member { user_id: string; role: string; handle: string; display_name?: string; }
+interface Org {
+  id: string;
+  name: string;
+  personal: boolean;
+  role: string;
+  memberCount: number;
+  agentCount: number;
+}
+interface Member {
+  user_id: string;
+  role: string;
+  handle: string;
+  display_name?: string;
+}
 
 // 管理「我的私有空间」的协作成员：被加进来的人能看到我创建的 Agent。
 const org = ref<Org | null>(null);
@@ -15,7 +27,9 @@ const busy = ref(false);
 
 function loadMembers(orgId: string) {
   apiGet<{ members: Member[] }>(`/api/orgs/${orgId}/members`)
-    .then((d) => { members.value = d.members || []; })
+    .then((d) => {
+      members.value = d.members || [];
+    })
     .catch(() => {});
 }
 
@@ -25,10 +39,14 @@ async function loadOrg() {
     const personal = (d.orgs || []).find((o) => o.personal) || null;
     org.value = personal;
     if (personal) loadMembers(personal.id);
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 }
 
-onMounted(() => { loadOrg(); });
+onMounted(() => {
+  loadOrg();
+});
 
 async function doInvite() {
   const h = invite.value.trim();
@@ -41,7 +59,7 @@ async function doInvite() {
     msg.value = "已加入";
     loadMembers(org.value.id);
   } catch (err: any) {
-    msg.value = err?.message === "user not found" ? "用户不存在" : (err?.message || "邀请失败");
+    msg.value = err?.message === "user not found" ? "用户不存在" : err?.message || "邀请失败";
   } finally {
     busy.value = false;
   }

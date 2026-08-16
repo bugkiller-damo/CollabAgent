@@ -1,12 +1,15 @@
 <script setup lang="ts">
-withDefaults(defineProps<{
-  icon?: string;
-  title: string;
-  description?: string;
-  actionLabel?: string;
-}>(), {
-  icon: "💬",
-});
+withDefaults(
+  defineProps<{
+    icon?: string;
+    title: string;
+    description?: string;
+    actionLabel?: string;
+  }>(),
+  {
+    icon: "💬",
+  },
+);
 
 const emit = defineEmits<{
   action: [];

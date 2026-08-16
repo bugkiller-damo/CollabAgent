@@ -2,9 +2,9 @@
 import { ref } from "vue";
 import { RouterLink } from "vue-router";
 import { apiPost } from "../api";
+import Button from "../components/ui/Button.vue";
 import Card from "../components/ui/Card.vue";
 import Input from "../components/ui/Input.vue";
-import Button from "../components/ui/Button.vue";
 
 const email = ref("");
 const code = ref("");
@@ -23,7 +23,9 @@ async function handleSendCode() {
   }
   loading.value = true;
   try {
-    const data = await apiPost<{ message: string; devCode?: string }>("/api/auth/forgot-password", { email: email.value });
+    const data = await apiPost<{ message: string; devCode?: string }>("/api/auth/forgot-password", {
+      email: email.value,
+    });
     msg.value = data.devCode ? `验证码（开发模式）: ${data.devCode}` : data.message;
     step.value = "reset";
   } catch (e: any) {

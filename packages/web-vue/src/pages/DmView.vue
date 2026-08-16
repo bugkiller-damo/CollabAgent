@@ -1,15 +1,15 @@
 <script setup lang="ts">
+import type { Message } from "@collabagent/shared";
 import { computed, ref, watch } from "vue";
 import { useRoute } from "vue-router";
-import { apiGet, apiClient } from "../api";
-import { useMessageStore, useUiStore } from "../stores";
-import type { Message } from "@collabagent/shared";
+import { apiClient, apiGet } from "../api";
+import MessageComposer, { type ComposerAttachment } from "../components/chat/MessageComposer.vue";
 import MessageRow from "../components/chat/MessageRow.vue";
 import EmptyState from "../components/EmptyState.vue";
-import MessageSkeleton from "../components/skeleton/MessageSkeleton.vue";
 import PageHeader from "../components/layout/PageHeader.vue";
-import MessageComposer, { type ComposerAttachment } from "../components/chat/MessageComposer.vue";
+import MessageSkeleton from "../components/skeleton/MessageSkeleton.vue";
 import Avatar from "../components/ui/Avatar.vue";
+import { useMessageStore, useUiStore } from "../stores";
 
 const EMPTY: Message[] = [];
 

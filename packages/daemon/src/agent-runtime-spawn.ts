@@ -1,22 +1,17 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { formatRestartSummary } from "./restart-summary.js";
+import type { IExitChain } from "./agent-runtime-exit.js";
+import type { IAgentStateMachine } from "./agent-runtime-state.js";
 import { installTermsAcceptHandler } from "./agent-runtime-terms-dialog.js";
+import type { ITurnTracker } from "./agent-runtime-turn-tracker.js";
 import { BUSY_MARKER_RE, PROMPT_RE } from "./agent-runtime-turn-tracker.js";
-import { bundleSlockMcpServer } from "./mcp-bundle.js";
 import { captureSessionId } from "./agent-sessions.js";
 import { getCommandPreset, renderResumeArgs } from "./command-presets.js";
-import type {
-  IAgentManager,
-  IAgentRunStore,
-  LiveAgentRun,
-  PtyOutputEvent,
-} from "./types/index.js";
-import type { IAgentStateMachine } from "./agent-runtime-state.js";
-import type { ITurnTracker } from "./agent-runtime-turn-tracker.js";
-import type { IExitChain } from "./agent-runtime-exit.js";
 import type { IIdleReclaimer } from "./idle-reclaimer.js";
+import { bundleSlockMcpServer } from "./mcp-bundle.js";
 import type { PostStartInputWriter } from "./post-start-input-writer.js";
+import { formatRestartSummary } from "./restart-summary.js";
+import type { IAgentManager, IAgentRunStore, LiveAgentRun, PtyOutputEvent } from "./types/index.js";
 
 /**
  * PTY 启动 Claude 时的参数（仿照 Hive `claude-command-defaults.ts`）。
@@ -204,9 +199,18 @@ export type SpawnPtyForAgent = (
  */
 export const createSpawnPtyForAgent = (deps: SpawnPtyForAgentDeps): SpawnPtyForAgent => {
   const {
-    agentManager, resolvedClaudePath, runStore, exitChain,
-    stateMachine, turnTracker, idleReclaimer, postStartWriter,
-    runIdByAgent, unsubByRunId, getAgentModel, lastOutputAtByAgent,
+    agentManager,
+    resolvedClaudePath,
+    runStore,
+    exitChain,
+    stateMachine,
+    turnTracker,
+    idleReclaimer,
+    postStartWriter,
+    runIdByAgent,
+    unsubByRunId,
+    getAgentModel,
+    lastOutputAtByAgent,
     getPreferredTermSize,
   } = deps;
 
@@ -250,9 +254,7 @@ export const createSpawnPtyForAgent = (deps: SpawnPtyForAgentDeps): SpawnPtyForA
     // 模型配置（runtime_profile.model，Web 端 sonnet/opus/haiku 可选）——此前从未
     // 接进启动参数，管理后台选的模型完全是摆设。做一次保守校验，防注入/坏值。
     const configuredModel = getAgentModel(agentName);
-    const modelArgs = configuredModel && /^[a-z0-9._-]+$/i.test(configuredModel)
-      ? ["--model", configuredModel]
-      : [];
+    const modelArgs = configuredModel && /^[a-z0-9._-]+$/i.test(configuredModel) ? ["--model", configuredModel] : [];
     if (modelArgs.length > 0) {
       console.log(`[Runtime] @${agentName} spawning with --model ${configuredModel}`);
     }
@@ -262,7 +264,9 @@ export const createSpawnPtyForAgent = (deps: SpawnPtyForAgentDeps): SpawnPtyForA
     // runId"是安全的 no-op（见下方注释），所以宽限期还没过时提前触发也不会
     // 误清理别的 run。
     let notifyExit: (() => void) | null = null;
-    const exitedSignal = new Promise<void>((resolve) => { notifyExit = resolve; });
+    const exitedSignal = new Promise<void>((resolve) => {
+      notifyExit = resolve;
+    });
 
     const snapshot = await agentManager.startAgent({
       agentId,
@@ -286,15 +290,12 @@ export const createSpawnPtyForAgent = (deps: SpawnPtyForAgentDeps): SpawnPtyForA
 
     if (resumeSessionId && !isRetry) {
       const graceWindowMs = getResumeGraceWindowMs();
-      const exited = await Promise.race([
-        exitedSignal.then(() => true),
-        sleep(graceWindowMs).then(() => false),
-      ]);
+      const exited = await Promise.race([exitedSignal.then(() => true), sleep(graceWindowMs).then(() => false)]);
       if (exited) {
         console.warn(
           `[Runtime] @${agentName} PTY exited within ${graceWindowMs}ms of spawning with ` +
-          `--resume ${resumeSessionId.slice(0, 8)}...— treating as a failed resume, clearing saved ` +
-          `session id and retrying once without --resume`,
+            `--resume ${resumeSessionId.slice(0, 8)}...— treating as a failed resume, clearing saved ` +
+            `session id and retrying once without --resume`,
         );
         clearSavedSessionId(runStore, agentId, agentName);
         return attemptSpawn(agentName, agentId, workspace, promptFile, env, initialUserMsg, null, true);
@@ -364,7 +365,7 @@ export const createSpawnPtyForAgent = (deps: SpawnPtyForAgentDeps): SpawnPtyForA
       idleReclaimer.touch(agentName);
       console.log(
         `[Runtime] @${agentName} round-end (outputLen=${run.output.length}) current screen: ` +
-        `${run.screenText.replace(/\s+/g, " ").trim().slice(-500)}`,
+          `${run.screenText.replace(/\s+/g, " ").trim().slice(-500)}`,
       );
     });
     unsubByRunId.set(snapshot.runId, unsub);
@@ -414,16 +415,16 @@ export const createSpawnPtyForAgent = (deps: SpawnPtyForAgentDeps): SpawnPtyForA
           if (resumeSessionId && !isRetry) {
             console.warn(
               `[Runtime] @${agentName} run ${snapshot.runId.slice(0, 8)} was already dead by the time bootstrap ` +
-              `was about to be written (--resume ${resumeSessionId.slice(0, 8)}... likely failed slower than the ` +
-              `${getResumeGraceWindowMs()}ms grace window) — clearing saved session id and redelivering the ` +
-              `message via a fresh spawn without --resume`,
+                `was about to be written (--resume ${resumeSessionId.slice(0, 8)}... likely failed slower than the ` +
+                `${getResumeGraceWindowMs()}ms grace window) — clearing saved session id and redelivering the ` +
+                `message via a fresh spawn without --resume`,
             );
             clearSavedSessionId(runStore, agentId, agentName);
             await attemptSpawn(agentName, agentId, workspace, promptFile, env, initialUserMsg, null, true);
           } else {
             console.error(
               `[Runtime] @${agentName} run ${snapshot.runId.slice(0, 8)} died before bootstrap could be written; ` +
-              `message was NOT delivered: "${initialUserMsg.slice(0, 100)}"`,
+                `message was NOT delivered: "${initialUserMsg.slice(0, 100)}"`,
             );
           }
           return;
