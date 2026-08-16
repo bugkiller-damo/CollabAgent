@@ -38,5 +38,22 @@ services:
       - ./packages:/app/packages
       - ./node_modules:/app/node_modules
 
+  # O4 对象存储（可选）：minio 挂在 profiles: ["s3"] 下，默认 docker compose up 不会启动它。
+  # 用法：docker compose --profile s3 up -d minio（控制台 http://localhost:9001，账号 slockadmin/slockadmin123）。
+  # 服务端切到对象存储：STORAGE_BACKEND=s3 S3_ENDPOINT=http://localhost:9000 S3_BUCKET=<bucket> ... 启动。
+  minio:
+    image: minio/minio
+    profiles: ["s3"]
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: slockadmin
+      MINIO_ROOT_PASSWORD: slockadmin123
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data/
+
 volumes:
   pgdata:
+  minio-data:

@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { canAccessChannel, canManageChannel } from "../lib/access.js";
 import { resolveChannel } from "../lib/channel.js";
 import { getOrCreateDmChannel, type Party, resolvePeer } from "../lib/dm.js";
+import { getStorage } from "../lib/storage.js";
 import { isServerMember, resolveTenant } from "../lib/tenant.js";
 
 export async function channelRoutes(app: FastifyInstance) {
@@ -249,7 +250,14 @@ export async function channelRoutes(app: FastifyInstance) {
     }
     const ch = await app.pg.query("SELECT id FROM channels WHERE id = $1", [channelId]);
     if (ch.rows.length === 0) return reply.status(404).send({ error: "channel not found" });
-    await app.pg.transaction(async (tx) => {
+    const orphanedKeys = await app.pg.transaction(async (tx) => {
+      // 删 message_attachments 之前先收集本频道消息关联过的附件 id（删行后对象字节要在事务外 best-effort 清理）
+      const linked = await tx.query<{ attachment_id: string }>(
+        `SELECT DISTINCT attachment_id FROM message_attachments
+          WHERE message_id IN (SELECT id FROM messages WHERE channel_id = $1)`,
+        [channelId],
+      );
+      const ids = linked.rows.map((r) => String(r.attachment_id));
       await tx.query(
         "DELETE FROM message_reactions WHERE message_id IN (SELECT id FROM messages WHERE channel_id = $1)",
         [channelId],
@@ -258,11 +266,33 @@ export async function channelRoutes(app: FastifyInstance) {
         "DELETE FROM message_attachments WHERE message_id IN (SELECT id FROM messages WHERE channel_id = $1)",
         [channelId],
       );
+      // 只删不再被任何消息引用的附件行（同一附件可能挂在别的频道/消息上，不能误删）
+      let removedKeys: string[] = [];
+      if (ids.length > 0) {
+        const removed = await tx.query<{ storage_key: string }>(
+          `DELETE FROM attachments
+            WHERE id = ANY($1) AND NOT EXISTS (
+              SELECT 1 FROM message_attachments ma WHERE ma.attachment_id = attachments.id
+            )
+            RETURNING storage_key`,
+          [ids],
+        );
+        removedKeys = removed.rows.map((r) => r.storage_key);
+      }
       await tx.query("DELETE FROM action_cards WHERE channel_id = $1", [channelId]);
       await tx.query("DELETE FROM messages WHERE channel_id = $1", [channelId]);
       await tx.query("DELETE FROM channel_members WHERE channel_id = $1", [channelId]);
       await tx.query("DELETE FROM channels WHERE id = $1", [channelId]);
+      return removedKeys;
     });
+    // 事务提交后再删对象字节：引用关系已断；失败仅告警（best-effort），不影响频道删除结果
+    for (const key of orphanedKeys) {
+      try {
+        await getStorage().remove(key);
+      } catch (err) {
+        req.log.warn({ err, key }, "attachment storage cleanup failed");
+      }
+    }
     return { ok: true };
   });
 
