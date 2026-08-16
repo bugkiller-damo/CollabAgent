@@ -8,7 +8,8 @@
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "typecheck": "pnpm -r run typecheck",
-    "audit:bcrypt-tokens": "node scripts/audit-bcrypt-tokens.mjs"
+    "audit:bcrypt-tokens": "node scripts/audit-bcrypt-tokens.mjs",
+    "validate:compose": "node scripts/validate-compose.mjs"
   },
   "engines": {
     "node": ">=20.0.0",

@@ -1,4 +1,18 @@
-version: "3.8"
+# ============================================================
+# Slock 生产部署形态（O19）
+#
+# 用法：
+#   1. 设置密钥（必须，缺省 compose 直接拒绝启动；应用侧 O5 硬校验也会兜底拒绝）：
+#      在仓库根 .env 写入（docker compose 自动读取，不入库）：
+#        JWT_SECRET=<openssl rand -hex 32>
+#        REFRESH_SECRET=<openssl rand -hex 32>
+#   2. 构建并启动：docker compose up -d --build
+#   3. 检查健康：docker compose ps（server 显示 healthy；healthcheck 探测 /api/health 的 db:true）
+#   4. 可选对象存储（O4）：docker compose --profile s3 up -d minio，
+#      并把 server 环境切 STORAGE_BACKEND=s3、S3_ENDPOINT=http://minio:9000 等（见 packages/server/.env.example）
+#
+# 本地开发请用 pnpm dev（postgres/valkey 可用本 compose 单独起：docker compose up -d postgres valkey）。
+# ============================================================
 
 services:
   postgres:
@@ -11,14 +25,36 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./packages/server/src/db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+      - ./packages/server/src/db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U collabagent -d collabagent"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+    restart: unless-stopped
 
   valkey:
-    # Valkey 是 Redis 的 Linux 基金会 fork（BSD 协议），wire protocol 兼容，
+    # Valkey 是 Redis 的 Linux 基金会 fork（BSD 协议），wire protocol 兼容；
     # ioredis 客户端无需更换；URL scheme 沿用 redis://（ioredis 只解析 redis/rediss scheme）。
     image: valkey/valkey:8-alpine
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+    restart: unless-stopped
 
   server:
     build:
@@ -27,16 +63,39 @@ services:
     ports:
       - "3001:3001"
     environment:
+      NODE_ENV: production
       DATABASE_URL: postgresql://collabagent:collabagent_dev@postgres:5432/collabagent
       VALKEY_URL: redis://valkey:6379
-      JWT_SECRET: dev-secret-change-in-production
-      PORT: 3001
-    depends_on:
-      - postgres
-      - valkey
+      # O5 联动：生产环境必须显式提供；缺省 compose 解析失败 + 应用启动 exit(1) 双保险
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required for production}
+      REFRESH_SECRET: ${REFRESH_SECRET:?REFRESH_SECRET is required for production}
+      PORT: "3001"
+      # 对象存储（O4）：默认 local 落 uploads-data 卷；切 MinIO 时打开下列配置
+      # STORAGE_BACKEND: s3
+      # S3_ENDPOINT: http://minio:9000
+      # S3_BUCKET: slock-attachments
+      # S3_ACCESS_KEY: slockadmin
+      # S3_SECRET_KEY: slockadmin123
+      # S3_FORCE_PATH_STYLE: "1"
     volumes:
-      - ./packages:/app/packages
-      - ./node_modules:/app/node_modules
+      - uploads-data:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3001/api/health | grep -q '\"db\":true' || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+    restart: unless-stopped
 
   # O4 对象存储（可选）：minio 挂在 profiles: ["s3"] 下，默认 docker compose up 不会启动它。
   # 用法：docker compose --profile s3 up -d minio（控制台 http://localhost:9001，账号 slockadmin/slockadmin123）。
@@ -53,7 +112,19 @@ services:
     command: server /data --console-address ":9001"
     volumes:
       - minio-data:/data/
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/minio/health/live || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+    restart: unless-stopped
 
 volumes:
   pgdata:
   minio-data:
+  uploads-data:

@@ -31,6 +31,8 @@ jobs:
         run: pnpm lint
       - name: Typecheck (all packages)
         run: pnpm -r typecheck
+      - name: Validate production deployment files (O19)
+        run: pnpm validate:compose
 
   daemon-test:
     name: L2 · Daemon Tests
