@@ -9,6 +9,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
     "build": "tsc"
   },
   "devDependencies": {

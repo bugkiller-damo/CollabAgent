@@ -5,8 +5,71 @@ on:
     branches: [main, master]
   pull_request:
 
+# O17 分层 CI：
+#   L1 lint-typecheck — 全仓 biome lint + 各包 typecheck（最快，先失败）
+#   L2 daemon-test    — daemon vitest（fake PTY/HTTP，无需 DB）
+#   L2 web-build      — React(web) + Vue3(web-vue) 双包构建
+#   L3 server-test    — 真 Postgres 黑盒集成测试（最重）
+# 依赖安全审计在独立 workflow：.github/workflows/audit.yml（O18）
+
 jobs:
-  build-and-test:
+  lint-typecheck:
+    name: L1 · Lint + Typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Lint (biome, all packages)
+        run: pnpm lint
+      - name: Typecheck (all packages)
+        run: pnpm -r typecheck
+
+  daemon-test:
+    name: L2 · Daemon Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Run daemon tests
+        run: pnpm --filter @collabagent/daemon run test
+
+  web-build:
+    name: L2 · Web Builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build web (React, legacy)
+        run: pnpm --filter @collabagent/web run build
+      - name: Build web-vue (Vue3)
+        run: pnpm --filter @collabagent/web-vue run build
+
+  server-test:
+    name: L3 · Server Integration Tests
     runs-on: ubuntu-latest
 
     services:
@@ -34,25 +97,17 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
-
       - uses: pnpm/action-setup@v4
         with:
           version: 9
-
       - uses: actions/setup-node@v5
         with:
           node-version: 20
           cache: pnpm
-
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-
-      - name: Typecheck (all packages)
-        run: pnpm -r typecheck
-
       - name: Run DB migrations
         run: pnpm --filter @collabagent/server run db:migrate
-
       - name: Start server
         run: |
           pnpm --filter @collabagent/server exec tsx src/index.ts &
@@ -64,10 +119,8 @@ jobs:
             sleep 1
           done
           curl -sf http://localhost:3001/api/health || (echo "server failed to start" && exit 1)
-
       - name: Run server tests
         run: pnpm --filter @collabagent/server run test
-
       - name: Stop server
         if: always()
         run: kill "$(cat server.pid)" || true

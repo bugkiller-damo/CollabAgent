@@ -11,6 +11,7 @@
     "serve": "tsx src/supervisor.ts",
     "build": "tsc",
     "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
     "test": "vitest run"
   },
   "dependencies": {

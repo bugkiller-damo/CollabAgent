@@ -1,0 +1,14 @@
+# O17：提交前自动格式化 + lint 修复；推送前全量 typecheck。
+# 安装：pnpm install 后自动执行（postinstall -> lefthook install）。
+pre-commit:
+  parallel: true
+  commands:
+    biome:
+      glob: "*.{js,cjs,mjs,ts,tsx,jsx,json,vue}"
+      run: npx biome check --write --no-errors-on-unmatched {staged_files}
+      stage_fixed: true
+
+pre-push:
+  commands:
+    typecheck:
+      run: pnpm -r typecheck
