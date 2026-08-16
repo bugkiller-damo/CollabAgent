@@ -296,7 +296,7 @@ O9 seq 并发测试 → O10/O11/O12/O13 daemon 收敛与安全 → O16 前端 WS
 | 8 | O6 登录锁迁移 Valkey | AI | ☑ 2026-08-16 |
 | 9 | O7 权限缓存一致性方案 | AI | ☑ 2026-08-16 |
 | 10 | O8 bcrypt 兼容分支退役计划 | AI | ☑ 2026-08-16 |
-| 11 | O19 生产 Dockerfile + compose | | ☐ |
+| 11 | O19 生产 Dockerfile + compose | AI | ☑ 2026-08-16 |
 | 12 | O14 Vue3 Phase G 收尾 | | ☐ |
 | 13 | O15 断线增量补拉 + 乐观队列 | | ☐ |
 | 14 | O9 seq 并发测试 | | ☐ |
@@ -361,7 +361,7 @@ O9 seq 并发测试 → O10/O11/O12/O13 daemon 收敛与安全 → O16 前端 WS
 | O12 | claude driver 权限收敛 | 🟡 中 | ⏳ 待办 | |
 | O14 | Vue3 Phase G 收尾 | 🟡 中 | ⏳ 待办 | |
 | O15 | 前端离线增量同步 | 🟡 中 | ⏳ 待办 | |
-| O19 | 生产部署形态 | 🟡 中 | ⏳ 待办 | |
+| O19 | 生产部署形态 | 🟡 中 | ✅ 完成 | `packages/server/Dockerfile` 多阶段（build: pnpm9 frozen install + 编译 → runtime: pnpm deploy --prod 裁剪纯生产依赖、非 root `slock` 用户、内置 HEALTHCHECK 探测 `/api/health` 的 db:true、`node dist/index.js`）；根 `.dockerignore`；`docker-compose.yml` 生产化（healthcheck×3、deploy 资源限制、`${JWT_SECRET:?}` 必选插值与 O5 双保险、depends_on 健康条件、uploads-data 卷、无源码挂载、minio profile 保留）；`pnpm-workspace.yaml` 开 `injectWorkspacePackages`（deploy 必需）；`scripts/validate-compose.mjs` 静态校验（compose 结构 + Dockerfile 约束，yaml 用仓库内传递依赖，无需 docker）+ CI L1 接入；本机 pnpm 11 模拟 deploy 验证 39.6MB 纯生产依赖；daemon 82/82 + server 219/219 + 全仓 typecheck 回归 |
 | O9 | messages.seq 竞态确认 | 🟢 低 | ⏳ 待办 | |
 | O13 | daemon 代码面收敛 | 🟢 低 | ⏳ 待办 | |
 | O16 | 前端 WS 层收敛 | 🟢 低 | ⏳ 待办 | |
