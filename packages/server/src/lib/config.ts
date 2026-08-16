@@ -50,6 +50,16 @@ export const config = {
   ).split(","),
   // 限流后端（Valkey / Redis 兼容协议）。VALKEY_URL 优先，REDIS_URL 为旧变量名兼容读取。
   VALKEY_URL: env("VALKEY_URL", env("REDIS_URL", "")),
+  // 对象存储后端（O4）：local=本地磁盘（默认）；s3|minio=对象存储（MinIO/S3 协议）
+  STORAGE_BACKEND: env("STORAGE_BACKEND", "local"),
+  S3_ENDPOINT: env("S3_ENDPOINT", ""),
+  S3_REGION: env("S3_REGION", "us-east-1"),
+  S3_BUCKET: env("S3_BUCKET", ""),
+  S3_ACCESS_KEY: env("S3_ACCESS_KEY", ""),
+  S3_SECRET_KEY: env("S3_SECRET_KEY", ""),
+  S3_FORCE_PATH_STYLE: env("S3_FORCE_PATH_STYLE", ""),
+  // 可选：公共桶/CDN 直链基地址（https://cdn.example.com）；不配置则经 /api/attachments/by-key 代理
+  S3_PUBLIC_BASE_URL: env("S3_PUBLIC_BASE_URL", ""),
   LOGIN_MAX_ATTEMPTS: Number(process.env.LOGIN_MAX_ATTEMPTS) || 5,
   LOGIN_LOCK_MS: Number(process.env.LOGIN_LOCK_MS) || 15 * 60 * 1000,
 } as const;
@@ -72,6 +82,13 @@ export function collectInsecureConfig(e: NodeJS.ProcessEnv = process.env): strin
   }
   if (!e.DATABASE_URL) {
     issues.push("DATABASE_URL 未设置（生产环境必须显式指定数据库连接串）");
+  }
+  // O4：选了对象存储后端就必须给全连接参数，否则上传下载全链路在生产直接失败
+  const backend = String(e.STORAGE_BACKEND || "local").toLowerCase();
+  if (backend === "s3" || backend === "minio") {
+    for (const key of ["S3_ENDPOINT", "S3_BUCKET", "S3_ACCESS_KEY", "S3_SECRET_KEY"] as const) {
+      if (!e[key]) issues.push(`STORAGE_BACKEND=${backend} 需要设置 ${key}（对象存储连接参数缺失）`);
+    }
   }
   return issues;
 }
