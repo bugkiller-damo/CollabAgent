@@ -1,3 +1,21 @@
+import { existsSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import dotenv from "dotenv";
+
+/**
+ * 加载 packages/server/.env（若存在）。
+ *
+ * 用 import.meta.url 定位到包根目录，不依赖进程 cwd——
+ * 无论从仓库根 `pnpm dev` 还是 `cd packages/server && pnpm dev` 都能命中同一份 .env。
+ * dotenv 默认不覆盖已由进程注入的环境变量（测试/CI 显式传入的 env 优先）。
+ */
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const ENV_FILE = resolve(__dirname, "../../.env");
+if (existsSync(ENV_FILE)) {
+  dotenv.config({ path: ENV_FILE });
+}
+
 /**
  * 集中配置管理 — 所有环境变量在此统一读取/校验。
  *
@@ -14,8 +32,8 @@ function env(key: string, fallback: string): string {
 export const INSECURE_DEV_DEFAULTS = {
   JWT_SECRET: "dev-secret-change-in-production",
   REFRESH_SECRET: "dev-refresh-secret",
-  /** 本地开发 DATABASE_URL 回退（本机 docker 实例，不含历史明文密码 P@ssw0rd）。 */
-  DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/collabagent",
+  /** 本地开发 DATABASE_URL 回退（与 docker-compose.yml 的 postgres 服务凭据一致）。 */
+  DATABASE_URL: "postgresql://collabagent:collabagent_dev@localhost:5432/collabagent",
 } as const;
 
 export const config = {
