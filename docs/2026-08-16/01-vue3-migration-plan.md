@@ -53,13 +53,24 @@
 7. 每页迁移完成 = `pnpm --filter @collabagent/web-vue typecheck && build` 双绿 + 与 React 版同路由功能对照。
 8. 不改 packages/web、packages/server、packages/daemon 的任何文件。
 
-## 5. 阶段划分
+## 5. 阶段划分与进度
 
-- **Phase A 脚手架** ✅ 已完成（本分支，`packages/web-vue` 17 文件，typecheck/build 双绿，15 路由占位页）
-- **Phase B 基础层**：`src/api/index.ts`、`src/lib/formatTime.ts`、10 个 pinia store、`useWebSocket`/`useMentionSuggest` composable、`wsSender`、theme 初始化
-- **Phase C 演示路径页面**（对照竞赛演示流程）：Login/Register → AppLayout(WS 分发) → ChannelView + 聊天组件族（MessageList/MessageRow/MarkdownContent/MessageComposer/MentionPopup/VirtualMessageList）→ TasksPage/TaskBoard
-- **Phase D 其余页面**：DM/Thread/Search、Settings 族、Admin 族、terminal/agent 面板族
-- **Phase E 收尾**：server 静态目录切换/并存部署、旧 `packages/web` 下线、`web-vue` → `web` 改名、竞赛材料技术栈措辞全面更新（presentation-plan.md 与 gen-pptx.js 仍有 "React 19 前端" 字样）
+> 状态更新时间：2026-08-16 17:30 ｜ 主体迁移（Phase A–F + 路由接线）已全部完成并验证。
+
+- **Phase A 脚手架** ✅（commit `5c39def`，17 文件，typecheck/build 双绿，占位路由）
+- **Phase B 基础层** ✅（commit `e59b48e`）`src/api/index.ts`、`src/lib/formatTime.ts`+`passwordStrength.ts`、10 个 pinia store + `wsSender`、`useWebSocket`/`useMentionSuggest`/`usePolling` composable、theme 初始化
+- **Phase C 通用 UI 组件层** ✅（commit `40b4d9a`，23 文件：ui/ + layout/ + chat/ + skeleton/ 等）
+- **Phase D 应用壳层 + 聊天组件族** ✅（commit `44d5a88` + `b7cd3f2` + `1463906`）AppLayout(WS 分发)、Sidebar、MarkdownContent(markdown-it+DOMPurify)、MessageRow、VirtualMessageList(vue-virtual)、等
+- **Phase E 其余组件 + admin/settings 页族** ✅（commit `2986404` + `59f918f` + `344d829`）agent 面板族、MentionPopover、Channel 面板族、5 个 admin 页面、5 个 settings 页面、ConnectWizard
+- **Phase F 核心页面 + 路由接线** ✅（commit `b5fc9d9` + `48435cb` + `4f21250` + `1756635` + `c0c2240`）MessageComposer、AuthGuard、ChannelView、DmView、ThreadView、TaskBoard；路由表从占位页全部切换到真实组件（AuthGuard/AppLayout 嵌套守卫，lazy chunk）
+- **Phase G 收尾（待用户决策，未执行）**：server 静态目录切换/并存部署、旧 `packages/web` 下线、`web-vue` → `web` 改名、竞赛材料技术栈措辞全面更新（presentation-plan.md 与 gen-pptx.js 仍有 "React 19 前端" 字样）
+
+### 迁移完成度核对（2026-08-16）
+
+- 页面：**19/19**（`packages/web/src/pages` 全部有 Vue 对应，`Skeleton` 归入 `skeleton/` 子目录属组织差异）
+- 组件：**~50/~50**（全部覆盖；`hooks/` → `composables/`、`api/client.ts` → `api/index.ts` 为惯例改名）
+- store/composable/lib：**全部覆盖**
+- 验证：`vue-tsc --noEmit` 干净 + `vite build` 447 模块 exit 0
 
 ## 6. 验证基线
 
