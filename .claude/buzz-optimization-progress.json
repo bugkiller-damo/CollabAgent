@@ -1,9 +1,11 @@
 {
   "plan": "docs/2026-08-16/02-buzz-vs-slock-optimization-plan.md",
   "startedAt": "2026-08-16",
-  "completedItems": ["O5"],
-  "currentItem": "O17",
+  "completedItems": ["O5", "O17", "O18"],
+  "currentItem": "O1",
   "notes": {
-    "O5": "config.ts 硬校验：collectInsecureConfig 纯函数（可单测）+ 生产命中默认值 process.exit(1)；ALLOW_INSECURE_DEV_SECRETS=1 仅限本地调试逃生门；DATABASE_URL 默认值移除 P@ssw0rd；新增 packages/server/.env.example + test/config.test.ts（6 通过）"
+    "O5": "config.ts 硬校验：collectInsecureConfig 纯函数（可单测）+ 生产命中默认值 process.exit(1)；ALLOW_INSECURE_DEV_SECRETS=1 仅限本地调试逃生门；DATABASE_URL 默认值移除 P@ssw0rd；新增 packages/server/.env.example + test/config.test.ts（6 通过）",
+    "O17": "Biome 2.5.8 全仓接入：biome.json（a11y/格式基线，0 error / 351 warning 不阻断）；5 包 lint 脚本 + 根 lint/lint:fix；ci.yml 分层 4 job（L1 lint+typecheck / L2 daemon tests / L2 web 双构建 / L3 server 真 PG 集成）；lefthook pre-commit 自动修复 + pre-push typecheck；.gitattributes LF 防行尾抖动。子代理修复 58 前端 error + server/daemon bug-class（agent-runtime.ts ANSI 正则改 new RegExp 模板形式，语义等价 82/82 测试过）",
+    "O18": "dependabot.yml（npm+gh-actions weekly，minor/patch 分组）+ audit.yml（PR/push/周一定时，--prod --audit-level=high 阻断，moderate 非阻断）"
   }
 }
