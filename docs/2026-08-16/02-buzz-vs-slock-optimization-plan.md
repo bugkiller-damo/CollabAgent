@@ -336,3 +336,38 @@ O9 seq 并发测试 → O10/O11/O12/O13 daemon 收敛与安全 → O16 前端 WS
 - 本方案与 `docs/2026-07-14/server-analysis.md`、`server-optimization-roadmap.md`、`server-review-scorecard.md` 互补：后者聚焦"代码质量/安全/测试覆盖"（已大量落地），本文聚焦"架构大梁 + 可扩展性 + 与 Buzz 的差距"。
 - 避免重复：CORS 白名单、`as any` 清理、hasMore 修复、错误格式统一、上传白名单、CSRF 轮换、优雅关闭、dev-token 后门等**已落地项不再重复**，仅在上文标注归属。
 - 冲突需裁决：若某项在本方案与既有 roadmap 中优先级不一致，以"止血优先"为准（O5/O17/O18 最优先）。
+
+---
+
+## 执行进度（2026-08-16 更新）
+
+> 落地状态跟踪。✅ = 已完成并提交；其余按优先级「止血 → 提质 → 精进」推进。
+> 提交哈希与本表对应关系见 `.claude/buzz-optimization-progress.json`。
+
+| # | 优化点 | 优先级 | 状态 | 落地说明 |
+|---|---|---|---|---|
+| O1 | Redis pub/sub 扇出 | 🔴 高 | ✅ 完成 | `lib/pubsub.ts`（ioredis + 内存回退）；`ws/handler.ts` 广播/sendToUser/sendToDaemon/terminal:frame 改走 pub/sub 信封；`index.ts` 注入 + 优雅关闭 |
+| O2 | 事件日志/审计 | 🔴 高 | ✅ 完成 | `events` 表（migration 010，BIGINT IDENTITY + 无外键）+ `lib/audit.ts` 哈希链（稳定序列化防 jsonb 键序重排 + advisory lock 串行链头）；消息 send/edit/delete 事务内追加事件；`GET /api/audit` + `/api/audit/verify`；5 单测 |
+| O5 | 配置危险默认值硬校验 | 🔴 高 | ✅ 完成 | `config.ts` 生产命中默认值 `exit(1)`；`ALLOW_INSECURE_DEV_SECRETS=1` 逃生门；`.env.example` + 6 单测 |
+| O17 | CI 分层 + lint | 🔴 高 | ✅ 完成 | Biome 全仓 0 error；4 job 分层 CI + lefthook；5 包 lint 脚本 |
+| O18 | 依赖安全审计 | 🔴 高 | ✅ 完成 | dependabot（npm+gh-actions weekly）+ audit.yml（高危阻断） |
+| O3 | 多租户边界 | 🟡 中 | ⏳ 待办 | 下一项：请求级租户解析替代 `getDefaultServerId` |
+| O4 | 对象存储抽象 | 🟡 中 | ⏳ 待办 | |
+| O6 | 登录防爆破迁移 Valkey | 🟡 中 | ⏳ 待办 | |
+| O7 | 权限缓存一致性 | 🟡 中 | ⏳ 待办 | |
+| O8 | WS 认证 bcrypt 分支退役 | 🟡 中 | ⏳ 待办 | |
+| O10 | daemon 生产启动路径 | 🟡 中 | ⏳ 待办 | |
+| O11 | MCP 凭据传递安全 | 🟡 中 | ⏳ 待办 | |
+| O12 | claude driver 权限收敛 | 🟡 中 | ⏳ 待办 | |
+| O14 | Vue3 Phase G 收尾 | 🟡 中 | ⏳ 待办 | |
+| O15 | 前端离线增量同步 | 🟡 中 | ⏳ 待办 | |
+| O19 | 生产部署形态 | 🟡 中 | ⏳ 待办 | |
+| O9 | messages.seq 竞态确认 | 🟢 低 | ⏳ 待办 | |
+| O13 | daemon 代码面收敛 | 🟢 低 | ⏳ 待办 | |
+| O16 | 前端 WS 层收敛 | 🟢 低 | ⏳ 待办 | |
+| O20 | 仓库卫生 | 🟢 低 | ⏳ 待办 | |
+
+### O1/O2 遗留增量项（已明确，未阻塞验收）
+
+- **O1**：presence（`daemonClients.has()` 驱动的 `isOnline`）仍为实例本地态；`terminalWatchers` 引用计数仍为实例本地。多实例下「同一 agent 的终端观众跨实例 start/stop」需把登记迁到共享存储，本轮未做（消息广播扇出——即验收主目标——已闭环）。
+- **O2**：事件接入当前覆盖 `message.send/edit/delete`；任务流转、频道成员增删、审批动作尚未接入 `appendEvent`（结构已就绪，逐个路由接入即可）；`/api/audit` 可见性校验当前仅支持 `message` 对象，其余 `object_type` fail-closed 返回 403。
