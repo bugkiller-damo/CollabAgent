@@ -1,6 +1,7 @@
 import jwt from "jsonwebtoken";
 import type { WebSocket } from "ws";
 import { config } from "../lib/config.js";
+import type { PubSub } from "../lib/pubsub.js";
 
 // 必须与 fastify-jwt 注册时的默认一致，否则浏览器 token 验不过 → 都变 "anon"
 const JWT_SECRET = config.JWT_SECRET;
@@ -194,19 +195,10 @@ function registerConnection(connection: WebSocket, userId: string, isDaemon: boo
             console.log(`[WS] Agent activity: ${msg.activity}`);
             break;
           case "terminal:frame": {
-            // daemon 推来的终端帧 → 只发给这个 agent 的观众（不是所有浏览器连接）
+            // daemon 推来的终端帧 → 只发给这个 agent 的观众（不是所有浏览器连接）。
+            // O1：经 pub/sub 发布，观众无论在哪个实例都能收到（本地观众由发布者直投覆盖）。
             const agentName = (msg as Record<string, unknown>).agentName as string | undefined;
-            const set = agentName ? terminalWatchers.get(userId)?.get(agentName) : undefined;
-            if (set) {
-              const payload = JSON.stringify(msg);
-              for (const ws of set) {
-                try {
-                  ws.send(payload);
-                } catch {
-                  /* ignore */
-                }
-              }
-            }
+            if (agentName) publish({ kind: "terminal-frame", userId, agentName, event: msg });
             break;
           }
           case "terminal:history": {
@@ -278,10 +270,12 @@ export function setWsPg(pg: typeof wsPg) {
  * - 公开频道：投递给所有浏览器连接 + 所有 daemon。
  * - 私有频道：浏览器端只投递给该频道的人类成员；daemon 端仍全发（agent 是否响应由其按成员/@提及自行判断）。
  * channelId 传频道 UUID。解析失败则退回全发（避免漏发）。
+ *
+ * O1：改为跨实例 pub/sub —— 本实例解析完成员后，把「信封」发布到 Valkey channel，
+ * 每个实例（含本实例）订阅后按各自的本地 socket 表投递。多实例部署时实例间不再互相看不见。
  */
 export async function broadcast(channelId: string, event: any) {
-  const payload = JSON.stringify(event);
-  let allowedHumanIds: Set<string> | null = null; // null = 不限制（公开）
+  let allowedHumanIds: string[] | null = null; // null = 不限制（公开）
   try {
     if (wsPg && channelId) {
       const ch = await wsPg.query<{ type: string }>("SELECT type FROM channels WHERE id = $1", [channelId]);
@@ -292,67 +286,118 @@ export async function broadcast(channelId: string, event: any) {
           "SELECT member_id FROM channel_members WHERE channel_id = $1 AND member_type = 'human'",
           [channelId],
         );
-        allowedHumanIds = new Set(m.rows.map((r) => String(r.member_id)));
+        allowedHumanIds = m.rows.map((r) => String(r.member_id));
       }
     }
   } catch {
     /* 解析失败：allowedHumanIds 保持 null，退回全发 */
   }
 
-  for (const [userId, sockets] of browserClients) {
-    if (allowedHumanIds && !allowedHumanIds.has(userId)) continue; // 私有频道：非成员浏览器不投递
-    for (const ws of sockets) {
-      try {
-        ws.send(payload);
-      } catch {
-        /* ignore */
-      }
-    }
-  }
-  for (const [, ws] of daemonClients) {
-    try {
-      ws.send(payload);
-    } catch {
-      /* ignore */
-    }
-  }
+  publish({ kind: "channel", channelId, allowedHumanIds, event });
 }
 
 /** Send a message to a specific daemon */
 export function sendToDaemon(userId: string, event: any) {
-  const daemon = daemonClients.get(userId);
-  if (daemon) {
-    try {
-      daemon.send(JSON.stringify(event));
-    } catch {
-      /* ignore */
-    }
-  }
+  publish({ kind: "daemon", userId, event });
 }
 
 /** Broadcast to all connected daemons */
 export function broadcastToDaemons(event: any) {
-  const payload = JSON.stringify(event);
-  for (const [, ws] of daemonClients) {
-    try {
-      ws.send(payload);
-    } catch {
-      /* ignore */
-    }
-  }
+  publish({ kind: "all-daemons", event });
 }
 
 /** Send a message to a specific user's browser clients */
 export function sendToUser(userId: string, event: any) {
-  const sockets = browserClients.get(userId);
-  if (!sockets) return;
-  const payload = JSON.stringify(event);
+  publish({ kind: "user", userId, event });
+}
+
+// ---------- 跨实例 pub/sub（O1） ----------
+const PUBSUB_CHANNEL = "slock:ws:v1";
+
+type WsEnvelope =
+  | { kind: "channel"; channelId: string; allowedHumanIds: string[] | null; event: any }
+  | { kind: "user"; userId: string; event: any }
+  | { kind: "daemon"; userId: string; event: any }
+  | { kind: "all-daemons"; event: any }
+  | { kind: "terminal-frame"; userId: string; agentName: string; event: any };
+
+let pubsub: PubSub | null = null;
+
+/** 由 index.ts 启动时注入 pubsub 实例并订阅广播 channel。 */
+export function setPubSub(p: PubSub): void {
+  pubsub = p;
+  p.subscribe(PUBSUB_CHANNEL, (payload) => handleEnvelope(payload as WsEnvelope));
+}
+
+function publish(env: WsEnvelope): void {
+  // pubsub 尚未注入（模块极早期）→ 本地直投兜底，避免消息凭空消失
+  if (pubsub) pubsub.publish(PUBSUB_CHANNEL, env);
+  else handleEnvelope(env);
+}
+
+function deliver(sockets: Iterable<WebSocket>, payload: string): void {
   for (const ws of sockets) {
     try {
       ws.send(payload);
     } catch {
       /* ignore */
     }
+  }
+}
+
+/** 收到信封后按 kind 投递给本实例的本地 socket 表（发布者与订阅者共用同一逻辑）。 */
+function handleEnvelope(env: WsEnvelope): void {
+  switch (env?.kind) {
+    case "channel": {
+      const allowed = env.allowedHumanIds ? new Set(env.allowedHumanIds) : null;
+      const payload = JSON.stringify(env.event);
+      for (const [userId, sockets] of browserClients) {
+        if (allowed && !allowed.has(userId)) continue; // 私有频道：非成员浏览器不投递
+        deliver(sockets, payload);
+      }
+      for (const [, ws] of daemonClients) {
+        try {
+          ws.send(payload);
+        } catch {
+          /* ignore */
+        }
+      }
+      break;
+    }
+    case "user": {
+      const sockets = browserClients.get(env.userId);
+      if (sockets) deliver(sockets, JSON.stringify(env.event));
+      break;
+    }
+    case "daemon": {
+      const daemon = daemonClients.get(env.userId);
+      if (daemon) {
+        try {
+          daemon.send(JSON.stringify(env.event));
+        } catch {
+          /* ignore */
+        }
+      }
+      break;
+    }
+    case "all-daemons": {
+      const payload = JSON.stringify(env.event);
+      for (const [, ws] of daemonClients) {
+        try {
+          ws.send(payload);
+        } catch {
+          /* ignore */
+        }
+      }
+      break;
+    }
+    case "terminal-frame": {
+      const set = terminalWatchers.get(env.userId)?.get(env.agentName);
+      if (set) deliver(set, JSON.stringify(env.event));
+      break;
+    }
+    default:
+      break; // 未知 kind / 脏数据 → 丢弃
   }
 }
 

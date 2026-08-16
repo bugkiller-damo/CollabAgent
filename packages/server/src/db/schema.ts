@@ -365,3 +365,27 @@ export const metricsSamples = pgTable("metrics_samples", {
   agentTotal: integer("agent_total").default(0).notNull(),
   agentOnline: integer("agent_online").default(0).notNull(),
 });
+
+// ---- events（审计日志 / 事件流水，O2）----
+// 运行时以 migrations/010_events.sql 为准（BIGINT IDENTITY id + 无外键）。
+// 此处仅作类型参考；id 在真实表是 IDENTITY，drizzle 模型里用 bigint 占位。
+export const events = pgTable(
+  "events",
+  {
+    id: bigint("id", { mode: "number" }).primaryKey(),
+    actorId: text("actor_id").notNull(),
+    actorType: varchar("actor_type", { length: 10 }).notNull(),
+    verb: varchar("verb", { length: 50 }).notNull(),
+    objectType: varchar("object_type", { length: 40 }).notNull(),
+    objectId: text("object_id").notNull(),
+    payload: jsonb("payload").default({}).notNull(),
+    prevHash: text("prev_hash"),
+    hash: text("hash").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [
+    index("idx_events_object").on(t.objectType, t.objectId),
+    index("idx_events_actor").on(t.actorId),
+    index("idx_events_verb").on(t.verb),
+  ],
+);

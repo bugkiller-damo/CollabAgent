@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { canAccessChannel, getChannelType } from "../lib/access.js";
+import { appendEvent } from "../lib/audit.js";
 import { cleanChannelName, resolveChannel } from "../lib/channel.js";
 import { dmOtherMembers, isDmTarget, type Party, resolveDmTarget } from "../lib/dm.js";
 import { inc } from "../lib/metrics.js";
@@ -134,6 +135,20 @@ export async function messageRoutes(app: FastifyInstance) {
         [resolvedChannelId, resolvedServerId, userId, content || "", threadId || null],
       );
       const msg = result.rows[0] as any;
+      // 审计事件（O2）：与消息写入同事务，追加 message.send 事件进哈希链
+      await appendEvent(tx, {
+        actorId: userId,
+        actorType: "human",
+        verb: "message.send",
+        objectType: "message",
+        objectId: String(msg.id),
+        payload: {
+          channelId: resolvedChannelId,
+          serverId: resolvedServerId ?? null,
+          content: content || "",
+          threadId: threadId ?? null,
+        },
+      });
       let mentionAgents: string[] | undefined;
       // @提及 agent：按频道类型决定「谁能被唤醒」。
       // 检测方式：对候选 agent 名做子串匹配（支持中文名；此前按 ASCII 解析 handle，
@@ -330,20 +345,32 @@ export async function messageRoutes(app: FastifyInstance) {
       return reply.status(403).send({ error: "can only edit your own messages" });
     }
     const oldContent = String(m.rows[0].content || "");
-    await app.pg.query("INSERT INTO message_edits (message_id, old_content, edited_by) VALUES ($1, $2, $3)", [
-      messageId,
-      oldContent,
-      userId,
-    ]);
-    const r = await app.pg.query(
-      'UPDATE messages SET content = $1, edited_at = now() WHERE id = $2 RETURNING id, content, edited_at as "editedAt"',
-      [content, messageId],
-    );
+    // 编辑历史 + 消息更新 + 审计事件 一个事务提交（O2）
+    const r = await app.pg.transaction(async (tx) => {
+      await tx.query("INSERT INTO message_edits (message_id, old_content, edited_by) VALUES ($1, $2, $3)", [
+        messageId,
+        oldContent,
+        userId,
+      ]);
+      const updated = await tx.query<{ id: string; content: string; editedAt: string }>(
+        'UPDATE messages SET content = $1, edited_at = now() WHERE id = $2 RETURNING id, content, edited_at as "editedAt"',
+        [content, messageId],
+      );
+      await appendEvent(tx, {
+        actorId: userId,
+        actorType: "human",
+        verb: "message.edit",
+        objectType: "message",
+        objectId: messageId,
+        payload: { oldContent, newContent: content },
+      });
+      return updated.rows[0];
+    });
     broadcast(String(m.rows[0].channel_id), {
       type: "message:update",
-      message: { id: messageId, content, editedAt: r.rows[0].editedAt },
+      message: { id: messageId, content, editedAt: r.editedAt },
     });
-    return { message: r.rows[0] };
+    return { message: r };
   });
 
   // 消息编辑历史（需频道可见性：编辑历史同样包含消息内容）
@@ -402,13 +429,24 @@ export async function messageRoutes(app: FastifyInstance) {
       return reply.status(403).send({ error: "can only delete your own messages" });
     }
     // 先删 reactions / attachments（如果有）防止 FK 悬挂
-    await app.pg.query("DELETE FROM message_reactions WHERE message_id = $1", [messageId]);
-    await app.pg.query("DELETE FROM message_attachments WHERE message_id = $1", [messageId]);
     // 不级联删 thread replies（保留历史），仅软删父消息内容
-    await app.pg.query(
-      "UPDATE messages SET content = '', task_number = NULL, task_status = NULL, task_assignee = NULL WHERE id = $1",
-      [messageId],
-    );
+    // 审计事件（O2）：删除 + 追加 message.delete 事件一个事务提交
+    await app.pg.transaction(async (tx) => {
+      await tx.query("DELETE FROM message_reactions WHERE message_id = $1", [messageId]);
+      await tx.query("DELETE FROM message_attachments WHERE message_id = $1", [messageId]);
+      await tx.query(
+        "UPDATE messages SET content = '', task_number = NULL, task_status = NULL, task_assignee = NULL WHERE id = $1",
+        [messageId],
+      );
+      await appendEvent(tx, {
+        actorId: userId,
+        actorType: "human",
+        verb: "message.delete",
+        objectType: "message",
+        objectId: messageId,
+        payload: {},
+      });
+    });
     broadcast(String(m.rows[0].channel_id), { type: "message:delete", message: { id: messageId } });
     return { ok: true };
   });

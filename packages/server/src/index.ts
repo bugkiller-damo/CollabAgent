@@ -7,10 +7,15 @@ import Fastify from "fastify";
 import pgPlugin, { closeDb, sql } from "./db/connection.js";
 import { runMigrations } from "./db/migrate.js";
 import { config, validateConfig } from "./lib/config.js";
+import { createPubSub } from "./lib/pubsub.js";
 import { rateLimitHook } from "./lib/rate-limit.js";
 import { UPLOAD_DIR } from "./lib/storage.js";
 
 validateConfig();
+
+// 跨实例 pub/sub：VALKEY_URL 未配置时回退进程内（单实例/测试）。
+// 必须在 validateConfig() 之后创建（生产不安全配置会 exit(1)，不应先连 Redis）。
+const pubsub = createPubSub(config.VALKEY_URL);
 
 import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
@@ -23,6 +28,7 @@ import { agentPublicRoutes } from "./routes/agents-public.js";
 import { agentReminderRoutes } from "./routes/agents-reminders.js";
 import { agentTaskRoutes } from "./routes/agents-tasks.js";
 import { attachmentRoutes } from "./routes/attachments.js";
+import { auditRoutes } from "./routes/audit.js";
 import { authRoutes } from "./routes/auth.js";
 import { channelRoutes } from "./routes/channels.js";
 import { integrationRoutes } from "./routes/integrations.js";
@@ -34,7 +40,7 @@ import { previewRoutes } from "./routes/preview.js";
 import { profileRoutes } from "./routes/profile.js";
 import { reminderRoutes } from "./routes/reminders.js";
 import { taskRoutes } from "./routes/tasks.js";
-import { wsHandler } from "./ws/handler.js";
+import { setPubSub, wsHandler } from "./ws/handler.js";
 
 const server = Fastify({
   logger: true,
@@ -79,6 +85,8 @@ await server.register(pgPlugin);
   const { setWsPg } = await import("./ws/handler.js");
   setWsPg(server.pg);
 }
+// O1：注入跨实例 pub/sub —— 每个实例订阅同一 channel，广播经 Valkey 扇出到所有实例的本地 socket 表。
+setPubSub(pubsub);
 await server.register(fastifyMultipart, { limits: { fileSize: config.MAX_UPLOAD_SIZE } });
 
 // Auth decorator — supports JWT (Bearer 或 httpOnly cookie), dev-token, and machine token
@@ -213,6 +221,7 @@ await server.register(taskRoutes, { prefix: "/api/tasks" });
 await server.register(reminderRoutes, { prefix: "/api/reminders" });
 await server.register(profileRoutes, { prefix: "/api/profile" });
 await server.register(attachmentRoutes, { prefix: "/api/attachments" });
+await server.register(auditRoutes, { prefix: "/api" });
 await server.register(previewRoutes, { prefix: "/api/preview" });
 await server.register(integrationRoutes, { prefix: "/api/integrations" });
 await server.register(actionRoutes, { prefix: "/api/actions" });
@@ -312,6 +321,7 @@ async function shutdown(signal: string) {
     }
   }
   await closeDb();
+  await pubsub.close();
   server.log.info("[Server] Goodbye");
   process.exit(0);
 }
