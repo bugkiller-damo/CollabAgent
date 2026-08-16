@@ -62,7 +62,7 @@ export function VirtualMessageList({ items, channelName, highlightMsgId, onRetry
   }, [highlightMsgId, items, virtualizer]);
 
   return (
-    <div ref={parentRef} className="flex-1 overflow-y-auto">
+    <div ref={parentRef} className="min-h-0 flex-1 overflow-y-auto">
       <div style={{ height: virtualizer.getTotalSize(), width: "100%", position: "relative" }}>
         {virtualizer.getVirtualItems().map((vi) => {
           const it = items[vi.index];

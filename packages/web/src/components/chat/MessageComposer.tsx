@@ -1,6 +1,6 @@
 import { useRef, useState, useCallback, useEffect } from "react";
 import { uploadAttachment, type UploadedAttachment } from "../../api/client";
-import { useMentionSuggest } from "../../hooks/useMentionSuggest";
+import { useMentionSuggest, type MentionScope } from "../../hooks/useMentionSuggest";
 import { MentionPopup } from "../chat/MentionPopup";
 import { Textarea } from "../ui/Textarea";
 import { IconButton } from "../ui/IconButton";
@@ -20,6 +20,8 @@ interface MessageComposerProps {
   onSend: (content: string, attachmentIds: string[]) => Promise<void>;
   /** External files dropped by parent (e.g. global drag-over). */
   droppedFiles?: File[] | null;
+  /** @ 提及候选的作用域：私有/DM 频道只列频道成员，公开频道为全量。 */
+  mentionScope?: MentionScope;
 }
 
 export function MessageComposer({
@@ -29,6 +31,7 @@ export function MessageComposer({
   onAttachmentsChange,
   onSend,
   droppedFiles,
+  mentionScope,
 }: MessageComposerProps) {
   const isControlled = controlledAttachments !== undefined;
   const [internalAttachments, setInternalAttachments] = useState<ComposerAttachment[]>([]);
@@ -51,7 +54,7 @@ export function MessageComposer({
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const { filtered, selectedIdx, visible, handleInput, handleKeyDown: mentionKD, insertMention: rawInsert } =
-    useMentionSuggest(textareaRef);
+    useMentionSuggest(textareaRef, mentionScope);
 
   const insertMention = (handle: string) => {
     const newText = rawInsert(handle);

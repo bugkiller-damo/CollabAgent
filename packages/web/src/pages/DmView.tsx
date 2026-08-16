@@ -90,13 +90,13 @@ export function DmView() {
           <EmptyState icon="⚠️" title="无法打开私信" description={error} />
         </div>
       ) : messages.length === 0 ? (
-        <div className="flex-1 overflow-y-auto p-4">
+        <div className="min-h-0 flex-1 overflow-y-auto p-4">
           {loading ? <MessageSkeleton /> : (
             <EmptyState icon="✉️" title="还没有私信" description={`发送第一条消息，开始和 ${title} 的私聊`} />
           )}
         </div>
       ) : (
-        <div ref={containerRef} className="flex-1 space-y-1 overflow-y-auto p-4">
+        <div ref={containerRef} className="min-h-0 flex-1 space-y-1 overflow-y-auto p-4">
           {messages.map((m: any, idx: number) => (
             <MessageRow key={m.id} msg={m} channelName={convKey} prevMsg={messages[idx - 1]} />
           ))}

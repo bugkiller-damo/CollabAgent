@@ -233,7 +233,7 @@ export function ChannelView() {
         </PageHeader>
 
         {isEmpty ? (
-          <div className="flex-1 overflow-y-auto p-4">
+          <div className="min-h-0 flex-1 overflow-y-auto p-4">
             {loading ? <MessageSkeleton /> : (
               <EmptyState icon="💬" title="还没有消息" description="发送第一条消息，开启这个频道的对话吧" />
             )}
@@ -241,7 +241,7 @@ export function ChannelView() {
         ) : useVirtual ? (
           <VirtualMessageList items={listItems} channelName={channelName} highlightMsgId={highlightMsgId} onRetry={retrySend} onDiscard={discardPending} />
         ) : (
-          <div ref={containerRef} className="flex-1 space-y-1 overflow-y-auto p-4">
+          <div ref={containerRef} className="min-h-0 flex-1 space-y-1 overflow-y-auto p-4">
             {messages.map((msg: any, idx: number) => (
               <MessageRow key={msg.id} msg={msg} channelName={channelName} prevMsg={messages[idx - 1]} />
             ))}
@@ -258,6 +258,7 @@ export function ChannelView() {
             onAttachmentsChange={setAttachments}
             onSend={handleSend}
             droppedFiles={droppedFiles}
+            mentionScope={{ channelId: (currentChannel as any)?.id, channelType: (currentChannel as any)?.type }}
           />
         </div>
       </div>

@@ -18,6 +18,7 @@ export function MentionPopup({ items, selectedIdx, onSelect }: Props) {
 
   return (
     <div
+      data-mention-popup
       className="absolute z-50 bg-gray-800 border border-gray-600 rounded-lg shadow-xl overflow-hidden"
       style={{ bottom: "100%", left: "1rem", minWidth: "14rem", maxHeight: "15rem", overflowY: "auto", marginBottom: "4px" }}
       

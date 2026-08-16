@@ -157,7 +157,7 @@ export function Sidebar() {
   };
 
   return (
-    <aside className="flex w-60 shrink-0 flex-col border-r border-gray-200 bg-gray-100 dark:border-gray-700 dark:bg-gray-800">
+    <aside className="flex h-full w-60 shrink-0 flex-col border-r border-gray-200 bg-gray-100 dark:border-gray-700 dark:bg-gray-800">
       <div className="border-b border-gray-200 p-4 dark:border-gray-700">
         <button className="flex w-full items-center gap-2 text-left">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-600 text-white">
@@ -170,7 +170,7 @@ export function Sidebar() {
         </button>
       </div>
 
-      <nav className="flex-1 space-y-4 overflow-y-auto p-2">
+      <nav className="min-h-0 flex-1 space-y-4 overflow-y-auto p-2">
         <SidebarSection
           title="频道"
           action={
