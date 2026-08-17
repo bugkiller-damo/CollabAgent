@@ -1,4 +1,4 @@
-﻿# Slock (collabagent) 对标 Buzz 全方位优化方案
+# Slock (collabagent) 对标 Buzz 全方位优化方案
 
 > 日期：2026-08-16
 > 分支：`feature/web-vue3`
@@ -299,7 +299,7 @@ O9 seq 并发测试 → O10/O11/O12/O13 daemon 收敛与安全 → O16 前端 WS
 | 11 | O19 生产 Dockerfile + compose | AI | ☑ 2026-08-16 |
 | 12 | O14 Vue3 Phase G 收尾 | AI | ☑ 2026-08-17 |
 | 13 | O15 断线增量补拉 + 乐观队列 | AI | ☑ 2026-08-17 |
-| 14 | O9 seq 并发测试 | | ☐ |
+| 14 | O9 seq 并发测试 | AI | ☑ 2026-08-17 |
 | 15 | O10 daemon prod 启动路径 | | ☐ |
 | 16 | O11 MCP 凭据安全 | | ☐ |
 | 17 | O12 claude 权限收敛 | | ☐ |
@@ -362,7 +362,7 @@ O9 seq 并发测试 → O10/O11/O12/O13 daemon 收敛与安全 → O16 前端 WS
 | O14 | Vue3 Phase G 收尾 | 🟡 中 | ✅ 完成 | server SPA 静态托管（WEB_DIST_DIR 可配、dist 存在才注册、fallback 排除 /api /files /internal /ws /docs，冒烟：/ 与 SPA 路由回 index.html、API 404 JSON、/docs 正常）；旧 `packages/web`（React）已删除 + `web-vue`→`web` 改名（lockfile 0 React 残留、CI 单包、vite 注释同步）；Dockerfile 并入前端构建与 web-dist（ENV WEB_DIST_DIR）；validate-compose 断言 +2；竞赛材料措辞：presentation-plan.md / gen-pptx.js（Zustand→Pinia）/ sharing 汇报文档 React 19→Vue 3；web build+typecheck 绿、SPA 冒烟绿、真 PG 全量 219/219 |
 | O15 | 前端离线增量同步 | 🟡 中 | ✅ 完成 | server：migration 011（messages.client_nonce + 部分唯一索引）+ POST /send 幂等（ON CONFLICT DO NOTHING 重放短路：零重复落库/广播/审计/通知，响应 deduplicated:true 回显）+ agent:deliver 广播带 clientNonce；web：messageStore backfill（/api/messages/history after 游标分页、局部游标防 live 消息跳窗、按 id 去重、并发 4、失败降级 live-only——对齐 buzz relayReconnectReplay）+ fetchHistory 推进 lastSeenSeq（max 保护）+ 离线乐观队列迁入 store（clientNonce 幂等重投、queued/failed 持久化 localStorage 恢复、WS 回执 ackPendingByNonce 调和——对齐 buzz channelWindowReconciliation）；AppLayout 重连 onConnect → backfillAll + flushAllPending；ChannelView/DmView 接入（修掉切频道静默丢 queued）；web 接入 vitest（17 单测）+ CI L2 web job 加 test 步骤；server 集成 4 用例；真 PG 全量 223/223 |
 | O19 | 生产部署形态 | 🟡 中 | ✅ 完成 | `packages/server/Dockerfile` 多阶段（build: pnpm9 frozen install + 编译 → runtime: pnpm deploy --prod 裁剪纯生产依赖、非 root `slock` 用户、内置 HEALTHCHECK 探测 `/api/health` 的 db:true、`node dist/index.js`）；根 `.dockerignore`；`docker-compose.yml` 生产化（healthcheck×3、deploy 资源限制、`${JWT_SECRET:?}` 必选插值与 O5 双保险、depends_on 健康条件、uploads-data 卷、无源码挂载、minio profile 保留）；`pnpm-workspace.yaml` 开 `injectWorkspacePackages`（deploy 必需）；`scripts/validate-compose.mjs` 静态校验（compose 结构 + Dockerfile 约束，yaml 用仓库内传递依赖，无需 docker）+ CI L1 接入；本机 pnpm 11 模拟 deploy 验证 39.6MB 纯生产依赖；daemon 82/82 + server 219/219 + 全仓 typecheck 回归 |
-| O9 | messages.seq 竞态确认 | 🟢 低 | ⏳ 待办 | |
+| O9 | messages.seq 竞态确认 | 🟢 低 | ✅ 完成 | seq=BIGSERIAL（nextval 原子唯一、空洞允许）确认无重复；**发现并修复两个真实缺口**：① /history 仅带 after 时按 DESC 取「最新一页」，前向游标一步到顶，O15 backfill >1 页缺口会被静默截断——改为仅 after 时 ASC 前向分页（hasMore=还有更新的；before/默认语义不变，web 侧唯一 after 消费者即 backfill）；② /send 事务内补 pg_advisory_xact_lock(hashtextextended(channel_id))，保证同频道「提交顺序 == seq 赋值顺序」，消除 BIGSERIAL 提交乱序导致的补拉永久遗漏窗口（agent/task 单语句自提交 INSERT 残留微秒级窗口，由 id 去重 + 全量刷新兜底，注记存档）；test/message-seq-concurrency.test.ts 3 用例（同频道并发 20 无重复+游标收齐严格升序、双频道交叉各自递增、同 nonce 并发恰一条）；真 PG 全量 226/226 |
 | O13 | daemon 代码面收敛 | 🟢 低 | ⏳ 待办 | |
 | O16 | 前端 WS 层收敛 | 🟢 低 | ⏳ 待办 | |
 | O20 | 仓库卫生 | 🟢 低 | ⏳ 待办 | |

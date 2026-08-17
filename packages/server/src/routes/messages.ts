@@ -162,6 +162,12 @@ export async function messageRoutes(app: FastifyInstance) {
     // 消息短路返回，事务内跳过审计/入圈/附件写入，事务外跳过通知/广播/指标，
     // 因此重放不会产生任何重复副作用，也不会提交半个事务。
     const { msg, attachments, mentionAgents, deduplicated } = await app.pg.transaction(async (tx) => {
+      // O9：同频道并发发送串行化——pg_advisory_xact_lock（随事务提交/回滚释放）保证
+      // 「事务提交顺序 == seq 赋值顺序」。BIGSERIAL 只保证唯一不保证提交有序：无锁时
+      // seq=101 的事务可能先于 seq=100 提交，断线补拉（WHERE seq > lastSeenSeq）会永久
+      // 漏掉晚提交的那条。键取 hashtextextended(channel_id) → 锁粒度单频道，不跨频道阻塞。
+      // （agent/task 的单语句自提交 INSERT 重排窗口在微秒级执行器内，见 02 方案 O9 注记。）
+      await tx.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [resolvedChannelId]);
       const result = hasNonce
         ? await tx.query(
             `INSERT INTO messages (channel_id, server_id, sender_id, sender_type, content, thread_id, client_nonce)
@@ -372,10 +378,18 @@ export async function messageRoutes(app: FastifyInstance) {
       query += " AND seq > $" + p++;
       params.push(Number(after));
     }
-    query += " ORDER BY seq DESC LIMIT $" + p;
+    // 分页方向（O9/O15）：
+    // - 带 before（翻旧页）或默认（首页）：取「最新一页」——DESC LIMIT 后 reverse 成升序，
+    //   hasMore 表示「还有更旧的」；
+    // - 仅带 after（断线补拉的前向游标）：取「最旧一页」——ASC LIMIT，
+    //   hasMore 表示「还有更新的」，客户端用本页最大 seq 作为下一个 after 继续前翻。
+    //   （DESC 语义下 after 只能拿到窗口内最新一页，游标一步到顶，>1 页的缺口会被静默截断。）
+    const forward = after !== undefined && before === undefined;
+    query += forward ? " ORDER BY seq ASC LIMIT $" + p : " ORDER BY seq DESC LIMIT $" + p;
     params.push(Number(limit) || 50);
     const result = await app.pg.query(query, params);
-    return { messages: result.rows.reverse(), hasMore: result.rows.length >= (Number(limit) || 50) };
+    const rows = forward ? result.rows : result.rows.reverse();
+    return { messages: rows, hasMore: result.rows.length >= (Number(limit) || 50) };
   });
 
   app.get("/search", { preHandler: [app.authenticate] }, async (req) => {
