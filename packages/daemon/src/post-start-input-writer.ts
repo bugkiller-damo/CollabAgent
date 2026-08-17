@@ -13,6 +13,20 @@ import type { IAgentManager } from "./types/index.js";
  *
  * 适配自 Hive 的 `post-start-input-writer.ts`，去除了 Gemini 特定检测；
  * paste acknowledgement 等待逻辑保留（见 submitPastedInteractiveInput）。
+ *
+ * ────────────────────────────────────────────────────────────────────────
+ * 何时可删（O13）：本文件整组逻辑（提示符就绪轮询 / bracketed paste / paste-ack
+ * 等待 / Enter 时序）都是「agent = PTY 里的 TUI」这一形态的键盘模拟补偿。
+ * 删除条件（满足其一）：
+ *   a) 输入通道结构化——agent 消息改走 stream-json 持久会话（本仓已有
+ *      PersistentClaude，stdin 写 JSON-RPC、无 TUI 键盘路径）或 ACP 类 headless
+ *      运行时（对照 buzz-agent：agent 是 stdio JSON-RPC 进程，session/prompt
+ *      投递消息，根本没有终端）；
+ *   b) claude CLI 官方提供非键盘的结构化输入通道（socket/IPC/持久会话 API）。
+ * 前置依赖：终端观察面板目前消费 PTY 渲染帧，结构化路径需先补等价的观察
+ * 遥测（buzz 用 OBSERVER_FRAME_TELEMETRY 结构化帧替代截屏）。
+ * 详见 docs/2026-08-18/01-pty-keyboard-vs-structured-channels.md。
+ * ────────────────────────────────────────────────────────────────────────
  */
 
 /** 支持交互式提示符检测的 CLI 命令 */

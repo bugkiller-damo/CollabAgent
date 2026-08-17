@@ -9,6 +9,15 @@ import type { IAgentManager, PtyOutputEvent } from "./types/index.js";
  * - 出现 `Iaccept` 或 `I accept`（Ink TUI 渲染有时相邻 span 之间没有空格）
  * - 出现 `Entertoconfirm` 或 `Enter to confirm`
  * - 出现 `1.No,exit` 和 `2.Yes` 选项
+ *
+ * 何时可删（O13）：这是「TUI 弹窗会吃掉键盘输入」类 workaround。删除条件
+ * （满足其一）：
+ *   a) claude 提供非交互的 terms 预接受通道（`claude config` 持久化、环境变量、
+ *      或 daemon 在 spawn 前预写信任配置）——terms 接受本是 per-machine 记录
+ *      （~/.claude.json），同机重复弹窗罕见，本模块的 1.5s 无弹窗快路径已是常态；
+ *   b) agent 不再跑 TUI（删除条件见 post-start-input-writer.ts 头注）。
+ * 删除前必须确认真机回归：新装机器/新 claude 版本首启不再弹该窗（live bug 1
+ * 的回归现象 = bootstrap 消息被弹窗吃掉、agent 永久停驻）。
  */
 export const isClaudeAcceptDialog = (screenText: string): boolean => {
   const clean = screenText;
