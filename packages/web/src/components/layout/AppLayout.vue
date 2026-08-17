@@ -150,6 +150,8 @@ const onMessage = (msg: WsServerEvent) => {
   }
   if (msg.type === "agent:deliver" && msg.message) {
     const m = msg.message as any;
+    // 乐观行调和：回执带上发送时的 clientNonce，先清掉本地对应的 pending 乐观行
+    if (m.clientNonce) messageStore.ackPendingByNonce(m.clientNonce);
     const hasThread = m.thread_id || m.threadId;
     const chs = channelStore.channels;
     const ch = chs.find((c: any) => c.id === m.channelId);
@@ -185,10 +187,22 @@ const onMessage = (msg: WsServerEvent) => {
   }
 };
 
+// 断线标记：本会话发生过断连后，下一次 onConnect 才需要增量补拉（首连靠 fetchHistory）
+let hadDisconnect = false;
+
 const { isConnected, reconnectAttempt, send } = useWebSocket({
   serverUrl: window.location.origin,
   token: "",
   onMessage,
+  onConnect: () => {
+    // 非首次连接 → 按 lastSeenSeq 增量补拉断线窗口（失败静默，不阻断连接）
+    if (hadDisconnect) void messageStore.backfillAll();
+    // 每次连接都补发离线队列：上会话恢复出的 queued 需要在首连时立即补发
+    void messageStore.flushAllPending();
+  },
+  onDisconnect: () => {
+    hadDisconnect = true;
+  },
 });
 
 // wsStatus 同步 uiStore

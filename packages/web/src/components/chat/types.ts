@@ -12,8 +12,11 @@ export interface Attachment {
 
 export interface PendingItem {
   tempId: string;
+  // 幂等键：随发送请求带 clientNonce，重试沿用同一 nonce，重复投递由服务端去重兜底
+  nonce: string;
   content: string;
   status: "sending" | "failed" | "queued";
+  attachmentIds?: string[];
 }
 
 export type ListItem = { kind: "msg"; data: any } | { kind: "pending"; data: PendingItem };

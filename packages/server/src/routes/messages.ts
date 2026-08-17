@@ -101,18 +101,25 @@ export async function messageRoutes(app: FastifyInstance) {
   });
 
   app.post("/send", { preHandler: [app.authenticate] }, async (req, reply) => {
-    const { channelId, content, target, threadId, attachmentIds } = req.body as {
+    const { channelId, content, target, threadId, attachmentIds, clientNonce } = req.body as {
       channelId?: string;
       content?: string;
       target?: string;
       threadId?: string;
       attachmentIds?: string[];
+      clientNonce?: string;
     };
     const ids: string[] = Array.isArray(attachmentIds) ? attachmentIds : [];
     if ((!content || !content.trim()) && ids.length === 0) {
       return reply.status(400).send({ error: "content or attachment required" });
     }
     if (!target) return reply.status(400).send({ error: "target required" });
+    // clientNonce（O15 幂等去重键）：可选；传了就必须是 8–64 位字母/数字/连字符，
+    // 非法直接 400——格式合法的 nonce 才允许进入下面的唯一索引去重路径。
+    if (clientNonce !== undefined && (typeof clientNonce !== "string" || !/^[A-Za-z0-9-]{8,64}$/.test(clientNonce))) {
+      return reply.status(400).send({ error: "invalid clientNonce" });
+    }
+    const hasNonce = clientNonce !== undefined;
     const userId = req.user.sub;
     const senderHandle = String(req.user?.handle || "unknown");
     const tenant = await resolveTenant(app, req);
@@ -147,11 +154,34 @@ export async function messageRoutes(app: FastifyInstance) {
     const channelType = await getChannelType(app, resolvedChannelId);
     // 消息本体 + （公开频道的）agent 自动入圈 + 附件挂载 一个事务提交。
     // （通知放在事务外：通知失败不应回滚消息本身）
-    const { msg, attachments, mentionAgents } = await app.pg.transaction(async (tx) => {
-      const result = await tx.query(
-        "INSERT INTO messages (channel_id, server_id, sender_id, sender_type, content, thread_id) VALUES ($1, $2, $3, 'human', $4, $5) RETURNING id, seq, created_at",
-        [resolvedChannelId, resolvedServerId, userId, content || "", threadId || null],
-      );
+    //
+    // 幂等（O15）：带 clientNonce 时消息本体 INSERT 置于事务最前面，用
+    // ON CONFLICT (channel_id, client_nonce) WHERE client_nonce IS NOT NULL DO NOTHING
+    // （部分唯一索引的冲突目标必须带上索引谓词）。冲突时 RETURNING 为空，说明该 nonce
+    // 已成功发过一次——本次是「重放」：DO NOTHING 不报错、事务保持有效，直接查出首条
+    // 消息短路返回，事务内跳过审计/入圈/附件写入，事务外跳过通知/广播/指标，
+    // 因此重放不会产生任何重复副作用，也不会提交半个事务。
+    const { msg, attachments, mentionAgents, deduplicated } = await app.pg.transaction(async (tx) => {
+      const result = hasNonce
+        ? await tx.query(
+            `INSERT INTO messages (channel_id, server_id, sender_id, sender_type, content, thread_id, client_nonce)
+             VALUES ($1, $2, $3, 'human', $4, $5, $6)
+             ON CONFLICT (channel_id, client_nonce) WHERE client_nonce IS NOT NULL DO NOTHING
+             RETURNING id, seq, created_at`,
+            [resolvedChannelId, resolvedServerId, userId, content || "", threadId || null, clientNonce],
+          )
+        : await tx.query(
+            "INSERT INTO messages (channel_id, server_id, sender_id, sender_type, content, thread_id) VALUES ($1, $2, $3, 'human', $4, $5) RETURNING id, seq, created_at",
+            [resolvedChannelId, resolvedServerId, userId, content || "", threadId || null],
+          );
+      // 幂等重放：RETURNING 为空 = 同频道 + 同 nonce 的首条消息已存在，查出并短路返回
+      if (result.rows.length === 0) {
+        const existed = await tx.query(
+          "SELECT id, seq, created_at FROM messages WHERE channel_id = $1 AND client_nonce = $2",
+          [resolvedChannelId, clientNonce],
+        );
+        return { msg: existed.rows[0] as any, attachments: [] as any[], mentionAgents: undefined, deduplicated: true };
+      }
       const msg = result.rows[0] as any;
       // 审计事件（O2）：与消息写入同事务，追加 message.send 事件进哈希链
       await appendEvent(tx, {
@@ -216,8 +246,20 @@ export async function messageRoutes(app: FastifyInstance) {
         );
         attachments = att.rows;
       }
-      return { msg, attachments, mentionAgents };
+      return { msg, attachments, mentionAgents, deduplicated: false };
     });
+
+    // 幂等重放：直接返回首条消息的标识——不重复通知/广播/@唤醒/审计，channelId 对齐正常路径 DM 语义
+    if (deduplicated) {
+      return {
+        state: "sent",
+        messageId: msg.id,
+        messageSeq: msg.seq,
+        clientNonce,
+        deduplicated: true,
+        channelId: dm ? "dm:" + resolvedChannelId : undefined,
+      };
+    }
 
     // @提及用户 → 通知（SELECT 已批量化，createNotification 含 INSERT）
     if (!dm && content && content.includes("@")) {
@@ -267,6 +309,8 @@ export async function messageRoutes(app: FastifyInstance) {
         time: msg.created_at,
         threadId: threadId || null,
         attachments,
+        // O15：clientNonce 回显给频道内各端，供发送方把广播与本地待确认消息对上（有传才带）
+        ...(hasNonce ? { clientNonce } : {}),
         // server 预过滤的「有权回应的 agent」列表：daemon 只 spawn 列表内的 agent，
         // 空数组 = 有人被 @ 但无人有权回应 → 不 spawn（避免 PTY 空转）。
         ...(mentionAgents !== undefined ? { mentionAgents } : {}),
@@ -281,6 +325,8 @@ export async function messageRoutes(app: FastifyInstance) {
       messageSeq: msg.seq,
       attachments,
       channelId: dm ? "dm:" + resolvedChannelId : undefined,
+      // O15：有传 clientNonce 才回显（无 nonce 的请求行为完全不变，向后兼容）
+      ...(hasNonce ? { clientNonce } : {}),
     };
   });
 

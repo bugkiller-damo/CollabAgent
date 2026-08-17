@@ -8,7 +8,7 @@ import ChannelSettingsModal from "../components/channel/ChannelSettingsModal.vue
 import MessageComposer, { type ComposerAttachment } from "../components/chat/MessageComposer.vue";
 import MessageRow from "../components/chat/MessageRow.vue";
 import PendingRow from "../components/chat/PendingRow.vue";
-import type { ListItem, PendingItem } from "../components/chat/types";
+import type { ListItem } from "../components/chat/types";
 import VirtualMessageList from "../components/chat/VirtualMessageList.vue";
 import EmptyState from "../components/EmptyState.vue";
 import PageHeader from "../components/layout/PageHeader.vue";
@@ -49,7 +49,8 @@ const terminalAgent = computed(() => uiStore.terminalAgent);
 // ---- 本地状态 ----
 const showMembers = ref(false);
 const showSettings = ref(false);
-const pending = ref<PendingItem[]>([]);
+// 离线发送队列归 store 按 target 持久化（切频道/刷新不丢），这里只做派生
+const pending = computed(() => (target.value ? messageStore.pendingByTarget[target.value] : undefined) || []);
 const attachments = ref<ComposerAttachment[]>([]);
 const droppedFiles = ref<File[] | null>(null);
 const dragOver = ref(false);
@@ -73,7 +74,7 @@ watch(
     if (name && fetchedRef.value !== name) {
       fetchedRef.value = name;
       channelStore.setActiveChannel(name);
-      pending.value = [];
+      // pending 队列在 store 按 target 持久，切频道不再清空（修静默丢 queued）
       attachments.value = [];
       messageStore.fetchHistory("#" + name).catch(() => {});
     }
@@ -122,21 +123,10 @@ function scrollToBottom() {
   }, 50);
 }
 
-// ---- 发送 / 离线队列 / 重试 ----
-async function trySend(tempId: string, content: string, attachmentIds?: string[]) {
-  try {
-    await apiClient("/api/messages/send", { method: "POST", body: { target: target.value, content, attachmentIds } });
-    pending.value = pending.value.filter((m) => m.tempId !== tempId);
-    messageStore.fetchHistory(target.value).catch(() => {});
-    scrollToBottom();
-  } catch (err) {
-    console.error("Send failed", err);
-    pending.value = pending.value.map((m) => (m.tempId === tempId ? { ...m, status: "failed" } : m));
-  }
-}
-
+// ---- 发送 / 离线队列 / 重试（队列逻辑已迁入 messageStore，本页只接线）----
 async function handleSend(content: string, attachmentIds: string[]) {
   if (attachmentIds.length > 0) {
+    // 附件路径保持现状：直发，失败 toast，不进离线队列
     try {
       await apiClient("/api/messages/send", { method: "POST", body: { target: target.value, content, attachmentIds } });
       messageStore.fetchHistory(target.value).catch(() => {});
@@ -152,39 +142,27 @@ async function handleSend(content: string, attachmentIds: string[]) {
   const trimmed = content.trim();
   if (!trimmed) return;
 
-  const tempId = "tmp-" + Date.now();
-  if (typeof navigator !== "undefined" && navigator.onLine === false) {
-    pending.value = [...pending.value, { tempId, content: trimmed, status: "queued" }];
-    scrollToBottom();
-    return;
-  }
-  pending.value = [...pending.value, { tempId, content: trimmed, status: "sending" }];
+  // 纯文本：入队（带 clientNonce 幂等键）→ 离线仅排队，在线立即 flush
+  messageStore.enqueuePending(target.value, trimmed);
   scrollToBottom();
-  trySend(tempId, trimmed);
+  if (typeof navigator !== "undefined" && navigator.onLine === false) return;
+  messageStore.flushPending(target.value).catch(() => {});
 }
 
 function retrySend(tempId: string) {
-  const item = pending.value.find((m) => m.tempId === tempId);
-  if (!item) return;
-  pending.value = pending.value.map((m) => (m.tempId === tempId ? { ...m, status: "sending" } : m));
-  trySend(tempId, item.content);
+  messageStore.retryPending(target.value, tempId).catch(() => {});
 }
 
 function discardPending(tempId: string) {
-  pending.value = pending.value.filter((m) => m.tempId !== tempId);
+  messageStore.discardPending(target.value, tempId);
 }
 
 // ---- Effect 4：恢复在线时补发离线排队消息（React useEffect([online])）----
 watch(
   online,
   (isOnline) => {
-    if (!isOnline) return;
-    const queued = pending.value.filter((m) => m.status === "queued");
-    if (queued.length === 0) return;
-    pending.value = pending.value.map((m) => (m.status === "queued" ? { ...m, status: "sending" } : m));
-    queued.forEach((m) => {
-      trySend(m.tempId, m.content);
-    });
+    if (!isOnline || !target.value) return;
+    messageStore.flushPending(target.value).catch(() => {});
   },
   { immediate: true },
 );

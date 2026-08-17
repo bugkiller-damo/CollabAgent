@@ -5,6 +5,7 @@ import { useRoute } from "vue-router";
 import { apiClient, apiGet } from "../api";
 import MessageComposer, { type ComposerAttachment } from "../components/chat/MessageComposer.vue";
 import MessageRow from "../components/chat/MessageRow.vue";
+import PendingRow from "../components/chat/PendingRow.vue";
 import EmptyState from "../components/EmptyState.vue";
 import PageHeader from "../components/layout/PageHeader.vue";
 import MessageSkeleton from "../components/skeleton/MessageSkeleton.vue";
@@ -36,6 +37,8 @@ const messages = computed<Message[]>(() => {
   if (!convKey.value) return EMPTY;
   return messageStore.messagesByTarget[convKey.value] || EMPTY;
 });
+// 离线发送队列归 store 按 target 持久化（对齐 ChannelView）
+const pending = computed(() => (convKey.value ? messageStore.pendingByTarget[convKey.value] : undefined) || []);
 const loading = computed(() => messageStore.loading);
 const online = computed(() => uiStore.online);
 
@@ -86,17 +89,49 @@ function scrollToBottom() {
 
 async function handleSend(content: string, attachmentIds: string[]) {
   if (!convKey.value) return;
-  try {
-    await apiClient("/api/messages/send", {
-      method: "POST",
-      body: { target: convKey.value, content, attachmentIds },
-    });
-    messageStore.fetchHistory(convKey.value).catch(() => {});
-    scrollToBottom();
-  } catch (err) {
-    throw err;
+  if (attachmentIds.length > 0) {
+    // 附件路径保持现状：直发，不进离线队列
+    try {
+      await apiClient("/api/messages/send", {
+        method: "POST",
+        body: { target: convKey.value, content, attachmentIds },
+      });
+      messageStore.fetchHistory(convKey.value).catch(() => {});
+      scrollToBottom();
+    } catch (err) {
+      throw err;
+    }
+    return;
   }
+
+  // 纯文本对齐 ChannelView：入队（带 clientNonce 幂等键）→ 离线仅排队，在线立即 flush
+  const trimmed = content.trim();
+  if (!trimmed) return;
+  messageStore.enqueuePending(convKey.value, trimmed);
+  scrollToBottom();
+  if (typeof navigator !== "undefined" && navigator.onLine === false) return;
+  messageStore.flushPending(convKey.value).catch(() => {});
 }
+
+function retryPending(tempId: string) {
+  if (!convKey.value) return;
+  messageStore.retryPending(convKey.value, tempId).catch(() => {});
+}
+
+function discardPending(tempId: string) {
+  if (!convKey.value) return;
+  messageStore.discardPending(convKey.value, tempId);
+}
+
+// 恢复在线时补发离线排队消息（对齐 ChannelView 的 online watch）
+watch(
+  online,
+  (isOnline) => {
+    if (!isOnline || !convKey.value) return;
+    messageStore.flushPending(convKey.value).catch(() => {});
+  },
+  { immediate: true },
+);
 
 function setAttachments(next: ComposerAttachment[]) {
   attachments.value = next;
@@ -121,7 +156,7 @@ function setAttachments(next: ComposerAttachment[]) {
       <EmptyState icon="⚠️" title="无法打开私信" :description="error" />
     </div>
 
-    <div v-else-if="messages.length === 0" class="min-h-0 flex-1 overflow-y-auto p-4">
+    <div v-else-if="messages.length === 0 && pending.length === 0" class="min-h-0 flex-1 overflow-y-auto p-4">
       <MessageSkeleton v-if="loading" />
       <EmptyState
         v-else
@@ -139,12 +174,13 @@ function setAttachments(next: ComposerAttachment[]) {
         :channel-name="convKey"
         :prev-msg="messages[idx - 1]"
       />
+      <PendingRow v-for="p in pending" :key="p.tempId" :item="p" @retry="retryPending" @discard="discardPending" />
     </div>
 
     <div class="border-t border-gray-200 p-4 dark:border-gray-700">
       <MessageComposer
         :placeholder="`发私信给 ${title}... (Enter 发送, Shift+Enter 换行, @ 提及)`"
-        :disabled="!!error || !convKey || !online"
+        :disabled="!!error || !convKey"
         :attachments="attachments"
         :on-attachments-change="setAttachments"
         :on-send="handleSend"

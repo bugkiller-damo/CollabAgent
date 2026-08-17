@@ -1,4 +1,4 @@
-name: CI
+﻿name: CI
 
 on:
   push:
@@ -8,7 +8,7 @@ on:
 # O17 分层 CI：
 #   L1 lint-typecheck — 全仓 biome lint + 各包 typecheck（最快，先失败）
 #   L2 daemon-test    — daemon vitest（fake PTY/HTTP，无需 DB）
-#   L2 web-build      — Vue3(web) 单包构建（O14 Phase G：旧 React 包已下线）
+#   L2 web-build      — Vue3(web) store 单测（O15 vitest）+ 单包构建（O14 Phase G：旧 React 包已下线）
 #   L3 server-test    — 真 Postgres 黑盒集成测试（最重）
 # 依赖安全审计在独立 workflow：.github/workflows/audit.yml（O18）
 
@@ -52,7 +52,7 @@ jobs:
         run: pnpm --filter @collabagent/daemon run test
 
   web-build:
-    name: L2 · Web Builds
+    name: L2 · Web Tests + Builds
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -65,6 +65,8 @@ jobs:
           cache: pnpm
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      - name: Test web (O15 store 单测)
+        run: pnpm --filter @collabagent/web run test
       - name: Build web (Vue3)
         run: pnpm --filter @collabagent/web run build
 
