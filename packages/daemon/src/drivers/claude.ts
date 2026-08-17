@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { getClaudePermissionArgs } from "../command-presets.js";
 import { resolveCommandOnPath } from "./probe.js";
 
 export interface ClaudeEvent {
@@ -37,7 +38,8 @@ export class ClaudeDriver {
   async query(text: string): Promise<string | null> {
     return new Promise((resolve) => {
       const claudeCmd = resolveCommandOnPath("claude") || "claude.cmd";
-      const args = ["--print", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"];
+      // O12：显式工具白名单替代 --dangerously-skip-permissions（见 command-presets.ts）
+      const args = ["--print", "--output-format", "stream-json", "--verbose", ...getClaudePermissionArgs()];
       if (this.sessionId) args.push("--resume", this.sessionId);
       if (this.promptFile) args.push("--append-system-prompt-file", this.promptFile);
       args.push(text);

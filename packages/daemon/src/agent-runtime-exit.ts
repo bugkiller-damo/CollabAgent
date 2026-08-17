@@ -1,6 +1,7 @@
 import type { ICredentialsClient } from "./agent-runtime-credentials.js";
 import type { IAgentStateMachine } from "./agent-runtime-state.js";
 import type { ITurnTracker } from "./agent-runtime-turn-tracker.js";
+import { removeAgentTokenFile } from "./agent-token-file.js";
 import { createExitCoordinator } from "./exit-coordinator.js";
 import { createExitHandler, createMinimalExitHandler } from "./exit-handler.js";
 import type { IIdleReclaimer } from "./idle-reclaimer.js";
@@ -27,6 +28,8 @@ export interface RunContextEntry {
   agentName: string;
   agentId: string;
   token: string;
+  /** agent 工作目录（O11：退出时删除 workspace/.slock/agent-token） */
+  workspace?: string;
   startedAt: number;
 }
 
@@ -99,6 +102,8 @@ export const createExitChain = (deps: ExitChainDeps): IExitChain => {
     });
     // 1b) 撤销服务端那份 scoped runtime token（best-effort，不阻塞/不影响退出流程）
     void credentialsClient.revokeAgentCredential(ctx.agentId);
+    // 1c) O11：删除 workspace 里的 token 文件（best-effort；token 已吊销，删不掉也只是死文件）
+    if (ctx.workspace) removeAgentTokenFile(ctx.workspace);
 
     // 2) 取消输出订阅
     const unsub = unsubByRunId.get(runId);

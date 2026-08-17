@@ -5,6 +5,7 @@ import type { SpawnPtyForAgent } from "./agent-runtime-spawn.js";
 import type { IAgentStateMachine } from "./agent-runtime-state.js";
 import type { ITurnTracker } from "./agent-runtime-turn-tracker.js";
 import { createWorkspaceDir, fetchDispatchContext, writeSystemPromptFile } from "./agent-startup.js";
+import { writeAgentTokenFile } from "./agent-token-file.js";
 import { claudePrint } from "./claude-print.js";
 import { PersistentClaude } from "./drivers/persistent-claude.js";
 import type { IIdleReclaimer } from "./idle-reclaimer.js";
@@ -113,6 +114,11 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
             // slock message send，不如现在就失败得明确，而不是悄悄退回共享
             // apiKey（那正是这套机制想关掉的安全洞）。
             const runtimeToken = await mintAgentCredential(agentId);
+            // O11：token 落盘（workspace/.slock/agent-token, 0600），子进程 env 只带
+            // 文件路径不带明文。env 对象里保留 SLOCK_AGENT_TOKEN 是给 daemon 内部用的
+            // （spawn 侧 registerRunContext → 退出时 tokenRegistry.revokeIfMatches），
+            // 真正传给 PTY 子进程前由 buildPtyEnv 剥离。
+            const tokenFile = writeAgentTokenFile(workspace, runtimeToken);
             // 查一下自己是不是这个频道的经理、频道里还有哪些别的 agent——写进
             // 系统提示里当确定事实，而不是让 agent 自己猜（见 agent-startup.ts
             // fetchDispatchContext 注释）。查询失败时退回通用提示文案，不阻塞启动。
@@ -121,6 +127,7 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
             const env = {
               SLOCK_AGENT_ID: agentId,
               SLOCK_AGENT_TOKEN: runtimeToken,
+              SLOCK_AGENT_TOKEN_FILE: tokenFile,
               SLOCK_SERVER_URL: options.serverUrl,
             };
             const runId = await spawnPtyForAgent(agentName, agentId, workspace, promptFile, env, userMsg);
@@ -179,9 +186,11 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
       // runtime token；这条兜底路径较少用，直接每次都换一个（幂等 upsert，
       // 覆盖上一条也无妨）
       const runtimeToken = await mintAgentCredential(agentId);
+      // O11：这条路径的 env 直接进子进程（PersistentClaude / claudePrint），
+      // 只放 token 文件路径，不放明文 token。
       const env = {
         SLOCK_AGENT_ID: agentId,
-        SLOCK_AGENT_TOKEN: runtimeToken,
+        SLOCK_AGENT_TOKEN_FILE: writeAgentTokenFile(workspace, runtimeToken),
         SLOCK_SERVER_URL: options.serverUrl,
       };
 

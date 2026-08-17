@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { COMMAND_PRESETS, getCommandPreset, renderResumeArgs } from "../src/command-presets.js";
+import {
+  COMMAND_PRESETS,
+  DEFAULT_AGENT_ALLOWED_TOOLS,
+  getClaudePermissionArgs,
+  getCommandPreset,
+  renderResumeArgs,
+} from "../src/command-presets.js";
 
 describe("command-presets", () => {
   describe("COMMAND_PRESETS", () => {
@@ -7,8 +13,11 @@ describe("command-presets", () => {
       expect(Object.keys(COMMAND_PRESETS).sort()).toEqual(["claude", "codex", "gemini", "opencode"]);
     });
 
-    it("claude preset 使用 --dangerously-skip-permissions", () => {
-      expect(COMMAND_PRESETS.claude?.yoloArgs).toContain("--dangerously-skip-permissions");
+    it("claude preset 已收敛为 --allowedTools 白名单（O12），无 --dangerously-skip-permissions", () => {
+      const args = COMMAND_PRESETS.claude!.yoloArgs;
+      expect(args.some((a) => a.startsWith("--allowedTools="))).toBe(true);
+      expect(args.join(" ")).not.toContain("--dangerously-skip-permissions");
+      expect(args.join(" ")).not.toContain("bypassPermissions");
     });
 
     it("codex preset 使用 --dangerously-bypass-approvals-and-sandbox", () => {
@@ -21,6 +30,28 @@ describe("command-presets", () => {
 
     it("opencode preset 没有 yolo args", () => {
       expect(COMMAND_PRESETS.opencode?.yoloArgs).toEqual([]);
+    });
+  });
+
+  describe("getClaudePermissionArgs（O12）", () => {
+    it("默认输出 --allowedTools 白名单，含最小工具面且不含危险旗标", () => {
+      delete process.env.SLOCK_AGENT_ALLOWED_TOOLS;
+      const args = getClaudePermissionArgs();
+      expect(args).toEqual([`--allowedTools=${DEFAULT_AGENT_ALLOWED_TOOLS}`]);
+      const joined = args.join(" ");
+      for (const tool of ["Bash", "Read", "Write", "Edit", "Glob", "Grep"]) {
+        expect(joined).toContain(tool);
+      }
+      expect(joined).not.toContain("--dangerously-skip-permissions");
+    });
+
+    it("SLOCK_AGENT_ALLOWED_TOOLS 覆盖默认集合", () => {
+      process.env.SLOCK_AGENT_ALLOWED_TOOLS = "Bash,Read";
+      try {
+        expect(getClaudePermissionArgs()).toEqual(["--allowedTools=Bash,Read"]);
+      } finally {
+        delete process.env.SLOCK_AGENT_ALLOWED_TOOLS;
+      }
     });
   });
 

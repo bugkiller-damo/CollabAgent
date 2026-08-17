@@ -1,5 +1,8 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import { rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { bundleSlockMcpServer } from "../src/mcp-bundle.js";
 
@@ -51,14 +54,20 @@ afterAll(async () => {
 });
 
 /** 起一个 MCP server 子进程，跑完 initialize 握手，返回可以继续发请求的 helper。 */
-async function spawnMcpClient() {
+async function spawnMcpClient(envOverrides: Record<string, string | undefined> = {}) {
+  // O11：envOverrides 支持覆盖/删除（undefined）默认 env，用于 TOKEN_FILE 用例
+  const env: Record<string, string> = {
+    ...process.env,
+    SLOCK_AGENT_ID: "agent-under-test",
+    SLOCK_AGENT_TOKEN: "sk_agent_test_token",
+    SLOCK_SERVER_URL: serverUrl,
+  } as Record<string, string>;
+  for (const [k, v] of Object.entries(envOverrides)) {
+    if (v === undefined) delete env[k];
+    else env[k] = v;
+  }
   const proc: ChildProcessWithoutNullStreams = spawn("node", [bundlePath], {
-    env: {
-      ...process.env,
-      SLOCK_AGENT_ID: "agent-under-test",
-      SLOCK_AGENT_TOKEN: "sk_agent_test_token",
-      SLOCK_SERVER_URL: serverUrl,
-    },
+    env,
     stdio: ["pipe", "pipe", "pipe"],
   });
 
@@ -164,6 +173,29 @@ describe("slock-mcp-server (bundled, spawned as a real child process)", () => {
         expect(JSON.parse(res.result.content[0].text)).toEqual(nextBody);
       } finally {
         client.close();
+      }
+    },
+    SPAWN_TEST_TIMEOUT,
+  );
+
+  it(
+    "O11：SLOCK_AGENT_TOKEN_FILE 优先于字面量 env——从文件读 token 且 env 无需明文",
+    async () => {
+      nextStatus = 200;
+      nextBody = { state: "sent", messageId: "m2", messageSeq: 2, attachments: [] };
+      const tokenFile = join(tmpdir(), `slock-mcp-tokenfile-${process.pid}-${Date.now()}`);
+      writeFileSync(tokenFile, "sk_agent_from_file_456");
+      const client = await spawnMcpClient({
+        SLOCK_AGENT_TOKEN: undefined, // 显式删除字面量，证明不依赖它
+        SLOCK_AGENT_TOKEN_FILE: tokenFile,
+      });
+      try {
+        const res = await client.callTool("send_message", { target: "#general", content: "hi" });
+        expect(res.result.isError).toBeFalsy();
+        expect(lastRequest?.auth).toBe("Bearer sk_agent_from_file_456");
+      } finally {
+        client.close();
+        rmSync(tokenFile, { force: true });
       }
     },
     SPAWN_TEST_TIMEOUT,

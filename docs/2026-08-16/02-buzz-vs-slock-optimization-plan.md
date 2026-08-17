@@ -301,8 +301,8 @@ O9 seq 并发测试 → O10/O11/O12/O13 daemon 收敛与安全 → O16 前端 WS
 | 13 | O15 断线增量补拉 + 乐观队列 | AI | ☑ 2026-08-17 |
 | 14 | O9 seq 并发测试 | AI | ☑ 2026-08-17 |
 | 15 | O10 daemon prod 启动路径 | | ☐ |
-| 16 | O11 MCP 凭据安全 | | ☐ |
-| 17 | O12 claude 权限收敛 | | ☐ |
+| 16 | O11 MCP 凭据安全 | AI | ☑ 2026-08-17 |
+| 17 | O12 claude 权限收敛 | AI | ☑ 2026-08-17 |
 | 18 | O13 daemon 代码面收敛 | | ☐ |
 | 19 | O16 前端 WS 层收敛 | | ☐ |
 | 20 | O20 仓库卫生 | | ☐ |
@@ -357,8 +357,8 @@ O9 seq 并发测试 → O10/O11/O12/O13 daemon 收敛与安全 → O16 前端 WS
 | O7 | 权限缓存一致性 | 🟡 中 | ✅ 完成 | TTL 语义固化（`ACCESS_CACHE_TTL_MS=2000` 常量 + 注释：主动失效之外的有界兜底窗口）；`invalidateChannel/invalidateMember` 变更点主动失效（改类型/删除/join/leave/invite/移除成员/角色变更/DM 入圈 8 处接入），变更后**下一次**判定即新值，消除最长 2s 旧权限窗口；`setAccessPubSub` 经 O1 pub/sub 扇出失效消息（`slock:access-inv:v1`）跨实例一致，宕机错过消息由 TTL 兜底；测试 8 单测（fake app：缓存命中/失效/时序语义/TTL 过期/pubsub 脏数据）+ 2 集成（私有→公开、移除成员立即生效，无 sleep）；真 PG 全量 212/212 |
 | O8 | WS 认证 bcrypt 分支退役 | 🟡 中 | ✅ 完成 | metrics 计数器 `machineAuthBcryptScans/Hits`（/api/metrics 可观测）；两处兼容分支（index.ts HTTP + ws/handler.ts WS）命中即 warn 日志（含 userId）；`scripts/audit-bcrypt-tokens.mjs`（pnpm audit:bcrypt-tokens，按表×哈希类型×状态统计 + 直接给退役判定，实库跑通：本机 dev 库 active bcrypt=22）；退役计划文档 `docs/2026-08-16/08-bcrypt-token-retirement.md`（退役判定 SQL + 删除清单步骤）；测试 4 单测（token-hash）+ 3 集成（HTTP/WS 旧令牌认证 + metrics 增长）；真 PG 全量 219/219 |
 | O10 | daemon 生产启动路径 | 🟡 中 | ⏳ 待办 | |
-| O11 | MCP 凭据传递安全 | 🟡 中 | ⏳ 待办 | |
-| O12 | claude driver 权限收敛 | 🟡 中 | ⏳ 待办 | |
+| O11 | MCP 凭据传递安全 | 🟡 中 | ✅ 完成 | 短时 scoped token（sk_agent_ mint/revoke/24h TTL）此前已落地；本轮关掉三处明文驻留：① 子进程 env——token 改写 workspace/.slock/agent-token（0600），PTY env 只带 SLOCK_AGENT_TOKEN_FILE 路径（buildPtyEnv 剥离字面量；PersistentClaude/claudePrint 路径 env 不含字面量）；② .mcp.json env 块改配 TOKEN_FILE，MCP server 启动读文件（字面量为兼容兜底）；③ setup-slock-wrapper 的 slock.bat/sh 不再内嵌**账号级 apiKey**（落盘大洞）；exit chain 退出删 token 文件（revoke+TTL 兜底）；死代码 claude-setup.ts（另一份内嵌 token 的 wrapper 生成器）删除；测试 +13（token-file 4 + auth TOKEN_FILE 4 + spawn-env 4 + mcp TOKEN_FILE 真子进程 1），daemon 97/97 |
+| O12 | claude driver 权限收敛 | 🟡 中 | ✅ 完成 | getClaudePermissionArgs()（command-presets）：显式工具白名单 --allowedTools=Bash,Read,Write,Edit,MultiEdit,Glob,Grep,LS,TodoWrite（协作开发最小面，对照 buzz-dev-mcp；SLOCK_AGENT_ALLOWED_TOOLS 可覆盖），未列出工具 fail-closed（PTY 弹窗无人应答→回合超时回收；MCP slock 工具由 enableAllProjectMcpServers 正交放行）；四处调用点全换：PTY 主路径 CLAUDE_YOLO_ARGS（连 --permission-mode=bypassPermissions 一起删）、persistent-claude、claude.ts、claude-print；command-presets claude 预设同步；真机冒烟 --allowedTools 被接受、permissionMode:default 生效；测试 +2；daemon 97/97 |
 | O14 | Vue3 Phase G 收尾 | 🟡 中 | ✅ 完成 | server SPA 静态托管（WEB_DIST_DIR 可配、dist 存在才注册、fallback 排除 /api /files /internal /ws /docs，冒烟：/ 与 SPA 路由回 index.html、API 404 JSON、/docs 正常）；旧 `packages/web`（React）已删除 + `web-vue`→`web` 改名（lockfile 0 React 残留、CI 单包、vite 注释同步）；Dockerfile 并入前端构建与 web-dist（ENV WEB_DIST_DIR）；validate-compose 断言 +2；竞赛材料措辞：presentation-plan.md / gen-pptx.js（Zustand→Pinia）/ sharing 汇报文档 React 19→Vue 3；web build+typecheck 绿、SPA 冒烟绿、真 PG 全量 219/219 |
 | O15 | 前端离线增量同步 | 🟡 中 | ✅ 完成 | server：migration 011（messages.client_nonce + 部分唯一索引）+ POST /send 幂等（ON CONFLICT DO NOTHING 重放短路：零重复落库/广播/审计/通知，响应 deduplicated:true 回显）+ agent:deliver 广播带 clientNonce；web：messageStore backfill（/api/messages/history after 游标分页、局部游标防 live 消息跳窗、按 id 去重、并发 4、失败降级 live-only——对齐 buzz relayReconnectReplay）+ fetchHistory 推进 lastSeenSeq（max 保护）+ 离线乐观队列迁入 store（clientNonce 幂等重投、queued/failed 持久化 localStorage 恢复、WS 回执 ackPendingByNonce 调和——对齐 buzz channelWindowReconciliation）；AppLayout 重连 onConnect → backfillAll + flushAllPending；ChannelView/DmView 接入（修掉切频道静默丢 queued）；web 接入 vitest（17 单测）+ CI L2 web job 加 test 步骤；server 集成 4 用例；真 PG 全量 223/223 |
 | O19 | 生产部署形态 | 🟡 中 | ✅ 完成 | `packages/server/Dockerfile` 多阶段（build: pnpm9 frozen install + 编译 → runtime: pnpm deploy --prod 裁剪纯生产依赖、非 root `slock` 用户、内置 HEALTHCHECK 探测 `/api/health` 的 db:true、`node dist/index.js`）；根 `.dockerignore`；`docker-compose.yml` 生产化（healthcheck×3、deploy 资源限制、`${JWT_SECRET:?}` 必选插值与 O5 双保险、depends_on 健康条件、uploads-data 卷、无源码挂载、minio profile 保留）；`pnpm-workspace.yaml` 开 `injectWorkspacePackages`（deploy 必需）；`scripts/validate-compose.mjs` 静态校验（compose 结构 + Dockerfile 约束，yaml 用仓库内传递依赖，无需 docker）+ CI L1 接入；本机 pnpm 11 模拟 deploy 验证 39.6MB 纯生产依赖；daemon 82/82 + server 219/219 + 全仓 typecheck 回归 |

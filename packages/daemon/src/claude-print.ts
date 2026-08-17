@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { getClaudePermissionArgs } from "./command-presets.js";
 
 function findClaudeCmd(): string {
   const appData = process.env.APPDATA || join("C:/Users", process.env.USERNAME || "Default", "AppData/Roaming");
@@ -30,7 +31,8 @@ export function claudePrint(
 ): Promise<ClaudePrintResult> {
   return new Promise((resolve) => {
     const cmd = findClaudeCmd();
-    const args = ["--print", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"];
+    // O12：显式工具白名单替代 --dangerously-skip-permissions（见 command-presets.ts）
+    const args = ["--print", "--output-format", "stream-json", "--verbose", ...getClaudePermissionArgs()];
     if (sessionId) args.push("--resume", sessionId);
 
     const promptFile = systemPromptFile || join(process.cwd(), ".slock", "system-prompt.md");

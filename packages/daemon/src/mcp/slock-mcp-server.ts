@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -25,11 +26,27 @@ import { z } from "zod";
  */
 
 const AGENT_ID = process.env.SLOCK_AGENT_ID;
-const AGENT_TOKEN = process.env.SLOCK_AGENT_TOKEN;
+// O11：token 优先从文件读（.mcp.json 里只配 SLOCK_AGENT_TOKEN_FILE 路径，
+// 明文 token 不进任何进程 env / 配置文件）；SLOCK_AGENT_TOKEN 字面量为旧版兼容兜底
+const AGENT_TOKEN = (() => {
+  const file = process.env.SLOCK_AGENT_TOKEN_FILE;
+  if (file) {
+    try {
+      const t = readFileSync(file, "utf-8").trim();
+      if (t) return t;
+      console.error(`[slock-mcp] token file ${file} is empty`);
+    } catch (err: any) {
+      console.error(`[slock-mcp] cannot read token file ${file}: ${err?.message ?? err}`);
+    }
+  }
+  return process.env.SLOCK_AGENT_TOKEN;
+})();
 const SERVER_URL = process.env.SLOCK_SERVER_URL;
 
 if (!AGENT_ID || !AGENT_TOKEN || !SERVER_URL) {
-  console.error("[slock-mcp] missing SLOCK_AGENT_ID / SLOCK_AGENT_TOKEN / SLOCK_SERVER_URL env, cannot start");
+  console.error(
+    "[slock-mcp] missing SLOCK_AGENT_ID / SLOCK_AGENT_TOKEN_FILE(or SLOCK_AGENT_TOKEN) / SLOCK_SERVER_URL env, cannot start",
+  );
   process.exit(1);
 }
 

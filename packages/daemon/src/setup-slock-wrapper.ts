@@ -5,8 +5,13 @@ import { fileURLToPath } from "node:url";
 /**
  * 生成 slock wrapper（slock.bat + CLI 预打包）。
  * agent 进程中 `slock` 命令即指向此 wrapper，确保环境变量正确。
+ *
+ * O11：脚本不再内嵌任何 token——旧版把「账号级 apiKey」明文写进
+ * .slock/slock.bat / .slock/slock（磁盘长期驻留，正是 scoped-token 机制想关掉的洞）。
+ * agent PTY 内 token 经 SLOCK_AGENT_TOKEN_FILE 传递（随 PTY env 继承，wrapper 无需
+ * 代设）；PTY 外手工调 slock 没有凭证时，CLI 会报明确的 MISSING_TOKEN 错误。
  */
-export async function setupSlockWrapper(agentId: string, serverUrl: string, apiKey: string): Promise<string> {
+export async function setupSlockWrapper(agentId: string, serverUrl: string): Promise<string> {
   const slockDir = join(process.cwd(), ".slock");
   mkdirSync(slockDir, { recursive: true });
 
@@ -41,7 +46,6 @@ export async function setupSlockWrapper(agentId: string, serverUrl: string, apiK
     `@echo off`,
     `if not defined SLOCK_AGENT_ID set SLOCK_AGENT_ID=${agentId}`,
     `if not defined SLOCK_SERVER_URL set SLOCK_SERVER_URL=${serverUrl}`,
-    `if not defined SLOCK_AGENT_TOKEN set SLOCK_AGENT_TOKEN=${apiKey}`,
     `if not defined SLOCK_AGENT_ACTIVE_CAPABILITIES set SLOCK_AGENT_ACTIVE_CAPABILITIES=send,read,mentions,tasks,reactions,server,channels`,
     runCmd,
   ].join("\r\n");
@@ -55,9 +59,8 @@ export async function setupSlockWrapper(agentId: string, serverUrl: string, apiK
     `#!/bin/sh`,
     `: "\${SLOCK_AGENT_ID:=${agentId}}"`,
     `: "\${SLOCK_SERVER_URL:=${serverUrl}}"`,
-    `: "\${SLOCK_AGENT_TOKEN:=${apiKey}}"`,
     `: "\${SLOCK_AGENT_ACTIVE_CAPABILITIES:=send,read,mentions,tasks,reactions,server,channels}"`,
-    `export SLOCK_AGENT_ID SLOCK_SERVER_URL SLOCK_AGENT_TOKEN SLOCK_AGENT_ACTIVE_CAPABILITIES`,
+    `export SLOCK_AGENT_ID SLOCK_SERVER_URL SLOCK_AGENT_ACTIVE_CAPABILITIES`,
     shRunCmd,
     ``,
   ].join("\n");

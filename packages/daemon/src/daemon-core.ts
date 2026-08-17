@@ -190,7 +190,7 @@ export class DaemonCore {
   }
 
   private async setupSlockWrapper() {
-    await setupSlockWrapper(this.agentId, this.serverUrl, this.apiKey);
+    await setupSlockWrapper(this.agentId, this.serverUrl);
   }
 
   private connect(): void {

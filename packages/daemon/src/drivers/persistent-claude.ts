@@ -1,6 +1,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { getClaudePermissionArgs } from "../command-presets.js";
 
 // 复用 claude-print 的命令查找逻辑
 function findClaudeCmd(): string {
@@ -37,13 +38,14 @@ export class PersistentClaude {
 
   private spawnProc(): boolean {
     const cmd = findClaudeCmd();
+    // O12：显式工具白名单替代 --dangerously-skip-permissions（见 command-presets.ts）
     const args = [
       "--input-format",
       "stream-json",
       "--output-format",
       "stream-json",
       "--verbose",
-      "--dangerously-skip-permissions",
+      ...getClaudePermissionArgs(),
     ];
     if (this.opts.systemPromptFile && existsSync(this.opts.systemPromptFile)) {
       args.push("--append-system-prompt-file", this.opts.systemPromptFile);
