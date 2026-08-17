@@ -9,6 +9,7 @@ import { useTerminalStore } from "../../stores/terminalStore";
 import { toast } from "../../stores/toastStore";
 import { setWsSender } from "../../stores/wsSender";
 import type { AgentStatusEvent, WsServerEvent } from "../../types";
+import AgentTerminalPanel from "../agent/AgentTerminalPanel.vue";
 import ErrorBoundary from "../ErrorBoundary.vue";
 import NotificationBell from "../notifications/NotificationBell.vue";
 import OnboardingChecklist from "../OnboardingChecklist.vue";
@@ -299,7 +300,13 @@ onUnmounted(() => {
       </ErrorBoundary>
     </main>
 
-    <!-- 终端观察面板（G3）尚未迁移（依赖 agent/AgentTerminalPanel），此处暂缺 -->
+    <!-- 终端观察面板（G3）：uiStore.terminalAgent 非空即开（ChannelView 观察终端按钮等触发） -->
+    <AgentTerminalPanel
+      v-if="uiStore.terminalAgent"
+      :agent-name="uiStore.terminalAgent"
+      :on-select-agent="(name: string) => uiStore.openTerminal(name)"
+      :on-close="() => uiStore.openTerminal(null)"
+    />
 
     <OnboardingChecklist />
     <ToastContainer />
