@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import { apiGet } from "../../api";
+import { wsSend } from "../../lib/wsManager";
 import { useTerminalStore } from "../../stores/terminalStore";
-import { wsSend } from "../../stores/wsSender";
 
 interface AgentOption {
   name: string;

@@ -304,7 +304,7 @@ O9 seq 并发测试 → O10/O11/O12/O13 daemon 收敛与安全 → O16 前端 WS
 | 16 | O11 MCP 凭据安全 | AI | ☑ 2026-08-17 |
 | 17 | O12 claude 权限收敛 | AI | ☑ 2026-08-17 |
 | 18 | O13 daemon 代码面收敛 | AI | ☑ 2026-08-18 |
-| 19 | O16 前端 WS 层收敛 | | ☐ |
+| 19 | O16 前端 WS 层收敛 | AI | ☑ 2026-08-18 |
 | 20 | O20 仓库卫生 | | ☐ |
 
 ---
@@ -364,7 +364,7 @@ O9 seq 并发测试 → O10/O11/O12/O13 daemon 收敛与安全 → O16 前端 WS
 | O19 | 生产部署形态 | 🟡 中 | ✅ 完成 | `packages/server/Dockerfile` 多阶段（build: pnpm9 frozen install + 编译 → runtime: pnpm deploy --prod 裁剪纯生产依赖、非 root `slock` 用户、内置 HEALTHCHECK 探测 `/api/health` 的 db:true、`node dist/index.js`）；根 `.dockerignore`；`docker-compose.yml` 生产化（healthcheck×3、deploy 资源限制、`${JWT_SECRET:?}` 必选插值与 O5 双保险、depends_on 健康条件、uploads-data 卷、无源码挂载、minio profile 保留）；`pnpm-workspace.yaml` 开 `injectWorkspacePackages`（deploy 必需）；`scripts/validate-compose.mjs` 静态校验（compose 结构 + Dockerfile 约束，yaml 用仓库内传递依赖，无需 docker）+ CI L1 接入；本机 pnpm 11 模拟 deploy 验证 39.6MB 纯生产依赖；daemon 82/82 + server 219/219 + 全仓 typecheck 回归 |
 | O9 | messages.seq 竞态确认 | 🟢 低 | ✅ 完成 | seq=BIGSERIAL（nextval 原子唯一、空洞允许）确认无重复；**发现并修复两个真实缺口**：① /history 仅带 after 时按 DESC 取「最新一页」，前向游标一步到顶，O15 backfill >1 页缺口会被静默截断——改为仅 after 时 ASC 前向分页（hasMore=还有更新的；before/默认语义不变，web 侧唯一 after 消费者即 backfill）；② /send 事务内补 pg_advisory_xact_lock(hashtextextended(channel_id))，保证同频道「提交顺序 == seq 赋值顺序」，消除 BIGSERIAL 提交乱序导致的补拉永久遗漏窗口（agent/task 单语句自提交 INSERT 残留微秒级窗口，由 id 去重 + 全量刷新兜底，注记存档）；test/message-seq-concurrency.test.ts 3 用例（同频道并发 20 无重复+游标收齐严格升序、双频道交叉各自递增、同 nonce 并发恰一条）；真 PG 全量 226/226 |
 | O13 | daemon 代码面收敛 | 🟢 低 | ✅ 完成 | 盘点结论：平台高频操作已 100% 走 MCP（17 工具全表），PTY 键盘模拟只剩「往 claude TUI 输入框写消息」唯一通道 + 三组衍生启发式；5 处 workaround 补「何时可删（O13）」注释（post-start-input-writer / terms-dialog / turn-tracker / agent-sessions / stdin-dispatcher 备注）；buzz 对照调研（buzz-agent=headless stdio JSON-RPC 无 PTY、buzz-acp pool+observer 结构化遥测帧、buzz-dev-mcp 7 工具最小面+shim 0600 keyfile 删 env——与 O11 同构交叉验证）；新增 docs/2026-08-18/01-pty-keyboard-vs-structured-channels.md（对照表 + 中期路线：PersistentClaude 补观察遥测→PTY 降降级路径）；daemon 97/97 |
-| O16 | 前端 WS 层收敛 | 🟢 低 | ⏳ 待办 | |
+| O16 | 前端 WS 层收敛 | 🟢 低 | ✅ 完成 | 收敛为 lib/wsManager.ts（框架无关单模块：连接/指数退避/70s 入站看门狗/ping-pong/发送/单例句柄 wsSend，createSocket 可注入——对照 buzz relay 分层在 slock 规模的取舍：单模块+依赖注入保可测性）+ lib/wsDispatch.ts（onMessage switch 出 AppLayout，store 只消费事件）；AppLayout 瘦身为纯组装（init+start/stop+onConnect 补拉/补发）；删除 stores/wsSender.ts 与 composables/useWebSocket.ts，AgentTerminalPanel 改从 lib/wsManager 发；多标签页语义文档化（补拉/补发均幂等，pending 内存态跨页同步留作 BroadcastChannel 后续项）；测试 +10（wsManager 7：首连/ping-pong/退避翻倍/看门狗/发送门控/stop/幂等 start；wsDispatch 3：deliver+nonce 调和/id 去重/update-delete 路由）；web 27/27、tsc/build 绿 |
 | O20 | 仓库卫生 | 🟢 低 | ⏳ 待办 | |
 
 ### O1/O2 遗留增量项（已明确，未阻塞验收）

@@ -1,14 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { RouterLink, useRoute } from "vue-router";
-import { useWebSocket } from "../../composables";
-import { useAgentStore, useAuthStore, useChannelStore, useMessageStore, useUiStore } from "../../stores";
-import type { AgentActivity } from "../../stores/agentStore";
-import { useNotificationStore } from "../../stores/notificationStore";
-import { useTerminalStore } from "../../stores/terminalStore";
-import { toast } from "../../stores/toastStore";
-import { setWsSender } from "../../stores/wsSender";
-import type { AgentStatusEvent, WsServerEvent } from "../../types";
+import { dispatchWsEvent } from "../../lib/wsDispatch";
+import { initWsManager, teardownWsManager } from "../../lib/wsManager";
+import { useAuthStore, useChannelStore, useMessageStore, useUiStore } from "../../stores";
 import AgentTerminalPanel from "../agent/AgentTerminalPanel.vue";
 import ErrorBoundary from "../ErrorBoundary.vue";
 import NotificationBell from "../notifications/NotificationBell.vue";
@@ -22,10 +17,7 @@ const route = useRoute();
 const authStore = useAuthStore();
 const messageStore = useMessageStore();
 const channelStore = useChannelStore();
-const agentStore = useAgentStore();
 const uiStore = useUiStore();
-const notificationStore = useNotificationStore();
-const terminalStore = useTerminalStore();
 
 const sidebarOpen = ref(false);
 
@@ -119,111 +111,22 @@ onMounted(() => {
   load();
 });
 
-// ---- WS 建立 + onMessage switch 分发（React 版在 AppLayout.tsx:112-179） ----
-const onMessage = (msg: WsServerEvent) => {
-  if (msg.type === "notification.new") {
-    notificationStore.prependNotification(msg.notification);
-  }
-  // 终端观察（G3）：daemon 推来的终端帧写入 terminalStore
-  if (msg.type === "terminal:frame") {
-    terminalStore.setFrame(msg.agentName, {
-      screen: msg.screen || "",
-      status: msg.status || "unknown",
-      time: msg.time,
-    });
-  }
-  if (msg.type === "agent:status" || msg.type === "agent:activity") {
-    const a = msg as unknown as AgentStatusEvent;
-    // daemon 上报带 agentName（G7 last_pty_line）；旧消息只有 agentId，兜底
-    const id = a.agentName || a.agentId || "agent";
-    const status = msg.type === "agent:status" ? a.status || "idle" : "working";
-    agentStore.updateStatus(id, status as AgentActivity, a.detail || "");
-  }
-  // 门控投递反馈：daemon 把发给忙碌 agent 的消息排队了（agent 空闲后按序投递，不丢）
-  if (msg.type === "agent:delivery-queued") {
-    toast.info(`⏳ @${msg.agentName} 正在工作，消息已缓冲，将在其空闲后自动投递`);
-  }
-  if (msg.type === "message:update" && msg.message) {
-    messageStore.applyMessageUpdate(msg.message.id, msg.message.content, msg.message.editedAt);
-  }
-  if (msg.type === "message:delete" && msg.message) {
-    messageStore.applyMessageDelete(msg.message.id);
-  }
-  if (msg.type === "agent:deliver" && msg.message) {
-    const m = msg.message as any;
-    // 乐观行调和：回执带上发送时的 clientNonce，先清掉本地对应的 pending 乐观行
-    if (m.clientNonce) messageStore.ackPendingByNonce(m.clientNonce);
-    const hasThread = m.thread_id || m.threadId;
-    const chs = channelStore.channels;
-    const ch = chs.find((c: any) => c.id === m.channelId);
-    const targetKey = ch ? "#" + ch.name : m.channelId;
-    messageStore.receiveMessage({
-      id: m.id,
-      seq: m.seq,
-      channelId: targetKey,
-      senderId: m.senderId,
-      senderName: m.senderName || "unknown",
-      senderType: m.senderType || "human",
-      content: m.content,
-      time: m.time || new Date().toISOString(),
-      attachments: m.attachments || [],
-    } as any);
-    if (hasThread) {
-      const threadKey = targetKey + ":" + (m.thread_id || m.threadId || "").substring(0, 8);
-      messageStore.receiveMessage({
-        ...m,
-        id: m.id,
-        seq: m.seq,
-        channelId: threadKey,
-        senderId: m.senderId,
-        senderName: m.senderName || "unknown",
-        senderType: m.senderType || "human",
-        content: m.content,
-        time: m.time || new Date().toISOString(),
-      } as any);
-    }
-    if (channelStore.activeChannelName && ch?.name !== channelStore.activeChannelName) {
-      channelStore.incrementUnread(targetKey);
-    }
-  }
-};
-
-// 断线标记：本会话发生过断连后，下一次 onConnect 才需要增量补拉（首连靠 fetchHistory）
-let hadDisconnect = false;
-
-const { isConnected, reconnectAttempt, send } = useWebSocket({
-  serverUrl: window.location.origin,
-  token: "",
-  onMessage,
-  onConnect: () => {
-    // 非首次连接 → 按 lastSeenSeq 增量补拉断线窗口（失败静默，不阻断连接）
-    if (hadDisconnect) void messageStore.backfillAll();
+// ---- WS 装配（O16 收敛）：生命周期归 lib/wsManager，事件路由归 lib/wsDispatch，
+// 本组件只做组装。断线重连 → 增量补拉 + 离线队列补发（O15）。
+const wsManager = initWsManager({
+  url: window.location.origin.replace(/^http/, "ws") + "/ws/chat",
+  onEvent: dispatchWsEvent,
+  onStatus: (status, attempt) => uiStore.setWsStatus(status, attempt),
+  onConnect: (isReconnect) => {
+    // 断线重连 → 按 lastSeenSeq 增量补拉断线窗口（失败静默，不阻断连接）
+    if (isReconnect) void messageStore.backfillAll();
     // 每次连接都补发离线队列：上会话恢复出的 queued 需要在首连时立即补发
     void messageStore.flushAllPending();
   },
-  onDisconnect: () => {
-    hadDisconnect = true;
-  },
 });
 
-// wsStatus 同步 uiStore
-watch(
-  [isConnected, reconnectAttempt],
-  ([connected, attempt]) => {
-    if (connected) uiStore.setWsStatus("connected", 0);
-    else if (attempt > 0) uiStore.setWsStatus("reconnecting", attempt);
-    else uiStore.setWsStatus("connecting", 0);
-  },
-  { immediate: true },
-);
-
-// 注入全局 WS 发送器（终端观察 watch/unwatch 等浏览器→server 消息用），卸载时清理
-onMounted(() => {
-  setWsSender(send as unknown as (msg: Record<string, unknown>) => void);
-});
-onUnmounted(() => {
-  setWsSender(null);
-});
+onMounted(() => wsManager.start());
+onUnmounted(() => teardownWsManager());
 </script>
 
 <template>
