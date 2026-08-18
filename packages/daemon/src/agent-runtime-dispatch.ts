@@ -71,6 +71,12 @@ export interface DispatchDeps {
     agentName: string,
     info: { toolName?: string; toolUseId?: string; status: "pending" | "completed"; text?: string },
   ) => void;
+  /**
+   * 回复守卫代发（headless）：回合结束但 agent 没调 send_message 时，由 daemon
+   * 以 agent 身份把最终正文发到频道（daemon-core 实现：mint scoped token + POST
+   * /internal/agent/:id/send）。比追问省一整轮 LLM 且确定性送达。
+   */
+  onReplyMissing?: (agentName: string, channel: string, content: string) => void;
 }
 
 /**
@@ -112,6 +118,8 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
     channel: string;
     hadSend: boolean;
     isNudge: boolean;
+    /** 本回合最后一段正文（text 帧）——回合结束未发送时由 daemon 直接代发 */
+    lastText?: string;
   }
   const turnGuards = new Map<string, TurnGuard>();
   const isSendToolFrame = (frame: { payload: { toolName?: string; text?: string } }): boolean => {
@@ -132,6 +140,11 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
         if (frame.kind === "tool_use") {
           const guard = turnGuards.get(agentName);
           if (guard && isSendToolFrame(frame)) guard.hadSend = true;
+        }
+        // 回复守卫：记下最后一段正文（代发的内容来源）
+        if (frame.kind === "text") {
+          const guard = turnGuards.get(agentName);
+          if (guard && frame.payload.text?.trim()) guard.lastText = frame.payload.text;
         }
         // C1：工具调用生命周期（pending = tool_use 出现，completed = tool_result 回灌）
         if (frame.kind === "tool_use" || frame.kind === "tool_result") {
@@ -155,18 +168,35 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
       idleReclaimer.touch(agentName);
       console.log(`[Daemon] @${agentName} round-end (stream-json result)`);
 
-      // 回复守卫判定：整回合没有发送动作且不是追问本身 → 追问一次
+      // 回复守卫判定：整回合没有发送动作且不是追问本身 → 优先代发，其次追问
       const guard = turnGuards.get(agentName);
       turnGuards.delete(agentName);
       if (guard && !guard.hadSend && !guard.isNudge && process.env.SLOCK_REPLY_GUARD !== "0") {
-        console.warn(`[Daemon] @${agentName} reply-guard: turn ended without send_message, nudging once`);
-        const nudge =
-          `${REPLY_GUARD_PREFIX} 系统检测到你上一个回合没有调用 send_message（或 slock message send）——` +
-          `你直接打的字不会送到频道，对方还在等回复。请现在把上一条问题的答案用 ` +
-          `\`mcp__slock__send_message\`（target="${guard.channel}"）补发出去。` +
-          `（触发于 ${new Date().toISOString()}）`; // 时间戳防 dedup 吞掉连续追问
-        // fire-and-forget：走正常队列，不和当前回合处理抢顺序
-        void dispatchToAgent(agentName, guard.channel, nudge).catch(() => {});
+        const answer = guard.lastText?.trim();
+        if (answer && deps.onReplyMissing) {
+          // 代发（2026-08-18 真机修正）：弱模型把答案当纯文本打完就结束回合是
+          // 高频行为，追问要烧一整轮 LLM（实测 $0.5+/次）且追问回合本身可能被
+          // 不活跃超时杀掉——二次失败。result 事件里已有最终正文，daemon 直接
+          // 以 agent 身份 POST 到频道：零额外回合、确定性送达。
+          console.warn(
+            `[Daemon] @${agentName} reply-guard: turn ended without send_message, auto-posting final text (${answer.length} chars)`,
+          );
+          try {
+            deps.onReplyMissing(agentName, guard.channel, answer);
+          } catch {
+            /* 代发失败走 console，不再追问 */
+          }
+        } else {
+          // 没有任何正文可代发（纯工具回合）→ 保留追问兜底
+          console.warn(`[Daemon] @${agentName} reply-guard: turn ended without send_message and no text, nudging once`);
+          const nudge =
+            `${REPLY_GUARD_PREFIX} 系统检测到你上一个回合没有调用 send_message（或 slock message send）——` +
+            `你直接打的字不会送到频道，对方还在等回复。请现在把上一条问题的答案用 ` +
+            `\`mcp__slock__send_message\`（target="${guard.channel}"）补发出去。` +
+            `（触发于 ${new Date().toISOString()}）`; // 时间戳防 dedup 吞掉连续追问
+          // fire-and-forget：走正常队列，不和当前回合处理抢顺序
+          void dispatchToAgent(agentName, guard.channel, nudge).catch(() => {});
+        }
       }
     }
   };

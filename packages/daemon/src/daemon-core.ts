@@ -100,6 +100,35 @@ export class DaemonCore {
             }),
           );
         },
+        // 回复守卫代发：回合结束但 agent 没调 send_message 时，daemon 以 agent
+        // 身份把最终正文直接发到频道（mint scoped token → POST send）。
+        // 比追问省一整轮 LLM，且不受追问回合被超时杀掉的二次失败影响。
+        onReplyMissing: (agentName, channel, content) => {
+          void (async () => {
+            try {
+              const agentId = this.runtime.resolveAgentId(agentName);
+              if (!agentId) {
+                console.warn(`[Daemon] reply-guard: no agentId for @${agentName}, cannot auto-post`);
+                return;
+              }
+              const mint = await fetch(`${this.serverUrl}/internal/agent/${agentId}/credentials`, {
+                method: "POST",
+                headers: { Authorization: `Bearer ${this.apiKey}` },
+              });
+              if (!mint.ok) throw new Error(`mint credential ${mint.status}`);
+              const { token } = (await mint.json()) as { token: string };
+              const res = await fetch(`${this.serverUrl}/internal/agent/${agentId}/send`, {
+                method: "POST",
+                headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+                body: JSON.stringify({ target: channel, content }),
+              });
+              if (!res.ok) throw new Error(`send ${res.status} ${await res.text().catch(() => "")}`);
+              console.log(`[Daemon] reply-guard auto-posted for @${agentName} -> ${channel} (${content.length} chars)`);
+            } catch (err: any) {
+              console.error(`[Daemon] reply-guard auto-post failed for @${agentName}:`, err?.message ?? err);
+            }
+          })();
+        },
       },
       tokenRegistry,
       liveRunRegistry,

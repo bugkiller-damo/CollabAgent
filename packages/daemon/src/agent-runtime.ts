@@ -117,6 +117,8 @@ export interface AgentRuntimeOptions {
     agentName: string,
     info: { toolName?: string; toolUseId?: string; status: "pending" | "completed"; text?: string },
   ) => void;
+  /** 回复守卫代发（headless）：回合结束但未 send_message 时，daemon 以 agent 身份代发最终正文 */
+  onReplyMissing?: (agentName: string, channel: string, content: string) => void;
 }
 
 export interface IAgentRuntime {
@@ -401,6 +403,7 @@ export const createAgentRuntime = (
     onDeliveryDeadLetter: options.onDeliveryDeadLetter,
     observationBus,
     onToolCall: options.onToolCall,
+    onReplyMissing: options.onReplyMissing,
   });
 
   // ---- 公开接口 ----
