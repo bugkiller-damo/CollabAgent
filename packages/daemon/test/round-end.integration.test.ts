@@ -59,10 +59,12 @@ describe("agent-runtime round-end detection (integration, fake PTY)", () => {
   let runtime: IAgentRuntime;
 
   beforeEach(() => {
+    // B2 起默认 headless；本文件钉的是 PTY 路径（fake PTY + 屏幕启发式回合检测），显式钉回 PTY 模式
+    process.env.SLOCK_USE_PTY = "1";
     fakeFetch = installFakeFetch();
     manager = createFakeAgentManager();
     runtime = createAgentRuntime(
-      { serverUrl: "http://fake-server.test", apiKey: "sk_machine_test" },
+      { serverUrl: "http://fake-server.test", apiKey: "test-api-key" },
       createAgentTokenRegistry(),
       createLiveRunRegistry(),
       undefined,
@@ -72,6 +74,7 @@ describe("agent-runtime round-end detection (integration, fake PTY)", () => {
   });
 
   afterEach(() => {
+    delete process.env.SLOCK_USE_PTY;
     runtime.stopAll();
     fakeFetch.restore();
   });

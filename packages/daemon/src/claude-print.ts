@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { applyAgentEnv } from "./agent-env-whitelist.js";
 import { getClaudePermissionArgs } from "./command-presets.js";
 
 function findClaudeCmd(): string {
@@ -49,7 +50,8 @@ export function claudePrint(
       cwd: cwd || process.cwd(),
       shell: true,
       windowsHide: true,
-      env: { ...process.env, ...(extraEnv || {}) },
+      // A2：env 白名单化（默认 warn-only，SLOCK_ENV_WHITELIST=1 收紧）
+      env: applyAgentEnv(extraEnv || {}, "ClaudePrint"),
     });
 
     let stdout = "";

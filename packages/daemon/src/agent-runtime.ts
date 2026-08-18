@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { createAgentManager } from "./agent-manager.js";
+import { createObservationBus, type ObservationBus } from "./agent-observation.js";
 import { createCredentialsClient } from "./agent-runtime-credentials.js";
 import { createDispatch } from "./agent-runtime-dispatch.js";
 import { createExitChain } from "./agent-runtime-exit.js";
@@ -98,15 +99,24 @@ const resolveClaudeBinary = (): string => {
  * - 常驻会话缓存（PTY 模式单进程常驻 / PersistentClaude 模式类常驻）
  * - 与 agent-tokens / live-run-registry 集成
  *
- * ### 启动路径
- * - 默认（PTY 模式）：node-pty 启动 Claude CLI，等 `❯` 提示符就绪后写入
- * - 兜底（`SLOCK_PERSISTENT_CLAUDE=1`）：旧 PersistentClaude + stream-json
+ * ### 启动路径（B2，2026-08-18 起 headless 为默认）
+ * - 默认（headless）：PersistentClaude 持久会话，stream-json stdin/stdout
+ *   结构化通道；`SLOCK_ONESHOT_CLAUDE=1` 退到 claudePrint 一次性模式
+ * - 降级（`SLOCK_USE_PTY=1`）：node-pty 启动 Claude CLI TUI，等 `❯` 提示符
+ *   就绪后键盘模拟写入（真 TUI 调试用，workaround 群见各文件「何时可删（O13）」注释）
  */
 export interface AgentRuntimeOptions {
   serverUrl: string;
   apiKey: string;
   /** 门控投递反馈：消息被排队时回调（daemon-core 注入，经 WS 通知前端"已缓冲"） */
   onDeliveryQueued?: (agentName: string, channelName: string) => void;
+  /** 死信上报：A1 派发队列重试耗尽/不可投递时回调（daemon-core 注入，经 WS 通知 server） */
+  onDeliveryDeadLetter?: (agentName: string, channelName: string, err: unknown) => void;
+  /** C1：agent 工具调用生命周期上报（仅 headless 路径，daemon-core 注入，经 WS 进审计流） */
+  onToolCall?: (
+    agentName: string,
+    info: { toolName?: string; toolUseId?: string; status: "pending" | "completed"; text?: string },
+  ) => void;
 }
 
 export interface IAgentRuntime {
@@ -150,6 +160,8 @@ export interface IAgentRuntime {
   __getAgentManager(): IAgentManager;
   __getDispatcher(): IAgentStdinDispatcher;
   __getRunId(agentName: string): string | null;
+  /** B1：headless 观察帧总线（daemon-core 的 terminal:watch 用它渲染 headless 围观画面） */
+  __getObservationBus(): ObservationBus;
 }
 
 export const createAgentRuntime = (
@@ -178,8 +190,15 @@ export const createAgentRuntime = (
   // 旧 PersistentClaude 路径（兜底）
   const persistentSessions = new Map<string, PersistentClaude>();
 
-  // 默认走 PTY；SLOCK_PERSISTENT_CLAUDE=1 走旧路径
-  const usePty = process.env.SLOCK_PERSISTENT_CLAUDE !== "1";
+  // ---- B1：结构化观察帧总线（headless 路径的围观数据源，见 agent-observation.ts）----
+  const observationBus = createObservationBus();
+
+  // B2（2026-08-18 切换）：headless（PersistentClaude + stream-json）为默认路径，
+  // PTY 降级为 fallback（SLOCK_USE_PTY=1，真 TUI 调试/排障用）。
+  // 门控与切换依据见 docs/2026-08-18/03-slock-modification-plan.md §2.B2——
+  // B1 观察帧 + A1 队列经七轮真机回归后执行本切换。
+  // SLOCK_PERSISTENT_CLAUDE=1 是旧开关，效果与默认一致（保留兼容，不再读取）。
+  const usePty = process.env.SLOCK_USE_PTY === "1";
 
   // ---- Per-agent-run scoped token（见 agent-runtime-credentials.ts）----
   const credentialsClient = createCredentialsClient(options.serverUrl, options.apiKey);
@@ -311,6 +330,24 @@ export const createAgentRuntime = (
           // 同一 agent 至少间隔一个阈值周期才再警告一次
           const lastWarn = lastWarnedAt.get(agentName) ?? 0;
           if (now - lastWarn < STUCK_WARN_MS) continue;
+
+          // headless（persistent）路径：PTY output/screen 恒为空，「outputLen=0
+          // 的 STUCK 警告」毫无信息量（2026-08-18 真机：133s 的正常多工具回合
+          // 被误报）。改用观察帧活动时间判活：stream-json 事件持续到达 = 正常干活；
+          // 真正无事件才警告，诊断文本取 transcript 尾部。
+          if (!run && persistentSessions.has(agentName)) {
+            const frames = observationBus.replay(agentName);
+            const lastFrameAt = frames.length > 0 ? frames[frames.length - 1].timestamp : 0;
+            if (lastFrameAt > 0 && now - lastFrameAt < STUCK_WARN_MS) continue;
+            lastWarnedAt.set(agentName, now);
+            const obsTail = observationBus.transcript(agentName, 600).replace(/\s+/g, " ").trim().slice(-300);
+            console.warn(
+              `[Runtime] @${agentName} STUCK in 'working' (headless: no stream events for ` +
+                `${lastFrameAt > 0 ? ((now - lastFrameAt) / 1000).toFixed(0) + "s" : "entire turn"}); transcript tail=...${obsTail}`,
+            );
+            continue;
+          }
+
           lastWarnedAt.set(agentName, now);
 
           const tail = (run?.output ?? "").slice(-200).replace(ANSI_CSI_RE, "");
@@ -361,6 +398,9 @@ export const createAgentRuntime = (
     agentSessions,
     dispatchPromises,
     onDeliveryQueued: options.onDeliveryQueued,
+    onDeliveryDeadLetter: options.onDeliveryDeadLetter,
+    observationBus,
+    onToolCall: options.onToolCall,
   });
 
   // ---- 公开接口 ----
@@ -508,6 +548,10 @@ export const createAgentRuntime = (
 
     __getRunId(agentName: string): string | null {
       return runIdByAgent.get(agentName) ?? null;
+    },
+
+    __getObservationBus(): ObservationBus {
+      return observationBus;
     },
   };
 };

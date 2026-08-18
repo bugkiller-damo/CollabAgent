@@ -26,6 +26,11 @@ import type { IAgentManager } from "./types/index.js";
  * 前置依赖：终端观察面板目前消费 PTY 渲染帧，结构化路径需先补等价的观察
  * 遥测（buzz 用 OBSERVER_FRAME_TELEMETRY 结构化帧替代截屏）。
  * 详见 docs/2026-08-18/01-pty-keyboard-vs-structured-channels.md。
+ *
+ * 状态更新（2026-08-18 B2）：条件 a) 及前置依赖均已达成——PersistentClaude
+ * stream-json 持久会话已是默认输入通道，观察遥测由 agent-observation.ts
+ * 结构化帧 + transcript 渲染承担。本文件仅服务 `SLOCK_USE_PTY=1` fallback，
+ * 彻底删除条件 = PTY 模式整体退役。
  * ────────────────────────────────────────────────────────────────────────
  */
 

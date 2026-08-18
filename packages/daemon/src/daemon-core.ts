@@ -66,6 +66,36 @@ export class DaemonCore {
           if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
           this.ws.send(JSON.stringify({ type: "agent:delivery-queued", agentName, channelName }));
         },
+        // A1 派发队列死信：重试耗尽/不可投递的消息经 WS 上报 server，
+        // 由 server 标记 delivery_failed（不自动重投，避免死信循环）。
+        onDeliveryDeadLetter: (agentName, channelName, err) => {
+          if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+          this.ws.send(
+            JSON.stringify({
+              type: "agent:delivery-dead-letter",
+              agentName,
+              channelName,
+              error: String((err as any)?.message ?? err).slice(0, 300),
+            }),
+          );
+        },
+        // C1：agent 本地工具调用生命周期进审计流（仅 headless 路径有结构化事件源）。
+        // 参数/结果摘要已在上游截断（agent-observation.ts 的 truncate 纪律），
+        // 完整内容留在本地 run 历史，不上 WS。
+        onToolCall: (agentName, info) => {
+          if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+          this.ws.send(
+            JSON.stringify({
+              type: "agent:tool-call",
+              agentName,
+              toolName: info.toolName ?? null,
+              toolUseId: info.toolUseId ?? null,
+              status: info.status,
+              text: info.text ?? null,
+              time: new Date().toISOString(),
+            }),
+          );
+        },
       },
       tokenRegistry,
       liveRunRegistry,
@@ -372,14 +402,18 @@ export class DaemonCore {
       case "terminal:watch": {
         // 浏览器观众上线：开始按 400ms 节拍推这个 agent 的终端帧（G3）。
         // 帧内容直接取终端模拟器渲染好的当前屏（screenText），无变化不推。
+        // B1：headless（persistent）路径没有 PTY 屏——用观察帧 replay buffer 渲染
+        // 的 transcript 作为 screen 推同一条 terminal:frame 通道，web 侧零改动。
         const agentName = msg.agentName as string;
         if (!agentName || this.terminalWatchers.has(agentName)) break;
         // 先补发一段历史：运行中的 run 发 scrollback（观众能看到打开终端前
-        // 发生的事）；没有运行中的 run 则发落盘日志的尾部（agent 已被回收也能回看）。
+        // 发生的事）；没有运行中的 run 则发观察帧 transcript（headless）或
+        // 落盘日志的尾部（agent 已被回收也能回看）。
         {
           const runId = this.runtime.__getRunId(agentName);
           const run = runId ? this.runtime.__getAgentManager().getRun(runId) : undefined;
-          const historyText = run?.historyText || readTerminalLogTail(agentName, 60_000);
+          const obsTranscript = this.runtime.__getObservationBus().transcript(agentName, 60_000);
+          const historyText = run?.historyText || obsTranscript || readTerminalLogTail(agentName, 60_000);
           if (historyText.trim()) {
             this.ws?.send(JSON.stringify({ type: "terminal:history", agentName, text: historyText }));
           }
@@ -389,8 +423,10 @@ export class DaemonCore {
           const manager = this.runtime.__getAgentManager();
           const run = runId ? manager.getRun(runId) : undefined;
           const state = this.runtime.getAgentState(agentName) ?? "unknown";
-          const status = run ? state : "offline";
-          const screen = run?.screenText ?? "";
+          // headless：有观察帧内容就不算 offline（没有 PTY run 但 agent 活着）
+          const obsScreen = run ? "" : this.runtime.__getObservationBus().transcript(agentName, 60_000);
+          const status = run ? state : obsScreen ? state : "offline";
+          const screen = run?.screenText ?? obsScreen;
           const key = status + "|" + screen;
           if (this.terminalLastFrame.get(agentName) === key) return;
           this.terminalLastFrame.set(agentName, key);

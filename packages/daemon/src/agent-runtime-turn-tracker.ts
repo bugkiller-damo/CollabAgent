@@ -23,6 +23,10 @@
  * `{"type":"result"}` 事件就是精确的回合边界，无需任何画面猜测；buzz-agent
  * 的 ACP session/prompt 响应同理）。claude 每版本 UI 文案变动（如 busy 标记
  * 措辞）都会冲击 BUSY_MARKER_RE/PROMPT_RE，结构化输出事件不受此影响。
+ *
+ * 状态更新（2026-08-18 B2）：删除条件已达成——headless 默认路径的回合边界
+ * 由 stream-json result 事件精确给出（agent-runtime-dispatch.ts handleStreamEvent），
+ * 本模块仅服务 `SLOCK_USE_PTY=1` fallback。彻底删除条件 = PTY 模式整体退役。
  */
 export const BUSY_MARKER_RE = /esc\s*to\s*interrupt/i;
 export const PROMPT_RE = /[❯›]/u;

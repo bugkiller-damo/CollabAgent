@@ -27,28 +27,38 @@ import { z } from "zod";
 
 const AGENT_ID = process.env.SLOCK_AGENT_ID;
 // O11：token 优先从文件读（.mcp.json 里只配 SLOCK_AGENT_TOKEN_FILE 路径，
-// 明文 token 不进任何进程 env / 配置文件）；SLOCK_AGENT_TOKEN 字面量为旧版兼容兜底
-const AGENT_TOKEN = (() => {
+// 明文 token 不进任何进程 env / 配置文件）；SLOCK_AGENT_TOKEN 字面量为旧版兼容兜底。
+// **每次请求重读文件**：daemon 每条 dispatch 都轮换 scoped token 并覆写 token
+// 文件（服务端 upsert，旧 token 立即失效）。常驻进程（persistent claude 的 MCP
+// 子进程跟随 claude 进程生命周期）若启动时缓存一次，第二轮 dispatch 起全部
+// 401「Invalid or expired agent token」（2026-08-18 真机实测，turn 2 回复丢失）。
+const readAgentToken = (): string | undefined => {
   const file = process.env.SLOCK_AGENT_TOKEN_FILE;
   if (file) {
     try {
       const t = readFileSync(file, "utf-8").trim();
       if (t) return t;
-      console.error(`[slock-mcp] token file ${file} is empty`);
-    } catch (err: any) {
-      console.error(`[slock-mcp] cannot read token file ${file}: ${err?.message ?? err}`);
+    } catch {
+      /* 落到 env 兜底 */
     }
   }
   return process.env.SLOCK_AGENT_TOKEN;
-})();
+};
 const SERVER_URL = process.env.SLOCK_SERVER_URL;
 
-if (!AGENT_ID || !AGENT_TOKEN || !SERVER_URL) {
+if (!AGENT_ID || !readAgentToken() || !SERVER_URL) {
   console.error(
     "[slock-mcp] missing SLOCK_AGENT_ID / SLOCK_AGENT_TOKEN_FILE(or SLOCK_AGENT_TOKEN) / SLOCK_SERVER_URL env, cannot start",
   );
   process.exit(1);
 }
+
+/** 每次调用重读 token（见 readAgentToken 注释）；读不到时给 agent 可读的错误 */
+const requireToken = (): string => {
+  const t = readAgentToken();
+  if (!t) throw new Error("[slock-mcp] agent token unavailable (token file empty or unreadable)");
+  return t;
+};
 
 async function callSlock(path: string, init?: RequestInit): Promise<unknown> {
   // content-type: application/json 只在有 body 时带——无 body 的 DELETE/POST 若带
@@ -56,7 +66,7 @@ async function callSlock(path: string, init?: RequestInit): Promise<unknown> {
   // cancel_reminder 中招，agent 反复重试白烧 token）。
   const headers: Record<string, string> = {
     ...(init?.headers as Record<string, string> | undefined),
-    Authorization: `Bearer ${AGENT_TOKEN}`,
+    Authorization: `Bearer ${requireToken()}`,
   };
   if (init?.body !== undefined) headers["content-type"] = "application/json";
   const res = await fetch(`${SERVER_URL}/internal/agent/${AGENT_ID}${path}`, {
@@ -83,7 +93,7 @@ async function callSlock(path: string, init?: RequestInit): Promise<unknown> {
 async function callSlockUpload(path: string, form: FormData): Promise<unknown> {
   const res = await fetch(`${SERVER_URL}/internal/agent/${AGENT_ID}${path}`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${AGENT_TOKEN}` }, // 不要手动设 content-type，fetch 会自动带 boundary
+    headers: { Authorization: `Bearer ${requireToken()}` }, // 不要手动设 content-type，fetch 会自动带 boundary
     body: form,
   });
   const text = await res.text();

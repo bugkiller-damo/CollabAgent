@@ -33,6 +33,8 @@ describe("session resume (agent-runtime-spawn.ts, fake PTY)", () => {
 
   beforeEach(() => {
     delete process.env.SLOCK_SESSION_RESUME;
+    // B2 起默认 headless；本文件钉的是 PTY 路径（fake PTY + --resume 链），显式钉回 PTY 模式
+    process.env.SLOCK_USE_PTY = "1";
     // 生产环境的宽限期/捕获延迟是 3s/5s（见 agent-runtime-spawn.ts），测试里
     // 调小到几十毫秒——不是为了"测试更快"这种次要目标，是因为这两个真实定时
     // 器的等待时间一旦叠加多个测试，会在整套测试并发跑的时候占住 worker 太久，
@@ -47,7 +49,7 @@ describe("session resume (agent-runtime-spawn.ts, fake PTY)", () => {
     storePath = join(tmpdir(), `slock-session-resume-test-${randomUUID()}.json`);
     runStore = createJsonRunStore(storePath);
     runtime = createAgentRuntime(
-      { serverUrl: "http://fake-server.test", apiKey: "sk_machine_test" },
+      { serverUrl: "http://fake-server.test", apiKey: "test-api-key" },
       createAgentTokenRegistry(),
       createLiveRunRegistry(),
       runStore,
@@ -58,6 +60,7 @@ describe("session resume (agent-runtime-spawn.ts, fake PTY)", () => {
 
   afterEach(() => {
     delete process.env.SLOCK_SESSION_RESUME;
+    delete process.env.SLOCK_USE_PTY;
     delete process.env.SLOCK_RESUME_GRACE_MS;
     delete process.env.SLOCK_SESSION_CAPTURE_DELAY_MS;
     runtime.stopAll();

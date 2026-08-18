@@ -18,6 +18,10 @@ import type { IAgentManager, PtyOutputEvent } from "./types/index.js";
  *   b) agent 不再跑 TUI（删除条件见 post-start-input-writer.ts 头注）。
  * 删除前必须确认真机回归：新装机器/新 claude 版本首启不再弹该窗（live bug 1
  * 的回归现象 = bootstrap 消息被弹窗吃掉、agent 永久停驻）。
+ *
+ * 状态更新（2026-08-18 B2）：条件 b) 已达成——headless 已是默认路径，本模块
+ * 仅服务 `SLOCK_USE_PTY=1` fallback（headless 下无 TUI 弹窗，条款 a) 的
+ * 预接受通道不再需要）。彻底删除条件 = PTY 模式整体退役。
  */
 export const isClaudeAcceptDialog = (screenText: string): boolean => {
   const clean = screenText;
