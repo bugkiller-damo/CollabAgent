@@ -33,4 +33,18 @@ for agent_id in "${!AGENTS[@]}"; do
 done
 
 echo "=== 同步完成 ==="
+
+# O20：同步后、入库前扫密钥/敏感内容（agent notes 里出现过 agent 把 token 背进
+# MEMORY.md 的真实案例，见 2026-08-17 O11 验证记录）。命中即阻断并列出文件，
+# 确认是死凭据/误报后用 SYNC_ALLOW_SECRETS=1 显式放行。
+SECRET_RE='sk_(agent|machine)_[A-Za-z0-9]+|-----BEGIN [A-Z ]*PRIVATE KEY-----'
+HITS=$(grep -rEl "$SECRET_RE" "$REPO_ROOT/agents" 2>/dev/null || true)
+if [ -n "$HITS" ] && [ "${SYNC_ALLOW_SECRETS:-0}" != "1" ]; then
+    echo ""
+    echo "✗ 检测到 notes 里含密钥/私钥模式，已阻断后续 git 提交流程：" >&2
+    echo "$HITS" | sed 's/^/  /' >&2
+    echo "  请先清理后再提交；确认是死凭据/误报可用 SYNC_ALLOW_SECRETS=1 显式放行。" >&2
+    exit 1
+fi
+
 echo "接下来: cd \"$REPO_ROOT\" && git add -A && git commit -m 'sync agent notes'"

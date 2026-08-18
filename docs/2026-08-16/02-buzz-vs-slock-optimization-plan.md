@@ -305,7 +305,7 @@ O9 seq 并发测试 → O10/O11/O12/O13 daemon 收敛与安全 → O16 前端 WS
 | 17 | O12 claude 权限收敛 | AI | ☑ 2026-08-17 |
 | 18 | O13 daemon 代码面收敛 | AI | ☑ 2026-08-18 |
 | 19 | O16 前端 WS 层收敛 | AI | ☑ 2026-08-18 |
-| 20 | O20 仓库卫生 | | ☐ |
+| 20 | O20 仓库卫生 | AI | ☑ 2026-08-18 |
 
 ---
 
@@ -365,7 +365,7 @@ O9 seq 并发测试 → O10/O11/O12/O13 daemon 收敛与安全 → O16 前端 WS
 | O9 | messages.seq 竞态确认 | 🟢 低 | ✅ 完成 | seq=BIGSERIAL（nextval 原子唯一、空洞允许）确认无重复；**发现并修复两个真实缺口**：① /history 仅带 after 时按 DESC 取「最新一页」，前向游标一步到顶，O15 backfill >1 页缺口会被静默截断——改为仅 after 时 ASC 前向分页（hasMore=还有更新的；before/默认语义不变，web 侧唯一 after 消费者即 backfill）；② /send 事务内补 pg_advisory_xact_lock(hashtextextended(channel_id))，保证同频道「提交顺序 == seq 赋值顺序」，消除 BIGSERIAL 提交乱序导致的补拉永久遗漏窗口（agent/task 单语句自提交 INSERT 残留微秒级窗口，由 id 去重 + 全量刷新兜底，注记存档）；test/message-seq-concurrency.test.ts 3 用例（同频道并发 20 无重复+游标收齐严格升序、双频道交叉各自递增、同 nonce 并发恰一条）；真 PG 全量 226/226 |
 | O13 | daemon 代码面收敛 | 🟢 低 | ✅ 完成 | 盘点结论：平台高频操作已 100% 走 MCP（17 工具全表），PTY 键盘模拟只剩「往 claude TUI 输入框写消息」唯一通道 + 三组衍生启发式；5 处 workaround 补「何时可删（O13）」注释（post-start-input-writer / terms-dialog / turn-tracker / agent-sessions / stdin-dispatcher 备注）；buzz 对照调研（buzz-agent=headless stdio JSON-RPC 无 PTY、buzz-acp pool+observer 结构化遥测帧、buzz-dev-mcp 7 工具最小面+shim 0600 keyfile 删 env——与 O11 同构交叉验证）；新增 docs/2026-08-18/01-pty-keyboard-vs-structured-channels.md（对照表 + 中期路线：PersistentClaude 补观察遥测→PTY 降降级路径）；daemon 97/97 |
 | O16 | 前端 WS 层收敛 | 🟢 低 | ✅ 完成 | 收敛为 lib/wsManager.ts（框架无关单模块：连接/指数退避/70s 入站看门狗/ping-pong/发送/单例句柄 wsSend，createSocket 可注入——对照 buzz relay 分层在 slock 规模的取舍：单模块+依赖注入保可测性）+ lib/wsDispatch.ts（onMessage switch 出 AppLayout，store 只消费事件）；AppLayout 瘦身为纯组装（init+start/stop+onConnect 补拉/补发）；删除 stores/wsSender.ts 与 composables/useWebSocket.ts，AgentTerminalPanel 改从 lib/wsManager 发；多标签页语义文档化（补拉/补发均幂等，pending 内存态跨页同步留作 BroadcastChannel 后续项）；测试 +10（wsManager 7：首连/ping-pong/退避翻倍/看门狗/发送门控/stop/幂等 start；wsDispatch 3：deliver+nonce 调和/id 去重/update-delete 路由）；web 27/27、tsc/build 绿 |
-| O20 | 仓库卫生 | 🟢 低 | ⏳ 待办 | |
+| O20 | 仓库卫生 | 🟢 低 | ✅ 完成 | 物理清除 cookies.txt/msgs.json/curl/根 .slock；**git 追踪中的 .slock/slock.bat（内含明文 sk_agent_ token，5/29 残留已过期）与 curl 移出追踪**；.gitignore 补 /.slock/、/curl；lefthook pre-commit 新增 sensitive-files 闸（scripts/check-sensitive-files.mjs：文件名黑名单 cookies.txt/.env/*.pem/curl + 内容扫 sk_agent_/sk_machine_/PEM 私钥，跨平台 node）；sync-agent-notes.sh 同步后扫 agents/ notes 密钥模式、命中阻断 + SYNC_ALLOW_SECRETS=1 逃生门（真实案例驱动：agent 曾把 token 背进 MEMORY.md）；测试 4 用例（进程级退出码语义，敏感样本拼接构造防自命中）；server tsc 绿 |
 
 ### O1/O2 遗留增量项（已明确，未阻塞验收）
 

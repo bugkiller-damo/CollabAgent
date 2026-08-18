@@ -7,6 +7,9 @@ pre-commit:
       glob: "*.{js,cjs,mjs,ts,tsx,jsx,json,vue}"
       run: npx biome check --write --no-errors-on-unmatched {staged_files}
       stage_fixed: true
+    # O20：敏感文件/密钥拦截（文件名黑名单 + sk_token/PEM 内容扫描）
+    sensitive-files:
+      run: node scripts/check-sensitive-files.mjs {staged_files}
 
 pre-push:
   commands:
