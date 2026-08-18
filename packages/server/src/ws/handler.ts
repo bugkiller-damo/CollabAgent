@@ -1,5 +1,6 @@
 import jwt from "jsonwebtoken";
 import type { WebSocket } from "ws";
+import { appendEvent } from "../lib/audit.js";
 import { config } from "../lib/config.js";
 import type { PubSub } from "../lib/pubsub.js";
 
@@ -201,6 +202,45 @@ function registerConnection(connection: WebSocket, userId: string, isDaemon: boo
             // 门控投递反馈：daemon 把忙碌期消息排队了 → 浏览器 toast"已缓冲，空闲后投递"
             sendToUser(userId, msg);
             break;
+          case "agent:delivery-dead-letter":
+            // A1 派发队列死信：daemon 重试耗尽/入队即判不可投递 → 浏览器 error toast，
+            // 消息确认未送达，需要人工介入（重发或检查 agent）
+            console.warn(
+              `[WS] delivery dead-letter: agent=${msg.agentName} channel=${msg.channelName} err=${msg.error}`,
+            );
+            sendToUser(userId, msg);
+            break;
+          case "agent:tool-call": {
+            // C1：agent 本地工具调用生命周期进审计链（O2 的 agent 侧补充）。
+            // object 建模为 agent（而非 tool_call）——审计 API 的访问控制按对象
+            // 判定（routes/audit.ts assertObjectAccess），agent 对象的可见性 =
+            // 「agent 属于该用户」，正好匹配 daemon→user 的归属关系。
+            // 频率是每个工具调用 2 条（pending/completed），哈希链 advisory lock
+            // 串行化在这个量级无压力。审计失败不阻断转发链（best-effort）。
+            const m = msg as Record<string, unknown>;
+            if (wsPg?.transaction && m.agentId) {
+              wsPg
+                .transaction((tx) =>
+                  appendEvent(tx, {
+                    actorId: String(m.agentId),
+                    actorType: "agent",
+                    verb: m.status === "pending" ? "tool.call.start" : "tool.call.end",
+                    objectType: "agent",
+                    objectId: String(m.agentId),
+                    payload: {
+                      agentName: m.agentName,
+                      toolName: m.toolName,
+                      toolUseId: m.toolUseId,
+                      status: m.status,
+                      text: m.text,
+                      time: m.time,
+                    },
+                  }),
+                )
+                .catch((err) => console.warn("[WS] tool-call audit append failed:", (err as Error)?.message ?? err));
+            }
+            break;
+          }
           case "agent:activity":
             console.log(`[WS] Agent activity: ${msg.activity}`);
             break;
@@ -270,7 +310,15 @@ function registerConnection(connection: WebSocket, userId: string, isDaemon: boo
 }
 
 // pg 引用，用于按频道成员定向投递（在 index.ts 启动时注入）
-let wsPg: { query: <T = any>(text: string, params?: unknown[]) => Promise<{ rows: T[] }> } | null = null;
+let wsPg: {
+  query: <T = any>(text: string, params?: unknown[]) => Promise<{ rows: T[] }>;
+  /** C1 工具调用审计用（appendEvent 必须在事务内）；可选以保持测试注入的最小形状 */
+  transaction?: <T = unknown>(
+    fn: (tx: {
+      query: <R = Record<string, unknown>>(text: string, params?: unknown[]) => Promise<{ rows: R[] }>;
+    }) => Promise<T>,
+  ) => Promise<T>;
+} | null = null;
 export function setWsPg(pg: typeof wsPg) {
   wsPg = pg;
 }

@@ -25,6 +25,14 @@ async function assertObjectAccess(
     if (await canAccessChannel(app, String(m.rows[0].channel_id), userId)) return "ok";
     return "forbidden";
   }
+  if (objectType === "agent") {
+    // agent 对象（C1 工具调用审计流：verb=tool.call.start/end）：
+    // 可见性 = 「agent 属于当前用户」（agents.user_id 即 daemon 所有者）
+    const a = await app.pg.query<{ user_id: string }>("SELECT user_id FROM agents WHERE id = $1", [objectId]);
+    if (a.rows.length === 0) return "notfound";
+    if (String(a.rows[0].user_id) === userId) return "ok";
+    return "forbidden";
+  }
   // 其余对象类型尚未接入可见性判定，一律拒绝（避免越权枚举）
   return "forbidden";
 }

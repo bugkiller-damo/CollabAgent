@@ -44,6 +44,11 @@ export function dispatchWsEvent(msg: WsServerEvent): void {
   if (type === "agent:delivery-queued") {
     toast.info(`⏳ @${(msg as any).agentName} 正在工作，消息已缓冲，将在其空闲后自动投递`);
   }
+  // A1 派发队列死信：重试多次仍投递失败（或 agent 已停止）——消息确认丢失，需人工介入
+  if (type === "agent:delivery-dead-letter") {
+    const m = msg as any;
+    toast.error(`❌ 发给 @${m.agentName} 的消息投递失败（已自动重试多次）：${m.error || "未知原因"}，请重新发送`);
+  }
   if (type === "message:update" && (msg as any).message) {
     const m = (msg as any).message;
     messageStore.applyMessageUpdate(m.id, m.content, m.editedAt);

@@ -88,6 +88,8 @@ export class DaemonCore {
             JSON.stringify({
               type: "agent:tool-call",
               agentName,
+              // server 审计链需要稳定 actorId（名字可改，id 不变）
+              agentId: this.runtime.resolveAgentId(agentName),
               toolName: info.toolName ?? null,
               toolUseId: info.toolUseId ?? null,
               status: info.status,
