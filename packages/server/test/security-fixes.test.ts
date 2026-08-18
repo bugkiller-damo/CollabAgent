@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { api, registerUser, cleanupTestData, closeSql, BASE, type TestUser } from "./helpers.js";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { api, BASE, cleanupTestData, closeSql, registerUser, type TestUser } from "./helpers.js";
 
 // 与 ws.test.ts 一致：WS 地址从 BASE 派生，不写死 3001（本地可用 SLOCK_TEST_BASE_URL 指定端口）
 const WS_BASE = BASE.replace(/^http/, "ws") + "/ws";
@@ -17,7 +17,11 @@ beforeAll(async () => {
   alice = await registerUser();
   bob = await registerUser();
   // alice 建一个私有频道供 join/附件测试
-  await api("/api/channels", { method: "POST", cookie: alice.cookie, body: { name: "sec-fix-priv", description: "回归测试", visibility: "private" } });
+  await api("/api/channels", {
+    method: "POST",
+    cookie: alice.cookie,
+    body: { name: "sec-fix-priv", description: "回归测试", visibility: "private" },
+  });
 });
 
 afterAll(async () => {
@@ -28,7 +32,8 @@ afterAll(async () => {
 describe("security fixes 2026-07-17", () => {
   it("@提及用户应产生 notification（split 正则回归）", async () => {
     const send = await api("/api/messages/send", {
-      method: "POST", cookie: alice.cookie,
+      method: "POST",
+      cookie: alice.cookie,
       body: { target: "#general", content: `hi @${bob.handle} 看一下这个` },
     });
     expect(send.status).toBe(200);
@@ -43,7 +48,12 @@ describe("security fixes 2026-07-17", () => {
     // alice 上传一个 txt 附件
     const fd = new FormData();
     fd.append("file", new Blob(["hello attachment"], { type: "text/plain" }), "sec-note.txt");
-    const csrf = alice.cookie.split(";").map((s) => s.trim()).find((s) => s.startsWith("csrf_token="))?.split("=")[1] || "";
+    const csrf =
+      alice.cookie
+        .split(";")
+        .map((s) => s.trim())
+        .find((s) => s.startsWith("csrf_token="))
+        ?.split("=")[1] || "";
     const up = await fetch(`${BASE}/api/attachments/upload`, {
       method: "POST",
       headers: { cookie: alice.cookie, "x-csrf-token": decodeURIComponent(csrf) },
@@ -54,7 +64,8 @@ describe("security fixes 2026-07-17", () => {
 
     // 挂到私有频道消息上
     const send = await api("/api/messages/send", {
-      method: "POST", cookie: alice.cookie,
+      method: "POST",
+      cookie: alice.cookie,
       body: { target: "#sec-fix-priv", content: "附件来了", attachmentIds: [uploaded.attachmentId] },
     });
     expect(send.status).toBe(200);
@@ -71,29 +82,40 @@ describe("security fixes 2026-07-17", () => {
   });
 
   it("私有频道禁止自主 join（403），公开频道可以", async () => {
-    const ch = await api("/api/channels/resolve?target=" + encodeURIComponent("#sec-fix-priv"), { cookie: alice.cookie });
+    const ch = await api("/api/channels/resolve?target=" + encodeURIComponent("#sec-fix-priv"), {
+      cookie: alice.cookie,
+    });
     expect(ch.status).toBe(200);
     const channelId = ch.data.id;
 
     const joinPriv = await api(`/api/channels/${channelId}/join`, { method: "POST", cookie: bob.cookie, body: {} });
     expect(joinPriv.status).toBe(403);
 
-    await api("/api/channels", { method: "POST", cookie: alice.cookie, body: { name: "sec-fix-pub", visibility: "public" } });
-    const pub = await api("/api/channels/resolve?target=" + encodeURIComponent("#sec-fix-pub"), { cookie: alice.cookie });
+    await api("/api/channels", {
+      method: "POST",
+      cookie: alice.cookie,
+      body: { name: "sec-fix-pub", visibility: "public" },
+    });
+    const pub = await api("/api/channels/resolve?target=" + encodeURIComponent("#sec-fix-pub"), {
+      cookie: alice.cookie,
+    });
     const joinPub = await api(`/api/channels/${pub.data.id}/join`, { method: "POST", cookie: bob.cookie, body: {} });
     expect(joinPub.status).toBe(200);
   });
 
   it("reminders：他人提醒读/改/删一律 404（IDOR 修复）", async () => {
     const created = await api("/api/reminders", {
-      method: "POST", cookie: alice.cookie,
+      method: "POST",
+      cookie: alice.cookie,
       body: { title: "alice 的提醒", delaySeconds: 3600 },
     });
     expect(created.status).toBe(200);
     const rid = created.data.reminder.id;
 
     expect((await api(`/api/reminders/${rid}`, { cookie: bob.cookie })).status).toBe(404);
-    expect((await api(`/api/reminders/${rid}`, { method: "PATCH", cookie: bob.cookie, body: { title: "hijack" } })).status).toBe(404);
+    expect(
+      (await api(`/api/reminders/${rid}`, { method: "PATCH", cookie: bob.cookie, body: { title: "hijack" } })).status,
+    ).toBe(404);
     expect((await api(`/api/reminders/${rid}`, { method: "DELETE", cookie: bob.cookie })).status).toBe(404);
     expect((await api(`/api/reminders/${rid}/log`, { cookie: bob.cookie })).status).toBe(404);
     // 本人正常
@@ -106,7 +128,7 @@ describe("security fixes 2026-07-17", () => {
     const token = mint.data.token as string;
     expect(token.startsWith("sk_machine_")).toBe(true);
     // 用新令牌调一个需认证的端点
-    const me = await api("/api/users", { cookie: `x=1`, csrf: false, token: undefined, });
+    const me = await api("/api/users", { cookie: `x=1`, csrf: false, token: undefined });
     expect(me.status).toBe(401); // 无 cookie 仍 401
     const authed = await fetch(`${BASE}/api/users`, {
       headers: { authorization: `Bearer ${token}` },
@@ -138,7 +160,8 @@ describe("security fixes 2026-07-17", () => {
   it("私有频道 @非成员 agent：不自动入圈，mentionAgents 为空（daemon 不会唤醒）", async () => {
     // alice 创建 agent（落在个人 org，与频道跨 server）
     const ag = await api("/api/agents", {
-      method: "POST", cookie: alice.cookie,
+      method: "POST",
+      cookie: alice.cookie,
       body: { name: "secbot", runtime: "claude", model: "sonnet" },
     });
     expect(ag.status).toBe(200);
@@ -152,13 +175,15 @@ describe("security fixes 2026-07-17", () => {
       ws.on("message", (raw) => {
         const msg = JSON.parse(raw.toString());
         if (msg.type === "agent:deliver" && msg.message?.content?.includes("@secbot")) {
-          clearTimeout(t); resolve(msg);
+          clearTimeout(t);
+          resolve(msg);
         }
       });
     });
 
     const send = await api("/api/messages/send", {
-      method: "POST", cookie: alice.cookie,
+      method: "POST",
+      cookie: alice.cookie,
       body: { target: "#sec-fix-priv", content: "@secbot 你好" },
     });
     expect(send.status).toBe(200);
@@ -170,14 +195,20 @@ describe("security fixes 2026-07-17", () => {
     ws.close();
 
     // 成员列表里不应有该 agent
-    const ch = await api("/api/channels/resolve?target=" + encodeURIComponent("#sec-fix-priv"), { cookie: alice.cookie });
+    const ch = await api("/api/channels/resolve?target=" + encodeURIComponent("#sec-fix-priv"), {
+      cookie: alice.cookie,
+    });
     const members = await api(`/api/channels/${ch.data.id}/members`, { cookie: alice.cookie });
     const agentMember = (members.data.members as any[]).find((m) => m.member_type === "agent" && m.handle === "secbot");
     expect(agentMember).toBeUndefined();
   });
 
   it("公开频道 @发送者名下 agent：自动入圈且 mentionAgents 包含它", async () => {
-    await api("/api/channels", { method: "POST", cookie: alice.cookie, body: { name: "sec-fix-pub2", visibility: "public" } });
+    await api("/api/channels", {
+      method: "POST",
+      cookie: alice.cookie,
+      body: { name: "sec-fix-pub2", visibility: "public" },
+    });
 
     const { WebSocket } = await import("ws");
     const ws = new WebSocket(WS_BASE, { headers: { Cookie: alice.cookie } });
@@ -187,13 +218,15 @@ describe("security fixes 2026-07-17", () => {
       ws.on("message", (raw) => {
         const msg = JSON.parse(raw.toString());
         if (msg.type === "agent:deliver" && msg.message?.content?.includes("@secbot")) {
-          clearTimeout(t); resolve(msg);
+          clearTimeout(t);
+          resolve(msg);
         }
       });
     });
 
     const send = await api("/api/messages/send", {
-      method: "POST", cookie: alice.cookie,
+      method: "POST",
+      cookie: alice.cookie,
       body: { target: "#sec-fix-pub2", content: "@secbot hello" },
     });
     expect(send.status).toBe(200);
@@ -203,7 +236,9 @@ describe("security fixes 2026-07-17", () => {
     ws.close();
 
     // 公开频道：自动入圈（发送者名下 agent 跨 server 也生效，与 /invite 回退一致）
-    const ch = await api("/api/channels/resolve?target=" + encodeURIComponent("#sec-fix-pub2"), { cookie: alice.cookie });
+    const ch = await api("/api/channels/resolve?target=" + encodeURIComponent("#sec-fix-pub2"), {
+      cookie: alice.cookie,
+    });
     const members = await api(`/api/channels/${ch.data.id}/members`, { cookie: alice.cookie });
     const agentMember = (members.data.members as any[]).find((m) => m.member_type === "agent" && m.handle === "secbot");
     expect(agentMember).toBeTruthy();
@@ -212,12 +247,17 @@ describe("security fixes 2026-07-17", () => {
   it("公开频道 @中文名 agent：mentionAgents 正确包含（中文名不被 ASCII 正则剥光）", async () => {
     // 复刻线上 bug：agent 名含数字+中文，旧的 handle 解析会把 "716测试机" 剥成 "716" 查无此人
     const ag = await api("/api/agents", {
-      method: "POST", cookie: alice.cookie,
+      method: "POST",
+      cookie: alice.cookie,
       body: { name: "716测试机", runtime: "claude", model: "sonnet" },
     });
     expect(ag.status).toBe(200);
 
-    await api("/api/channels", { method: "POST", cookie: alice.cookie, body: { name: "sec-fix-pub3", visibility: "public" } });
+    await api("/api/channels", {
+      method: "POST",
+      cookie: alice.cookie,
+      body: { name: "sec-fix-pub3", visibility: "public" },
+    });
 
     const { WebSocket } = await import("ws");
     const ws = new WebSocket(WS_BASE, { headers: { Cookie: alice.cookie } });
@@ -227,13 +267,15 @@ describe("security fixes 2026-07-17", () => {
       ws.on("message", (raw) => {
         const msg = JSON.parse(raw.toString());
         if (msg.type === "agent:deliver" && msg.message?.content?.includes("716测试机")) {
-          clearTimeout(t); resolve(msg);
+          clearTimeout(t);
+          resolve(msg);
         }
       });
     });
 
     const send = await api("/api/messages/send", {
-      method: "POST", cookie: alice.cookie,
+      method: "POST",
+      cookie: alice.cookie,
       body: { target: "#sec-fix-pub3", content: "@716测试机 你好" },
     });
     expect(send.status).toBe(200);

@@ -1,0 +1,22 @@
+# O19：docker build 上下文过滤（context 是仓库根）
+node_modules
+**/node_modules
+**/dist
+.git
+.github
+.slock
+uploads
+**/uploads
+packages/*/uploads
+*.log
+packages/server/.env
+.env
+.env.*
+!.env.example
+**/.env.example
+cookies.txt
+msgs.json
+docs
+.claude
+agents
+subagent-worktrees

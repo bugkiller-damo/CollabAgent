@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 
-const NOTIFICATION_FIELDS = "id, user_id, type, actor_id, actor_name, channel_id, message_id, title, body, metadata, read, created_at";
+const NOTIFICATION_FIELDS =
+  "id, user_id, type, actor_id, actor_name, channel_id, message_id, title, body, metadata, read, created_at";
 
 export async function notificationRoutes(app: FastifyInstance) {
   // ---- 获取通知列表 ----
@@ -21,7 +22,7 @@ export async function notificationRoutes(app: FastifyInstance) {
     const result = await app.pg.query(query, params);
     const unreadResult = await app.pg.query(
       "SELECT COUNT(*)::int as count FROM notifications WHERE user_id = $1 AND read = false",
-      [userId]
+      [userId],
     );
 
     return {
@@ -37,7 +38,7 @@ export async function notificationRoutes(app: FastifyInstance) {
     const { id } = req.params as { id: string };
     const result = await app.pg.query(
       "UPDATE notifications SET read = true WHERE id = $1 AND user_id = $2 RETURNING id",
-      [id, userId]
+      [id, userId],
     );
     if (result.rows.length === 0) return reply.status(404).send({ error: "notification not found" });
     return { ok: true };
@@ -48,15 +49,12 @@ export async function notificationRoutes(app: FastifyInstance) {
     const userId = req.user.sub;
     const { ids } = req.body as { ids?: string[] };
     if (ids && Array.isArray(ids) && ids.length > 0) {
-      await app.pg.query(
-        "UPDATE notifications SET read = true WHERE id = ANY($1::uuid[]) AND user_id = $2",
-        [ids, userId]
-      );
+      await app.pg.query("UPDATE notifications SET read = true WHERE id = ANY($1::uuid[]) AND user_id = $2", [
+        ids,
+        userId,
+      ]);
     } else {
-      await app.pg.query(
-        "UPDATE notifications SET read = true WHERE user_id = $1",
-        [userId]
-      );
+      await app.pg.query("UPDATE notifications SET read = true WHERE user_id = $1", [userId]);
     }
     return { ok: true };
   });
@@ -66,7 +64,7 @@ export async function notificationRoutes(app: FastifyInstance) {
     const userId = req.user.sub;
     const result = await app.pg.query(
       "SELECT COUNT(*)::int as count FROM notifications WHERE user_id = $1 AND read = false",
-      [userId]
+      [userId],
     );
     return { unreadCount: result.rows[0].count };
   });

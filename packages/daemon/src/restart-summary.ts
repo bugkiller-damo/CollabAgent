@@ -58,7 +58,10 @@ export function formatRestartSummary(agentName: string, runs: AgentRunRecord[]):
   lines.push(`## 恢复摘要 (@${agentName})`);
   lines.push("");
   for (const r of recent) {
-    const dur = r.durationMs !== null ? ` (${r.messagesProcessed} msgs, ${fmtDuration(r.durationMs)})` : ` (${r.messagesProcessed} msgs)`;
+    const dur =
+      r.durationMs !== null
+        ? ` (${r.messagesProcessed} msgs, ${fmtDuration(r.durationMs)})`
+        : ` (${r.messagesProcessed} msgs)`;
     const exit = r.exitCode !== null && r.exitCode !== 0 ? ` exit=${r.exitCode}` : "";
     // exit=129 = 128+SIGTERM，是 idle 回收的正常终止，不是 agent 出错——
     // 显示成 "error" 会让 agent 误以为自己历史上一串失败（2026-07-18 实测发现）。
@@ -72,7 +75,9 @@ export function formatRestartSummary(agentName: string, runs: AgentRunRecord[]):
   lines.push("");
   // 原写法「处理 N 条消息」是最近 5 次 run 的累计值，读起来像本次会话 2 秒
   // 就处理了 4 条——拆成「本次」与「累计」两段说清楚。
-  lines.push(`最近会话: ${lastSince}前开始（本次已处理 ${lastRun.messagesProcessed} 条消息）；近 ${recent.length} 次运行累计 ${totalMsgs} 条。`);
+  lines.push(
+    `最近会话: ${lastSince}前开始（本次已处理 ${lastRun.messagesProcessed} 条消息）；近 ${recent.length} 次运行累计 ${totalMsgs} 条。`,
+  );
 
   return lines.join("\n");
 }

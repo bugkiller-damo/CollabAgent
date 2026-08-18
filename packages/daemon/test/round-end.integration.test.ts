@@ -1,6 +1,6 @@
-import { describe, it, expect, beforeEach, afterEach, afterAll } from "vitest";
-import { rmSync, existsSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createAgentRuntime, type IAgentRuntime } from "../src/agent-runtime.js";
 import { createAgentTokenRegistry } from "../src/agent-tokens.js";
 import { createLiveRunRegistry } from "../src/live-run-registry.js";
@@ -28,23 +28,27 @@ const TEST_AGENT_ID = "11111111-1111-1111-1111-111111111111";
 const CLEAR_AND_HOME = "\x1b[2J\x1b[H";
 
 /** 刚启动、还没处理任何消息时的空闲欢迎屏（bug 3/11 的误判来源） */
-const SPLASH_SCREEN = CLEAR_AND_HOME + [
-  "▐▛███▜▌ Claude Code v2.1.211",
-  "▝▜█████▛▘ Sonnet 5 · API Usage Billing",
-  "────────────────────────────────────────",
-  "❯",
-  "────────────────────────────────────────",
-  "⏵⏵ bypass permissions on (shift+tab to cycle)  ctrl+g to edit in Notepad.exe",
-].join("\r\n");
+const SPLASH_SCREEN =
+  CLEAR_AND_HOME +
+  [
+    "▐▛███▜▌ Claude Code v2.1.211",
+    "▝▜█████▛▘ Sonnet 5 · API Usage Billing",
+    "────────────────────────────────────────",
+    "❯",
+    "────────────────────────────────────────",
+    "⏵⏵ bypass permissions on (shift+tab to cycle)  ctrl+g to edit in Notepad.exe",
+  ].join("\r\n");
 
 /** 正在处理中的忙碌帧（bug 5/6 的误判来源——带 ❯ 边框，但底部是 esc to interrupt） */
-const BUSY_FRAME = CLEAR_AND_HOME + [
-  "✻ Philosophising…",
-  "────────────────────────────────────────",
-  "❯",
-  "────────────────────────────────────────",
-  "⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ← for ag…",
-].join("\r\n");
+const BUSY_FRAME =
+  CLEAR_AND_HOME +
+  [
+    "✻ Philosophising…",
+    "────────────────────────────────────────",
+    "❯",
+    "────────────────────────────────────────",
+    "⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ← for ag…",
+  ].join("\r\n");
 
 /** bug 10 的确切复现字节：❯ 紧跟在文字后面，没有换行分隔的"紧凑收尾帧" */
 const COMPACT_DONE_FRAME = CLEAR_AND_HOME + "✻Cooked for2m 42s❯ ← for agents";
@@ -55,10 +59,12 @@ describe("agent-runtime round-end detection (integration, fake PTY)", () => {
   let runtime: IAgentRuntime;
 
   beforeEach(() => {
+    // B2 起默认 headless；本文件钉的是 PTY 路径（fake PTY + 屏幕启发式回合检测），显式钉回 PTY 模式
+    process.env.SLOCK_USE_PTY = "1";
     fakeFetch = installFakeFetch();
     manager = createFakeAgentManager();
     runtime = createAgentRuntime(
-      { serverUrl: "http://fake-server.test", apiKey: "sk_machine_test" },
+      { serverUrl: "http://fake-server.test", apiKey: "test-api-key" },
       createAgentTokenRegistry(),
       createLiveRunRegistry(),
       undefined,
@@ -68,6 +74,7 @@ describe("agent-runtime round-end detection (integration, fake PTY)", () => {
   });
 
   afterEach(() => {
+    delete process.env.SLOCK_USE_PTY;
     runtime.stopAll();
     fakeFetch.restore();
   });
@@ -76,8 +83,16 @@ describe("agent-runtime round-end detection (integration, fake PTY)", () => {
     // 清理 writeSystemPromptFile/createWorkspaceDir 在 process.cwd()/.slock 下
     // 真实写入的测试产物（.slock 本身已 gitignore，这里只是保持本地目录干净）
     const dir = join(process.cwd(), ".slock");
-    try { rmSync(join(dir, `sysprompt-${TEST_AGENT_NAME}.md`), { force: true }); } catch { /* best-effort */ }
-    try { rmSync(join(dir, "workspaces", TEST_AGENT_NAME), { recursive: true, force: true }); } catch { /* best-effort */ }
+    try {
+      rmSync(join(dir, `sysprompt-${TEST_AGENT_NAME}.md`), { force: true });
+    } catch {
+      /* best-effort */
+    }
+    try {
+      rmSync(join(dir, "workspaces", TEST_AGENT_NAME), { recursive: true, force: true });
+    } catch {
+      /* best-effort */
+    }
   });
 
   async function dispatchAndGetRun() {
@@ -94,117 +109,93 @@ describe("agent-runtime round-end detection (integration, fake PTY)", () => {
     await new Promise((resolve) => setTimeout(resolve, 1700));
   }
 
-  it(
-    "does not fire round-end on the pristine startup splash, even after it becomes pending (bug 3 / bug 11 regression)",
-    async () => {
-      const run = await dispatchAndGetRun();
+  it("does not fire round-end on the pristine startup splash, even after it becomes pending (bug 3 / bug 11 regression)", async () => {
+    const run = await dispatchAndGetRun();
+    await run.feed(SPLASH_SCREEN);
+    await waitForPendingToBeSet();
+
+    // 再喂一次同样的欢迎屏内容，模拟"这一帧恰好又被重新渲染了一次"——
+    // 此时 pending 已经是 true，但从没观测到过忙碌标记，round-end 不应该触发
+    await run.feed(SPLASH_SCREEN);
+    expect(runtime.getAgentState(TEST_AGENT_NAME)).toBe("working");
+  }, 10000);
+
+  it("does not fire round-end while a busy marker is showing, even though the ❯ box is also rendered (bug 5/6 regression)", async () => {
+    const run = await dispatchAndGetRun();
+    await run.feed(SPLASH_SCREEN);
+    await waitForPendingToBeSet();
+
+    await run.feed(BUSY_FRAME);
+    expect(runtime.getAgentState(TEST_AGENT_NAME)).toBe("working");
+  }, 10000);
+
+  it("fires round-end on a compact no-newline completion frame, once busy was observed first (bug 10 fix + bug 11 invariant)", async () => {
+    const run = await dispatchAndGetRun();
+    await run.feed(SPLASH_SCREEN);
+    await waitForPendingToBeSet();
+
+    await run.feed(BUSY_FRAME);
+    expect(runtime.getAgentState(TEST_AGENT_NAME)).toBe("working");
+
+    await run.feed(COMPACT_DONE_FRAME);
+    expect(runtime.getAgentState(TEST_AGENT_NAME)).toBe("idle");
+  }, 10000);
+
+  it("never fires round-end if busy was never observed, even after many idle-looking frames (bug 11 core invariant)", async () => {
+    const run = await dispatchAndGetRun();
+    await run.feed(SPLASH_SCREEN);
+    await waitForPendingToBeSet();
+
+    // 连续喂好几次"看起来空闲"的帧，但从没出现过忙碌标记——
+    // 这正是 bug 11 的失败场景：不能仅凭"当前空闲"就判定回合结束
+    for (let i = 0; i < 3; i++) {
       await run.feed(SPLASH_SCREEN);
-      await waitForPendingToBeSet();
-
-      // 再喂一次同样的欢迎屏内容，模拟"这一帧恰好又被重新渲染了一次"——
-      // 此时 pending 已经是 true，但从没观测到过忙碌标记，round-end 不应该触发
-      await run.feed(SPLASH_SCREEN);
       expect(runtime.getAgentState(TEST_AGENT_NAME)).toBe("working");
-    },
-    10000,
-  );
+    }
+  }, 10000);
 
-  it(
-    "does not fire round-end while a busy marker is showing, even though the ❯ box is also rendered (bug 5/6 regression)",
-    async () => {
-      const run = await dispatchAndGetRun();
-      await run.feed(SPLASH_SCREEN);
-      await waitForPendingToBeSet();
+  it("keeps waiting through an overlapping second dispatch instead of resetting on arrival (bug 8 regression)", async () => {
+    const run = await dispatchAndGetRun();
+    await run.feed(SPLASH_SCREEN);
+    await waitForPendingToBeSet();
 
-      await run.feed(BUSY_FRAME);
-      expect(runtime.getAgentState(TEST_AGENT_NAME)).toBe("working");
-    },
-    10000,
-  );
+    await run.feed(BUSY_FRAME);
+    expect(runtime.getAgentState(TEST_AGENT_NAME)).toBe("working");
 
-  it(
-    "fires round-end on a compact no-newline completion frame, once busy was observed first (bug 10 fix + bug 11 invariant)",
-    async () => {
-      const run = await dispatchAndGetRun();
-      await run.feed(SPLASH_SCREEN);
-      await waitForPendingToBeSet();
+    // 第二条消息在第一条还"忙碌中"时到达——复用同一个已运行的 PTY
+    // （runIdByAgent 已经有这个 agent 的 runId，走 doDispatch 的复用分支）
+    await runtime.dispatchToAgent(TEST_AGENT_NAME, "general", "第二条消息");
+    // 不应该因为第二条消息的到来就重置"已经观测到忙碌"这个证据
+    expect(runtime.getAgentState(TEST_AGENT_NAME)).toBe("working");
 
-      await run.feed(BUSY_FRAME);
-      expect(runtime.getAgentState(TEST_AGENT_NAME)).toBe("working");
+    // 只有等两条消息都处理完（真正回到空闲）才应该触发 round-end
+    await run.feed(COMPACT_DONE_FRAME);
+    expect(runtime.getAgentState(TEST_AGENT_NAME)).toBe("idle");
+  }, 10000);
 
-      await run.feed(COMPACT_DONE_FRAME);
-      expect(runtime.getAgentState(TEST_AGENT_NAME)).toBe("idle");
-    },
-    10000,
-  );
+  it("does not leak stale pending/busy state into a fresh spawn after the previous run exited (bug 9 regression)", async () => {
+    const run1 = await dispatchAndGetRun();
+    await run1.feed(SPLASH_SCREEN);
+    await waitForPendingToBeSet();
+    await run1.feed(BUSY_FRAME); // 忙碌中，pending 还没被消费
+    expect(runtime.getAgentState(TEST_AGENT_NAME)).toBe("working");
 
-  it(
-    "never fires round-end if busy was never observed, even after many idle-looking frames (bug 11 core invariant)",
-    async () => {
-      const run = await dispatchAndGetRun();
-      await run.feed(SPLASH_SCREEN);
-      await waitForPendingToBeSet();
+    // 模拟这个 run 被杀掉（比如 idle-reclaimer 误杀，或者进程崩溃）——
+    // pending/busyObserved 都应该在退出清理链里被清空
+    run1.simulateExit(1);
+    // 退出清理链会把状态转回 idle（不是 stopped，见 agent-runtime.ts 的注释）
+    expect(runtime.getAgentState(TEST_AGENT_NAME)).toBe("idle");
 
-      // 连续喂好几次"看起来空闲"的帧，但从没出现过忙碌标记——
-      // 这正是 bug 11 的失败场景：不能仅凭"当前空闲"就判定回合结束
-      for (let i = 0; i < 3; i++) {
-        await run.feed(SPLASH_SCREEN);
-        expect(runtime.getAgentState(TEST_AGENT_NAME)).toBe("working");
-      }
-    },
-    10000,
-  );
-
-  it(
-    "keeps waiting through an overlapping second dispatch instead of resetting on arrival (bug 8 regression)",
-    async () => {
-      const run = await dispatchAndGetRun();
-      await run.feed(SPLASH_SCREEN);
-      await waitForPendingToBeSet();
-
-      await run.feed(BUSY_FRAME);
-      expect(runtime.getAgentState(TEST_AGENT_NAME)).toBe("working");
-
-      // 第二条消息在第一条还"忙碌中"时到达——复用同一个已运行的 PTY
-      // （runIdByAgent 已经有这个 agent 的 runId，走 doDispatch 的复用分支）
-      await runtime.dispatchToAgent(TEST_AGENT_NAME, "general", "第二条消息");
-      // 不应该因为第二条消息的到来就重置"已经观测到忙碌"这个证据
-      expect(runtime.getAgentState(TEST_AGENT_NAME)).toBe("working");
-
-      // 只有等两条消息都处理完（真正回到空闲）才应该触发 round-end
-      await run.feed(COMPACT_DONE_FRAME);
-      expect(runtime.getAgentState(TEST_AGENT_NAME)).toBe("idle");
-    },
-    10000,
-  );
-
-  it(
-    "does not leak stale pending/busy state into a fresh spawn after the previous run exited (bug 9 regression)",
-    async () => {
-      const run1 = await dispatchAndGetRun();
-      await run1.feed(SPLASH_SCREEN);
-      await waitForPendingToBeSet();
-      await run1.feed(BUSY_FRAME); // 忙碌中，pending 还没被消费
-      expect(runtime.getAgentState(TEST_AGENT_NAME)).toBe("working");
-
-      // 模拟这个 run 被杀掉（比如 idle-reclaimer 误杀，或者进程崩溃）——
-      // pending/busyObserved 都应该在退出清理链里被清空
-      run1.simulateExit(1);
-      // 退出清理链会把状态转回 idle（不是 stopped，见 agent-runtime.ts 的注释）
-      expect(runtime.getAgentState(TEST_AGENT_NAME)).toBe("idle");
-
-      // 重新 dispatch，全新 spawn 一个 PTY；如果 pending/busyObserved 没有正确清理，
-      // 这里喂一次干净的欢迎屏就会立刻被误判成"回合结束"（复现过 bug 3/9 的症状）
-      await runtime.dispatchToAgent(TEST_AGENT_NAME, "general", "重新触发");
-      const runId2 = runtime.__getRunId(TEST_AGENT_NAME);
-      expect(runId2).toBeTruthy();
-      expect(runId2).not.toBe(run1.runId);
-      const run2 = manager.getFakeRun(runId2!)!;
-      await run2.feed(SPLASH_SCREEN);
-      await waitForPendingToBeSet();
-      await run2.feed(SPLASH_SCREEN); // 再喂一次，模拟"这一帧又被重绘了一次"
-      expect(runtime.getAgentState(TEST_AGENT_NAME)).toBe("working");
-    },
-    10000,
-  );
+    // 重新 dispatch，全新 spawn 一个 PTY；如果 pending/busyObserved 没有正确清理，
+    // 这里喂一次干净的欢迎屏就会立刻被误判成"回合结束"（复现过 bug 3/9 的症状）
+    await runtime.dispatchToAgent(TEST_AGENT_NAME, "general", "重新触发");
+    const runId2 = runtime.__getRunId(TEST_AGENT_NAME);
+    expect(runId2).toBeTruthy();
+    expect(runId2).not.toBe(run1.runId);
+    const run2 = manager.getFakeRun(runId2!)!;
+    await run2.feed(SPLASH_SCREEN);
+    await waitForPendingToBeSet();
+    await run2.feed(SPLASH_SCREEN); // 再喂一次，模拟"这一帧又被重绘了一次"
+    expect(runtime.getAgentState(TEST_AGENT_NAME)).toBe("working");
+  }, 10000);
 });

@@ -17,6 +17,16 @@
  * 流水账。这两组状态 + screenText 一起，取代了之前连续 4 次踩坑
  * （见 docs/2026-07-16/08-hive-alignment-gap-analysis.md 第 3/5/6/10 个 bug）
  * 的"偏移量记账 + 正则扫描历史"方案。
+ *
+ * 何时可删（O13）：本模块是「从 TUI 画面反推协议状态」的启发式。删除条件：
+ * agent 输入/输出走结构化通道（PersistentClaude 的 stream-json 模式里
+ * `{"type":"result"}` 事件就是精确的回合边界，无需任何画面猜测；buzz-agent
+ * 的 ACP session/prompt 响应同理）。claude 每版本 UI 文案变动（如 busy 标记
+ * 措辞）都会冲击 BUSY_MARKER_RE/PROMPT_RE，结构化输出事件不受此影响。
+ *
+ * 状态更新（2026-08-18 B2）：删除条件已达成——headless 默认路径的回合边界
+ * 由 stream-json result 事件精确给出（agent-runtime-dispatch.ts handleStreamEvent），
+ * 本模块仅服务 `SLOCK_USE_PTY=1` fallback。彻底删除条件 = PTY 模式整体退役。
  */
 export const BUSY_MARKER_RE = /esc\s*to\s*interrupt/i;
 export const PROMPT_RE = /[❯›]/u;
@@ -35,11 +45,19 @@ export const createTurnTracker = (): ITurnTracker => {
   const busyObservedByAgent = new Map<string, true>();
 
   return {
-    incPending: (name: string) => { pendingMsgCount.set(name, true); },
-    decPending: (name: string) => { pendingMsgCount.delete(name); },
+    incPending: (name: string) => {
+      pendingMsgCount.set(name, true);
+    },
+    decPending: (name: string) => {
+      pendingMsgCount.delete(name);
+    },
     hasPending: (name: string): boolean => pendingMsgCount.has(name),
-    markBusyObserved: (name: string) => { busyObservedByAgent.set(name, true); },
+    markBusyObserved: (name: string) => {
+      busyObservedByAgent.set(name, true);
+    },
     hasBeenBusy: (name: string): boolean => busyObservedByAgent.has(name),
-    clearBusyObserved: (name: string) => { busyObservedByAgent.delete(name); },
+    clearBusyObserved: (name: string) => {
+      busyObservedByAgent.delete(name);
+    },
   };
 };

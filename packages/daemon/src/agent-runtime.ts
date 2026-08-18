@@ -1,25 +1,26 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { PersistentClaude } from "./drivers/persistent-claude.js";
 import { createAgentManager } from "./agent-manager.js";
-import { createPostStartInputWriter, type PostStartInputWriter } from "./post-start-input-writer.js";
-import { createAgentStdinDispatcher } from "./agent-stdin-dispatcher.js";
-import { resolveCommandOnPath } from "./drivers/probe.js";
-import { resolveCommand } from "./command-resolver.js";
-import { createIdleReclaimer } from "./idle-reclaimer.js";
+import { createObservationBus, type ObservationBus } from "./agent-observation.js";
 import { createCredentialsClient } from "./agent-runtime-credentials.js";
-import { createAgentStateMachine } from "./agent-runtime-state.js";
-import { createTurnTracker, BUSY_MARKER_RE, PROMPT_RE } from "./agent-runtime-turn-tracker.js";
+import { createDispatch } from "./agent-runtime-dispatch.js";
 import { createExitChain } from "./agent-runtime-exit.js";
 import { createSpawnPtyForAgent } from "./agent-runtime-spawn.js";
-import { createDispatch } from "./agent-runtime-dispatch.js";
+import { createAgentStateMachine } from "./agent-runtime-state.js";
+import { BUSY_MARKER_RE, createTurnTracker, PROMPT_RE } from "./agent-runtime-turn-tracker.js";
+import { createAgentStdinDispatcher } from "./agent-stdin-dispatcher.js";
+import { resolveCommand } from "./command-resolver.js";
+import type { PersistentClaude } from "./drivers/persistent-claude.js";
+import { resolveCommandOnPath } from "./drivers/probe.js";
+import { createIdleReclaimer } from "./idle-reclaimer.js";
+import { createPostStartInputWriter, type PostStartInputWriter } from "./post-start-input-writer.js";
 import type {
-  IAgentTokenRegistry,
-  ILiveRunRegistry,
+  AgentStatus,
   IAgentManager,
   IAgentRunStore,
   IAgentStdinDispatcher,
-  AgentStatus,
+  IAgentTokenRegistry,
+  ILiveRunRegistry,
 } from "./types/index.js";
 
 // 重新导出，保持既有 import { BUSY_MARKER_RE, PROMPT_RE } from "./agent-runtime.js" 的调用方
@@ -31,6 +32,13 @@ export { BUSY_MARKER_RE, PROMPT_RE };
 // agent-runtime-turn-tracker.ts
 
 const PTY_COMMAND = "claude"; // TODO: read from command-resolver
+
+// ANSI CSI 序列（ESC [ 参数 结尾字母）匹配——stuck 检测里剥 raw tail 用。
+// 不能写 /\x1b…/ 正则字面量：noControlCharactersInRegex 拒绝一切匹配控制字符的
+// 正则字面量（\x1b / \u001b / \u{1b} 都会被拦），改为字符串构造 RegExp，
+// 编译结果与 /\x1b\[[0-9;?]*[a-zA-Z]/g 完全一致（仅用于 replace，无 lastIndex 状态问题）。
+const ESC = "\x1b";
+const ANSI_CSI_RE = new RegExp(`${ESC}\\[[0-9;?]*[a-zA-Z]`, "g");
 
 /**
  * 解析 Claude CLI 的可执行文件路径。
@@ -58,7 +66,9 @@ const resolveCmdShimTarget = (cmdPath: string): string | null => {
       // 也有可能 %dp0% 已展开（绝对路径）
       if (existsSync(raw)) return raw;
     }
-  } catch { /* 解析失败，回退 */ }
+  } catch {
+    /* 解析失败，回退 */
+  }
   return null;
 };
 
@@ -89,21 +99,38 @@ const resolveClaudeBinary = (): string => {
  * - 常驻会话缓存（PTY 模式单进程常驻 / PersistentClaude 模式类常驻）
  * - 与 agent-tokens / live-run-registry 集成
  *
- * ### 启动路径
- * - 默认（PTY 模式）：node-pty 启动 Claude CLI，等 `❯` 提示符就绪后写入
- * - 兜底（`SLOCK_PERSISTENT_CLAUDE=1`）：旧 PersistentClaude + stream-json
+ * ### 启动路径（B2，2026-08-18 起 headless 为默认）
+ * - 默认（headless）：PersistentClaude 持久会话，stream-json stdin/stdout
+ *   结构化通道；`SLOCK_ONESHOT_CLAUDE=1` 退到 claudePrint 一次性模式
+ * - 降级（`SLOCK_USE_PTY=1`）：node-pty 启动 Claude CLI TUI，等 `❯` 提示符
+ *   就绪后键盘模拟写入（真 TUI 调试用，workaround 群见各文件「何时可删（O13）」注释）
  */
 export interface AgentRuntimeOptions {
   serverUrl: string;
   apiKey: string;
   /** 门控投递反馈：消息被排队时回调（daemon-core 注入，经 WS 通知前端"已缓冲"） */
   onDeliveryQueued?: (agentName: string, channelName: string) => void;
+  /** 死信上报：A1 派发队列重试耗尽/不可投递时回调（daemon-core 注入，经 WS 通知 server） */
+  onDeliveryDeadLetter?: (agentName: string, channelName: string, err: unknown) => void;
+  /** C1：agent 工具调用生命周期上报（仅 headless 路径，daemon-core 注入，经 WS 进审计流） */
+  onToolCall?: (
+    agentName: string,
+    info: { toolName?: string; toolUseId?: string; status: "pending" | "completed"; text?: string },
+  ) => void;
+  /** 回复守卫代发（headless）：回合结束但未 send_message 时，daemon 以 agent 身份代发最终正文 */
+  onReplyMissing?: (agentName: string, channel: string, content: string) => void;
 }
 
 export interface IAgentRuntime {
   // 消息分发
   dispatchToAgent(agentName: string, channelName: string, userMsg: string): Promise<void>;
-  runAgent(agentName: string, channelName: string, replyTarget: string, senderName: string, content: string): Promise<void>;
+  runAgent(
+    agentName: string,
+    channelName: string,
+    replyTarget: string,
+    senderName: string,
+    content: string,
+  ): Promise<void>;
   runAgentDm(agentName: string, replyTarget: string, senderName: string, content: string): Promise<void>;
   runAgentReminder(agentName: string, reminder: { title?: string; channel?: string }): Promise<void>;
   // 注：原 autostartAgent（崩溃恢复主动拉起 + 注入"安静等待"恢复消息）已于
@@ -135,6 +162,8 @@ export interface IAgentRuntime {
   __getAgentManager(): IAgentManager;
   __getDispatcher(): IAgentStdinDispatcher;
   __getRunId(agentName: string): string | null;
+  /** B1：headless 观察帧总线（daemon-core 的 terminal:watch 用它渲染 headless 围观画面） */
+  __getObservationBus(): ObservationBus;
 }
 
 export const createAgentRuntime = (
@@ -163,8 +192,15 @@ export const createAgentRuntime = (
   // 旧 PersistentClaude 路径（兜底）
   const persistentSessions = new Map<string, PersistentClaude>();
 
-  // 默认走 PTY；SLOCK_PERSISTENT_CLAUDE=1 走旧路径
-  const usePty = process.env.SLOCK_PERSISTENT_CLAUDE !== "1";
+  // ---- B1：结构化观察帧总线（headless 路径的围观数据源，见 agent-observation.ts）----
+  const observationBus = createObservationBus();
+
+  // B2（2026-08-18 切换）：headless（PersistentClaude + stream-json）为默认路径，
+  // PTY 降级为 fallback（SLOCK_USE_PTY=1，真 TUI 调试/排障用）。
+  // 门控与切换依据见 docs/2026-08-18/03-slock-modification-plan.md §2.B2——
+  // B1 观察帧 + A1 队列经七轮真机回归后执行本切换。
+  // SLOCK_PERSISTENT_CLAUDE=1 是旧开关，效果与默认一致（保留兼容，不再读取）。
+  const usePty = process.env.SLOCK_USE_PTY === "1";
 
   // ---- Per-agent-run scoped token（见 agent-runtime-credentials.ts）----
   const credentialsClient = createCredentialsClient(options.serverUrl, options.apiKey);
@@ -184,10 +220,7 @@ export const createAgentRuntime = (
   if (resolvedClaudePath !== "claude") {
     console.log(`[Runtime] Resolved claude binary: ${resolvedClaudePath}`);
   }
-  const postStartWriter: PostStartInputWriter = createPostStartInputWriter(
-    agentManager,
-    resolvedClaudePath,
-  );
+  const postStartWriter: PostStartInputWriter = createPostStartInputWriter(agentManager, resolvedClaudePath);
   const dispatcher: IAgentStdinDispatcher = createAgentStdinDispatcher(
     agentManager,
     (agentName: string) => runIdByAgent.get(agentName) ?? null,
@@ -214,9 +247,16 @@ export const createAgentRuntime = (
 
   // ---- 退出清理链（见 agent-runtime-exit.ts）----
   const exitChain = createExitChain({
-    tokenRegistry, runStore, liveRunRegistry, agentManager,
-    idleReclaimer, turnTracker, stateMachine, credentialsClient,
-    unsubByRunId, runIdByAgent,
+    tokenRegistry,
+    runStore,
+    liveRunRegistry,
+    agentManager,
+    idleReclaimer,
+    turnTracker,
+    stateMachine,
+    credentialsClient,
+    unsubByRunId,
+    runIdByAgent,
   });
 
   // ---- 内部方法 ----
@@ -270,8 +310,10 @@ export const createAgentRuntime = (
         // 静默兜底（先于 STUCK 警告）
         const lastOut = lastOutputAtByAgent.get(agentName) ?? 0;
         if (
-          turnTracker.hasPending(agentName) && run &&
-          lastOut > 0 && now - lastOut > QUIESCE_MS &&
+          turnTracker.hasPending(agentName) &&
+          run &&
+          lastOut > 0 &&
+          now - lastOut > QUIESCE_MS &&
           PROMPT_RE.test(run.screenText)
         ) {
           turnTracker.decPending(agentName);
@@ -280,7 +322,7 @@ export const createAgentRuntime = (
           idleReclaimer.touch(agentName);
           console.log(
             `[Runtime] @${agentName} round-end (quiescence fallback: no output for ${((now - lastOut) / 1000).toFixed(0)}s, ` +
-            `busyObserved was ${turnTracker.hasBeenBusy(agentName)})`,
+              `busyObserved was ${turnTracker.hasBeenBusy(agentName)})`,
           );
           continue;
         }
@@ -290,14 +332,32 @@ export const createAgentRuntime = (
           // 同一 agent 至少间隔一个阈值周期才再警告一次
           const lastWarn = lastWarnedAt.get(agentName) ?? 0;
           if (now - lastWarn < STUCK_WARN_MS) continue;
+
+          // headless（persistent）路径：PTY output/screen 恒为空，「outputLen=0
+          // 的 STUCK 警告」毫无信息量（2026-08-18 真机：133s 的正常多工具回合
+          // 被误报）。改用观察帧活动时间判活：stream-json 事件持续到达 = 正常干活；
+          // 真正无事件才警告，诊断文本取 transcript 尾部。
+          if (!run && persistentSessions.has(agentName)) {
+            const frames = observationBus.replay(agentName);
+            const lastFrameAt = frames.length > 0 ? frames[frames.length - 1].timestamp : 0;
+            if (lastFrameAt > 0 && now - lastFrameAt < STUCK_WARN_MS) continue;
+            lastWarnedAt.set(agentName, now);
+            const obsTail = observationBus.transcript(agentName, 600).replace(/\s+/g, " ").trim().slice(-300);
+            console.warn(
+              `[Runtime] @${agentName} STUCK in 'working' (headless: no stream events for ` +
+                `${lastFrameAt > 0 ? ((now - lastFrameAt) / 1000).toFixed(0) + "s" : "entire turn"}); transcript tail=...${obsTail}`,
+            );
+            continue;
+          }
+
           lastWarnedAt.set(agentName, now);
 
-          const tail = (run?.output ?? "").slice(-200).replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "");
+          const tail = (run?.output ?? "").slice(-200).replace(ANSI_CSI_RE, "");
           const screen = (run?.screenText ?? "").replace(/\s+/g, " ").trim().slice(-300);
           console.warn(
             `[Runtime] @${agentName} STUCK in 'working' for ${(elapsed / 1000).toFixed(1)}s ` +
-            `(outputLen=${run?.output.length ?? 0}, pending=${hasPending(agentName)}, ` +
-            `busyObserved=${hasBeenBusy(agentName)}); raw tail=...${tail} || screen=...${screen}`,
+              `(outputLen=${run?.output.length ?? 0}, pending=${hasPending(agentName)}, ` +
+              `busyObserved=${hasBeenBusy(agentName)}); raw tail=...${tail} || screen=...${screen}`,
           );
         }
       }
@@ -307,9 +367,16 @@ export const createAgentRuntime = (
 
   // ---- PTY 启动（见 agent-runtime-spawn.ts）----
   const spawnPtyForAgent = createSpawnPtyForAgent({
-    agentManager, resolvedClaudePath, runStore, exitChain,
-    stateMachine, turnTracker, idleReclaimer, postStartWriter,
-    runIdByAgent, unsubByRunId,
+    agentManager,
+    resolvedClaudePath,
+    runStore,
+    exitChain,
+    stateMachine,
+    turnTracker,
+    idleReclaimer,
+    postStartWriter,
+    runIdByAgent,
+    unsubByRunId,
     getAgentModel: (name) => agentInfo.get(name)?.model,
     lastOutputAtByAgent,
     getPreferredTermSize: (name) => preferredTermSize.get(name),
@@ -317,11 +384,26 @@ export const createAgentRuntime = (
 
   // ---- 消息分发核心（见 agent-runtime-dispatch.ts）----
   const { dispatchToAgent, runAgent, runAgentDm, runAgentReminder } = createDispatch({
-    options, stateMachine, turnTracker, exitChain, idleReclaimer,
-    credentialsClient, postStartWriter, spawnPtyForAgent, usePty,
-    resolveAgentId, agentInfo, runIdByAgent, persistentSessions,
-    agentSessions, dispatchPromises,
+    options,
+    stateMachine,
+    turnTracker,
+    exitChain,
+    idleReclaimer,
+    credentialsClient,
+    postStartWriter,
+    spawnPtyForAgent,
+    usePty,
+    resolveAgentId,
+    agentInfo,
+    runIdByAgent,
+    persistentSessions,
+    agentSessions,
+    dispatchPromises,
     onDeliveryQueued: options.onDeliveryQueued,
+    onDeliveryDeadLetter: options.onDeliveryDeadLetter,
+    observationBus,
+    onToolCall: options.onToolCall,
+    onReplyMissing: options.onReplyMissing,
   });
 
   // ---- 公开接口 ----
@@ -332,7 +414,11 @@ export const createAgentRuntime = (
     runAgentDm,
     runAgentReminder,
 
-    registerAgent(id: string, name: string, info: { displayName?: string; description?: string; model?: string }): void {
+    registerAgent(
+      id: string,
+      name: string,
+      info: { displayName?: string; description?: string; model?: string },
+    ): void {
       agentDrivers.set(name, true);
       if (id) agentNameToId.set(name, id);
       // 合并而非覆盖：编辑 agent（PATCH → agent:start 重推）时某些字段可能缺省，
@@ -349,7 +435,10 @@ export const createAgentRuntime = (
       if (oldRunId) {
         agentManager.stopRun(oldRunId);
         const unsub = unsubByRunId.get(oldRunId);
-        if (unsub) { unsub(); unsubByRunId.delete(oldRunId); }
+        if (unsub) {
+          unsub();
+          unsubByRunId.delete(oldRunId);
+        }
         runIdByAgent.delete(name);
       }
       persistentSessions.get(name)?.stop();
@@ -367,7 +456,10 @@ export const createAgentRuntime = (
       if (runId) {
         agentManager.stopRun(runId);
         const unsub = unsubByRunId.get(runId);
-        if (unsub) { unsub(); unsubByRunId.delete(runId); }
+        if (unsub) {
+          unsub();
+          unsubByRunId.delete(runId);
+        }
         runIdByAgent.delete(name);
       }
       persistentSessions.get(name)?.stop();
@@ -385,8 +477,8 @@ export const createAgentRuntime = (
         const res = await fetch(options.serverUrl + "/api/agents?mine=1", {
           headers: { Authorization: `Bearer ${options.apiKey}` },
         });
-        const data = await res.json() as any;
-        for (const agent of (data.agents || [])) {
+        const data = (await res.json()) as any;
+        for (const agent of data.agents || []) {
           const name = agent.name as string;
           if (agent.id) agentNameToId.set(name, agent.id as string);
           agentInfo.set(name, { displayName: agent.display_name, description: agent.description, model: agent.model });
@@ -405,14 +497,19 @@ export const createAgentRuntime = (
     findMentionedAgent,
     mentionedAgentNames,
     listAgentNames: () => Array.from(agentDrivers.keys()),
-    setPreferredTermSize: (agentName, size) => { preferredTermSize.set(agentName, size); },
+    setPreferredTermSize: (agentName, size) => {
+      preferredTermSize.set(agentName, size);
+    },
 
     stopAgent(agentName: string): void {
       const runId = runIdByAgent.get(agentName);
       if (runId) {
         agentManager.stopRun(runId);
         const unsub = unsubByRunId.get(runId);
-        if (unsub) { unsub(); unsubByRunId.delete(runId); }
+        if (unsub) {
+          unsub();
+          unsubByRunId.delete(runId);
+        }
         runIdByAgent.delete(agentName);
       }
       persistentSessions.get(agentName)?.stop();
@@ -422,7 +519,8 @@ export const createAgentRuntime = (
 
     stopAll(): void {
       idleReclaimer.stop();
-      for (const unsub of unsubByRunId.values()) unsub();      unsubByRunId.clear();
+      for (const unsub of unsubByRunId.values()) unsub();
+      unsubByRunId.clear();
       for (const runId of runIdByAgent.values()) agentManager.stopRun(runId);
       runIdByAgent.clear();
       for (const s of persistentSessions.values()) s.stop();
@@ -453,6 +551,10 @@ export const createAgentRuntime = (
 
     __getRunId(agentName: string): string | null {
       return runIdByAgent.get(agentName) ?? null;
+    },
+
+    __getObservationBus(): ObservationBus {
+      return observationBus;
     },
   };
 };

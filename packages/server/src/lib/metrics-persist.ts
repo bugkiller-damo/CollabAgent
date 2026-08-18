@@ -16,7 +16,9 @@ export function startMetricsPersistence(app: FastifyInstance, intervalMs = 60000
         const r = await app.pg.query<{ user_id: string }>("SELECT user_id FROM agents");
         agentTotal = r.rows.length;
         agentOnline = r.rows.filter((a) => daemonClients.has(String(a.user_id))).length;
-      } catch { /* agents table may not exist during early startup */ }
+      } catch {
+        /* agents table may not exist during early startup */
+      }
 
       await app.pg.query(
         `INSERT INTO metrics_samples
@@ -36,7 +38,7 @@ export function startMetricsPersistence(app: FastifyInstance, intervalMs = 60000
           daemonClients.size,
           agentTotal,
           agentOnline,
-        ]
+        ],
       );
 
       // 清理 7 天前旧数据（best-effort，不阻断采样）

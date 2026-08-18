@@ -16,7 +16,11 @@ export function installFakeFetch(): { restore(): void; calls: Array<{ url: strin
       return {
         ok: true,
         status: 200,
-        json: async () => ({ token: "sk_agent_test_token", agentId: "test-agent", expiresAt: new Date().toISOString() }),
+        json: async () => ({
+          token: "sk_agent_test_token",
+          agentId: "test-agent",
+          expiresAt: new Date().toISOString(),
+        }),
         text: async () => "",
       } as Response;
     }
@@ -29,6 +33,8 @@ export function installFakeFetch(): { restore(): void; calls: Array<{ url: strin
 
   return {
     calls,
-    restore() { globalThis.fetch = original; },
+    restore() {
+      globalThis.fetch = original;
+    },
   };
 }

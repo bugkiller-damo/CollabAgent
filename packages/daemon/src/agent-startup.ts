@@ -1,8 +1,8 @@
-import { existsSync, mkdirSync, writeFileSync, copyFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { legacyAgentDirName, safeAgentDirName } from "./agent-dir-name.js";
 import { generateRelaySystemPrompt, generateSystemPrompt } from "./system-prompt.js";
 import type { AgentInfo } from "./types/index.js";
-import { safeAgentDirName, legacyAgentDirName } from "./agent-dir-name.js";
 
 /**
  * Agent 启动指令与工作区管理模块。
@@ -70,10 +70,7 @@ export function writeSystemPromptFile(
 }
 
 /** 创建 agent 工作区目录，不存在时种入 MEMORY.md 模板 */
-export function createWorkspaceDir(
-  agentName: string,
-  info: { displayName?: string; description?: string },
-): string {
+export function createWorkspaceDir(agentName: string, info: { displayName?: string; description?: string }): string {
   const safe = safeAgentDirName(agentName);
   const dir = join(process.cwd(), ".slock", "workspaces", safe);
   mkdirSync(dir, { recursive: true });
@@ -88,7 +85,9 @@ export function createWorkspaceDir(
       try {
         copyFileSync(legacyMem, memFile);
         console.log(`[Runtime] Migrated MEMORY.md from legacy workspace ${legacyAgentDirName(agentName)} -> ${safe}`);
-      } catch { /* 迁移失败退回种模板，不阻塞启动 */ }
+      } catch {
+        /* 迁移失败退回种模板，不阻塞启动 */
+      }
     }
   }
   if (!existsSync(memFile)) {
@@ -126,7 +125,7 @@ export function buildStartupInstructions(agent: AgentInfo, workspaceDir: string)
     agent.description ? `Description: ${agent.description}` : "",
     "",
     "## Protocol",
-    "- Use \`slock\` CLI to interact with the platform",
+    "- Use `slock` CLI to interact with the platform",
     "- Messages are dispatched via stdin in stream-json format",
     "- Respond only when work is complete",
   ]

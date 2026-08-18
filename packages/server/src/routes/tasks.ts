@@ -1,16 +1,28 @@
 import type { FastifyInstance } from "fastify";
-import { cleanChannelName, resolveChannel } from "../lib/channel.js";
 import { canAccessChannel } from "../lib/access.js";
+import { resolveChannel } from "../lib/channel.js";
+import { resolveTenant } from "../lib/tenant.js";
 
 const STATUSES = ["todo", "in_progress", "in_review", "done", "closed"];
 
 export async function taskRoutes(app: FastifyInstance) {
   // 解析频道并校验调用者可见性（公开频道任何人可读；私有/DM 仅成员）。
+  // O3：显式租户下频道必须属于租户 server 且调用者是该 server 成员。
   // 返回 null 表示已发 404/403，调用方直接 return。
-  async function resolveAccessible(channel: string, userId: string, reply: any, cols = "id") {
-    const ch = await resolveChannel(app, channel, cols);
-    if (!ch) { reply.status(404).send({ error: "channel not found" }); return null; }
-    if (!(await canAccessChannel(app, ch.id, userId))) {
+  async function resolveAccessible(req: any, channel: string, userId: string, reply: any, cols = "id") {
+    const tenant = await resolveTenant(app, req);
+    const scope = tenant.explicit ? tenant.serverId : undefined;
+    const ch = await resolveChannel(app, channel, cols, scope);
+    if (!ch) {
+      reply.status(404).send({ error: "channel not found" });
+      return null;
+    }
+    if (
+      !(await canAccessChannel(app, ch.id, userId, {
+        serverId: tenant.explicit ? tenant.serverId : undefined,
+        enforceServerMembership: tenant.explicit,
+      }))
+    ) {
       reply.status(403).send({ error: "no access to this channel" });
       return null;
     }
@@ -20,7 +32,7 @@ export async function taskRoutes(app: FastifyInstance) {
   app.get("/", { preHandler: [app.authenticate] }, async (req, reply) => {
     const { channel, status } = req.query as Record<string, string>;
     if (!channel) return reply.status(400).send({ error: "channel required" });
-    const ch = await resolveAccessible(channel, req.user.sub, reply);
+    const ch = await resolveAccessible(req, channel, req.user.sub, reply);
     if (!ch) return;
     const chId = ch.id;
     let query = `SELECT m.id, m.content, m.task_number, m.task_status, m.task_assignee, m.created_at,
@@ -45,12 +57,12 @@ export async function taskRoutes(app: FastifyInstance) {
   app.post("/", { preHandler: [app.authenticate] }, async (req, reply) => {
     const { channel, tasks } = req.body as { channel?: string; tasks?: { title: string }[] };
     if (!channel || !tasks?.length) return reply.status(400).send({ error: "channel and tasks required" });
-    const ch = await resolveAccessible(channel, req.user.sub, reply, "id, server_id");
+    const ch = await resolveAccessible(req, channel, req.user.sub, reply, "id, server_id");
     if (!ch) return;
     const userId = req.user.sub;
     const maxNum = await app.pg.query<{ n: number }>(
       "SELECT COALESCE(MAX(task_number), 0) as n FROM messages WHERE channel_id = $1 AND task_number IS NOT NULL",
-      [ch.id]
+      [ch.id],
     );
     let next = Number(maxNum.rows[0]!.n);
     const created: any[] = [];
@@ -59,7 +71,7 @@ export async function taskRoutes(app: FastifyInstance) {
       const result = await app.pg.query(
         `INSERT INTO messages (channel_id, server_id, sender_id, sender_type, content, task_number, task_status)
          VALUES ($1, $2, $3, 'human', $4, $5, 'todo') RETURNING id, task_number, content`,
-        [ch.id, ch.server_id, userId, t.title, next]
+        [ch.id, ch.server_id, userId, t.title, next],
       );
       created.push(result.rows[0]);
     }
@@ -70,13 +82,21 @@ export async function taskRoutes(app: FastifyInstance) {
   app.post("/from-message", { preHandler: [app.authenticate] }, async (req, reply) => {
     const { message_id } = req.body as { message_id?: string };
     if (!message_id) return reply.status(400).send({ error: "message_id required" });
-    const found = await app.pg.query<{ id: string; channel_id: string; task_number: number | null; content: string | null }>(
-      "SELECT id, channel_id, task_number, content FROM messages WHERE id = $1",
-      [message_id]
-    );
+    const found = await app.pg.query<{
+      id: string;
+      channel_id: string;
+      task_number: number | null;
+      content: string | null;
+    }>("SELECT id, channel_id, task_number, content FROM messages WHERE id = $1", [message_id]);
     const msg = found.rows[0];
     if (!msg) return reply.status(404).send({ error: "message not found" });
-    if (!(await canAccessChannel(app, msg.channel_id, req.user.sub))) {
+    const tenant = await resolveTenant(app, req);
+    if (
+      !(await canAccessChannel(app, msg.channel_id, req.user.sub, {
+        serverId: tenant.explicit ? tenant.serverId : undefined,
+        enforceServerMembership: tenant.explicit,
+      }))
+    ) {
       return reply.status(403).send({ error: "no access to this channel" });
     }
     if (msg.task_number != null) {
@@ -90,7 +110,7 @@ export async function taskRoutes(app: FastifyInstance) {
              task_status = 'todo', updated_at = now()
        WHERE id = $1 AND task_number IS NULL
        RETURNING id, task_number, task_status, content`,
-      [message_id, msg.channel_id]
+      [message_id, msg.channel_id],
     );
     if (result.rows.length === 0) {
       return reply.status(409).send({ error: "message is already a task" });
@@ -99,17 +119,22 @@ export async function taskRoutes(app: FastifyInstance) {
   });
 
   app.post("/claim", { preHandler: [app.authenticate] }, async (req, reply) => {
-    const { channel, task_numbers, message_ids } = req.body as { channel?: string; task_numbers?: number[]; message_ids?: string[] };
+    const { channel, task_numbers, message_ids } = req.body as {
+      channel?: string;
+      task_numbers?: number[];
+      message_ids?: string[];
+    };
     if (!channel) return reply.status(400).send({ error: "channel required" });
-    const ch = await resolveAccessible(channel, req.user.sub, reply);
+    const ch = await resolveAccessible(req, channel, req.user.sub, reply);
     if (!ch) return;
     const chId = ch.id;
     const userId = req.user.sub;
     const results: any[] = [];
-    for (const num of (task_numbers || [])) {
-      const existing = await app.pg.query(
-        "SELECT * FROM messages WHERE channel_id = $1 AND task_number = $2", [chId, num]
-      );
+    for (const num of task_numbers || []) {
+      const existing = await app.pg.query("SELECT * FROM messages WHERE channel_id = $1 AND task_number = $2", [
+        chId,
+        num,
+      ]);
       if (existing.rows.length === 0) {
         results.push({ number: num, status: "conflict", error: "not_found" });
         continue;
@@ -125,7 +150,7 @@ export async function taskRoutes(app: FastifyInstance) {
       }
       await app.pg.query(
         "UPDATE messages SET task_status = 'in_progress', task_assignee = $1, updated_at = now() WHERE channel_id = $2 AND task_number = $3",
-        [userId, chId, num]
+        [userId, chId, num],
       );
       results.push({ number: num, status: "claimed" });
     }
@@ -135,11 +160,11 @@ export async function taskRoutes(app: FastifyInstance) {
   app.post("/unclaim", { preHandler: [app.authenticate] }, async (req, reply) => {
     const { channel, task_number } = req.body as { channel?: string; task_number?: number };
     if (!channel) return reply.status(400).send({ error: "channel required" });
-    const ch = await resolveAccessible(channel, req.user.sub, reply);
+    const ch = await resolveAccessible(req, channel, req.user.sub, reply);
     if (!ch) return;
     await app.pg.query(
       "UPDATE messages SET task_assignee = NULL, task_status = 'todo', updated_at = now() WHERE channel_id = $1 AND task_number = $2",
-      [ch.id, task_number]
+      [ch.id, task_number],
     );
     return { ok: true };
   });
@@ -148,25 +173,30 @@ export async function taskRoutes(app: FastifyInstance) {
     const { channel, number, status } = req.body as { channel?: string; number?: number; status?: string };
     if (!channel) return reply.status(400).send({ error: "channel required" });
     if (!status || !STATUSES.includes(status)) return reply.status(400).send({ error: `invalid status: ${status}` });
-    const ch = await resolveAccessible(channel, req.user.sub, reply);
+    const ch = await resolveAccessible(req, channel, req.user.sub, reply);
     if (!ch) return;
     const chId = ch.id;
     const result = await app.pg.query(
       "UPDATE messages SET task_status = $1, updated_at = now() WHERE channel_id = $2 AND task_number = $3 RETURNING *",
-      [status, chId, number]
+      [status, chId, number],
     );
     // 任务完成/关闭时通知创建者（仅人类创建者有通知中心；agent 创建的跳过，
     // 否则 notifications.user_id 外键指向 users 表会因 agent id 违约导致 500。
     // 通知失败不阻断状态更新本身。）
-    if (result.rows.length > 0 && (status === "done" || status === "closed") &&
-        result.rows[0].sender_type === "human") {
+    if (
+      result.rows.length > 0 &&
+      (status === "done" || status === "closed") &&
+      result.rows[0].sender_type === "human"
+    ) {
       try {
         const task = result.rows[0];
         const { createNotification } = await import("../lib/notifications.js");
         const channelResult = await app.pg.query("SELECT name FROM channels WHERE id = $1", [chId]);
         const channelName = channelResult.rows[0]?.name || channel;
         await createNotification(app, {
-          userId: String(task.sender_id), type: "task_assigned", actorId: String(req.user.sub),
+          userId: String(task.sender_id),
+          type: "task_assigned",
+          actorId: String(req.user.sub),
           actorName: String(req.user?.handle ?? "unknown"),
           channelId: String(chId),
           title: `任务 #${number} 已完成`,

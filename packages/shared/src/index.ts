@@ -17,21 +17,21 @@ export type TargetKind = "channel" | "dm" | "thread";
 
 export interface MessageTarget {
   kind: TargetKind;
-  channel?: string;          // "#general"
-  peer?: string;             // "@alice" (DM)
-  threadId?: string;         // 线程短 ID (8 字符)
+  channel?: string; // "#general"
+  peer?: string; // "@alice" (DM)
+  threadId?: string; // 线程短 ID (8 字符)
 }
 
 export interface Message {
   id: UUID;
-  seq: number;               // 全局递增序列号
+  seq: number; // 全局递增序列号
   channelId: UUID;
   senderId: UUID;
   senderName: string;
   senderType: MessageType;
-  content: string;           // Markdown
+  content: string; // Markdown
   time: ISO8601;
-  threadId?: UUID;           // 所属线程的父消息 ID (NULL = top-level)
+  threadId?: UUID; // 所属线程的父消息 ID (NULL = top-level)
   replyTarget?: string;
   // 任务扩展
   taskNumber?: number;
@@ -65,10 +65,10 @@ export type ChannelVisibility = "public" | "private";
 export interface Channel {
   id: UUID;
   serverId: UUID;
-  name: string;              // "#general"
+  name: string; // "#general"
   description?: string;
   visibility: ChannelVisibility;
-  joined?: boolean;          // 当前用户/agent 是否已加入
+  joined?: boolean; // 当前用户/agent 是否已加入
   archived: boolean;
   memberCount: number;
   createdAt: ISO8601;
@@ -89,7 +89,7 @@ export interface ChannelMember {
 
 export interface User {
   id: UUID;
-  handle: string;            // @mention 唯一标识
+  handle: string; // @mention 唯一标识
   displayName: string;
   description?: string;
   avatarUrl?: string;
@@ -104,14 +104,14 @@ export interface Agent {
   id: UUID;
   userId: UUID;
   serverId: UUID;
-  name: string;              // stable @handle
+  name: string; // stable @handle
   displayName: string;
   description?: string;
   avatarUrl?: string;
   status: AgentStatus;
-  runtime: string;           // "claude" | "codex" | "kimi" | ...
+  runtime: string; // "claude" | "codex" | "kimi" | ...
   model: string;
-  capabilities: string[];    // ["send", "read", "tasks", ...]
+  capabilities: string[]; // ["send", "read", "tasks", ...]
   createdAt: ISO8601;
 }
 
@@ -120,12 +120,12 @@ export interface Agent {
 export type TaskStatus = "todo" | "in_progress" | "in_review" | "done";
 
 export interface Task {
-  number: number;            // 频道内自增
+  number: number; // 频道内自增
   messageId: UUID;
   channelId: UUID;
   title: string;
   status: TaskStatus;
-  assignee?: UUID;           // agent ID
+  assignee?: UUID; // agent ID
   createdAt: ISO8601;
   updatedAt: ISO8601;
 }
@@ -134,7 +134,7 @@ export interface Task {
 
 export type ReminderStatus = "scheduled" | "fired" | "canceled";
 
-export type RepeatRule = string;  // "every:15m" | "daily@09:00" | "weekly:mon,fri@09:00"
+export type RepeatRule = string; // "every:15m" | "daily@09:00" | "weekly:mon,fri@09:00"
 
 export interface Reminder {
   id: UUID;
@@ -189,7 +189,7 @@ export interface MachineToken {
   userId: UUID;
   serverId: UUID;
   tokenHash: string;
-  tokenPrefix: string;       // "sk_machine_"
+  tokenPrefix: string; // "sk_machine_"
   scope: Record<string, unknown>;
   expiresAt?: ISO8601;
   revokedAt?: ISO8601;
@@ -202,7 +202,7 @@ export type ActionType = "channel:create" | "agent:create";
 export interface ActionCard {
   id: UUID;
   channelId: UUID;
-  createdBy: UUID;           // agent ID
+  createdBy: UUID; // agent ID
   targetUser: UUID;
   actionType: ActionType;
   actionData: Record<string, unknown>;
@@ -241,12 +241,7 @@ export type WsServerMessageType =
   | "reminder.snapshot"
   | "ping";
 
-export type WsClientMessageType =
-  | "ready"
-  | "agent:deliver:ack"
-  | "agent:activity"
-  | "agent:status"
-  | "pong";
+export type WsClientMessageType = "ready" | "agent:deliver:ack" | "agent:activity" | "agent:status" | "pong";
 
 export interface WsServerMessage {
   type: WsServerMessageType;
@@ -283,8 +278,8 @@ export type ApiResponse<T = unknown> = ApiOk<T> | ApiError;
 // ---- 分页 ----
 
 export interface PaginationOpts {
-  before?: number;           // seq
+  before?: number; // seq
   after?: number;
-  around?: UUID;             // message UUID
-  limit?: number;            // 默认 50
+  around?: UUID; // message UUID
+  limit?: number; // 默认 50
 }

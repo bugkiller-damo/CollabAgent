@@ -4,7 +4,11 @@ export function formatTime(iso: string | undefined | null): string {
   const d = new Date(iso);
   const now = new Date();
   const diffSec = Math.floor((now.getTime() - d.getTime()) / 1000);
-  const diffDay = Math.floor((Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()) - Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())) / 86400000);
+  const diffDay = Math.floor(
+    (Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()) -
+      Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())) /
+      86400000,
+  );
 
   const time = d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
 

@@ -31,7 +31,7 @@ function readTokenFromFile(filePath: string): string {
   } catch (err) {
     throw new AgentBootstrapError(
       "TOKEN_FILE_UNREADABLE",
-      `Token file ${filePath} could not be read: ${(err as Error).message}`
+      `Token file ${filePath} could not be read: ${(err as Error).message}`,
     );
   }
   const token = raw.trim();
@@ -63,21 +63,20 @@ export function loadAgentContext(env: Record<string, string | undefined> = proce
     if (!agentProxyUrl) {
       throw new AgentBootstrapError(
         "MISSING_AGENT_PROXY_URL",
-        "SLOCK_AGENT_PROXY_URL is required when agent proxy auth is set"
+        "SLOCK_AGENT_PROXY_URL is required when agent proxy auth is set",
       );
     }
     if (agentProxyToken && agentProxyTokenFile) {
       throw new AgentBootstrapError(
         "MULTIPLE_AGENT_PROXY_TOKENS",
-        "Set only one of SLOCK_AGENT_PROXY_TOKEN or SLOCK_AGENT_PROXY_TOKEN_FILE"
+        "Set only one of SLOCK_AGENT_PROXY_TOKEN or SLOCK_AGENT_PROXY_TOKEN_FILE",
       );
     }
-    const token =
-      agentProxyToken ?? (agentProxyTokenFile ? readTokenFromFile(agentProxyTokenFile) : null);
+    const token = agentProxyToken ?? (agentProxyTokenFile ? readTokenFromFile(agentProxyTokenFile) : null);
     if (!token) {
       throw new AgentBootstrapError(
         "MISSING_AGENT_PROXY_TOKEN",
-        "SLOCK_AGENT_PROXY_TOKEN_FILE or SLOCK_AGENT_PROXY_TOKEN is required when SLOCK_AGENT_PROXY_URL is set"
+        "SLOCK_AGENT_PROXY_TOKEN_FILE or SLOCK_AGENT_PROXY_TOKEN is required when SLOCK_AGENT_PROXY_URL is set",
       );
     }
     return {
@@ -135,6 +134,6 @@ export function loadAgentContext(env: Record<string, string | undefined> = proce
 
   throw new AgentBootstrapError(
     "MISSING_TOKEN",
-    "No SLOCK_AGENT_PROXY_TOKEN_FILE, SLOCK_AGENT_PROXY_TOKEN, SLOCK_AGENT_CREDENTIAL_KEY_FILE, SLOCK_AGENT_TOKEN_FILE, or SLOCK_AGENT_TOKEN is set"
+    "No SLOCK_AGENT_PROXY_TOKEN_FILE, SLOCK_AGENT_PROXY_TOKEN, SLOCK_AGENT_CREDENTIAL_KEY_FILE, SLOCK_AGENT_TOKEN_FILE, or SLOCK_AGENT_TOKEN is set",
   );
 }

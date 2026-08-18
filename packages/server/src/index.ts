@@ -1,41 +1,46 @@
-import Fastify from "fastify";
 import cors from "@fastify/cors";
-import fastifyWebsocket from "@fastify/websocket";
 import fastifyJwt from "@fastify/jwt";
 import fastifyMultipart from "@fastify/multipart";
 import fastifyStatic from "@fastify/static";
-import pgPlugin, { closeDb } from "./db/connection.js";
-import { sql } from "./db/connection.js";
+import fastifyWebsocket from "@fastify/websocket";
+import Fastify from "fastify";
+import pgPlugin, { closeDb, sql } from "./db/connection.js";
 import { runMigrations } from "./db/migrate.js";
-import { UPLOAD_DIR } from "./lib/storage.js";
 import { config, validateConfig } from "./lib/config.js";
+import { createPubSub } from "./lib/pubsub.js";
 import { rateLimitHook } from "./lib/rate-limit.js";
+import { UPLOAD_DIR } from "./lib/storage.js";
 
 validateConfig();
 
-import { authRoutes } from "./routes/auth.js";
-import { channelRoutes } from "./routes/channels.js";
-import { messageRoutes } from "./routes/messages.js";
-import { taskRoutes } from "./routes/tasks.js";
-import { reminderRoutes } from "./routes/reminders.js";
-import { profileRoutes } from "./routes/profile.js";
-import { attachmentRoutes } from "./routes/attachments.js";
-import { integrationRoutes } from "./routes/integrations.js";
-import { actionRoutes } from "./routes/actions.js";
-import { notificationRoutes } from "./routes/notifications.js";
-import { agentRoutes } from "./routes/agents.js";
-import { agentMessageRoutes } from "./routes/agents-messages.js";
-import { agentTaskRoutes } from "./routes/agents-tasks.js";
-import { agentReminderRoutes } from "./routes/agents-reminders.js";
-import { agentCredentialRoutes } from "./routes/agents-credentials.js";
-import { agentDispatchRoutes } from "./routes/agents-dispatch.js";
-import { previewRoutes } from "./routes/preview.js";
-import { orgRoutes } from "./routes/orgs.js";
-import { metricsRoutes } from "./routes/metrics.js";
-import { wsHandler } from "./ws/handler.js";
-import { agentPublicRoutes } from "./routes/agents-public.js";
+// 跨实例 pub/sub：VALKEY_URL 未配置时回退进程内（单实例/测试）。
+// 必须在 validateConfig() 之后创建（生产不安全配置会 exit(1)，不应先连 Redis）。
+const pubsub = createPubSub(config.VALKEY_URL);
+
 import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
+import { actionRoutes } from "./routes/actions.js";
+import { agentRoutes } from "./routes/agents.js";
+import { agentCredentialRoutes } from "./routes/agents-credentials.js";
+import { agentDispatchRoutes } from "./routes/agents-dispatch.js";
+import { agentMessageRoutes } from "./routes/agents-messages.js";
+import { agentPublicRoutes } from "./routes/agents-public.js";
+import { agentReminderRoutes } from "./routes/agents-reminders.js";
+import { agentTaskRoutes } from "./routes/agents-tasks.js";
+import { attachmentRoutes } from "./routes/attachments.js";
+import { auditRoutes } from "./routes/audit.js";
+import { authRoutes } from "./routes/auth.js";
+import { channelRoutes } from "./routes/channels.js";
+import { integrationRoutes } from "./routes/integrations.js";
+import { messageRoutes } from "./routes/messages.js";
+import { metricsRoutes } from "./routes/metrics.js";
+import { notificationRoutes } from "./routes/notifications.js";
+import { orgRoutes } from "./routes/orgs.js";
+import { previewRoutes } from "./routes/preview.js";
+import { profileRoutes } from "./routes/profile.js";
+import { reminderRoutes } from "./routes/reminders.js";
+import { taskRoutes } from "./routes/tasks.js";
+import { setPubSub, wsHandler } from "./ws/handler.js";
 
 const server = Fastify({
   logger: true,
@@ -80,10 +85,17 @@ await server.register(pgPlugin);
   const { setWsPg } = await import("./ws/handler.js");
   setWsPg(server.pg);
 }
+// O1：注入跨实例 pub/sub —— 每个实例订阅同一 channel，广播经 Valkey 扇出到所有实例的本地 socket 表。
+setPubSub(pubsub);
+// O7：权限缓存主动失效经同一 pub/sub 扇出（跨实例一致；TTL 兜底）
+{
+  const { setAccessPubSub } = await import("./lib/access.js");
+  setAccessPubSub(pubsub);
+}
 await server.register(fastifyMultipart, { limits: { fileSize: config.MAX_UPLOAD_SIZE } });
 
 // Auth decorator — supports JWT (Bearer 或 httpOnly cookie), dev-token, and machine token
-server.decorate("authenticate", async function (request: any, reply: any) {
+server.decorate("authenticate", async (request: any, reply: any) => {
   const { parseCookies, ACCESS_COOKIE } = await import("./lib/cookies.js");
   const authHeader = request.headers.authorization || "";
   const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : authHeader;
@@ -109,7 +121,7 @@ server.decorate("authenticate", async function (request: any, reply: any) {
       `SELECT ac.token_hash, a.user_id, a.name
        FROM agent_credentials ac JOIN agents a ON a.id = ac.agent_id
        WHERE ac.agent_id = $1 AND ac.revoked_at IS NULL AND (ac.expires_at IS NULL OR ac.expires_at > now())`,
-      [agentId]
+      [agentId],
     );
     if (cred.rows.length > 0 && (await verifyTokenHash(token, cred.rows[0].token_hash))) {
       request.user = { sub: cred.rows[0].user_id, handle: cred.rows[0].name, scope: "agent-run", agentId };
@@ -124,7 +136,7 @@ server.decorate("authenticate", async function (request: any, reply: any) {
     // 快路径：sha256 哈希直接按唯一索引命中（新签发的令牌都走这里）
     const fast = await server.pg.query<{ user_id: string; scope: string }>(
       "SELECT user_id, scope FROM machine_tokens WHERE token_hash = $1 AND revoked_at IS NULL",
-      [sha256Token(token)]
+      [sha256Token(token)],
     );
     if (fast.rows.length > 0) {
       const user = await server.pg.query("SELECT id, handle FROM users WHERE id = $1", [fast.rows[0].user_id]);
@@ -134,13 +146,22 @@ server.decorate("authenticate", async function (request: any, reply: any) {
       }
       return reply.status(401).send({ error: "Invalid machine token" });
     }
-    // 兼容路径：历史 bcrypt 哈希的令牌（等全部轮换/吊销后可删除此分支）
+    // 兼容路径：历史 bcrypt 哈希的令牌（等全部轮换/吊销后可删除此分支，O8）。
+    // 观测：machineAuthBcryptScans/Hits 计数器（/api/metrics）+ 命中 warn 日志；
+    // 退役判定见 docs/2026-08-16/08-bcrypt-token-retirement.md。
+    const { inc } = await import("./lib/metrics.js");
+    inc("machineAuthBcryptScans");
     const bcrypt = (await import("bcryptjs")).default;
     const legacy = await server.pg.query<{ user_id: string; scope: string; token_hash: string }>(
-      "SELECT user_id, scope, token_hash FROM machine_tokens WHERE revoked_at IS NULL"
+      "SELECT user_id, scope, token_hash FROM machine_tokens WHERE revoked_at IS NULL",
     );
     for (const row of legacy.rows) {
       if (isBcryptHash(row.token_hash) && (await bcrypt.compare(token, row.token_hash))) {
+        inc("machineAuthBcryptHits");
+        request.log.warn(
+          { userId: row.user_id, scope: row.scope },
+          "legacy bcrypt machine token used — rotate/revoke it (see 08-bcrypt-token-retirement.md)",
+        );
         const user = await server.pg.query("SELECT id, handle FROM users WHERE id = $1", [row.user_id]);
         if (user.rows.length > 0) {
           request.user = { sub: user.rows[0].id, handle: user.rows[0].handle, scope: row.scope };
@@ -166,7 +187,9 @@ server.decorate("authenticate", async function (request: any, reply: any) {
       }
       request.user = payload;
       return;
-    } catch { return reply.status(401).send({ error: "Unauthorized" }); }
+    } catch {
+      return reply.status(401).send({ error: "Unauthorized" });
+    }
   }
 
   return reply.status(401).send({ error: "Unauthorized" });
@@ -212,6 +235,7 @@ await server.register(taskRoutes, { prefix: "/api/tasks" });
 await server.register(reminderRoutes, { prefix: "/api/reminders" });
 await server.register(profileRoutes, { prefix: "/api/profile" });
 await server.register(attachmentRoutes, { prefix: "/api/attachments" });
+await server.register(auditRoutes, { prefix: "/api" });
 await server.register(previewRoutes, { prefix: "/api/preview" });
 await server.register(integrationRoutes, { prefix: "/api/integrations" });
 await server.register(actionRoutes, { prefix: "/api/actions" });
@@ -227,7 +251,7 @@ await server.register(agentPublicRoutes, { prefix: "/api" });
 await server.register(metricsRoutes, { prefix: "/api" });
 
 // WebSocket
-server.register(async function (scope) {
+server.register(async (scope) => {
   scope.get("/ws", { websocket: true }, wsHandler);
 });
 
@@ -237,7 +261,9 @@ server.get("/api/health", async () => {
   try {
     await server.pg.query("SELECT 1");
     dbOk = true;
-  } catch { /* DB degraded */ }
+  } catch {
+    /* DB degraded */
+  }
   return { status: dbOk ? "ok" : "degraded", db: dbOk, time: new Date().toISOString() };
 });
 
@@ -249,26 +275,51 @@ server.get("/api/daemon/status", { preHandler: [server.authenticate] }, async (r
 
 // Public user list (for @mention autocomplete) — 需登录，避免未认证枚举全站用户
 server.get("/api/users", { preHandler: [server.authenticate] }, async () => {
-  const users = await server.pg.query(
-    "SELECT id, handle, display_name, avatar_url FROM users ORDER BY handle"
-  );
+  const users = await server.pg.query("SELECT id, handle, display_name, avatar_url FROM users ORDER BY handle");
   return { users: users.rows };
 });
+
+// O14 Phase G：生产静态托管 web 前端（SPA，vue-router history 模式）。
+// dist 存在才注册：本地开发由 vite 直出（5174，proxy 到本服务），纯后端部署跳过。
+{
+  const { existsSync, readFileSync } = await import("node:fs");
+  const { dirname, join, resolve } = await import("node:path");
+  const { fileURLToPath } = await import("node:url");
+  const webDist = config.WEB_DIST_DIR
+    ? resolve(config.WEB_DIST_DIR)
+    : resolve(dirname(fileURLToPath(import.meta.url)), "../../web/dist");
+  const indexHtmlPath = join(webDist, "index.html");
+  if (existsSync(indexHtmlPath)) {
+    const indexHtml = readFileSync(indexHtmlPath, "utf8");
+    await server.register(fastifyStatic, { root: webDist, prefix: "/", decorateReply: false });
+    // SPA 回退：非保留前缀的 GET 回 index.html；API/WS/文件等保留前缀维持 JSON 404 语义
+    const RESERVED_PREFIXES = ["/api", "/files", "/internal", "/ws", "/docs"];
+    server.setNotFoundHandler((req, reply) => {
+      const url = (req.raw.url || "").split("?")[0];
+      const reserved = RESERVED_PREFIXES.some((p) => url === p || url.startsWith(p + "/"));
+      if (req.method === "GET" && !reserved) {
+        return reply.type("text/html").send(indexHtml);
+      }
+      return reply.status(404).send({ error: "Not Found" });
+    });
+    server.log.info(`[Web] SPA static hosting enabled: ${webDist}`);
+  }
+}
 
 // Auto-migrate on startup
 await runMigrations();
 server.log.info("[DB] Schema migrated");
 
-  // Auto-seed default data (first run only)
-  const serverCount = await sql`SELECT count(*)::int as c FROM servers`;
-  if (serverCount[0].c === 0) {
-    // created_by 留空：播种时通常还没有用户（首个注册用户会被并入此服务器）
-    const [sv] = await sql`INSERT INTO servers (name, created_by) VALUES ('Default Server', NULL) RETURNING id`;
-    for (const ch of ["general", "random", "engineering"]) {
-      await sql`INSERT INTO channels (server_id, name, description) VALUES (${sv.id}, ${ch}, ${ch === "general" ? "General discussion" : ch === "random" ? "Random topics" : "Engineering team"})`;
-    }
-    server.log.info("[DB] Seed data created: 1 server, 3 channels");
+// Auto-seed default data (first run only)
+const serverCount = await sql`SELECT count(*)::int as c FROM servers`;
+if (serverCount[0].c === 0) {
+  // created_by 留空：播种时通常还没有用户（首个注册用户会被并入此服务器）
+  const [sv] = await sql`INSERT INTO servers (name, created_by) VALUES ('Default Server', NULL) RETURNING id`;
+  for (const ch of ["general", "random", "engineering"]) {
+    await sql`INSERT INTO channels (server_id, name, description) VALUES (${sv.id}, ${ch}, ${ch === "general" ? "General discussion" : ch === "random" ? "Random topics" : "Engineering team"})`;
   }
+  server.log.info("[DB] Seed data created: 1 server, 3 channels");
+}
 
 // Start
 const port = config.PORT;
@@ -294,11 +345,24 @@ try {
 async function shutdown(signal: string) {
   server.log.info(`[Server] Received ${signal}, shutting down gracefully...`);
   const { daemonClients, browserClients } = await import("./ws/handler.js");
-  for (const [, ws] of daemonClients) { try { ws.close(1001, "server shutdown"); } catch { /* ignore */ } }
+  for (const [, ws] of daemonClients) {
+    try {
+      ws.close(1001, "server shutdown");
+    } catch {
+      /* ignore */
+    }
+  }
   for (const [, sockets] of browserClients) {
-    for (const ws of sockets) { try { ws.close(1001, "server shutdown"); } catch { /* ignore */ } }
+    for (const ws of sockets) {
+      try {
+        ws.close(1001, "server shutdown");
+      } catch {
+        /* ignore */
+      }
+    }
   }
   await closeDb();
+  await pubsub.close();
   server.log.info("[Server] Goodbye");
   process.exit(0);
 }

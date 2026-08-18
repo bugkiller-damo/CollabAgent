@@ -1,14 +1,12 @@
 import { spawn } from "node:child_process";
-import { join } from "node:path";
 import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { applyAgentEnv } from "./agent-env-whitelist.js";
+import { getClaudePermissionArgs } from "./command-presets.js";
 
 function findClaudeCmd(): string {
   const appData = process.env.APPDATA || join("C:/Users", process.env.USERNAME || "Default", "AppData/Roaming");
-  const candidates = [
-    join(appData, "npm", "claude.cmd"),
-    "C:/Program Files/Claude Code/claude.cmd",
-    "claude.cmd",
-  ];
+  const candidates = [join(appData, "npm", "claude.cmd"), "C:/Program Files/Claude Code/claude.cmd", "claude.cmd"];
   for (const c of candidates) {
     if (existsSync(c)) return c;
   }
@@ -25,13 +23,17 @@ function q(s: string): string {
   return /\s/.test(s) ? `"${s}"` : s;
 }
 
-export function claudePrint(prompt: string, sessionId?: string, systemPromptFile?: string, extraEnv?: Record<string, string>, cwd?: string): Promise<ClaudePrintResult> {
+export function claudePrint(
+  prompt: string,
+  sessionId?: string,
+  systemPromptFile?: string,
+  extraEnv?: Record<string, string>,
+  cwd?: string,
+): Promise<ClaudePrintResult> {
   return new Promise((resolve) => {
     const cmd = findClaudeCmd();
-    const args = [
-      "--print", "--output-format", "stream-json",
-      "--verbose", "--dangerously-skip-permissions",
-    ];
+    // O12：显式工具白名单替代 --dangerously-skip-permissions（见 command-presets.ts）
+    const args = ["--print", "--output-format", "stream-json", "--verbose", ...getClaudePermissionArgs()];
     if (sessionId) args.push("--resume", sessionId);
 
     const promptFile = systemPromptFile || join(process.cwd(), ".slock", "system-prompt.md");
@@ -48,15 +50,24 @@ export function claudePrint(prompt: string, sessionId?: string, systemPromptFile
       cwd: cwd || process.cwd(),
       shell: true,
       windowsHide: true,
-      env: { ...process.env, ...(extraEnv || {}) },
+      // A2：env 白名单化（默认 warn-only，SLOCK_ENV_WHITELIST=1 收紧）
+      env: applyAgentEnv(extraEnv || {}, "ClaudePrint"),
     });
 
     let stdout = "";
     let stderr = "";
-    const timer = setTimeout(() => { try { child.kill(); } catch {} }, 120000);
+    const timer = setTimeout(() => {
+      try {
+        child.kill();
+      } catch {}
+    }, 120000);
 
-    child.stdout.on("data", (d) => { stdout += d.toString(); });
-    child.stderr.on("data", (d) => { stderr += d.toString(); });
+    child.stdout.on("data", (d) => {
+      stdout += d.toString();
+    });
+    child.stderr.on("data", (d) => {
+      stderr += d.toString();
+    });
 
     child.on("error", (err) => {
       clearTimeout(timer);
@@ -89,7 +100,9 @@ export function claudePrint(prompt: string, sessionId?: string, systemPromptFile
     try {
       child.stdin.write(prompt);
       child.stdin.end();
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   });
 }
 

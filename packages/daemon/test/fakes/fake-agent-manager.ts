@@ -1,11 +1,11 @@
-import { createTerminalState, type ITerminalState } from "../../src/terminal-state.js";
 import { createPtyOutputBus } from "../../src/pty-output-bus.js";
+import { createTerminalState, type ITerminalState } from "../../src/terminal-state.js";
 import type {
-  IAgentManager,
   AgentRunSnapshot,
-  StartAgentInput,
+  IAgentManager,
   PtyOutputBus,
   RunStatus,
+  StartAgentInput,
 } from "../../src/types/index.js";
 
 /**

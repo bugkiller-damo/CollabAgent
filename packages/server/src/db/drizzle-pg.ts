@@ -1,18 +1,32 @@
-import { pgTable as _pgTable, uuid, varchar, text, boolean, timestamp, bigint, integer, jsonb, uniqueIndex, index, primaryKey, foreignKey } from "drizzle-orm/pg-core";
+import {
+  pgTable as _pgTable,
+  bigint,
+  boolean,
+  foreignKey,
+  index,
+  integer,
+  jsonb,
+  primaryKey,
+  text,
+  timestamp,
+  uniqueIndex,
+  uuid,
+  varchar,
+} from "drizzle-orm/pg-core";
 
 // Re-export with same signatures for schema definition
 export {
   _pgTable as pgTable,
-  uuid,
-  varchar,
-  text,
-  boolean,
-  timestamp,
   bigint,
+  boolean,
+  foreignKey,
+  index,
   integer,
   jsonb,
-  uniqueIndex,
-  index,
   primaryKey,
-  foreignKey,
+  text,
+  timestamp,
+  uniqueIndex,
+  uuid,
+  varchar,
 };

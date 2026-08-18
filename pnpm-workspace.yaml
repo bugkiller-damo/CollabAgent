@@ -1,5 +1,9 @@
 packages:
   - "packages/*"
+# O19：workspace 依赖注入（每个包 node_modules 自包含），pnpm deploy 生产裁剪必需
+injectWorkspacePackages: true
 allowBuilds:
   esbuild: true
+  lefthook: true
   node-pty: true
+  vue-demi: true

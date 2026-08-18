@@ -1,7 +1,10 @@
-import { describe, it, expect, afterAll } from "vitest";
-import { api, registerUser, cleanupTestData, closeSql, uniqHandle } from "./helpers.js";
+import { afterAll, describe, expect, it } from "vitest";
+import { api, cleanupTestData, closeSql, registerUser, uniqHandle } from "./helpers.js";
 
-afterAll(async () => { await cleanupTestData(); await closeSql(); });
+afterAll(async () => {
+  await cleanupTestData();
+  await closeSql();
+});
 
 describe("auth: register / login / cookie / csrf / sessions / deactivate", () => {
   it("register sets httpOnly access_token + csrf cookies and returns token", async () => {
@@ -55,9 +58,19 @@ describe("auth: register / login / cookie / csrf / sessions / deactivate", () =>
 
   it("deactivate requires correct password, then blocks login", async () => {
     const u = await registerUser();
-    const wrong = await api("/api/profile/deactivate", { method: "POST", cookie: u.cookie, csrf: u.csrf, body: { password: "nope" } });
+    const wrong = await api("/api/profile/deactivate", {
+      method: "POST",
+      cookie: u.cookie,
+      csrf: u.csrf,
+      body: { password: "nope" },
+    });
     expect(wrong.status).toBe(401);
-    const ok = await api("/api/profile/deactivate", { method: "POST", cookie: u.cookie, csrf: u.csrf, body: { password: "Test1234" } });
+    const ok = await api("/api/profile/deactivate", {
+      method: "POST",
+      cookie: u.cookie,
+      csrf: u.csrf,
+      body: { password: "Test1234" },
+    });
     expect(ok.status).toBe(200);
     const relog = await api("/api/auth/login", { method: "POST", body: { handle: u.handle, password: "Test1234" } });
     expect(relog.status).toBe(403);
@@ -70,5 +83,72 @@ describe("auth: register / login / cookie / csrf / sessions / deactivate", () =>
     expect(exp.data.profile.handle).toBe(u.handle);
     expect(exp.data).toHaveProperty("messages");
     expect(exp.data).toHaveProperty("sessions");
+  });
+});
+
+describe("auth: 登录防爆破（O6 账号+IP 双维度）", () => {
+  it("同账号跨 IP 失败 5 次后锁定：换 IP + 正确密码仍 429", async () => {
+    const u = await registerUser();
+    const fail = (ip: string) =>
+      api("/api/auth/login", {
+        method: "POST",
+        headers: { "x-forwarded-for": ip },
+        body: { login: u.handle, password: "WrongPass123" },
+      });
+    for (let i = 0; i < 4; i++) expect((await fail("10.11.0.1")).status).toBe(401);
+    expect((await fail("10.11.0.2")).status).toBe(401); // 第 5 次：换 IP 仍计入账号维度
+    // 账号已锁：换第三个 IP、用正确密码也进不去
+    const locked = await api("/api/auth/login", {
+      method: "POST",
+      headers: { "x-forwarded-for": "10.11.0.3" },
+      body: { login: u.handle, password: "Test1234" },
+    });
+    expect(locked.status).toBe(429);
+    expect(locked.data.error).toMatch(/分钟后再试/);
+  });
+
+  it("成功登录清除计数：4 次失败后成功登录，再来 1 次失败不锁", async () => {
+    const u = await registerUser();
+    const fail = () =>
+      api("/api/auth/login", {
+        method: "POST",
+        headers: { "x-forwarded-for": "10.11.0.4" },
+        body: { login: u.handle, password: "WrongPass123" },
+      });
+    for (let i = 0; i < 4; i++) expect((await fail()).status).toBe(401);
+    const ok = await api("/api/auth/login", {
+      method: "POST",
+      headers: { "x-forwarded-for": "10.11.0.4" },
+      body: { login: u.handle, password: "Test1234" },
+    });
+    expect(ok.status).toBe(200); // 成功 → 清除双 key
+    // 若未清除，第 5 次失败会触发锁定；这里再成功登录一次验证未被锁
+    expect(
+      (
+        await api("/api/auth/login", {
+          method: "POST",
+          headers: { "x-forwarded-for": "10.11.0.5" },
+          body: { login: u.handle, password: "WrongPass123" },
+        })
+      ).status,
+    ).toBe(401);
+    const again = await api("/api/auth/login", {
+      method: "POST",
+      headers: { "x-forwarded-for": "10.11.0.5" },
+      body: { login: u.handle, password: "Test1234" },
+    });
+    expect(again.status).toBe(200); // 计数已被上次成功清除，未达到锁定阈值
+  });
+
+  it("不存在的账号同样累计失败并锁定（防账号枚举爆破）", async () => {
+    const ghost = uniqHandle();
+    const fail = () =>
+      api("/api/auth/login", {
+        method: "POST",
+        headers: { "x-forwarded-for": "10.11.0.6" },
+        body: { login: ghost, password: "Whatever123" },
+      });
+    for (let i = 0; i < 5; i++) expect((await fail()).status).toBe(401);
+    expect((await fail()).status).toBe(429);
   });
 });

@@ -1,26 +1,22 @@
-import { WebSocket } from "ws";
-import { existsSync, unlinkSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { AgentContext } from "./auth.js";
-import type { DaemonConfig } from "./types/index.js";
-import { ApiClient } from "./client.js";
-import { probeClaude } from "./drivers/probe.js";
-import { createAgentTokenRegistry } from "./agent-tokens.js";
-import { createLiveRunRegistry } from "./live-run-registry.js";
-import { createAgentRuntime, type IAgentRuntime } from "./agent-runtime.js";
-import { setupSlockWrapper } from "./setup-slock-wrapper.js";
+import { WebSocket } from "ws";
 import { createJsonRunStore, defaultStorePath } from "./agent-run-store.js";
+import { createAgentRuntime, type IAgentRuntime } from "./agent-runtime.js";
+import { createAgentTokenRegistry } from "./agent-tokens.js";
+import { probeClaude } from "./drivers/probe.js";
+import { createLiveRunRegistry } from "./live-run-registry.js";
+import { setupSlockWrapper } from "./setup-slock-wrapper.js";
 import { readTerminalLogTail } from "./terminal-log.js";
+import type { DaemonConfig } from "./types/index.js";
 
 export class DaemonCore {
   private ws: WebSocket | null = null;
   private serverUrl: string;
   private apiKey: string;
-  private slockDir: string | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelay = 1000;
   private authFailed = false;
-  private client: ApiClient;
   private runtime: IAgentRuntime;
   private agentId = "00000000-0000-0000-0000-000000000001";
   /** 崩溃前处于 starting/running 状态的 agent（autostart 方案 A 用），见 constructor 里的采集顺序说明 */
@@ -28,20 +24,12 @@ export class DaemonCore {
   /** 终端观察（G3）：agentName -> 推帧定时器；agentName -> 上次推过的帧（去重） */
   private terminalWatchers = new Map<string, ReturnType<typeof setInterval>>();
   private terminalLastFrame = new Map<string, string>();
+  /** B1：观看期间的观察帧转发订阅（agentName → unsubscribe） */
+  private terminalObsUnsubs = new Map<string, () => void>();
 
   constructor(private config: DaemonConfig) {
     this.serverUrl = config.serverUrl;
     this.apiKey = config.apiKey;
-    const ctx: AgentContext = {
-      agentId: this.agentId,
-      serverUrl: config.serverUrl,
-      serverId: null,
-      token: config.apiKey,
-      clientMode: "legacy-machine",
-      secretSource: "legacy-token-env",
-      activeCapabilities: null,
-    };
-    this.client = new ApiClient(ctx);
     const tokenRegistry = createAgentTokenRegistry();
     const liveRunRegistry = createLiveRunRegistry();
     const runStore = createJsonRunStore(defaultStorePath());
@@ -52,7 +40,11 @@ export class DaemonCore {
     const plannedMarker = join(process.cwd(), ".slock", "planned-restart");
     const isPlannedRestart = existsSync(plannedMarker);
     if (isPlannedRestart) {
-      try { unlinkSync(plannedMarker); } catch { /* ignore */ }
+      try {
+        unlinkSync(plannedMarker);
+      } catch {
+        /* ignore */
+      }
       console.log("[Daemon] Planned restart detected (marker file) — skipping autostart");
     }
     // 必须在 markUnfinishedRunsStale() 之前采集——那个方法会把这些记录的
@@ -75,6 +67,67 @@ export class DaemonCore {
         onDeliveryQueued: (agentName, channelName) => {
           if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
           this.ws.send(JSON.stringify({ type: "agent:delivery-queued", agentName, channelName }));
+        },
+        // A1 派发队列死信：重试耗尽/不可投递的消息经 WS 上报 server，
+        // 由 server 标记 delivery_failed（不自动重投，避免死信循环）。
+        onDeliveryDeadLetter: (agentName, channelName, err) => {
+          if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+          this.ws.send(
+            JSON.stringify({
+              type: "agent:delivery-dead-letter",
+              agentName,
+              channelName,
+              error: String((err as any)?.message ?? err).slice(0, 300),
+            }),
+          );
+        },
+        // C1：agent 本地工具调用生命周期进审计流（仅 headless 路径有结构化事件源）。
+        // 参数/结果摘要已在上游截断（agent-observation.ts 的 truncate 纪律），
+        // 完整内容留在本地 run 历史，不上 WS。
+        onToolCall: (agentName, info) => {
+          if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+          this.ws.send(
+            JSON.stringify({
+              type: "agent:tool-call",
+              agentName,
+              // server 审计链需要稳定 actorId（名字可改，id 不变）
+              agentId: this.runtime.resolveAgentId(agentName),
+              toolName: info.toolName ?? null,
+              toolUseId: info.toolUseId ?? null,
+              status: info.status,
+              text: info.text ?? null,
+              time: new Date().toISOString(),
+            }),
+          );
+        },
+        // 回复守卫代发：回合结束但 agent 没调 send_message 时，daemon 以 agent
+        // 身份把最终正文直接发到频道（mint scoped token → POST send）。
+        // 比追问省一整轮 LLM，且不受追问回合被超时杀掉的二次失败影响。
+        onReplyMissing: (agentName, channel, content) => {
+          void (async () => {
+            try {
+              const agentId = this.runtime.resolveAgentId(agentName);
+              if (!agentId) {
+                console.warn(`[Daemon] reply-guard: no agentId for @${agentName}, cannot auto-post`);
+                return;
+              }
+              const mint = await fetch(`${this.serverUrl}/internal/agent/${agentId}/credentials`, {
+                method: "POST",
+                headers: { Authorization: `Bearer ${this.apiKey}` },
+              });
+              if (!mint.ok) throw new Error(`mint credential ${mint.status}`);
+              const { token } = (await mint.json()) as { token: string };
+              const res = await fetch(`${this.serverUrl}/internal/agent/${agentId}/send`, {
+                method: "POST",
+                headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+                body: JSON.stringify({ target: channel, content }),
+              });
+              if (!res.ok) throw new Error(`send ${res.status} ${await res.text().catch(() => "")}`);
+              console.log(`[Daemon] reply-guard auto-posted for @${agentName} -> ${channel} (${content.length} chars)`);
+            } catch (err: any) {
+              console.error(`[Daemon] reply-guard auto-post failed for @${agentName}:`, err?.message ?? err);
+            }
+          })();
         },
       },
       tokenRegistry,
@@ -118,17 +171,25 @@ export class DaemonCore {
           const lines = run.screenText.split("\n");
           for (let i = lines.length - 1; i >= 0; i--) {
             const t = lines[i]!.trim();
-            if (t) { lastLine = t.slice(0, 80); break; }
+            if (t) {
+              lastLine = t.slice(0, 80);
+              break;
+            }
           }
         }
         const key = status + "|" + lastLine;
         if (this.lastReportedByAgent.get(name) === key) continue;
         this.lastReportedByAgent.set(name, key);
         const agentId = this.runtime.resolveAgentId(name);
-        this.ws.send(JSON.stringify({
-          type: "agent:status", agentId: agentId || name, agentName: name,
-          status, detail: lastLine,
-        }));
+        this.ws.send(
+          JSON.stringify({
+            type: "agent:status",
+            agentId: agentId || name,
+            agentName: name,
+            status,
+            detail: lastLine,
+          }),
+        );
       }
     };
     this.statusReporter = setInterval(tick, 3000);
@@ -148,7 +209,7 @@ export class DaemonCore {
     if (!this.autostartCandidates.length) return;
     console.log(
       `[Daemon] ${this.autostartCandidates.length} agent(s) were active before last crash/restart — ` +
-      `skipping eager autostart (they will lazy-spawn with session resume on their next real message)`,
+        `skipping eager autostart (they will lazy-spawn with session resume on their next real message)`,
     );
   }
 
@@ -187,15 +248,15 @@ export class DaemonCore {
         "  完成后重启本 daemon 即可。",
         "──────────────────────────────────────────────",
         "",
-      ].join("\n")
+      ].join("\n"),
     );
   }
 
   private async setupSlockWrapper() {
-    this.slockDir = await setupSlockWrapper(this.agentId, this.serverUrl, this.apiKey);
+    await setupSlockWrapper(this.agentId, this.serverUrl);
   }
 
-private connect(): void {
+  private connect(): void {
     const url = new URL("/ws", this.config.serverUrl);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     this.ws = new WebSocket(url.toString(), {
@@ -204,15 +265,20 @@ private connect(): void {
     this.ws.on("open", () => {
       console.log("[Daemon] Connected to server");
       this.reconnectDelay = 1000;
-      this.ws?.send(JSON.stringify({
-        type: "ready", capabilities: ["send", "read"],
-        runtimes: ["daemon-cli"],
-        hostname: process.env.COMPUTERNAME || "unknown",
-        daemonVersion: "0.1.0",
-      }));
+      this.ws?.send(
+        JSON.stringify({
+          type: "ready",
+          capabilities: ["send", "read"],
+          runtimes: ["daemon-cli"],
+          hostname: process.env.COMPUTERNAME || "unknown",
+          daemonVersion: "0.1.0",
+        }),
+      );
     });
     this.ws.on("message", (data) => {
-      try { this.handleMessage(JSON.parse(data.toString())); } catch (err: any) {
+      try {
+        this.handleMessage(JSON.parse(data.toString()));
+      } catch (err: any) {
         console.error("[Daemon] WS message parse/handle error:", err?.message || String(err));
       }
     });
@@ -229,7 +295,7 @@ private connect(): void {
             "  用新的 --api-key 重启 daemon。",
             "──────────────────────────────────────────────",
             "",
-          ].join("\n")
+          ].join("\n"),
         );
         this.authFailed = true;
         void this.stop();
@@ -251,7 +317,6 @@ private connect(): void {
     }, this.reconnectDelay);
   }
 
-
   private async handleMessage(msg: Record<string, unknown>): Promise<void> {
     const type = msg.type as string | undefined;
     switch (type) {
@@ -267,7 +332,10 @@ private connect(): void {
         // 部分路径在 config.runtime_profile.model。三个位置都兜底。
         const rp = (config.runtime_profile ?? agent?.runtime_profile) as { model?: string } | undefined;
         const model = (agent?.model as string) || (config.model as string) || rp?.model || undefined;
-        if (!agentName) { console.log("[Daemon] agent:start without name, ignored"); break; }
+        if (!agentName) {
+          console.log("[Daemon] agent:start without name, ignored");
+          break;
+        }
         this.runtime.registerAgent(agentId, agentName, { displayName, description, model });
         break;
       }
@@ -290,8 +358,11 @@ private connect(): void {
             const replyTarget = threadId ? `#${channelName}:${threadId.slice(0, 8)}` : `#${channelName}`;
             const senderName = (m.senderName as string) || (m.senderId as string) || "unknown";
             console.log(`[Daemon] Dispatch message for @${forceTarget} in ${replyTarget}: ${content.slice(0, 50)}`);
-            try { await this.runtime.runAgent(forceTarget, channelName, replyTarget, senderName, content); }
-            catch (err: any) { console.error("[Daemon] Dispatch routing failed:", err?.message); }
+            try {
+              await this.runtime.runAgent(forceTarget, channelName, replyTarget, senderName, content);
+            } catch (err: any) {
+              console.error("[Daemon] Dispatch routing failed:", err?.message);
+            }
           }
           break;
         }
@@ -305,8 +376,11 @@ private connect(): void {
           for (const name of recipients) {
             if (!this.runtime.hasAgent(name)) continue;
             console.log(`[Daemon] DM -> @${name} (reply ${replyTarget})`);
-            try { await this.runtime.runAgentDm(name, replyTarget, senderHandle, content); }
-            catch (err: any) { console.error("[Daemon] DM dispatch failed:", err?.message); }
+            try {
+              await this.runtime.runAgentDm(name, replyTarget, senderHandle, content);
+            } catch (err: any) {
+              console.error("[Daemon] DM dispatch failed:", err?.message);
+            }
           }
           break;
         }
@@ -361,14 +435,33 @@ private connect(): void {
       case "terminal:watch": {
         // 浏览器观众上线：开始按 400ms 节拍推这个 agent 的终端帧（G3）。
         // 帧内容直接取终端模拟器渲染好的当前屏（screenText），无变化不推。
+        // B1：headless（persistent）路径没有 PTY 屏——用观察帧 replay buffer 渲染
+        // 的 transcript 作为 screen 推同一条 terminal:frame 通道，web 侧零改动。
         const agentName = msg.agentName as string;
         if (!agentName || this.terminalWatchers.has(agentName)) break;
+        // B1 web 结构化视图：观看期间把观察帧原样推给浏览器（事件流面板消费），
+        // 先补 replay buffer 作历史。PTY 路径无观察帧（bus 为空），订阅零开销；
+        // 引用计数纪律与 terminal:frame 一致（无人观看不传输）。
+        {
+          const obsBus = this.runtime.__getObservationBus();
+          const replay = obsBus.replay(agentName);
+          if (replay.length > 0) {
+            this.ws?.send(JSON.stringify({ type: "terminal:obs-history", agentName, frames: replay }));
+          }
+          const unsub = obsBus.subscribe(agentName, (f) => {
+            if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+            this.ws.send(JSON.stringify({ type: "terminal:obs-frame", agentName, frame: f }));
+          });
+          this.terminalObsUnsubs.set(agentName, unsub);
+        }
         // 先补发一段历史：运行中的 run 发 scrollback（观众能看到打开终端前
-        // 发生的事）；没有运行中的 run 则发落盘日志的尾部（agent 已被回收也能回看）。
+        // 发生的事）；没有运行中的 run 则发观察帧 transcript（headless）或
+        // 落盘日志的尾部（agent 已被回收也能回看）。
         {
           const runId = this.runtime.__getRunId(agentName);
           const run = runId ? this.runtime.__getAgentManager().getRun(runId) : undefined;
-          const historyText = run?.historyText || readTerminalLogTail(agentName, 60_000);
+          const obsTranscript = this.runtime.__getObservationBus().transcript(agentName, 60_000);
+          const historyText = run?.historyText || obsTranscript || readTerminalLogTail(agentName, 60_000);
           if (historyText.trim()) {
             this.ws?.send(JSON.stringify({ type: "terminal:history", agentName, text: historyText }));
           }
@@ -378,15 +471,22 @@ private connect(): void {
           const manager = this.runtime.__getAgentManager();
           const run = runId ? manager.getRun(runId) : undefined;
           const state = this.runtime.getAgentState(agentName) ?? "unknown";
-          const status = run ? state : "offline";
-          const screen = run?.screenText ?? "";
+          // headless：有观察帧内容就不算 offline（没有 PTY run 但 agent 活着）
+          const obsScreen = run ? "" : this.runtime.__getObservationBus().transcript(agentName, 60_000);
+          const status = run ? state : obsScreen ? state : "offline";
+          const screen = run?.screenText ?? obsScreen;
           const key = status + "|" + screen;
           if (this.terminalLastFrame.get(agentName) === key) return;
           this.terminalLastFrame.set(agentName, key);
-          this.ws?.send(JSON.stringify({
-            type: "terminal:frame", agentName, screen, status,
-            time: new Date().toISOString(),
-          }));
+          this.ws?.send(
+            JSON.stringify({
+              type: "terminal:frame",
+              agentName,
+              screen,
+              status,
+              time: new Date().toISOString(),
+            }),
+          );
         };
         tick(); // 立即推一帧，观众打开就能看到当前屏
         this.terminalWatchers.set(agentName, setInterval(tick, 400));
@@ -407,6 +507,9 @@ private connect(): void {
         if (timer) clearInterval(timer);
         this.terminalWatchers.delete(agentName);
         this.terminalLastFrame.delete(agentName);
+        // B1：观察帧订阅一并退订（引用计数归零，停止传输）
+        this.terminalObsUnsubs.get(agentName)?.();
+        this.terminalObsUnsubs.delete(agentName);
         break;
       }
       case "terminal:resize": {
@@ -424,13 +527,18 @@ private connect(): void {
         }
         break;
       }
-      case "ping": this.ws?.send(JSON.stringify({ type: "pong" })); break;
+      case "ping":
+        this.ws?.send(JSON.stringify({ type: "pong" }));
+        break;
     }
   }
 
   async stop(): Promise<void> {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-    if (this.statusReporter) { clearInterval(this.statusReporter); this.statusReporter = null; }
+    if (this.statusReporter) {
+      clearInterval(this.statusReporter);
+      this.statusReporter = null;
+    }
     for (const timer of this.terminalWatchers.values()) clearInterval(timer);
     this.terminalWatchers.clear();
     this.terminalLastFrame.clear();
@@ -439,8 +547,13 @@ private connect(): void {
     try {
       mkdirSync(join(process.cwd(), ".slock"), { recursive: true });
       writeFileSync(join(process.cwd(), ".slock", "planned-restart"), String(Date.now()));
-    } catch { /* best-effort */ }
-    if (this.ws) { this.ws.close(); this.ws = null; }
+    } catch {
+      /* best-effort */
+    }
+    if (this.ws) {
+      this.ws.close();
+      this.ws = null;
+    }
     this.runtime.stopAll();
     console.log("[Daemon] Stopped");
   }

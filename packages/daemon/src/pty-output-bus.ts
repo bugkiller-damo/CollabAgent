@@ -28,7 +28,9 @@ export const createPtyOutputBus = (): PtyOutputBus => {
       const listeners = listenersByRunId.get(ev.runId);
       if (!listeners || listeners.size === 0) return;
       for (const listener of listeners) {
-        try { listener(ev); } catch (err: any) {
+        try {
+          listener(ev);
+        } catch (err: any) {
           // 单个监听器抛错不应影响其他订阅者
           console.error("[PtyOutputBus] listener error:", err?.message ?? err);
         }

@@ -5,11 +5,18 @@
   "scripts": {
     "dev": "pnpm -r run dev",
     "build": "pnpm -r run build",
-    "lint": "pnpm -r run lint",
-    "typecheck": "pnpm -r run typecheck"
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "typecheck": "pnpm -r run typecheck",
+    "audit:bcrypt-tokens": "node scripts/audit-bcrypt-tokens.mjs",
+    "validate:compose": "node scripts/validate-compose.mjs"
   },
   "engines": {
     "node": ">=20.0.0",
     "pnpm": ">=9.0.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.8",
+    "lefthook": "^2.1.10"
   }
 }

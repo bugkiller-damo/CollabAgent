@@ -1,8 +1,8 @@
-import { describe, it, expect, afterEach } from "vitest";
-import { mkdirSync, writeFileSync, rmSync, utimesSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
+import { afterEach, describe, expect, it } from "vitest";
 import { captureSessionId, listSessions, mangleClaudeProjectPath } from "../src/agent-sessions.js";
 
 /**
@@ -21,7 +21,11 @@ describe("agent-sessions.ts — claude session file discovery", () => {
 
   afterEach(() => {
     for (const dir of createdDirs.splice(0)) {
-      try { rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        /* best-effort */
+      }
     }
   });
 

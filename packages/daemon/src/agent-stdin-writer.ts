@@ -48,10 +48,15 @@ export const createStreamJsonWriter = (): IStdinWriter => ({
 
 export function createStdinWriter(strategy: StdinWriteStrategyType): IStdinWriter {
   switch (strategy) {
-    case "direct": return createDirectWriter();
-    case "bracketed-paste": return createBracketedPasteWriter();
-    case "wait-for-prompt": return createWaitForPromptWriter();
-    case "stream-json": return createStreamJsonWriter();
-    default: return createDirectWriter();
+    case "direct":
+      return createDirectWriter();
+    case "bracketed-paste":
+      return createBracketedPasteWriter();
+    case "wait-for-prompt":
+      return createWaitForPromptWriter();
+    case "stream-json":
+      return createStreamJsonWriter();
+    default:
+      return createDirectWriter();
   }
 }

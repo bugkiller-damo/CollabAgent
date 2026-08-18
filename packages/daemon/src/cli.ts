@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { Command } from "commander";
-import { loadAgentContext, AgentBootstrapError } from "./auth.js";
+import { AgentBootstrapError, loadAgentContext } from "./auth.js";
 import { ApiClient } from "./client.js";
 import { CliExit, emit, fail } from "./output.js";
 
@@ -15,7 +15,13 @@ function registerWhoami(parent: Command) {
       const ctx = loadAgentContext();
       emit({
         ok: true,
-        data: { agentId: ctx.agentId, serverUrl: ctx.serverUrl, serverId: ctx.serverId, clientMode: ctx.clientMode, secretSource: ctx.secretSource },
+        data: {
+          agentId: ctx.agentId,
+          serverUrl: ctx.serverUrl,
+          serverId: ctx.serverId,
+          clientMode: ctx.clientMode,
+          secretSource: ctx.secretSource,
+        },
       });
     });
 }
@@ -47,7 +53,10 @@ function registerChannelMembers(parent: Command) {
     .action(async (target: string) => {
       const ctx = loadAgentContext();
       const client = new ApiClient(ctx);
-      const res = await client.request("GET", `/internal/agent/${encodeURIComponent(ctx.agentId)}/channel-members?channel=${encodeURIComponent(target)}`);
+      const res = await client.request(
+        "GET",
+        `/internal/agent/${encodeURIComponent(ctx.agentId)}/channel-members?channel=${encodeURIComponent(target)}`,
+      );
       if (!res.ok) fail("MEMBERS_FAILED", res.error ?? `HTTP ${res.status}`);
       process.stdout.write(JSON.stringify(res.data, null, 2) + "\n");
     });
@@ -61,7 +70,11 @@ function registerChannelJoin(parent: Command) {
     .action(async (opts: { target: string }) => {
       const ctx = loadAgentContext();
       const client = new ApiClient(ctx);
-      const res = await client.request("POST", `/internal/agent/${encodeURIComponent(ctx.agentId)}/channels/${encodeURIComponent(opts.target.replace(/^#/, ""))}/join`, {});
+      const res = await client.request(
+        "POST",
+        `/internal/agent/${encodeURIComponent(ctx.agentId)}/channels/${encodeURIComponent(opts.target.replace(/^#/, ""))}/join`,
+        {},
+      );
       if (!res.ok) fail("JOIN_FAILED", res.error ?? `HTTP ${res.status}`);
       process.stdout.write(`Joined ${opts.target}\n`);
     });
@@ -75,7 +88,11 @@ function registerChannelLeave(parent: Command) {
     .action(async (opts: { target: string }) => {
       const ctx = loadAgentContext();
       const client = new ApiClient(ctx);
-      const res = await client.request("POST", `/internal/agent/${encodeURIComponent(ctx.agentId)}/channels/${encodeURIComponent(opts.target.replace(/^#/, ""))}/leave`, {});
+      const res = await client.request(
+        "POST",
+        `/internal/agent/${encodeURIComponent(ctx.agentId)}/channels/${encodeURIComponent(opts.target.replace(/^#/, ""))}/leave`,
+        {},
+      );
       if (!res.ok) fail("LEAVE_FAILED", res.error ?? `HTTP ${res.status}`);
       process.stdout.write(`Left ${opts.target}\n`);
     });
@@ -92,7 +109,9 @@ function registerThreadUnfollow(parent: Command) {
     .action(async (opts: { target: string }) => {
       const ctx = loadAgentContext();
       const client = new ApiClient(ctx);
-      const res = await client.request("POST", `/internal/agent/${encodeURIComponent(ctx.agentId)}/threads/unfollow`, { target: opts.target });
+      const res = await client.request("POST", `/internal/agent/${encodeURIComponent(ctx.agentId)}/threads/unfollow`, {
+        target: opts.target,
+      });
       if (!res.ok) fail("UNFOLLOW_FAILED", res.error ?? `HTTP ${res.status}`);
       process.stdout.write(`Unfollowed ${opts.target}\n`);
     });
@@ -107,7 +126,9 @@ function registerMessageSend(parent: Command) {
     .description("Send a message to a channel, DM, or thread. Content is read from stdin.")
     .requiredOption("--target <target>", "Target channel, DM, or thread")
     .option("--send-draft", "Send a saved draft after reviewing newer messages")
-    .option("--attachment-id <id>", "Attachment ID to link (repeatable)", (v: string, prev: string[] = []) => prev.concat(v))
+    .option("--attachment-id <id>", "Attachment ID to link (repeatable)", (v: string, prev: string[] = []) =>
+      prev.concat(v),
+    )
     .action(async (opts: { target: string; sendDraft?: boolean; attachmentId?: string[] }) => {
       const ctx = loadAgentContext();
       const client = new ApiClient(ctx);
@@ -181,7 +202,10 @@ function registerMessageRead(parent: Command) {
       if (opts.around) params.set("around", opts.around);
       if (opts.limit) params.set("limit", opts.limit);
 
-      const res = await client.request("GET", `/internal/agent/${encodeURIComponent(ctx.agentId)}/history?${params.toString()}`);
+      const res = await client.request(
+        "GET",
+        `/internal/agent/${encodeURIComponent(ctx.agentId)}/history?${params.toString()}`,
+      );
       if (!res.ok) fail("READ_FAILED", res.error ?? `HTTP ${res.status}`);
       process.stdout.write(JSON.stringify(res.data, null, 2) + "\n");
     });
@@ -204,7 +228,10 @@ function registerMessageSearch(parent: Command) {
       if (opts.sender) params.set("sender", opts.sender);
       if (opts.limit) params.set("limit", opts.limit);
 
-      const res = await client.request("GET", `/internal/agent/${encodeURIComponent(ctx.agentId)}/search?${params.toString()}`);
+      const res = await client.request(
+        "GET",
+        `/internal/agent/${encodeURIComponent(ctx.agentId)}/search?${params.toString()}`,
+      );
       if (!res.ok) fail("SEARCH_FAILED", res.error ?? `HTTP ${res.status}`);
       process.stdout.write(JSON.stringify(res.data, null, 2) + "\n");
     });
@@ -221,7 +248,11 @@ function registerMessageReact(parent: Command) {
       const ctx = loadAgentContext();
       const client = new ApiClient(ctx);
       const method = opts.remove ? "DELETE" : "POST";
-      const res = await client.request(method, `/internal/agent/${encodeURIComponent(ctx.agentId)}/messages/${opts.messageId}/reactions`, { emoji: opts.emoji });
+      const res = await client.request(
+        method,
+        `/internal/agent/${encodeURIComponent(ctx.agentId)}/messages/${opts.messageId}/reactions`,
+        { emoji: opts.emoji },
+      );
       if (!res.ok) fail("REACT_FAILED", res.error ?? `HTTP ${res.status}`);
       process.stdout.write(`${opts.remove ? "Removed" : "Added"} reaction ${opts.emoji}\n`);
     });
@@ -250,7 +281,11 @@ function registerAttachmentUpload(parent: Command) {
       const blob = new Blob([buffer], { type: opts.mimeType ?? "application/octet-stream" });
       form.append("file", blob, pathModule.basename(filePath));
 
-      const res = await client.requestMultipart("POST", `/internal/agent/${encodeURIComponent(ctx.agentId)}/upload`, form);
+      const res = await client.requestMultipart(
+        "POST",
+        `/internal/agent/${encodeURIComponent(ctx.agentId)}/upload`,
+        form,
+      );
       if (!res.ok) fail("UPLOAD_FAILED", res.error ?? `HTTP ${res.status}`);
       process.stdout.write(JSON.stringify(res.data, null, 2) + "\n");
     });
@@ -291,7 +326,10 @@ function registerTaskList(parent: Command) {
       const params = new URLSearchParams();
       params.set("channel", opts.channel);
       if (opts.status) params.set("status", opts.status);
-      const res = await client.request("GET", `/internal/agent/${encodeURIComponent(ctx.agentId)}/tasks?${params.toString()}`);
+      const res = await client.request(
+        "GET",
+        `/internal/agent/${encodeURIComponent(ctx.agentId)}/tasks?${params.toString()}`,
+      );
       if (!res.ok) fail("TASK_LIST_FAILED", res.error ?? `HTTP ${res.status}`);
       process.stdout.write(JSON.stringify(res.data, null, 2) + "\n");
     });
@@ -363,11 +401,15 @@ function registerTaskUpdate(parent: Command) {
     .action(async (opts: { channel: string; number: string; status: string }) => {
       const ctx = loadAgentContext();
       const client = new ApiClient(ctx);
-      const res = await client.request("POST", `/internal/agent/${encodeURIComponent(ctx.agentId)}/tasks/update-status`, {
-        channel: opts.channel,
-        number: Number(opts.number),
-        status: opts.status,
-      });
+      const res = await client.request(
+        "POST",
+        `/internal/agent/${encodeURIComponent(ctx.agentId)}/tasks/update-status`,
+        {
+          channel: opts.channel,
+          number: Number(opts.number),
+          status: opts.status,
+        },
+      );
       if (!res.ok) fail("TASK_UPDATE_FAILED", res.error ?? `HTTP ${res.status}`);
       process.stdout.write(JSON.stringify(res.data, null, 2) + "\n");
     });
@@ -405,7 +447,10 @@ function registerDispatchList(parent: Command) {
       const params = new URLSearchParams();
       params.set("channel", opts.channel);
       if (opts.status) params.set("status", opts.status);
-      const res = await client.request("GET", `/internal/agent/${encodeURIComponent(ctx.agentId)}/dispatches?${params.toString()}`);
+      const res = await client.request(
+        "GET",
+        `/internal/agent/${encodeURIComponent(ctx.agentId)}/dispatches?${params.toString()}`,
+      );
       if (!res.ok) fail("DISPATCH_LIST_FAILED", res.error ?? `HTTP ${res.status}`);
       process.stdout.write(JSON.stringify(res.data, null, 2) + "\n");
     });
@@ -420,9 +465,13 @@ function registerDispatchReport(parent: Command) {
     .action(async (reportText: string, opts: { id: string }) => {
       const ctx = loadAgentContext();
       const client = new ApiClient(ctx);
-      const res = await client.request("POST", `/internal/agent/${encodeURIComponent(ctx.agentId)}/dispatch/${encodeURIComponent(opts.id)}/report`, {
-        reportText,
-      });
+      const res = await client.request(
+        "POST",
+        `/internal/agent/${encodeURIComponent(ctx.agentId)}/dispatch/${encodeURIComponent(opts.id)}/report`,
+        {
+          reportText,
+        },
+      );
       if (!res.ok) fail("DISPATCH_REPORT_FAILED", res.error ?? `HTTP ${res.status}`);
       process.stdout.write("Dispatch reported\n");
     });
@@ -437,9 +486,13 @@ function registerDispatchCancel(parent: Command) {
     .action(async (opts: { id: string; reason?: string }) => {
       const ctx = loadAgentContext();
       const client = new ApiClient(ctx);
-      const res = await client.request("POST", `/internal/agent/${encodeURIComponent(ctx.agentId)}/dispatch/${encodeURIComponent(opts.id)}/cancel`, {
-        reason: opts.reason,
-      });
+      const res = await client.request(
+        "POST",
+        `/internal/agent/${encodeURIComponent(ctx.agentId)}/dispatch/${encodeURIComponent(opts.id)}/cancel`,
+        {
+          reason: opts.reason,
+        },
+      );
       if (!res.ok) fail("DISPATCH_CANCEL_FAILED", res.error ?? `HTTP ${res.status}`);
       process.stdout.write("Dispatch cancelled\n");
     });
@@ -509,10 +562,14 @@ function registerIntegrationLogin(parent: Command) {
     .action(async (opts: { service: string; scope?: string }) => {
       const ctx = loadAgentContext();
       const client = new ApiClient(ctx);
-      const res = await client.request("POST", `/internal/agent/${encodeURIComponent(ctx.agentId)}/integrations/login`, {
-        service: opts.service,
-        scope: opts.scope,
-      });
+      const res = await client.request(
+        "POST",
+        `/internal/agent/${encodeURIComponent(ctx.agentId)}/integrations/login`,
+        {
+          service: opts.service,
+          scope: opts.scope,
+        },
+      );
       if (!res.ok) fail("INTEGRATION_LOGIN_FAILED", res.error ?? `HTTP ${res.status}`);
       process.stdout.write(JSON.stringify(res.data, null, 2) + "\n");
     });
@@ -569,7 +626,10 @@ function registerReminderCancel(parent: Command) {
     .action(async (opts: { id: string }) => {
       const ctx = loadAgentContext();
       const client = new ApiClient(ctx);
-      const res = await client.request("DELETE", `/internal/agent/${encodeURIComponent(ctx.agentId)}/reminders/${opts.id}`);
+      const res = await client.request(
+        "DELETE",
+        `/internal/agent/${encodeURIComponent(ctx.agentId)}/reminders/${opts.id}`,
+      );
       if (!res.ok) fail("REMINDER_CANCEL_FAILED", res.error ?? `HTTP ${res.status}`);
       process.stdout.write("Reminder cancelled\n");
     });
@@ -584,7 +644,11 @@ function registerReminderSnooze(parent: Command) {
     .action(async (opts: { id: string; by: string }) => {
       const ctx = loadAgentContext();
       const client = new ApiClient(ctx);
-      const res = await client.request("POST", `/internal/agent/${encodeURIComponent(ctx.agentId)}/reminders/${opts.id}/snooze`, { duration: opts.by });
+      const res = await client.request(
+        "POST",
+        `/internal/agent/${encodeURIComponent(ctx.agentId)}/reminders/${opts.id}/snooze`,
+        { duration: opts.by },
+      );
       if (!res.ok) fail("REMINDER_SNOOZE_FAILED", res.error ?? `HTTP ${res.status}`);
       process.stdout.write(JSON.stringify(res.data, null, 2) + "\n");
     });
@@ -607,7 +671,11 @@ function registerReminderUpdate(parent: Command) {
       if (opts.in) body.delaySeconds = parseDuration(opts.in);
       if (opts.cadence) body.repeat = opts.cadence;
       if (opts.title) body.title = opts.title;
-      const res = await client.request("PATCH", `/internal/agent/${encodeURIComponent(ctx.agentId)}/reminders/${opts.id}`, body);
+      const res = await client.request(
+        "PATCH",
+        `/internal/agent/${encodeURIComponent(ctx.agentId)}/reminders/${opts.id}`,
+        body,
+      );
       if (!res.ok) fail("REMINDER_UPDATE_FAILED", res.error ?? `HTTP ${res.status}`);
       process.stdout.write(JSON.stringify(res.data, null, 2) + "\n");
     });
@@ -621,7 +689,10 @@ function registerReminderLog(parent: Command) {
     .action(async (opts: { id: string }) => {
       const ctx = loadAgentContext();
       const client = new ApiClient(ctx);
-      const res = await client.request("GET", `/internal/agent/${encodeURIComponent(ctx.agentId)}/reminders/${opts.id}/log`);
+      const res = await client.request(
+        "GET",
+        `/internal/agent/${encodeURIComponent(ctx.agentId)}/reminders/${opts.id}/log`,
+      );
       if (!res.ok) fail("REMINDER_LOG_FAILED", res.error ?? `HTTP ${res.status}`);
       process.stdout.write(JSON.stringify(res.data, null, 2) + "\n");
     });
@@ -661,11 +732,16 @@ function parseDuration(duration: string): number {
   if (!match) throw new Error(`Invalid duration: ${duration}`);
   const value = Number(match[1]);
   switch (match[2]) {
-    case "s": return value;
-    case "m": return value * 60;
-    case "h": return value * 3600;
-    case "d": return value * 86400;
-    default: return value;
+    case "s":
+      return value;
+    case "m":
+      return value * 60;
+    case "h":
+      return value * 3600;
+    case "d":
+      return value * 86400;
+    default:
+      return value;
   }
 }
 
@@ -673,10 +749,7 @@ function parseDuration(duration: string): number {
 // Program entry
 // ---------------------------------------------------------------------------
 const program = new Command();
-program
-  .name("slock")
-  .description("Agent-facing execution interface for CollabAgent")
-  .version("0.1.0");
+program.name("slock").description("Agent-facing execution interface for CollabAgent").version("0.1.0");
 
 // Top-level command groups
 const authCmd = program.command("auth").description("Auth introspection");

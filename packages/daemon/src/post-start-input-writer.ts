@@ -13,15 +13,29 @@ import type { IAgentManager } from "./types/index.js";
  *
  * 适配自 Hive 的 `post-start-input-writer.ts`，去除了 Gemini 特定检测；
  * paste acknowledgement 等待逻辑保留（见 submitPastedInteractiveInput）。
+ *
+ * ────────────────────────────────────────────────────────────────────────
+ * 何时可删（O13）：本文件整组逻辑（提示符就绪轮询 / bracketed paste / paste-ack
+ * 等待 / Enter 时序）都是「agent = PTY 里的 TUI」这一形态的键盘模拟补偿。
+ * 删除条件（满足其一）：
+ *   a) 输入通道结构化——agent 消息改走 stream-json 持久会话（本仓已有
+ *      PersistentClaude，stdin 写 JSON-RPC、无 TUI 键盘路径）或 ACP 类 headless
+ *      运行时（对照 buzz-agent：agent 是 stdio JSON-RPC 进程，session/prompt
+ *      投递消息，根本没有终端）；
+ *   b) claude CLI 官方提供非键盘的结构化输入通道（socket/IPC/持久会话 API）。
+ * 前置依赖：终端观察面板目前消费 PTY 渲染帧，结构化路径需先补等价的观察
+ * 遥测（buzz 用 OBSERVER_FRAME_TELEMETRY 结构化帧替代截屏）。
+ * 详见 docs/2026-08-18/01-pty-keyboard-vs-structured-channels.md。
+ *
+ * 状态更新（2026-08-18 B2）：条件 a) 及前置依赖均已达成——PersistentClaude
+ * stream-json 持久会话已是默认输入通道，观察遥测由 agent-observation.ts
+ * 结构化帧 + transcript 渲染承担。本文件仅服务 `SLOCK_USE_PTY=1` fallback，
+ * 彻底删除条件 = PTY 模式整体退役。
+ * ────────────────────────────────────────────────────────────────────────
  */
 
 /** 支持交互式提示符检测的 CLI 命令 */
-export const INTERACTIVE_COMMANDS = new Set([
-  "claude",
-  "codex",
-  "gemini",
-  "opencode",
-]);
+export const INTERACTIVE_COMMANDS = new Set(["claude", "codex", "gemini", "opencode"]);
 
 /** 轮询间隔 */
 const READY_CHECK_INTERVAL_MS = 50;
@@ -30,11 +44,7 @@ const READY_CHECK_INTERVAL_MS = 50;
 const READY_TIMEOUT_MS = 8000;
 
 /** 支持 bracketed paste 的 CLI（多行内容用 ANSI 转义包装） */
-const COMMANDS_WITH_BRACKETED_PASTE = new Set([
-  "claude",
-  "codex",
-  "opencode",
-]);
+const COMMANDS_WITH_BRACKETED_PASTE = new Set(["claude", "codex", "opencode"]);
 
 /**
  * 从 command 里提取可比对的裸名字——调用方传进来的往往是 resolveClaudeBinary()
@@ -45,7 +55,9 @@ const COMMANDS_WITH_BRACKETED_PASTE = new Set([
  * 写入"的旧行为，只是靠运气大部分时候没炸。
  */
 export const commandBaseName = (command: string): string =>
-  basename(command).replace(/\.(exe|cmd|bat)$/i, "").toLowerCase();
+  basename(command)
+    .replace(/\.(exe|cmd|bat)$/i, "")
+    .toLowerCase();
 
 /**
  * 检测当前屏幕是否出现交互式提示符 `❯`/`›`。screenText 已经是终端模拟器
@@ -88,19 +100,14 @@ const PASTE_ACK_MAX_TIMEOUT_MS = 3000;
  * 永久停在那，output 长度冻结不再变化。这正是 Hive 的 `post-start-input-writer.ts`
  * 用 paste-ack 等待解决的问题；本文件之前的版本把这段逻辑简化掉了。
  */
-const submitPastedInteractiveInput = (
-  agentManager: IAgentManager,
-  runId: string,
-  text: string,
-): void => {
+const submitPastedInteractiveInput = (agentManager: IAgentManager, runId: string, text: string): void => {
   const wrapped = toBracketedPasteSubmission(text);
   agentManager.writeInput(runId, wrapped);
-  console.log(`[PostStart] ${runId} wrote bracketed paste (${text.length} chars), waiting for ack/timeout before Enter`);
-
-  const timeoutMs = Math.min(
-    PASTE_ACK_MAX_TIMEOUT_MS,
-    Math.max(PASTE_ACK_MIN_TIMEOUT_MS, text.length * 2),
+  console.log(
+    `[PostStart] ${runId} wrote bracketed paste (${text.length} chars), waiting for ack/timeout before Enter`,
   );
+
+  const timeoutMs = Math.min(PASTE_ACK_MAX_TIMEOUT_MS, Math.max(PASTE_ACK_MIN_TIMEOUT_MS, text.length * 2));
   const startedAt = Date.now();
 
   const trySubmit = (): void => {
@@ -120,10 +127,12 @@ const submitPastedInteractiveInput = (
     if (acked || timedOut) {
       console.log(
         `[PostStart] ${runId} sending Enter now (acked=${acked}, timedOut=${timedOut}, ` +
-        `elapsed=${Date.now() - startedAt}ms) screen=...${run.screenText.replace(/\s+/g, " ").trim().slice(-300)}`,
+          `elapsed=${Date.now() - startedAt}ms) screen=...${run.screenText.replace(/\s+/g, " ").trim().slice(-300)}`,
       );
       setTimeout(() => {
-        try { agentManager.writeInput(runId, "\r"); } catch (err: any) {
+        try {
+          agentManager.writeInput(runId, "\r");
+        } catch (err: any) {
           console.warn(`[PostStart] ${runId} writeInput("\\r") threw:`, err?.message ?? err);
         }
       }, PASTE_SETTLE_DELAY_MS);
@@ -144,10 +153,7 @@ export type PostStartInputWriter = (runId: string, text: string) => void;
  * @param command      - 启动的 CLI 命令名（如 "claude"），决定是否用 bracketed paste
  * @returns writer 函数
  */
-export const createPostStartInputWriter = (
-  agentManager: IAgentManager,
-  command: string,
-): PostStartInputWriter => {
+export const createPostStartInputWriter = (agentManager: IAgentManager, command: string): PostStartInputWriter => {
   return (runId: string, text: string): void => {
     const startedAt = Date.now();
     let attempts = 0;
@@ -179,8 +185,8 @@ export const createPostStartInputWriter = (
         if (timedOut && !promptReady) {
           console.warn(
             `[PostStart] ${runId} prompt not ready after ${READY_TIMEOUT_MS}ms ` +
-            `(command=${basename(command)}, outputLen=${run.output.length}); ` +
-            `writing anyway. screen=...${run.screenText.replace(/\s+/g, " ").trim().slice(-300)}`,
+              `(command=${basename(command)}, outputLen=${run.output.length}); ` +
+              `writing anyway. screen=...${run.screenText.replace(/\s+/g, " ").trim().slice(-300)}`,
           );
         }
         return;

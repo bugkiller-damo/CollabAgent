@@ -15,6 +15,18 @@ import { join, resolve } from "node:path";
  * - codex: ~/.codex/sessions/{sessionId}.jsonl
  * - gemini: {workspace}/.gemini/tmp/{project}/...
  * - opencode: {workspace}/.opencode/sessions/{sessionId}.json
+ *
+ * 何时可删（O13）：captureSessionId 靠「扫文件系统里最新修改的会话文件」猜测
+ * 当前 session——在 PTY/TUI 模式下没有更好的来源。删除条件：
+ *   a) claude 在结构化输出里直接报告 session id（`--output-format stream-json`
+ *      的 system init 事件就带 session_id——one-shot 与 PersistentClaude 路径
+ *      已经在用它，本启发式只服务 PTY 路径）；
+ *   b) 或输入/输出通道整体结构化后（见 post-start-input-writer.ts 头注）。
+ * 已知脆弱点：多 PTY 同 workspace 并发时「最新 mtime」可能拿错会话。
+ *
+ * 状态更新（2026-08-18 B2）：条件 a) 已达成——headless 默认路径的 session id
+ * 来自 stream-json system init 事件（精确来源），本启发式仅服务
+ * `SLOCK_USE_PTY=1` fallback。彻底删除条件 = PTY 模式整体退役。
  */
 
 /** Claude Code 生成 `~/.claude/projects/` 子目录名的规则：见上方注释。 */
@@ -65,7 +77,9 @@ export function captureSessionId(cliName: string, workspaceDir: string): string 
         latestMtime = s.mtimeMs;
         latest = f;
       }
-    } catch { /* skip */ }
+    } catch {
+      /* skip */
+    }
   }
   return extractSessionId(latest);
 }

@@ -25,13 +25,19 @@ export function startReminderScheduler(app: FastifyInstance, intervalMs = 20000)
               LIMIT 20
               FOR UPDATE SKIP LOCKED
            )
-         RETURNING *`
+         RETURNING *`,
       );
       if (claimed.rows.length > 0) {
         const { inc } = await import("./metrics.js");
         inc("remindersFired", claimed.rows.length);
       }
-      for (const r of claimed.rows as { owner_id: string; id: number; title: string; channel_ref: string | null; repeat_rule: string | null }[]) {
+      for (const r of claimed.rows as {
+        owner_id: string;
+        id: number;
+        title: string;
+        channel_ref: string | null;
+        repeat_rule: string | null;
+      }[]) {
         // 解析出这个 agent 的所有者，只通知对应那台 daemon——广播会让别的 daemon
         // 误把它当成自己托管的 agent 尝试拉起，spawn 阶段 403 "not your agent"。
         const owner = await app.pg.query<{ user_id: string }>("SELECT user_id FROM agents WHERE id = $1", [r.owner_id]);
@@ -48,15 +54,15 @@ export function startReminderScheduler(app: FastifyInstance, intervalMs = 20000)
         if (next) {
           await app.pg.query(
             "UPDATE reminders SET status = 'scheduled', fire_at = $1, updated_at = now() WHERE id = $2",
-            [next.toISOString(), r.id]
+            [next.toISOString(), r.id],
           );
         }
         // 持久化事件日志（best-effort，不阻断 fire）
         await app.pg
-          .query(
-            "INSERT INTO reminder_events (reminder_id, event_type, detail) VALUES ($1, 'fired', $2::jsonb)",
-            [r.id, JSON.stringify({ title: r.title, repeat: r.repeat_rule || null, next: next ? next.toISOString() : null })]
-          )
+          .query("INSERT INTO reminder_events (reminder_id, event_type, detail) VALUES ($1, 'fired', $2::jsonb)", [
+            r.id,
+            JSON.stringify({ title: r.title, repeat: r.repeat_rule || null, next: next ? next.toISOString() : null }),
+          ])
           .catch(() => {});
         app.log?.info?.(`[Reminder] fired "${r.title}" for agent ${String(r.owner_id).slice(0, 8)}`);
       }

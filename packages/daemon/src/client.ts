@@ -1,5 +1,5 @@
-import { buildFetchDispatcher } from "./proxy.js";
 import type { AgentContext } from "./auth.js";
+import { buildFetchDispatcher } from "./proxy.js";
 
 export interface ApiResponse<T = unknown> {
   ok: boolean;
@@ -36,15 +36,18 @@ export class ApiClient {
     if (suffix === "/send") return "/internal/agent-api/send";
     if (suffix.startsWith("/history")) return `/internal/agent-api/history${suffix.slice("/history".length)}`;
     if (suffix.startsWith("/search")) return `/internal/agent-api/search${suffix.slice("/search".length)}`;
-    if (suffix.startsWith("/channel-members")) return `/internal/agent-api/channel-members${suffix.slice("/channel-members".length)}`;
+    if (suffix.startsWith("/channel-members"))
+      return `/internal/agent-api/channel-members${suffix.slice("/channel-members".length)}`;
     if (suffix === "/profile" || suffix.startsWith("/profile/")) return `/internal/agent-api${suffix}`;
     if (suffix === "/integrations" || suffix.startsWith("/integrations/")) return `/internal/agent-api${suffix}`;
     if (suffix === "/upload") return "/internal/agent-api/upload";
     if (suffix === "/resolve-channel") return "/internal/agent-api/resolve-channel";
     if (suffix === "/threads/unfollow") return "/internal/agent-api/threads/unfollow";
     if (suffix === "/prepare-action") return "/internal/agent-api/prepare-action";
-    if (suffix === "/tasks" || suffix.startsWith("/tasks?") || suffix.startsWith("/tasks/")) return `/internal/agent-api${suffix}`;
-    if (suffix === "/reminders" || suffix.startsWith("/reminders?") || suffix.startsWith("/reminders/")) return `/internal/agent-api${suffix}`;
+    if (suffix === "/tasks" || suffix.startsWith("/tasks?") || suffix.startsWith("/tasks/"))
+      return `/internal/agent-api${suffix}`;
+    if (suffix === "/reminders" || suffix.startsWith("/reminders?") || suffix.startsWith("/reminders/"))
+      return `/internal/agent-api${suffix}`;
     if (suffix === "/receive" || suffix.startsWith("/receive?")) return "/internal/agent-api/events?since=latest";
 
     // Reaction: /messages/{id}/reactions
@@ -60,7 +63,7 @@ export class ApiClient {
 
   private buildAuthHeaders(): Record<string, string> {
     const headers: Record<string, string> = {
-      "Authorization": `Bearer ${this.ctx.token}`,
+      Authorization: `Bearer ${this.ctx.token}`,
       "X-Agent-Id": this.ctx.agentId,
       "X-Slock-Client": "cli",
     };
@@ -120,11 +123,7 @@ export class ApiClient {
     };
   }
 
-  async request<T = unknown>(
-    method: string,
-    pathname: string,
-    body?: unknown
-  ): Promise<ApiResponse<T>> {
+  async request<T = unknown>(method: string, pathname: string, body?: unknown): Promise<ApiResponse<T>> {
     pathname = this.rewriteAgentCredentialPath(pathname);
     const url = new URL(pathname, this.ctx.serverUrl).toString();
     const headers = this.buildAuthHeaders();
@@ -141,11 +140,7 @@ export class ApiClient {
     return this.parseJsonResponse<T>(res);
   }
 
-  async requestMultipart<T = unknown>(
-    method: string,
-    pathname: string,
-    form: FormData
-  ): Promise<ApiResponse<T>> {
+  async requestMultipart<T = unknown>(method: string, pathname: string, form: FormData): Promise<ApiResponse<T>> {
     pathname = this.rewriteAgentCredentialPath(pathname);
     const url = new URL(pathname, this.ctx.serverUrl).toString();
     const headers = this.buildAuthHeaders();

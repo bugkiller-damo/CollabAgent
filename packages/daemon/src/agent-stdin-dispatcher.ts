@@ -1,5 +1,5 @@
-import type { IAgentManager, IAgentStdinDispatcher } from "./types/index.js";
 import type { PostStartInputWriter } from "./post-start-input-writer.js";
+import type { IAgentManager, IAgentStdinDispatcher } from "./types/index.js";
 
 /**
  * Agent stdin 消息调度器。
@@ -11,6 +11,11 @@ import type { PostStartInputWriter } from "./post-start-input-writer.js";
  *
  * 写入策略：内部通过 PostStartInputWriter 投递，会等 PTY 提示符 `❯` / `›` 就绪
  * 后再写入，避免在 CLI 未就绪时丢消息。
+ *
+ * 备注（O13）：本模块不是时序 workaround——它是业务消息格式化层（六类系统消息
+ * 的统一信封）。它随键盘输入通道的存亡而动：若输入改走 stream-json/ACP 结构化
+ * 通道（见 post-start-input-writer.ts 头注的删除条件），这里只需把 `writer` 换成
+ * 结构化写入器，消息格式本身可原样保留。
  */
 export const createAgentStdinDispatcher = (
   _manager: IAgentManager,
@@ -23,7 +28,10 @@ export const createAgentStdinDispatcher = (
 
   const writeToRun = (agentName: string, payload: string): void => {
     const runId = getRunId(agentName);
-    if (!runId) { console.warn(`[Dispatcher] No runId for @${agentName}`); return; }
+    if (!runId) {
+      console.warn(`[Dispatcher] No runId for @${agentName}`);
+      return;
+    }
     writer(runId, payload);
   };
 

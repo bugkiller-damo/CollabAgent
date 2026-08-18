@@ -55,7 +55,7 @@ export const createExitHandler = (opts: ExitHandlerOptions): ExitHandler => {
 
     console.log(
       `[ExitHandler] run=${ctx.runId.slice(0, 8)} agent=${ctx.agentId.slice(0, 8)} ` +
-      `exit=${ctx.exitCode}${ctx.signal ? ` signal=${ctx.signal}` : ""}`,
+        `exit=${ctx.exitCode}${ctx.signal ? ` signal=${ctx.signal}` : ""}`,
     );
     return result;
   };

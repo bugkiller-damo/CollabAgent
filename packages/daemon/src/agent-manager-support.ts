@@ -1,7 +1,7 @@
 import type { IPty } from "node-pty";
-import type { AgentRunSnapshot, RunStatus } from "./types/index.js";
 import type { PtyOutputBus } from "./pty-output-bus.js";
 import { createTerminalState, type ITerminalState } from "./terminal-state.js";
+import type { AgentRunSnapshot, RunStatus } from "./types/index.js";
 
 /** 单次 Agent 运行的进程封装（含 PTY 句柄与控制方法） */
 export interface AgentRunProcess {
@@ -41,20 +41,22 @@ export const MAX_RUN_OUTPUT_LENGTH = 1_000_000;
  *
  * 返回值即 `run` 本身（已附加方法），方便链式调用。
  */
-export const attachAgentPty = (
-  run: AgentRunProcess,
-  pty: IPty,
-  outputBus: PtyOutputBus,
-): AgentRunProcess => {
+export const attachAgentPty = (run: AgentRunProcess, pty: IPty, outputBus: PtyOutputBus): AgentRunProcess => {
   // ---- 控制方法 ----
   run.stop = (signal?: string) => {
     if (run.isStopped()) return;
-    try { pty.kill(signal); } catch { /* 已退出 */ }
+    try {
+      pty.kill(signal);
+    } catch {
+      /* 已退出 */
+    }
   };
 
   run.write = (input: string | Buffer) => {
     if (run.isStopped()) return;
-    try { pty.write(input); } catch (err: any) {
+    try {
+      pty.write(input);
+    } catch (err: any) {
       console.error(`[AgentMgr] write failed for ${run.runId}:`, err?.message ?? err);
     }
   };
@@ -62,16 +64,32 @@ export const attachAgentPty = (
   run.resize = (cols: number, rows: number) => {
     run.cols = cols;
     run.rows = rows;
-    try { pty.resize(cols, rows); } catch { /* resize 在已退出时可能失败 */ }
-    try { run.terminal.resize(cols, rows); } catch { /* 不应该失败，防御性 */ }
+    try {
+      pty.resize(cols, rows);
+    } catch {
+      /* resize 在已退出时可能失败 */
+    }
+    try {
+      run.terminal.resize(cols, rows);
+    } catch {
+      /* 不应该失败，防御性 */
+    }
   };
 
   run.pause = () => {
-    try { pty.pause(); } catch { /* Windows 上可能不支持 */ }
+    try {
+      pty.pause();
+    } catch {
+      /* Windows 上可能不支持 */
+    }
   };
 
   run.resume = () => {
-    try { pty.resume(); } catch { /* Windows 上可能不支持 */ }
+    try {
+      pty.resume();
+    } catch {
+      /* Windows 上可能不支持 */
+    }
   };
 
   run.isStopped = () => run.status === "exited" || run.status === "error";
@@ -105,10 +123,7 @@ export const attachAgentPty = (
  * - 若已注册 onExit 回调，触发之
  * - 幂等：重复调用仅更新 exitCode
  */
-export const finishAgentRun = (
-  run: AgentRunProcess,
-  exitCode: number | null,
-): void => {
+export const finishAgentRun = (run: AgentRunProcess, exitCode: number | null): void => {
   if (run.status === "exited" || run.status === "error") {
     if (run.exitCode === null) run.exitCode = exitCode;
     return;
@@ -116,7 +131,9 @@ export const finishAgentRun = (
   run.exitCode = exitCode;
   run.status = exitCode === 0 ? "exited" : "error";
   if (run.onExit) {
-    try { run.onExit(exitCode); } catch (err: any) {
+    try {
+      run.onExit(exitCode);
+    } catch (err: any) {
       console.error(`[AgentMgr] onExit callback failed for ${run.runId}:`, err?.message ?? err);
     }
   }

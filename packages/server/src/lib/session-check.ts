@@ -16,28 +16,17 @@ export function clearSessionCache(): void {
   cache.clear();
 }
 
-export async function isSessionValid(
-  app: FastifyInstance,
-  sid: string,
-  userId: string,
-  tv?: string
-): Promise<boolean> {
+export async function isSessionValid(app: FastifyInstance, sid: string, userId: string, tv?: string): Promise<boolean> {
   const key = `${sid}:${tv ?? ""}`;
   const hit = cache.get(key);
   if (hit && Date.now() < hit.expiresAt) return hit.ok;
 
   let ok = false;
   try {
-    const s = await app.pg.query(
-      "SELECT 1 FROM user_sessions WHERE id = $1 AND revoked_at IS NULL",
-      [sid]
-    );
+    const s = await app.pg.query("SELECT 1 FROM user_sessions WHERE id = $1 AND revoked_at IS NULL", [sid]);
     if (s.rows.length > 0) {
       if (tv) {
-        const u = await app.pg.query(
-          "SELECT 1 FROM users WHERE id = $1 AND token_version = $2",
-          [userId, tv]
-        );
+        const u = await app.pg.query("SELECT 1 FROM users WHERE id = $1 AND token_version = $2", [userId, tv]);
         ok = u.rows.length > 0;
       } else {
         ok = true;

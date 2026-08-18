@@ -60,14 +60,21 @@ export const createAgentStateMachine = (): IAgentStateMachine => {
     // 同态迁移是 no-op（退出清理链等会对已是 idle 的 agent 再转一次 idle），
     // 直接放行，不打扰 assertTransition 的警告日志。
     if (from === to) return;
-    try { assertTransition(from, to); } catch { return; }
+    try {
+      assertTransition(from, to);
+    } catch {
+      return;
+    }
     agentStates.set(name, { status: to, lastTransitionAt: Date.now(), startupTimer: null });
     console.log(`[Runtime] @${name} ${STATE_LABEL[from]} → ${STATE_LABEL[to]}`);
   };
 
   const clearStartupTimer = (name: string): void => {
     const st = agentStates.get(name);
-    if (st?.startupTimer) { clearTimeout(st.startupTimer); st.startupTimer = null; }
+    if (st?.startupTimer) {
+      clearTimeout(st.startupTimer);
+      st.startupTimer = null;
+    }
   };
 
   return {

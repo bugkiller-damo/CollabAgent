@@ -7,13 +7,20 @@ declare module "fastify" {
     pg: {
       query: <T = Record<string, unknown>>(sql: string, params?: unknown[]) => Promise<{ rows: T[] }>;
       transaction: <T = unknown>(
-        fn: (tx: { query: <R = Record<string, unknown>>(sql: string, params?: unknown[]) => Promise<{ rows: R[] }> }) => Promise<T>
+        fn: (tx: {
+          query: <R = Record<string, unknown>>(sql: string, params?: unknown[]) => Promise<{ rows: R[] }>;
+        }) => Promise<T>,
       ) => Promise<T>;
     };
   }
 
   interface FastifyRequest {
-    file?: () => Promise<{ filename: string; mimetype: string; toBuffer: () => Promise<Buffer>; file?: { truncated: boolean } }>;
+    file?: () => Promise<{
+      filename: string;
+      mimetype: string;
+      toBuffer: () => Promise<Buffer>;
+      file?: { truncated: boolean };
+    }>;
   }
 }
 

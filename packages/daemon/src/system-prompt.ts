@@ -35,7 +35,11 @@ export function generateRelaySystemPrompt(agent: AgentIdentity, channelName?: st
 
 // 自主模式系统提示（Phase 2）：agent 自己用 slock CLI 收发。
 // 仅列当前服务端已实现的命令，避免 agent 调用未实现接口而 404。
-export function generateSystemPrompt(agent: AgentIdentity, channelName?: string, dispatchContext?: DispatchContext | null): string {
+export function generateSystemPrompt(
+  agent: AgentIdentity,
+  channelName?: string,
+  dispatchContext?: DispatchContext | null,
+): string {
   const display = agent.displayName && agent.displayName !== agent.name ? `（${agent.displayName}）` : "";
   const ch = channelName || "general";
   const lines = [

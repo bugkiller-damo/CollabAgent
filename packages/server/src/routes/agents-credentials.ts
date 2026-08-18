@@ -16,8 +16,9 @@ const TOKEN_PREFIX = "sk_agent_";
 const TTL_MS = 24 * 60 * 60 * 1000; // 24h：足够覆盖单次长会话，daemon 重启后下次 dispatch 会自然重新 mint
 
 function generateToken(): string {
-  const randomPart = Array.from({ length: 32 }, () =>
-    "abcdefghijklmnopqrstuvwxyz0123456789"[Math.floor(Math.random() * 36)]
+  const randomPart = Array.from(
+    { length: 32 },
+    () => "abcdefghijklmnopqrstuvwxyz0123456789"[Math.floor(Math.random() * 36)],
   ).join("");
   return TOKEN_PREFIX + randomPart;
 }
@@ -51,7 +52,7 @@ export async function agentCredentialRoutes(app: FastifyInstance) {
          expires_at = EXCLUDED.expires_at,
          revoked_at = NULL,
          created_at = now()`,
-      [agentId, hash, TOKEN_PREFIX, expiresAt.toISOString()]
+      [agentId, hash, TOKEN_PREFIX, expiresAt.toISOString()],
     );
     return { token, agentId, expiresAt: expiresAt.toISOString() };
   });
@@ -60,10 +61,9 @@ export async function agentCredentialRoutes(app: FastifyInstance) {
   app.delete("/:agentId/credentials", { preHandler: [app.authenticate, requireOwnAgent] }, async (req, reply) => {
     if (!requireMachineAuth(req, reply)) return;
     const agentId = (req.params as Record<string, string>).agentId;
-    await app.pg.query(
-      "UPDATE agent_credentials SET revoked_at = now() WHERE agent_id = $1 AND revoked_at IS NULL",
-      [agentId]
-    );
+    await app.pg.query("UPDATE agent_credentials SET revoked_at = now() WHERE agent_id = $1 AND revoked_at IS NULL", [
+      agentId,
+    ]);
     return { ok: true };
   });
 }

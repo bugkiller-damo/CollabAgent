@@ -1,22 +1,17 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { formatRestartSummary } from "./restart-summary.js";
-import { installTermsAcceptHandler } from "./agent-runtime-terms-dialog.js";
-import { BUSY_MARKER_RE, PROMPT_RE } from "./agent-runtime-turn-tracker.js";
-import { bundleSlockMcpServer } from "./mcp-bundle.js";
-import { captureSessionId } from "./agent-sessions.js";
-import { getCommandPreset, renderResumeArgs } from "./command-presets.js";
-import type {
-  IAgentManager,
-  IAgentRunStore,
-  LiveAgentRun,
-  PtyOutputEvent,
-} from "./types/index.js";
-import type { IAgentStateMachine } from "./agent-runtime-state.js";
-import type { ITurnTracker } from "./agent-runtime-turn-tracker.js";
 import type { IExitChain } from "./agent-runtime-exit.js";
+import type { IAgentStateMachine } from "./agent-runtime-state.js";
+import { installTermsAcceptHandler } from "./agent-runtime-terms-dialog.js";
+import type { ITurnTracker } from "./agent-runtime-turn-tracker.js";
+import { BUSY_MARKER_RE, PROMPT_RE } from "./agent-runtime-turn-tracker.js";
+import { captureSessionId } from "./agent-sessions.js";
+import { getClaudePermissionArgs, getCommandPreset, renderResumeArgs } from "./command-presets.js";
 import type { IIdleReclaimer } from "./idle-reclaimer.js";
+import { bundleSlockMcpServer } from "./mcp-bundle.js";
 import type { PostStartInputWriter } from "./post-start-input-writer.js";
+import { formatRestartSummary } from "./restart-summary.js";
+import type { IAgentManager, IAgentRunStore, LiveAgentRun, PtyOutputEvent } from "./types/index.js";
 
 /**
  * PTY 启动 Claude 时的参数（仿照 Hive `claude-command-defaults.ts`）。
@@ -28,11 +23,10 @@ import type { PostStartInputWriter } from "./post-start-input-writer.js";
  * - `--permission-mode=bypassPermissions`：bypass 模式
  * - `--disallowedTools=Task`：禁用 Task 子代理
  */
-const CLAUDE_YOLO_ARGS = [
-  "--dangerously-skip-permissions",
-  "--permission-mode=bypassPermissions",
-  "--disallowedTools=Task",
-];
+// O12：主路径不再带 --dangerously-skip-permissions / bypassPermissions，
+// 改显式工具白名单（见 command-presets.ts getClaudePermissionArgs 注释）。
+// 每次 spawn 动态求值（SLOCK_AGENT_ALLOWED_TOOLS 可覆盖），不用模块级冻结常量。
+const getSpawnPermissionArgs = (): string[] => getClaudePermissionArgs();
 
 /**
  * Session resume（见 docs/2026-07-16/13-autostart-session-resume-plan.md §3.1）。
@@ -90,9 +84,15 @@ const clearSavedSessionId = (runStore: IAgentRunStore | undefined, agentId: stri
 /**
  * PTY 关键环境变量（仿照 Hive `agent-run-starter.ts:77-86`）。
  * 没有这些，Claude Code 的 TUI 可能不渲染 ❯ 提示符，或走非交互分支。
+ *
+ * O11：显式剔除 SLOCK_AGENT_TOKEN——明文 token 不进子进程 env（同机跨进程可读、
+ * 可能进 core dump）。token 经 workspace 里的 `.slock/agent-token` 文件传递
+ * （SLOCK_AGENT_TOKEN_FILE 只含路径，非敏感）；daemon 侧退出清理仍需 token 值，
+ * 由调用方在 env 对象上保留（daemon 内部），这里只剥离「给子进程的那份」。
  */
-const buildPtyEnv = (baseEnv: Record<string, string>): Record<string, string> => {
+export const buildPtyEnv = (baseEnv: Record<string, string>): Record<string, string> => {
   const env = { ...baseEnv };
+  delete env.SLOCK_AGENT_TOKEN;
   env.COLORTERM = "truecolor";
   env.FORCE_COLOR = "1";
   env.TERM = "xterm-256color";
@@ -115,13 +115,15 @@ const buildPtyEnv = (baseEnv: Record<string, string>): Record<string, string> =>
  * agent-runtime-terms-dialog.ts 里加一个同类的检测 + 自动确认分支，而不是
  * 继续猜测配置项名称。
  */
-const writeMcpConfig = (
+export const writeMcpConfig = (
   workspace: string,
   agentId: string,
-  agentToken: string,
+  agentTokenFile: string,
   serverUrl: string,
   mcpBundlePath: string,
 ): void => {
+  // O11：.mcp.json 只放 token 文件路径（非敏感），不再内嵌明文 token；
+  // MCP server 启动时按 SLOCK_AGENT_TOKEN_FILE 读文件取 token（见 mcp/slock-mcp-server.ts）
   const mcpConfig = {
     mcpServers: {
       slock: {
@@ -129,7 +131,7 @@ const writeMcpConfig = (
         args: [mcpBundlePath],
         env: {
           SLOCK_AGENT_ID: agentId,
-          SLOCK_AGENT_TOKEN: agentToken,
+          SLOCK_AGENT_TOKEN_FILE: agentTokenFile,
           SLOCK_SERVER_URL: serverUrl,
         },
       },
@@ -204,9 +206,18 @@ export type SpawnPtyForAgent = (
  */
 export const createSpawnPtyForAgent = (deps: SpawnPtyForAgentDeps): SpawnPtyForAgent => {
   const {
-    agentManager, resolvedClaudePath, runStore, exitChain,
-    stateMachine, turnTracker, idleReclaimer, postStartWriter,
-    runIdByAgent, unsubByRunId, getAgentModel, lastOutputAtByAgent,
+    agentManager,
+    resolvedClaudePath,
+    runStore,
+    exitChain,
+    stateMachine,
+    turnTracker,
+    idleReclaimer,
+    postStartWriter,
+    runIdByAgent,
+    unsubByRunId,
+    getAgentModel,
+    lastOutputAtByAgent,
     getPreferredTermSize,
   } = deps;
 
@@ -239,7 +250,7 @@ export const createSpawnPtyForAgent = (deps: SpawnPtyForAgentDeps): SpawnPtyForA
     try {
       const mcpBundlePath = await bundleSlockMcpServer();
       if (mcpBundlePath) {
-        writeMcpConfig(workspace, agentId, env.SLOCK_AGENT_TOKEN ?? "", env.SLOCK_SERVER_URL ?? "", mcpBundlePath);
+        writeMcpConfig(workspace, agentId, env.SLOCK_AGENT_TOKEN_FILE ?? "", env.SLOCK_SERVER_URL ?? "", mcpBundlePath);
       }
     } catch (err: any) {
       console.warn(`[Runtime] @${agentName} MCP config setup failed, falling back to CLI-only: ${err?.message ?? err}`);
@@ -250,9 +261,7 @@ export const createSpawnPtyForAgent = (deps: SpawnPtyForAgentDeps): SpawnPtyForA
     // 模型配置（runtime_profile.model，Web 端 sonnet/opus/haiku 可选）——此前从未
     // 接进启动参数，管理后台选的模型完全是摆设。做一次保守校验，防注入/坏值。
     const configuredModel = getAgentModel(agentName);
-    const modelArgs = configuredModel && /^[a-z0-9._-]+$/i.test(configuredModel)
-      ? ["--model", configuredModel]
-      : [];
+    const modelArgs = configuredModel && /^[a-z0-9._-]+$/i.test(configuredModel) ? ["--model", configuredModel] : [];
     if (modelArgs.length > 0) {
       console.log(`[Runtime] @${agentName} spawning with --model ${configuredModel}`);
     }
@@ -262,7 +271,9 @@ export const createSpawnPtyForAgent = (deps: SpawnPtyForAgentDeps): SpawnPtyForA
     // runId"是安全的 no-op（见下方注释），所以宽限期还没过时提前触发也不会
     // 误清理别的 run。
     let notifyExit: (() => void) | null = null;
-    const exitedSignal = new Promise<void>((resolve) => { notifyExit = resolve; });
+    const exitedSignal = new Promise<void>((resolve) => {
+      notifyExit = resolve;
+    });
 
     const snapshot = await agentManager.startAgent({
       agentId,
@@ -270,7 +281,7 @@ export const createSpawnPtyForAgent = (deps: SpawnPtyForAgentDeps): SpawnPtyForA
       workspaceDir: workspace,
       systemPromptFile: promptFile,
       env: ptyEnv,
-      args: [...CLAUDE_YOLO_ARGS, ...modelArgs, ...resumeArgs],
+      args: [...getSpawnPermissionArgs(), ...modelArgs, ...resumeArgs],
       // 面板协商过的首选尺寸（若有）：新 PTY 直接按用户面板比例启动，
       // 而不是先 80x24 启动再被动 resize
       ...(getPreferredTermSize(agentName) ?? {}),
@@ -286,15 +297,12 @@ export const createSpawnPtyForAgent = (deps: SpawnPtyForAgentDeps): SpawnPtyForA
 
     if (resumeSessionId && !isRetry) {
       const graceWindowMs = getResumeGraceWindowMs();
-      const exited = await Promise.race([
-        exitedSignal.then(() => true),
-        sleep(graceWindowMs).then(() => false),
-      ]);
+      const exited = await Promise.race([exitedSignal.then(() => true), sleep(graceWindowMs).then(() => false)]);
       if (exited) {
         console.warn(
           `[Runtime] @${agentName} PTY exited within ${graceWindowMs}ms of spawning with ` +
-          `--resume ${resumeSessionId.slice(0, 8)}...— treating as a failed resume, clearing saved ` +
-          `session id and retrying once without --resume`,
+            `--resume ${resumeSessionId.slice(0, 8)}...— treating as a failed resume, clearing saved ` +
+            `session id and retrying once without --resume`,
         );
         clearSavedSessionId(runStore, agentId, agentName);
         return attemptSpawn(agentName, agentId, workspace, promptFile, env, initialUserMsg, null, true);
@@ -306,6 +314,7 @@ export const createSpawnPtyForAgent = (deps: SpawnPtyForAgentDeps): SpawnPtyForA
       agentName,
       agentId,
       token: env.SLOCK_AGENT_TOKEN ?? "",
+      workspace, // O11：退出清理时删除 workspace/.slock/agent-token
       startedAt: snapshot.startedAt,
     });
     runStore?.insertAgentRun({
@@ -364,7 +373,7 @@ export const createSpawnPtyForAgent = (deps: SpawnPtyForAgentDeps): SpawnPtyForA
       idleReclaimer.touch(agentName);
       console.log(
         `[Runtime] @${agentName} round-end (outputLen=${run.output.length}) current screen: ` +
-        `${run.screenText.replace(/\s+/g, " ").trim().slice(-500)}`,
+          `${run.screenText.replace(/\s+/g, " ").trim().slice(-500)}`,
       );
     });
     unsubByRunId.set(snapshot.runId, unsub);
@@ -414,16 +423,16 @@ export const createSpawnPtyForAgent = (deps: SpawnPtyForAgentDeps): SpawnPtyForA
           if (resumeSessionId && !isRetry) {
             console.warn(
               `[Runtime] @${agentName} run ${snapshot.runId.slice(0, 8)} was already dead by the time bootstrap ` +
-              `was about to be written (--resume ${resumeSessionId.slice(0, 8)}... likely failed slower than the ` +
-              `${getResumeGraceWindowMs()}ms grace window) — clearing saved session id and redelivering the ` +
-              `message via a fresh spawn without --resume`,
+                `was about to be written (--resume ${resumeSessionId.slice(0, 8)}... likely failed slower than the ` +
+                `${getResumeGraceWindowMs()}ms grace window) — clearing saved session id and redelivering the ` +
+                `message via a fresh spawn without --resume`,
             );
             clearSavedSessionId(runStore, agentId, agentName);
             await attemptSpawn(agentName, agentId, workspace, promptFile, env, initialUserMsg, null, true);
           } else {
             console.error(
               `[Runtime] @${agentName} run ${snapshot.runId.slice(0, 8)} died before bootstrap could be written; ` +
-              `message was NOT delivered: "${initialUserMsg.slice(0, 100)}"`,
+                `message was NOT delivered: "${initialUserMsg.slice(0, 100)}"`,
             );
           }
           return;

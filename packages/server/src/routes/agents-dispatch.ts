@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { getAgent, requireOwnAgent, isChannelManager } from "../lib/agent-helpers.js";
+import { getAgent, isChannelManager, requireOwnAgent } from "../lib/agent-helpers.js";
 import { resolveChannel } from "../lib/channel.js";
 import { resolvePeer } from "../lib/dm.js";
 import { broadcast } from "../ws/handler.js";
@@ -76,18 +76,32 @@ export async function agentDispatchRoutes(app: FastifyInstance) {
       "SELECT 1 FROM channel_members WHERE channel_id = $1 AND member_id = $2 AND member_type = 'agent'",
       [ch.id, peer.id],
     );
-    if (member.rows.length === 0) return reply.status(400).send({ error: "worker agent is not a member of this channel" });
+    if (member.rows.length === 0)
+      return reply.status(400).send({ error: "worker agent is not a member of this channel" });
 
     const manager = await getAgent(app, agentId);
     const dispatch = (
-      await app.pg.query<{ id: string; channel_id: string; from_agent_id: string; to_agent_id: string; text: string; status: string; created_at: string }>(
+      await app.pg.query<{
+        id: string;
+        channel_id: string;
+        from_agent_id: string;
+        to_agent_id: string;
+        text: string;
+        status: string;
+        created_at: string;
+      }>(
         "INSERT INTO dispatches (channel_id, from_agent_id, to_agent_id, text) VALUES ($1, $2, $3, $4) RETURNING id, channel_id, from_agent_id, to_agent_id, text, status, created_at",
         [ch.id, agentId, peer.id, text],
       )
     ).rows[0];
 
     const msgId = await insertAndDeliver(
-      app, ch.id, ch.server_id as string, ch.name as string, agentId, manager,
+      app,
+      ch.id,
+      ch.server_id as string,
+      ch.name as string,
+      agentId,
+      manager,
       `📋 @${peer.handle} 你收到经理 @${manager?.name || "manager"} 派的任务（dispatch ${dispatch.id}）：${text}`,
       peer.handle,
     );
@@ -119,79 +133,116 @@ export async function agentDispatchRoutes(app: FastifyInstance) {
     const params: any[] = [ch.id, agentId];
     let q = `SELECT id, channel_id, from_agent_id, to_agent_id, text, status, report_text, artifacts, created_at, reported_at, cancelled_at
               FROM dispatches WHERE channel_id = $1 AND ${col} = $2`;
-    if (status && STATUSES.includes(status)) { params.push(status); q += ` AND status = $${params.length}`; }
+    if (status && STATUSES.includes(status)) {
+      params.push(status);
+      q += ` AND status = $${params.length}`;
+    }
     const result = await app.pg.query(q + " ORDER BY created_at DESC", params);
     return { dispatches: result.rows };
   });
 
-  app.post("/:agentId/dispatch/:dispatchId/report", { preHandler: [app.authenticate, requireOwnAgent] }, async (req, reply) => {
-    const agentId = (req.params as Record<string, string>).agentId;
-    const dispatchId = (req.params as Record<string, string>).dispatchId;
-    const { reportText, artifacts } = req.body as { reportText?: string; artifacts?: string[] };
+  app.post(
+    "/:agentId/dispatch/:dispatchId/report",
+    { preHandler: [app.authenticate, requireOwnAgent] },
+    async (req, reply) => {
+      const agentId = (req.params as Record<string, string>).agentId;
+      const dispatchId = (req.params as Record<string, string>).dispatchId;
+      const { reportText, artifacts } = req.body as { reportText?: string; artifacts?: string[] };
 
-    const found = await app.pg.query<{ id: string; channel_id: string; from_agent_id: string; task_message_id: string | null }>(
-      "SELECT id, channel_id, from_agent_id, task_message_id FROM dispatches WHERE id = $1 AND to_agent_id = $2 AND status = 'open'",
-      [dispatchId, agentId],
-    );
-    if (found.rows.length === 0) return reply.status(404).send({ error: "no open dispatch for this agent" });
-    const dispatch = found.rows[0];
-
-    await app.pg.query(
-      "UPDATE dispatches SET status = 'reported', report_text = $1, artifacts = $2, reported_at = now() WHERE id = $3",
-      [reportText || "", JSON.stringify(artifacts || []), dispatchId],
-    );
-    // P1 同步：回报 → 看板卡片转 in_review（等经理审查）
-    if (dispatch.task_message_id) {
-      await app.pg.query(
-        "UPDATE messages SET task_status = 'in_review', updated_at = now() WHERE id = $1",
-        [dispatch.task_message_id],
+      const found = await app.pg.query<{
+        id: string;
+        channel_id: string;
+        from_agent_id: string;
+        task_message_id: string | null;
+      }>(
+        "SELECT id, channel_id, from_agent_id, task_message_id FROM dispatches WHERE id = $1 AND to_agent_id = $2 AND status = 'open'",
+        [dispatchId, agentId],
       );
-    }
+      if (found.rows.length === 0) return reply.status(404).send({ error: "no open dispatch for this agent" });
+      const dispatch = found.rows[0];
 
-    const worker = await getAgent(app, agentId);
-    const manager = await getAgent(app, dispatch.from_agent_id);
-    if (!manager?.name) return reply.status(500).send({ error: "manager agent no longer exists" });
-    const ch = await app.pg.query<{ id: string; server_id: string; name: string }>("SELECT id, server_id, name FROM channels WHERE id = $1", [dispatch.channel_id]);
-    await insertAndDeliver(
-      app, dispatch.channel_id, ch.rows[0].server_id, ch.rows[0].name, agentId, worker,
-      `✅ @${manager.name} 你派给 @${worker?.name || "worker"} 的任务已回报（dispatch ${dispatchId}）：${reportText || "(无说明)"}`,
-      manager.name,
-    );
-
-    return { ok: true };
-  });
-
-  app.post("/:agentId/dispatch/:dispatchId/cancel", { preHandler: [app.authenticate, requireOwnAgent] }, async (req, reply) => {
-    const agentId = (req.params as Record<string, string>).agentId;
-    const dispatchId = (req.params as Record<string, string>).dispatchId;
-    const { reason } = req.body as { reason?: string };
-
-    const found = await app.pg.query<{ id: string; channel_id: string; to_agent_id: string; task_message_id: string | null }>(
-      "SELECT id, channel_id, to_agent_id, task_message_id FROM dispatches WHERE id = $1 AND from_agent_id = $2 AND status = 'open'",
-      [dispatchId, agentId],
-    );
-    if (found.rows.length === 0) return reply.status(404).send({ error: "no open dispatch owned by this agent" });
-    const dispatch = found.rows[0];
-
-    await app.pg.query("UPDATE dispatches SET status = 'cancelled', cancelled_at = now() WHERE id = $1", [dispatchId]);
-    // P1 同步：撤回 → 看板卡片关闭
-    if (dispatch.task_message_id) {
       await app.pg.query(
-        "UPDATE messages SET task_status = 'closed', updated_at = now() WHERE id = $1",
-        [dispatch.task_message_id],
+        "UPDATE dispatches SET status = 'reported', report_text = $1, artifacts = $2, reported_at = now() WHERE id = $3",
+        [reportText || "", JSON.stringify(artifacts || []), dispatchId],
       );
-    }
+      // P1 同步：回报 → 看板卡片转 in_review（等经理审查）
+      if (dispatch.task_message_id) {
+        await app.pg.query("UPDATE messages SET task_status = 'in_review', updated_at = now() WHERE id = $1", [
+          dispatch.task_message_id,
+        ]);
+      }
 
-    const manager = await getAgent(app, agentId);
-    const worker = await getAgent(app, dispatch.to_agent_id);
-    if (!worker?.name) return reply.status(500).send({ error: "worker agent no longer exists" });
-    const ch = await app.pg.query<{ id: string; server_id: string; name: string }>("SELECT id, server_id, name FROM channels WHERE id = $1", [dispatch.channel_id]);
-    await insertAndDeliver(
-      app, dispatch.channel_id, ch.rows[0].server_id, ch.rows[0].name, agentId, manager,
-      `🚫 @${worker.name} 经理 @${manager?.name || "manager"} 撤回了派给你的任务（dispatch ${dispatchId}）：${reason || "(无说明)"}`,
-      worker.name,
-    );
+      const worker = await getAgent(app, agentId);
+      const manager = await getAgent(app, dispatch.from_agent_id);
+      if (!manager?.name) return reply.status(500).send({ error: "manager agent no longer exists" });
+      const ch = await app.pg.query<{ id: string; server_id: string; name: string }>(
+        "SELECT id, server_id, name FROM channels WHERE id = $1",
+        [dispatch.channel_id],
+      );
+      await insertAndDeliver(
+        app,
+        dispatch.channel_id,
+        ch.rows[0].server_id,
+        ch.rows[0].name,
+        agentId,
+        worker,
+        `✅ @${manager.name} 你派给 @${worker?.name || "worker"} 的任务已回报（dispatch ${dispatchId}）：${reportText || "(无说明)"}`,
+        manager.name,
+      );
 
-    return { ok: true };
-  });
+      return { ok: true };
+    },
+  );
+
+  app.post(
+    "/:agentId/dispatch/:dispatchId/cancel",
+    { preHandler: [app.authenticate, requireOwnAgent] },
+    async (req, reply) => {
+      const agentId = (req.params as Record<string, string>).agentId;
+      const dispatchId = (req.params as Record<string, string>).dispatchId;
+      const { reason } = req.body as { reason?: string };
+
+      const found = await app.pg.query<{
+        id: string;
+        channel_id: string;
+        to_agent_id: string;
+        task_message_id: string | null;
+      }>(
+        "SELECT id, channel_id, to_agent_id, task_message_id FROM dispatches WHERE id = $1 AND from_agent_id = $2 AND status = 'open'",
+        [dispatchId, agentId],
+      );
+      if (found.rows.length === 0) return reply.status(404).send({ error: "no open dispatch owned by this agent" });
+      const dispatch = found.rows[0];
+
+      await app.pg.query("UPDATE dispatches SET status = 'cancelled', cancelled_at = now() WHERE id = $1", [
+        dispatchId,
+      ]);
+      // P1 同步：撤回 → 看板卡片关闭
+      if (dispatch.task_message_id) {
+        await app.pg.query("UPDATE messages SET task_status = 'closed', updated_at = now() WHERE id = $1", [
+          dispatch.task_message_id,
+        ]);
+      }
+
+      const manager = await getAgent(app, agentId);
+      const worker = await getAgent(app, dispatch.to_agent_id);
+      if (!worker?.name) return reply.status(500).send({ error: "worker agent no longer exists" });
+      const ch = await app.pg.query<{ id: string; server_id: string; name: string }>(
+        "SELECT id, server_id, name FROM channels WHERE id = $1",
+        [dispatch.channel_id],
+      );
+      await insertAndDeliver(
+        app,
+        dispatch.channel_id,
+        ch.rows[0].server_id,
+        ch.rows[0].name,
+        agentId,
+        manager,
+        `🚫 @${worker.name} 经理 @${manager?.name || "manager"} 撤回了派给你的任务（dispatch ${dispatchId}）：${reason || "(无说明)"}`,
+        worker.name,
+      );
+
+      return { ok: true };
+    },
+  );
 }

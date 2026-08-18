@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { api, registerUser, cleanupTestData, sql, closeSql, type TestUser } from "./helpers.js";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { api, cleanupTestData, closeSql, registerUser, sql, type TestUser } from "./helpers.js";
 
 let user: TestUser;
 

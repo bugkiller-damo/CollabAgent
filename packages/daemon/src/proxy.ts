@@ -23,7 +23,7 @@ function hostMatchesNoProxyEntry(hostname: string, ruleHost: string): boolean {
 
 function getProxyUrlForTarget(
   targetUrl: string,
-  env: Record<string, string | undefined> = process.env
+  env: Record<string, string | undefined> = process.env,
 ): string | undefined {
   const protocol = new URL(targetUrl).protocol;
   switch (protocol) {
@@ -40,10 +40,7 @@ function getProxyUrlForTarget(
   }
 }
 
-function shouldBypassProxy(
-  targetUrl: string,
-  env: Record<string, string | undefined> = process.env
-): boolean {
+function shouldBypassProxy(targetUrl: string, env: Record<string, string | undefined> = process.env): boolean {
   const rawNoProxy = env.NO_PROXY || env.no_proxy;
   if (!rawNoProxy) return false;
   const url = new URL(targetUrl);
@@ -63,7 +60,7 @@ function shouldBypassProxy(
 
 export function buildFetchDispatcher(
   targetUrl: string,
-  env: Record<string, string | undefined> = process.env
+  env: Record<string, string | undefined> = process.env,
 ): ProxyAgent | undefined {
   const proxyUrl = getProxyUrlForTarget(targetUrl, env);
   if (!proxyUrl || shouldBypassProxy(targetUrl, env)) return undefined;

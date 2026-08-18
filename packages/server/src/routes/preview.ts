@@ -16,7 +16,7 @@ function metaContent(html: string, ...names: string[]): string | undefined {
     // 兼容 property= 和 name=，属性顺序任意
     const re = new RegExp(
       `<meta[^>]+(?:property|name)=["']${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}["'][^>]*>`,
-      "i"
+      "i",
     );
     const tag = html.match(re)?.[0];
     if (tag) {
