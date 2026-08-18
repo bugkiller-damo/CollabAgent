@@ -33,6 +33,15 @@ export function dispatchWsEvent(msg: WsServerEvent): void {
       time: f.time,
     });
   }
+  // B1 结构化观察帧：事件流面板消费（obs-history 整体置换，obs-frame 逐条追加）
+  if (type === "terminal:obs-frame") {
+    const f = msg as any;
+    if (f.agentName && f.frame) terminalStore.appendObsFrame(f.agentName, f.frame);
+  }
+  if (type === "terminal:obs-history") {
+    const f = msg as any;
+    if (f.agentName && Array.isArray(f.frames)) terminalStore.setObsHistory(f.agentName, f.frames);
+  }
   if (type === "agent:status" || type === "agent:activity") {
     const a = msg as unknown as AgentStatusEvent;
     // daemon 上报带 agentName（G7 last_pty_line）；旧消息只有 agentId，兜底

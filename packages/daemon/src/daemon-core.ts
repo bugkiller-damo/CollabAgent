@@ -24,6 +24,8 @@ export class DaemonCore {
   /** 终端观察（G3）：agentName -> 推帧定时器；agentName -> 上次推过的帧（去重） */
   private terminalWatchers = new Map<string, ReturnType<typeof setInterval>>();
   private terminalLastFrame = new Map<string, string>();
+  /** B1：观看期间的观察帧转发订阅（agentName → unsubscribe） */
+  private terminalObsUnsubs = new Map<string, () => void>();
 
   constructor(private config: DaemonConfig) {
     this.serverUrl = config.serverUrl;
@@ -408,6 +410,21 @@ export class DaemonCore {
         // 的 transcript 作为 screen 推同一条 terminal:frame 通道，web 侧零改动。
         const agentName = msg.agentName as string;
         if (!agentName || this.terminalWatchers.has(agentName)) break;
+        // B1 web 结构化视图：观看期间把观察帧原样推给浏览器（事件流面板消费），
+        // 先补 replay buffer 作历史。PTY 路径无观察帧（bus 为空），订阅零开销；
+        // 引用计数纪律与 terminal:frame 一致（无人观看不传输）。
+        {
+          const obsBus = this.runtime.__getObservationBus();
+          const replay = obsBus.replay(agentName);
+          if (replay.length > 0) {
+            this.ws?.send(JSON.stringify({ type: "terminal:obs-history", agentName, frames: replay }));
+          }
+          const unsub = obsBus.subscribe(agentName, (f) => {
+            if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+            this.ws.send(JSON.stringify({ type: "terminal:obs-frame", agentName, frame: f }));
+          });
+          this.terminalObsUnsubs.set(agentName, unsub);
+        }
         // 先补发一段历史：运行中的 run 发 scrollback（观众能看到打开终端前
         // 发生的事）；没有运行中的 run 则发观察帧 transcript（headless）或
         // 落盘日志的尾部（agent 已被回收也能回看）。
@@ -461,6 +478,9 @@ export class DaemonCore {
         if (timer) clearInterval(timer);
         this.terminalWatchers.delete(agentName);
         this.terminalLastFrame.delete(agentName);
+        // B1：观察帧订阅一并退订（引用计数归零，停止传输）
+        this.terminalObsUnsubs.get(agentName)?.();
+        this.terminalObsUnsubs.delete(agentName);
         break;
       }
       case "terminal:resize": {

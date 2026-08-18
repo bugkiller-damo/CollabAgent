@@ -251,6 +251,16 @@ function registerConnection(connection: WebSocket, userId: string, isDaemon: boo
             if (agentName) publish({ kind: "terminal-frame", userId, agentName, event: msg });
             break;
           }
+          case "terminal:obs-frame": {
+            // B1 结构化观察帧：与 terminal:frame 同一条观众定向通道（按 agentName 引用计数）
+            const agentName = (msg as Record<string, unknown>).agentName as string | undefined;
+            if (agentName) publish({ kind: "terminal-frame", userId, agentName, event: msg });
+            break;
+          }
+          case "terminal:obs-history":
+            // B1 观察帧 replay buffer（打开事件流面板时补历史）——同 terminal:history 的低频路径
+            sendToUser(userId, msg);
+            break;
           case "terminal:history": {
             // daemon 回传的历史日志 → 发给该用户所有浏览器连接（请求方面板消费，
             // 负载小且频次低，不值得再维护请求级路由）

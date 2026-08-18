@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from "vue";
 import { apiGet } from "../../api";
 import { wsSend } from "../../lib/wsManager";
 import { useTerminalStore } from "../../stores/terminalStore";
+import AgentObsStream from "./AgentObsStream.vue";
 
 interface AgentOption {
   name: string;
@@ -32,11 +33,23 @@ const MAX_FS = 20;
 const terminalStore = useTerminalStore();
 const frame = computed(() => terminalStore.frames[props.agentName]);
 const history = computed(() => terminalStore.histories[props.agentName]);
+// B1 结构化观察帧（headless 事件流）：有帧时面板提供「事件流」tab
+const obsList = computed(() => terminalStore.obsFrames[props.agentName] ?? []);
 
-const tab = ref<"live" | "log">("live");
+const tab = ref<"live" | "log" | "events">("live");
 const agents = ref<AgentOption[]>([]);
 const livePreRef = ref<HTMLPreElement | null>(null);
 const logPreRef = ref<HTMLPreElement | null>(null);
+const eventsRef = ref<HTMLDivElement | null>(null);
+
+// 观察帧首次到达时自动切到事件流 tab（每 agent 一次；用户手动切走不抢回）
+let obsAutoSwitchedFor = "";
+watch(obsList, (list) => {
+  if (list.length > 0 && obsAutoSwitchedFor !== props.agentName) {
+    obsAutoSwitchedFor = props.agentName;
+    tab.value = "events";
+  }
+});
 
 // 面板宽度（可拖拽，localStorage 记忆）
 const savedW = Number(localStorage.getItem("terminal_panel_w"));
@@ -117,10 +130,10 @@ onMounted(() => {
 
 // 新帧/新日志到达时滚到底部
 function scrollToBottom() {
-  const el = tab.value === "live" ? livePreRef.value : logPreRef.value;
+  const el = tab.value === "live" ? livePreRef.value : tab.value === "events" ? eventsRef.value : logPreRef.value;
   if (el) el.scrollTop = el.scrollHeight;
 }
-watch([() => frame.value?.screen, history, tab], scrollToBottom);
+watch([() => frame.value?.screen, history, () => obsList.value.length, tab], scrollToBottom);
 onMounted(scrollToBottom);
 
 const includesCurrent = computed(() => agents.value.some((a) => a.name === props.agentName));
@@ -163,6 +176,13 @@ const st = computed(() => STATUS_LABEL[status.value] || STATUS_LABEL.offline);
         实时画面
       </button>
       <button
+        v-if="obsList.length > 0"
+        @click="tab = 'events'"
+        :class="`flex-1 py-1.5 ${tab === 'events' ? 'border-b-2 border-blue-500 font-medium text-gray-900 dark:text-white' : 'text-gray-500'}`"
+      >
+        事件流
+      </button>
+      <button
         @click="tab = 'log'"
         :class="`flex-1 py-1.5 ${tab === 'log' ? 'border-b-2 border-blue-500 font-medium text-gray-900 dark:text-white' : 'text-gray-500'}`"
       >
@@ -194,6 +214,14 @@ const st = computed(() => STATUS_LABEL[status.value] || STATUS_LABEL.offline);
       :style="{ fontSize: fontSize + 'px', lineHeight: 1.5 }"
       class="flex-1 overflow-auto bg-gray-950 p-3 font-mono text-green-200 whitespace-pre"
     >{{ frame?.screen || "等待终端画面…（agent 未运行时无输出）" }}</pre>
+    <div
+      v-else-if="tab === 'events'"
+      ref="eventsRef"
+      :style="{ fontSize: fontSize + 'px', lineHeight: 1.5 }"
+      class="min-h-0 flex-1 overflow-auto bg-gray-950 p-3"
+    >
+      <AgentObsStream :frames="obsList" />
+    </div>
     <div v-else class="flex min-h-0 flex-1 flex-col">
       <pre
         ref="logPreRef"
@@ -212,6 +240,7 @@ const st = computed(() => STATUS_LABEL[status.value] || STATUS_LABEL.offline);
       <template v-if="tab === 'live'">
         画面每 0.4s 刷新，仅在观看时传输{{ frame?.time ? " · 最近更新 " + new Date(frame.time).toLocaleTimeString("zh-CN") : "" }}
       </template>
+      <template v-else-if="tab === 'events'">结构化事件流（headless）：工具调用可展开输入/结果，仅在观看时传输</template>
       <template v-else>日志在 agent 每次运行结束时落盘，含本次 run 的完整画面</template>
     </p>
   </aside>
