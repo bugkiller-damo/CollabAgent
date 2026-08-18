@@ -19,17 +19,17 @@
     "@collabagent/shared": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@xterm/headless": "^6.0.0",
-    "commander": "^12.1.0",
+    "commander": "^15.0.0",
     "node-pty": "^1.1.0",
-    "undici": "^7.0.0",
+    "undici": "^8.10.0",
     "ws": "^8.18.0",
-    "zod": "^3.25.76"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/ws": "^8.5.0",
     "esbuild": "^0.28.0",
     "tsx": "^4.19.0",
-    "typescript": "^5.7.0",
+    "typescript": "^7.0.2",
     "vitest": "^4.1.7"
   }
 }
