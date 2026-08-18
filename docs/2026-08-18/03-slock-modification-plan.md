@@ -184,3 +184,25 @@ pending/in_progress/completed/failed（02 文档 §1.4）。
 
 **回退预案**：每个 Phase 都有 env 开关可独立回退（A1 队列可旁路、
 A2 `SLOCK_ENV_INHERIT=1`、B2 `SLOCK_USE_PTY=1`），回退不依赖代码回滚。
+
+---
+
+## 6. 落地状态与遗留事项（2026-08-18 施工完成后补记）
+
+**全部任务已落地并验证**（commit `1b3764d` daemon / `034def1` server/web /
+`27dfd49` B1 web 面板 / `83b526c` 回复守卫 v2），含七轮真机回归与审计流
+端到端验证（10/10 断言）。计划外新增：**回复守卫**（回合结束无 send_message
+→ daemon 以 agent 身份代发最终正文，弱模型漏回复的确定性兜底）。
+
+**遗留事项**（均不阻塞使用，按优先级）：
+
+| 事项 | 说明 | 触发条件 |
+|------|------|---------|
+| A2 白名单默认值翻正 | 当前默认 warn-only（全量继承 + diff 日志）；翻正 = 默认 whitelist 收紧，`SLOCK_ENV_INHERIT=1` 降级为回退开关 | 用户决定暂缓——`SLOCK_ENV_WHITELIST=1` 多跑一段时间无工具链断裂后再翻 |
+| Steer 语义 | 进行中回合消息注入；回复守卫已验证「回合边界自动注入」，真 steer 待 claude stream-json 能力验证 | 远期，另立文档 |
+| PTY 模式整体退役 | 4 处 workaround 的最终删除条件 | headless 长期稳定后再议 |
+| agent 引导层加固 | 系统提示加「网络命令必须带 --max-time」（curl 挂死是真机反复出现的回合挂死源） | 随手可做 |
+
+**已知边界**（真机实测记录，遇到再处理）：
+- 单段超长生成超 300s 无事件会被不活跃超时误杀——调 `SLOCK_PERSISTENT_TURN_MS`（grok 中继慢生成场景暂定 600000）
+- WebFetch 在「claude.ai 不可达」的网络环境（如 grok 中转）不可用，白名单只放 WebSearch
