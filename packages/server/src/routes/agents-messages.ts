@@ -51,7 +51,7 @@ export async function agentMessageRoutes(app: FastifyInstance) {
       "INSERT INTO messages (channel_id, server_id, sender_id, sender_type, content, thread_id) VALUES ($1, $2, $3, 'agent', $4, $5) RETURNING id, seq, created_at",
       [channelDbId, serverId, agentId, (content as string) || "", resolvedThreadId],
     );
-    const msg = result.rows[0];
+    const msg = result.rows[0] as { id: string; seq: number; created_at: string };
     let attachments: any[] = [];
     if (attIds.length > 0) {
       for (const aid of attIds)

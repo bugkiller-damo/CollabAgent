@@ -211,14 +211,6 @@ export interface IAgentStartup {
   createWorkspaceDir(agentName: string): string;
 }
 
-/** stdin 写入策略 */
-export type StdinWriteStrategyType = "direct" | "wait-for-prompt" | "bracketed-paste" | "stream-json";
-
-export interface IStdinWriter {
-  write(runId: string, text: string, snapshot: AgentRunSnapshot): void;
-  readonly strategy: StdinWriteStrategyType;
-}
-
 export interface IAgentStdinDispatcher {
   writeDispatchPrompt(agentName: string, taskText: string, dispatchId: string): void;
   writeReportForwardPrompt(agentName: string, reportText: string): void;

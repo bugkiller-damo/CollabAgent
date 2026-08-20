@@ -1,7 +1,8 @@
+import type { WsToBrowserMessage } from "@collabagent/shared";
 import type { FastifyInstance } from "fastify";
 import { sendToUser } from "../ws/handler.js";
 
-export type NotificationType = "@mention" | "task_assigned" | "dm" | "reminder";
+export type NotificationType = "@mention" | "task_assigned" | "dm" | "reminder" | "patrol_paused";
 
 export interface CreateNotificationOpts {
   userId: string; // 通知接收人
@@ -35,10 +36,10 @@ export async function createNotification(app: FastifyInstance, opts: CreateNotif
       opts.metadata ? JSON.stringify(opts.metadata) : null,
     ],
   );
-  const row = result.rows[0];
+  const row = result.rows[0] as any;
 
   // WS 实时推送
-  const event = {
+  const event: WsToBrowserMessage = {
     type: "notification.new",
     notification: {
       id: row.id,
