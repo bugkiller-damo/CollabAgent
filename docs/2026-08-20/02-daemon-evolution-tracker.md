@@ -215,5 +215,5 @@ token 消耗在成本查询面可见。
 | Step 0 | 2026-08-20 | `dffb5f8` | CLAUDE.md 重写；01 归档标注；删 adapter-layer / drivers/claude.ts / agent-stdin-writer.ts（+2 死类型）；build + 135 测试全绿 |
 | Step 1 | 2026-08-20 | `dffb5f8` | 覆盖盘点后只补真空：新增 agent-runtime-state(16 例)+persistent-claude(9 例)；S1.1/S1.4 已覆盖免做；160 全绿；发现 1 个 exit-handler 竞态遗留观察 |
 | Step 2 | 2026-08-20 | `dffb5f8` | shared WS 段重写为四方向 union；daemon/server 接线（sendWs 唯一出口 + 参数类型化）；删 server 死 case agent:activity；全仓 build + daemon 160 全绿；server 套件受环境（PG/:3001）阻塞待复验 |
-| Step 3 | 2026-08-20 | 待 commit | PTY 冻结隔离（不删代码）：7 纯 PTY 文件 + 3 混合文件 legacy 标记；SLOCK_USE_PTY=1 启动警告；terminal-log.ts/writeMcpConfig 确认共享不冻结；全仓 build + 160 测试全绿 |
+| Step 3 | 2026-08-20 | `a65f60c` | PTY 冻结隔离（不删代码）：7 纯 PTY 文件 + 3 混合文件 legacy 标记；SLOCK_USE_PTY=1 启动警告；terminal-log.ts/writeMcpConfig 确认共享不冻结；全仓 build + 160 测试全绿 |
 | — | 2026-08-20 | `f136641` | （旁证）T2 agent 巡检既有改动同批提交：migration 012 + scheduler 护栏 + patrol prompt 分流 + CLI + 面板 + T8 设计文档 |
