@@ -17,7 +17,9 @@ AI agents, and routes messages between them.
 - **headless 为默认**（2026-08-18 起）：`drivers/persistent-claude.ts` 常驻进程 +
   `--input-format/--output-format stream-json`，`result` 事件 = 精确回合边界，
   回合级 Promise + 沉默超时（300s）卡死保护。`SLOCK_ONESHOT_CLAUDE=1` 退到 one-shot。
-- **PTY 是待退役兜底**：`SLOCK_USE_PTY=1` 启用（调试用），删除计划见 tracker Step 3。
+- **PTY 是冻结保留的兜底**（2026-08-20 Step 3）：`SLOCK_USE_PTY=1` 启用（调试/回退用），
+  启用时启动日志打 legacy 警告；代码❄️冻结不删（headless 未过长期验证），
+  删除评估 2026-09 底，见 tracker Step 3。
 - **A1 派发队列**：`agent-dispatch-queue.ts` 串行派发 + 指数退避重试 + 死信上报 +
   15s 去重 + 忙碌合并。
 - **安全**：scoped runtime token（`agent-tokens.ts` + `agent-token-file.ts` 0600）、
@@ -38,9 +40,12 @@ AI agents, and routes messages between them.
 | 队列与生命周期 | `agent-dispatch-queue.ts` / `live-run-registry.ts` / `agent-run-store.ts` / `idle-reclaimer.ts` / `supervisor.ts` |
 | 安全 | `agent-tokens.ts` / `agent-token-file.ts` / `agent-env-whitelist.ts` / `command-presets.ts` / `command-resolver.ts` / `auth.ts` |
 | 启动与提示 | `agent-startup.ts` / `system-prompt.ts` / `setup-slock-wrapper.ts` / `restart-summary.ts` |
-| PTY 兜底（待退役） | `agent-manager.ts` / `agent-manager-support.ts` / `post-start-input-writer.ts` / `pty-output-bus.ts` / `terminal-state.ts` / `terminal-log.ts` |
+| PTY 兜底（❄️冻结保留） | `agent-manager.ts` / `agent-manager-support.ts` / `post-start-input-writer.ts` / `pty-output-bus.ts` / `terminal-state.ts` / `terminal-log.ts`* |
 | 会话 | `agent-sessions.ts`（sessionId 捕获/恢复）/ `agent-dir-name.ts` |
 | 其他 | `client.ts` / `proxy.ts` / `exit-coordinator.ts` / `exit-handler.ts` / `output.ts` / `types/index.ts` |
+
+\* `terminal-log.ts` 为共享文件（headless 的 `terminal:history` 也用它读落盘日志），不在冻结范围；
+`agent-runtime-spawn.ts` 同理仅 `createSpawnPtyForAgent`/`buildPtyEnv` 冻结，`writeMcpConfig` 正常维护。
 
 ## 当前执行跟踪
 

@@ -56,23 +56,19 @@
 
 ## 2. P0 · 还债批（现在可做，与 T 系列并行）
 
-### P0.1 PTY 路径整体退役（= buzz-todo L3，前置条件已满足）
-- **删除条件核查**：L3 要求「headless 长期稳定」——08-18 起 headless 默认已跑通真机
-  两轮 + T2 patrol 落地，且 `agent-sessions.ts` 注明 session id 已有精确来源
-  （stream-json system init），PTY 启发式仅剩 fallback 用途。满足。
-- **删除清单**：
-  - `src/agent-manager.ts`、`src/agent-manager-support.ts`、`src/pty-output-bus.ts`、
-    `src/terminal-state.ts`、`src/terminal-log.ts`、`src/post-start-input-writer.ts`、
-    `src/agent-runtime-turn-tracker.ts`、`src/agent-runtime-terms-dialog.ts`、
-    `src/agent-runtime-spawn.ts`（~560 行）
-  - `agent-runtime.ts` / `agent-runtime-dispatch.ts` / `daemon-core.ts` 内的 PTY 分支、
-    `SLOCK_USE_PTY` 门控、`terminal:watch/unwatch/resize/history` WS 处理（web 侧
-    AgentTerminalPanel 同步退役或改为只读 obs 面板）
-  - 依赖：`node-pty`、`@xterm/headless`
-  - `agent-sessions.ts` 的 mtime 启发式（O13 注明随 PTY 退役删除）
-- **验收**：`SLOCK_USE_PTY=1` 环境变量从代码与文档消失；`npx tsc --noEmit` 通过；
-  grep 无 `node-pty` 引用。
-- **预估**：中 | 风险：web 终端面板用户需提前公告。
+### P0.1 PTY 路径冻结隔离（= buzz-todo L3 的修正版，2026-08-20 用户决策）
+- **决策**：退役 ≠ 删除。PTY 整体冻结为 legacy 兜底、代码保留——headless（08-18 起默认）
+  尚未经过长期验证，保留 `SLOCK_USE_PTY=1` 回退能力。删除推迟到 **2026-09 底评估**
+  （headless 稳定运行满 6 周）。
+- **本 Step 动作**（详见 tracker Step 3）：9 个 PTY 文件加统一 ❄️ legacy 头注；
+  混合文件分支点标注（`agent-runtime-spawn.ts` 的 `writeMcpConfig` 与
+  `terminal-log.ts` 服务 headless，不在冻结范围）；`SLOCK_USE_PTY=1` 启动打 legacy
+  警告日志；web 终端面板保留；依赖 `node-pty`/`@xterm/headless` 保留。
+- **原删除方案保留备查**（评估到期后执行）：删 9 文件 + 收编 `agent-runtime.ts` /
+  `agent-runtime-dispatch.ts` / `daemon-core.ts` 的 PTY 分支与 `SLOCK_USE_PTY` 门控 +
+  卸依赖 + 删 `agent-sessions.ts` mtime 启发式。
+- **验收**：全仓 build 绿 + daemon 测试绿；`SLOCK_USE_PTY=1` 路径可编译可用；
+  每个 PTY 文件带 legacy 标记。
 
 ### P0.2 死代码与占位清理
 - 删 `packages/adapter-layer/`（空壳，不在 workspace，仅有 dist/node_modules）。
@@ -158,7 +154,7 @@
 Step 0（当天，零风险）   P0.4 文档修正 + P0.2 死代码清理
 Step 1（2~3 天）        P0.5 测试最小集（幸存主干安全网）
 Step 2（1~2 天）        P0.3 WS 类型对齐（tsc 驱动；给 T8 备好消息 union）
-Step 3（2~4 天）        P0.1 PTY 退役（安全网就位后单独一个纯删除 PR）
+Step 3（1 天）           P0.1 PTY 冻结隔离（不删代码：legacy 头注 + 分支标注 + 启动警告）
 Step 4（并行轨道）       D3 成本记账（独立；必须早于 D1）
 Step 5                  T8 经理分诊（在干净/有类型/有测试的 dispatch 层上开发）
 Step 6                  D1 + D2 同批（设计可在 Step 5 期间并行，实施等 T8 合并）
@@ -170,8 +166,8 @@ Step 7                  T4（D4 并入其 scope）→ T3/T1 按产品优先级
 
 1. **P0.5 先于 P0.1/P0.3**——删除与重构都落在幸存主干上，没有测试网不动刀；
 2. **D3 先于 D1**——Context Builder 会显著推高 token 消耗，仪表必须先装上；
-3. **agent-runtime-dispatch.ts 严格串行**——P0.1（删 PTY 分支）→ T8（加 triage 分支）
-   → D1（加 Context Builder 前置），三者不同时开工，避免 rebase 地狱。
+3. **`agent-runtime-dispatch.ts` 串行新功能**——Step 3 后 PTY 分支冻结不动，
+   T8（加 triage）→ D1（加 Context Builder 前置）依次落地，不同时开工，避免 rebase 地狱。
 
 ---
 

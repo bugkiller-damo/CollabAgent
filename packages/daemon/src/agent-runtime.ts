@@ -203,6 +203,14 @@ export const createAgentRuntime = (
   // B1 观察帧 + A1 队列经七轮真机回归后执行本切换。
   // SLOCK_PERSISTENT_CLAUDE=1 是旧开关，效果与默认一致（保留兼容，不再读取）。
   const usePty = process.env.SLOCK_USE_PTY === "1";
+  if (usePty) {
+    // ❄️ LEGACY（2026-08-20 Step 3）：PTY 代码已冻结保留（headless 未过长期验证，
+    // 留作回退），启用者必须明确知情。删除评估：2026-09 底，见 tracker Step 3。
+    console.warn(
+      "[Runtime] ⚠️ SLOCK_USE_PTY=1：PTY legacy fallback 已启用（冻结保留，仅调试/回退用）；" +
+        "受支持路径是 headless（默认）。删除评估见 docs/2026-08-20/02 Step 3。",
+    );
+  }
 
   // ---- Per-agent-run scoped token（见 agent-runtime-credentials.ts）----
   const credentialsClient = createCredentialsClient(options.serverUrl, options.apiKey);

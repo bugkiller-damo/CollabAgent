@@ -1,3 +1,11 @@
+/**
+ * ❄️ LEGACY / FROZEN（2026-08-20，演进 Step 3）
+ * 本文件仅服务 PTY fallback（SLOCK_USE_PTY=1）。headless 是默认且受支持的路径。
+ * 冻结纪律：不接受新功能与非缺陷改动；仅在 headless 出现不可修复问题时作回退启用。
+ * 保留原因：headless 尚未经过长期验证（2026-08-18 起默认）。
+ * 删除评估：headless 稳定运行满 6 周后（2026-09 底）按
+ * docs/2026-08-20/02-daemon-evolution-tracker.md Step 3 原删除方案执行。
+ */
 import { randomUUID } from "node:crypto";
 import { type IPty, spawn } from "node-pty";
 import { applyAgentEnv } from "./agent-env-whitelist.js";

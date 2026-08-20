@@ -11,8 +11,8 @@
 
 ## ★ 当前焦点
 
-> **Step 2 · ✅ 完成**（2026-08-20，全仓 build + daemon 160 测试全绿，改动待 commit）。
-> **下一步：Step 3 · PTY 整体退役（前置：web 终端面板退役公告 S3.1）**
+> **Step 3 · ✅ 完成**（2026-08-20，PTY 冻结隔离：9 文件 legacy 标记 + 分支标注 +
+> 启动警告；build + 160 测试全绿，改动待 commit）。**下一步：Step 4 · 成本记账（并行轨道）**
 
 ---
 
@@ -20,8 +20,8 @@
 
 1. **P0.5（Step 1）先于 P0.1/P0.3（Step 2/3）**——没有测试网，不动幸存主干；
 2. **D3（Step 4）先于 D1（Step 6）**——仪表先于增耗；
-3. **`agent-runtime-dispatch.ts` 严格串行**——P0.1（删 PTY 分支）→ T8（加 triage）→
-   D1（加 Context Builder 前置），三者不同时开工。
+3. **`agent-runtime-dispatch.ts` 串行新功能**——Step 3 后 PTY 分支冻结不动，
+   T8（加 triage）→ D1（加 Context Builder 前置）依次落地，不同时开工。
 
 并行许可：Step 4（成本记账）与 Step 0~3 零代码交集，任何空档均可插入；
 Step 6 的**设计文档**可在 Step 5 开发期间并行写。
@@ -120,22 +120,35 @@ Step 6 的**设计文档**可在 Step 5 开发期间并行写。
 
 ---
 
-## Step 3 · PTY 整体退役（2~4 天）☐ —— 单独纯删除 PR
+## Step 3 · PTY 冻结隔离（**不删代码**，headless 观察期后评估删除）✅ 2026-08-20
 
-- [ ] S3.1 web 终端面板（AgentTerminalPanel）退役公告/降级为只读 obs 面板
-- [ ] S3.2 删除 9 个 PTY 文件：`agent-manager.ts`、`agent-manager-support.ts`、
-      `pty-output-bus.ts`、`terminal-state.ts`、`terminal-log.ts`、
-      `post-start-input-writer.ts`、`agent-runtime-turn-tracker.ts`、
-      `agent-runtime-terms-dialog.ts`、`agent-runtime-spawn.ts`
-- [ ] S3.3 收编 `agent-runtime.ts` / `agent-runtime-dispatch.ts` / `daemon-core.ts` 内
-      PTY 分支与 `SLOCK_USE_PTY` 门控；删 `terminal:watch/unwatch/resize/history` 处理
-- [ ] S3.4 卸依赖 `node-pty`、`@xterm/headless`；删 `agent-sessions.ts` mtime 启发式
-      （O13 注明随 PTY 退役删除）
-- [ ] S3.5 文档清尾：CLAUDE.md / 相关 docs 中 PTY 与 `SLOCK_USE_PTY` 引用
+> **决策修正（2026-08-20 用户指示）**：PTY 整体退役 ≠ 删除。冻结为 legacy 兜底、
+> **代码全部保留**——headless 尚未经过长期验证，保留 `SLOCK_USE_PTY=1` 回退能力。
+> 删除动作推迟：建议 2026-09 底评估（届时 headless 已默认运行 6+ 周）再决定是否真删。
+> 本 Step 目标变为：**隔离标记 + 降级警告 + 文档同步**，让 PTY 代码「看得见的冻结」，
+> 防止新代码继续往 PTY 路径上长。
 
-**验收**：`grep -ri "node-pty\|SLOCK_USE_PTY" packages/` 零命中；tsc 通过；
-Step 1 测试全绿。
-**⚠️ 完成后**：`agent-runtime-dispatch.ts` 只剩 headless 单路径，T8 才允许开工。
+- [x] S3.1 web 终端面板（AgentTerminalPanel）**保留**（原「退役公告」取消——PTY 功能
+      保留则面板保留；面板同时服务 obs 帧，headless 下也在用）
+- [x] S3.2 PTY 文件统一 ❄️ legacy 头注（graph 子代理全量触点盘点后执行）：
+      - 纯 PTY 全文件冻结（7）：`agent-manager.ts`、`agent-manager-support.ts`、
+        `pty-output-bus.ts`、`terminal-state.ts`、`post-start-input-writer.ts`、
+        `agent-runtime-turn-tracker.ts`、`agent-runtime-terms-dialog.ts`
+      - 混合文件范围化标注（3）：`agent-runtime-spawn.ts`（`writeMcpConfig` 服务
+        headless 不冻结，其余冻结）、`agent-stdin-dispatcher.ts`（writer 是 PTY 专属
+        故整体随冻）、`agent-sessions.ts`（mtime 启发式冻结，工具函数不冻结）
+      - **明确排除**：`terminal-log.ts`（headless `terminal:history` 也用它，共享文件）
+- [x] S3.3 混合文件 PTY 分支点注释（`agent-runtime.ts` usePty 读取处 +
+      `agent-runtime-dispatch.ts:249` if(usePty) 分支入口）
+- [x] S3.4 `SLOCK_USE_PTY=1` 生效时启动打 legacy 警告（`agent-runtime.ts`：
+      「PTY legacy fallback 已启用（冻结保留，仅调试/回退用）」）
+- [x] S3.5 文档同步：CLAUDE.md（冻结保留 + 共享文件脚注）、
+      `01-daemon-evolution-plan.md`（P0.1 改写为冻结方案，原删除方案保留备查）、
+      tracker 本段；§5 顺序与规则 3 同步修正（dispatch 层仅剩 T8→D1 串行约束）
+
+**依赖处置**：`node-pty`、`@xterm/headless` **保留不卸**（回退能力需要）。
+**验收**：全仓 build 绿 + daemon 160 测试绿；`SLOCK_USE_PTY=1` 路径保持可编译可用；
+grep 每个 PTY 文件都有 legacy 标记。
 
 ---
 
@@ -202,4 +215,5 @@ token 消耗在成本查询面可见。
 | Step 0 | 2026-08-20 | `dffb5f8` | CLAUDE.md 重写；01 归档标注；删 adapter-layer / drivers/claude.ts / agent-stdin-writer.ts（+2 死类型）；build + 135 测试全绿 |
 | Step 1 | 2026-08-20 | `dffb5f8` | 覆盖盘点后只补真空：新增 agent-runtime-state(16 例)+persistent-claude(9 例)；S1.1/S1.4 已覆盖免做；160 全绿；发现 1 个 exit-handler 竞态遗留观察 |
 | Step 2 | 2026-08-20 | `dffb5f8` | shared WS 段重写为四方向 union；daemon/server 接线（sendWs 唯一出口 + 参数类型化）；删 server 死 case agent:activity；全仓 build + daemon 160 全绿；server 套件受环境（PG/:3001）阻塞待复验 |
+| Step 3 | 2026-08-20 | 待 commit | PTY 冻结隔离（不删代码）：7 纯 PTY 文件 + 3 混合文件 legacy 标记；SLOCK_USE_PTY=1 启动警告；terminal-log.ts/writeMcpConfig 确认共享不冻结；全仓 build + 160 测试全绿 |
 | — | 2026-08-20 | `f136641` | （旁证）T2 agent 巡检既有改动同批提交：migration 012 + scheduler 护栏 + patrol prompt 分流 + CLI + 面板 + T8 设计文档 |

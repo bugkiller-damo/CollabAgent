@@ -248,6 +248,9 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
 
     if (usePty) {
       // ---- PTY 模式 ----
+      // ❄️ LEGACY / FROZEN（2026-08-20 Step 3）：本分支（至下方 headless 分支前的
+      // return）整体冻结保留，仅 SLOCK_USE_PTY=1 时进入；冻结纪律与删除评估见
+      // docs/2026-08-20/02-daemon-evolution-tracker.md Step 3。
       try {
         // 首次发送：启动 PTY（bootstrap 系统提示 + 本条用户消息合并成一次写入，
         // 见 spawnPtyForAgent 注释——避免两次独立写产生竞态）；后续发送：复用现有 PTY。
