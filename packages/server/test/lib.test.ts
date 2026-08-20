@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { cleanChannelName } from "../src/lib/channel.js";
 import { newCsrfToken, parseCookies } from "../src/lib/cookies.js";
 import { dmChannelName, isDmTarget } from "../src/lib/dm.js";
-import { initialFireAt, nextFireFromRepeat, parseDurationToMs } from "../src/lib/reminders.js";
+import { initialFireAt, nextFireFromRepeat, parseDurationToMs, validatePatrolRepeat } from "../src/lib/reminders.js";
 import { isAllowedMimeType } from "../src/lib/storage.js";
 
 describe("cleanChannelName", () => {
@@ -40,6 +40,18 @@ describe("initialFireAt", () => {
     expect(initialFireAt({ fireAt: d.toISOString() })!.toISOString()).toBe(d.toISOString());
   });
   it("空返回 null", () => expect(initialFireAt({})).toBeNull());
+});
+
+// T2 patrol 频率护栏（设计:docs/2026-08-19/02-t2-agent-patrol-design.md §6 最小周期 5min）
+describe("validatePatrolRepeat", () => {
+  it("every:30m 合法", () => expect(validatePatrolRepeat("every:30m")).toBeNull());
+  it("every:5m 边界合法", () => expect(validatePatrolRepeat("every:5m")).toBeNull());
+  it("hourly 合法", () => expect(validatePatrolRepeat("hourly")).toBeNull());
+  it("daily@09:00 合法", () => expect(validatePatrolRepeat("daily@09:00")).toBeNull());
+  it("every:30s 低于 5min 下限被拒绝", () => expect(validatePatrolRepeat("every:30s")).toMatch(/too short/));
+  it("every:1m 低于下限被拒绝", () => expect(validatePatrolRepeat("every:1m")).toMatch(/too short/));
+  it("非法语法被拒绝", () => expect(validatePatrolRepeat("whenever")).toMatch(/unsupported/));
+  it("空字符串被拒绝", () => expect(validatePatrolRepeat("")).toMatch(/unsupported/));
 });
 
 describe("newCsrfToken", () => {

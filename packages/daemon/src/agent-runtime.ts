@@ -3,7 +3,7 @@ import { dirname } from "node:path";
 import { createAgentManager } from "./agent-manager.js";
 import { createObservationBus, type ObservationBus } from "./agent-observation.js";
 import { createCredentialsClient } from "./agent-runtime-credentials.js";
-import { createDispatch } from "./agent-runtime-dispatch.js";
+import { createDispatch, type ReminderFirePayload } from "./agent-runtime-dispatch.js";
 import { createExitChain } from "./agent-runtime-exit.js";
 import { createSpawnPtyForAgent } from "./agent-runtime-spawn.js";
 import { createAgentStateMachine } from "./agent-runtime-state.js";
@@ -132,7 +132,7 @@ export interface IAgentRuntime {
     content: string,
   ): Promise<void>;
   runAgentDm(agentName: string, replyTarget: string, senderName: string, content: string): Promise<void>;
-  runAgentReminder(agentName: string, reminder: { title?: string; channel?: string }): Promise<void>;
+  runAgentReminder(agentName: string, reminder: ReminderFirePayload): Promise<void>;
   // 注：原 autostartAgent（崩溃恢复主动拉起 + 注入"安静等待"恢复消息）已于
   // 2026-07-29 移除——那条恢复消息是一整个 agent 回合且 99% 空转（实测 55k 输出），
   // 改为 lazy spawn + session resume（见 daemon-core.autostartCrashedAgents）。
@@ -142,6 +142,8 @@ export interface IAgentRuntime {
   unregisterAgent(name: string): void;
   loadExistingAgents(): Promise<void>;
   resolveAgentId(agentName: string): string | null;
+  /** 反查:agentId(UUID) → 注册名(reminder.fire 等只带 id 的入信用) */
+  resolveAgentName(agentId: string): string | null;
   findMentionedAgent(content: string): string | null;
   mentionedAgentNames(content: string): string[];
   /** 全部已注册 agent 的名字列表（G7 状态栏轮询用） */
@@ -264,6 +266,16 @@ export const createAgentRuntime = (
   const resolveAgentId = (agentName: string): string | null => {
     if (agentNameToId.has(agentName)) return agentNameToId.get(agentName)!;
     if (/^[0-9a-f-]{36}$/i.test(agentName)) return agentName;
+    return null;
+  };
+
+  // reminder.fire 等链路只带 agentId(UUID)——注册表以 name 为键,反查注册名;
+  // 查不到返回 null(调用方按 unknown agent 处理,不 spawn)。
+  const resolveAgentName = (agentId: string): string | null => {
+    if (agentDrivers.has(agentId)) return agentId; // 已经是 name
+    for (const [name, id] of agentNameToId.entries()) {
+      if (String(id) === String(agentId)) return name;
+    }
     return null;
   };
 
@@ -496,6 +508,7 @@ export const createAgentRuntime = (
     resolveAgentId,
     findMentionedAgent,
     mentionedAgentNames,
+    resolveAgentName,
     listAgentNames: () => Array.from(agentDrivers.keys()),
     setPreferredTermSize: (agentName, size) => {
       preferredTermSize.set(agentName, size);

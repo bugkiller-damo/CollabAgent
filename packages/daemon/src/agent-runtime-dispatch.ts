@@ -15,6 +15,39 @@ import type { IIdleReclaimer } from "./idle-reclaimer.js";
 import { bundleSlockMcpServer } from "./mcp-bundle.js";
 import type { PostStartInputWriter } from "./post-start-input-writer.js";
 
+/** reminder.fire 负载（T2：kind='patrol' 时带 instructions 走巡检 prompt 模板） */
+export interface ReminderFirePayload {
+  title?: string;
+  channel?: string;
+  kind?: string;
+  instructions?: string;
+}
+
+/**
+ * T2 巡检 prompt 模板（纯函数，便于单测）。
+ * 设计:docs/2026-08-19/02-t2-agent-patrol-design.md §T2.3：
+ * 任务指令 + 产出约定 + 沉默协议（沉默是正常产出，防止 cron 每次触发都刷屏）；
+ * 明示「不要自我续期」——调度由系统负责，防循环放大（D4 prompt 侧保险）。
+ */
+export function buildPatrolPrompt(reminder: ReminderFirePayload): string {
+  const reportWhere = reminder.channel
+    ? `用 \`send_message\` 工具发到 ${reminder.channel}（target 严格用该值），没有该工具时退回` +
+      ` \`echo "内容" | slock message send --target "${reminder.channel}"\``
+    : `按你 MEMORY.md 里的约定选择频道，用 \`send_message\` 工具发出`;
+  return [
+    `【定时巡检】${reminder.title || "(未命名任务)"}`,
+    ``,
+    `任务指令：${reminder.instructions || reminder.title || "(无指令)"}`,
+    ``,
+    `产出约定：`,
+    `- 有值得报告的发现 → ${reportWhere}。`,
+    `- 没有值得报告的发现 → 直接结束回合，不发任何消息（沉默是正常产出）。`,
+    `- 也不要发「无事可报」「已保持沉默」之类的确认消息——零输出就是沉默。`,
+    `- 之前轮次已经报告过的内容不要重复报告。`,
+    `- 不要为延续本任务给自己创建新提醒；调度由系统负责。`,
+  ].join("\n");
+}
+
 export interface IDispatch {
   dispatchToAgent(agentName: string, channelName: string, userMsg: string): Promise<void>;
   runAgent(
@@ -25,7 +58,7 @@ export interface IDispatch {
     content: string,
   ): Promise<void>;
   runAgentDm(agentName: string, replyTarget: string, senderName: string, content: string): Promise<void>;
-  runAgentReminder(agentName: string, reminder: { title?: string; channel?: string }): Promise<void>;
+  runAgentReminder(agentName: string, reminder: ReminderFirePayload): Promise<void>;
 }
 
 export interface DispatchDeps {
@@ -521,8 +554,12 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
     await dispatchToAgent(agentName, replyTarget, userMsg);
   };
 
-  const runAgentReminder = async (agentName: string, reminder: { title?: string; channel?: string }): Promise<void> => {
+  const runAgentReminder = async (agentName: string, reminder: ReminderFirePayload): Promise<void> => {
     const channelName = (reminder.channel || "").replace(/^#/, "").split(":")[0] || "general";
+    if (reminder.kind === "patrol") {
+      await dispatchToAgent(agentName, channelName, buildPatrolPrompt(reminder));
+      return;
+    }
     const where = reminder.channel
       ? `相关频道：${reminder.channel}。如需发消息，用 \`send_message\` 工具（target="${reminder.channel}"），没有该工具时退回` +
         `\`echo "内容" | slock message send --target "${reminder.channel}"\`。`

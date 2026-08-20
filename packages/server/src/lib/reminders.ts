@@ -40,15 +40,32 @@ export function initialFireAt(body: { fireAt?: string; delaySeconds?: number; re
   return null;
 }
 
+// ---- T2 patrol 护栏参数（设计:docs/2026-08-19/02-t2-agent-patrol-design.md §6) ----
+export const PATROL_MIN_INTERVAL_MS = 5 * 60 * 1000; // patrol 最小周期 5min
+export const PATROL_MAX_PER_AGENT = 10; // 每 agent 活跃 patrol 上限
+
+// patrol 周期校验:必须可解析且周期 ≥ 5min;返回错误文案,合法返回 null
+export function validatePatrolRepeat(repeat: string): string | null {
+  const next = nextFireFromRepeat(repeat, new Date());
+  if (!next) return "unsupported repeat rule (supported: every:N{s,m,h,d}, hourly, daily, daily@HH:MM)";
+  if (next.getTime() - Date.now() < PATROL_MIN_INTERVAL_MS) return "patrol interval too short (min 5m)";
+  return null;
+}
+
 export function reminderToDto(r: any) {
   return {
     id: r.id,
+    kind: r.kind || "reminder",
     title: r.title,
+    instructions: r.instructions || null,
     fireAt: r.fire_at,
     repeat: r.repeat_rule || null,
     channel: r.channel_ref || null,
     status: r.status,
+    paused: r.paused ?? false,
     fireCount: r.fire_count ?? 0,
+    consecutiveSilent: r.consecutive_silent ?? 0,
+    maxConsecutiveSilent: r.max_consecutive_silent ?? 5,
     lastFiredAt: r.last_fired_at || null,
     createdAt: r.created_at,
   };
