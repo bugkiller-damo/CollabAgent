@@ -97,6 +97,8 @@ export const streamEventToFrames = (agentName: string, ev: any, allocSeq: () => 
       break;
     }
     case "result": {
+      // 数值 cost/duration/turns 只进 summary 字符串；落库在
+      // agent-runtime-dispatch.handleStreamEvent（D3 / Step 4）。
       const ok = ev.subtype === "success";
       const summary = [
         ok ? "success" : `error (${ev.subtype ?? "?"})`,

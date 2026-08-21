@@ -3,6 +3,7 @@ import { canAccessChannel, getChannelType } from "../lib/access.js";
 import { appendEvent } from "../lib/audit.js";
 import { cleanChannelName, resolveChannel } from "../lib/channel.js";
 import { dmOtherMembers, isDmTarget, type Party, resolveDmTarget } from "../lib/dm.js";
+import { computeTriageAgents } from "../lib/manager-triage.js";
 import { inc } from "../lib/metrics.js";
 import { createNotification } from "../lib/notifications.js";
 import { attachmentsJson, reactionsJson } from "../lib/query-fragments.js";
@@ -293,6 +294,36 @@ export async function messageRoutes(app: FastifyInstance) {
     }
 
     const senderName = req.user?.display_name || req.user?.handle || "unknown";
+    // T8 分诊：无 agent 会被唤醒 + 顶层消息 + 频道开关开 → 附加单选经理。
+    // 查询放在事务外：开关/经理变更不该回滚已提交的消息；失败则本条不分诊。
+    let triageAgents: string[] | undefined;
+    if (!dm && !threadId) {
+      try {
+        const ch = await app.pg.query<{ manager_triage_enabled: boolean }>(
+          "SELECT manager_triage_enabled FROM channels WHERE id = $1",
+          [resolvedChannelId],
+        );
+        let managerName: string | null = null;
+        if (ch.rows[0]?.manager_triage_enabled) {
+          const mgr = await app.pg.query<{ name: string }>(
+            `SELECT a.name FROM channel_members cm JOIN agents a ON a.id = cm.member_id
+              WHERE cm.channel_id = $1 AND cm.member_type = 'agent' AND cm.is_manager = true
+              ORDER BY cm.joined_at ASC LIMIT 1`,
+            [resolvedChannelId],
+          );
+          managerName = mgr.rows[0]?.name ?? null;
+        }
+        triageAgents = computeTriageAgents({
+          dm,
+          threadId,
+          mentionAgents,
+          enabled: !!ch.rows[0]?.manager_triage_enabled,
+          managerName,
+        });
+      } catch (err: any) {
+        console.warn("[messages] T8 triage lookup failed:", err?.message ?? err);
+      }
+    }
     // DM：浏览器侧用稳定的 dm:<uuid> 作为会话键；并附带 agent 接收方供 daemon「无需 @」唤醒
     let dmAgentRecipients: string[] | undefined;
     if (dm) {
@@ -320,6 +351,7 @@ export async function messageRoutes(app: FastifyInstance) {
         // server 预过滤的「有权回应的 agent」列表：daemon 只 spawn 列表内的 agent，
         // 空数组 = 有人被 @ 但无人有权回应 → 不 spawn（避免 PTY 空转）。
         ...(mentionAgents !== undefined ? { mentionAgents } : {}),
+        ...(triageAgents ? { triageAgents } : {}),
         ...(dm ? { dm: true, dmAgentRecipients, dmPeerHandle: dmPeer?.handle } : {}),
       },
     });

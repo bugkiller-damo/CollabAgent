@@ -8,7 +8,7 @@ AI agents, and routes messages between them.
 
 ## 当前状态（2026-08-20 核查）
 
-**已非早期单体**：`packages/daemon/src/` 49 个源文件 + `test/` 19 个测试文件。
+**已非早期单体**：`packages/daemon/src/` 50 个源文件 + `test/` 23 个测试文件。
 2026-07-15 路线图（26 项）与 2026-08-18 计划（A1/A2/B1/C1/B2/C2 等）**已全部落地**
 （存档：`.claude/goal-progress.json`，currentTask = ALL-DONE）。
 
@@ -27,6 +27,12 @@ AI agents, and routes messages between them.
 - **状态机**：`agent-runtime-state.ts` 五态（uninit/idle/starting/working/stopped）。
 - **观察**：stream-json 事件 → `agent-observation.ts` 观察帧 → WS 进 web 面板；
   tool_call 经 C1 进审计流。
+- **成本记账（D3，2026-08-20 Step 4）**：`agent-cost-tracker.ts` 按
+  (agent, channel, UTC day) 累计 result 事件的 `total_cost_usd`；
+  `SLOCK_COST_BUDGET_USD` 超限 → A1 拒投 + 频道熔断消息；`slock cost show` 查近 7 天。
+- **Context Builder（D1，2026-08-21 Step 6）**：线程追问入队前拉该线程历史并截断注入；
+  顶层 @ / DM / 巡检不注入。D2 本批仅 prompt 隔离 + `daemon-thread-sessions.json`
+  （不拆 (agent, thread) 进程池）。
 - **Agent 回话通道**：`mcp/slock-mcp-server.ts`（agent 经 MCP 工具调 server API 发消息/
   派单/读历史），`mcp-bundle.ts` 随运行时注入。
 
@@ -37,7 +43,7 @@ AI agents, and routes messages between them.
 | 入口 | `index.ts` / `cli.ts` / `daemon-core.ts`（WS 客户端 + 消息分发） |
 | 运行时编排 | `agent-runtime.ts`（核心）+ `agent-runtime-dispatch/-spawn/-exit/-state/-credentials/-turn-tracker/-terms-dialog.ts` |
 | 驱动 | `drivers/persistent-claude.ts`（默认）/ `claude-print.ts`（one-shot）/ `drivers/probe.ts` |
-| 队列与生命周期 | `agent-dispatch-queue.ts` / `live-run-registry.ts` / `agent-run-store.ts` / `idle-reclaimer.ts` / `supervisor.ts` |
+| 队列与生命周期 | `agent-dispatch-queue.ts` / `live-run-registry.ts` / `agent-run-store.ts` / `agent-cost-tracker.ts`（D3 成本记账） / `agent-context-builder.ts`（D1） / `agent-thread-sessions.ts`（D2 映射） / `idle-reclaimer.ts` / `supervisor.ts` |
 | 安全 | `agent-tokens.ts` / `agent-token-file.ts` / `agent-env-whitelist.ts` / `command-presets.ts` / `command-resolver.ts` / `auth.ts` |
 | 启动与提示 | `agent-startup.ts` / `system-prompt.ts` / `setup-slock-wrapper.ts` / `restart-summary.ts` |
 | PTY 兜底（❄️冻结保留） | `agent-manager.ts` / `agent-manager-support.ts` / `post-start-input-writer.ts` / `pty-output-bus.ts` / `terminal-state.ts` / `terminal-log.ts`* |
@@ -56,7 +62,7 @@ AI agents, and routes messages between them.
 
 ```
 npx tsc --noEmit -p packages/daemon/tsconfig.json
-pnpm vitest run          # packages/daemon 测试（test/ 19 文件）
+pnpm vitest run          # packages/daemon 测试（test/ 23 文件）
 ```
 
 ## 历史档案（已完结，勿再按此工作）
@@ -73,6 +79,7 @@ pnpm vitest run          # packages/daemon 测试（test/ 19 文件）
 
 | 文档 | 用途 |
 |------|------|
+| `docs/2026-08-21/01-d1-d2-context-session-design.md` | Step 6 D1/D2 设计（prompt 隔离，线程追问） |
 | `docs/2026-08-20/01-daemon-evolution-plan.md` | daemon 演进方案（还债+扩建） |
 | `docs/2026-08-20/02-daemon-evolution-tracker.md` | **执行跟踪（以此为准）** |
 | `docs/2026-08-19/01-buzz-borrowing-todo.md` | 产品能力 backlog（T1~T8 + L1~L5） |

@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref } from "vue";
-import { apiClient } from "../../api";
+import { computed, onMounted, ref } from "vue";
+import { apiClient, apiGet } from "../../api";
 import { useChannelStore } from "../../stores";
 import ConfirmDialog from "../ConfirmDialog.vue";
 import Button from "../ui/Button.vue";
@@ -18,18 +18,38 @@ const channelStore = useChannelStore();
 
 const description = ref(props.channel.description || "");
 const visibility = ref<"public" | "private">(props.channel.type === "private" ? "private" : "public");
+const managerTriageEnabled = ref(!!(props.channel.manager_triage_enabled ?? props.channel.managerTriageEnabled));
+const hasManagerAgent = ref(false);
+const canManage = computed(() => {
+  const role = props.channel.role as string | undefined;
+  return role === "owner" || role === "admin";
+});
 const error = ref("");
 const saving = ref(false);
 const confirm = ref<null | "delete" | "archive">(null);
+
+onMounted(() => {
+  apiGet<{ members: { member_type: string; is_manager?: boolean }[] }>(`/api/channels/${props.channel.id}/members`)
+    .then((d) => {
+      hasManagerAgent.value = (d.members || []).some((m) => m.member_type === "agent" && m.is_manager);
+    })
+    .catch(() => {});
+});
 
 async function handleSave() {
   saving.value = true;
   error.value = "";
   try {
-    await channelStore.updateChannel(props.channel.id, {
+    const patch: {
+      description: string;
+      type: "public" | "private";
+      managerTriageEnabled?: boolean;
+    } = {
       description: description.value.trim(),
       type: visibility.value,
-    });
+    };
+    if (canManage.value) patch.managerTriageEnabled = managerTriageEnabled.value;
+    await channelStore.updateChannel(props.channel.id, patch);
     props.onClose();
   } catch (err: any) {
     error.value = err?.message || "保存失败";
@@ -110,6 +130,22 @@ async function handleArchive() {
             🔒 私有
           </button>
         </div>
+      </div>
+
+      <div>
+        <label class="mb-1 flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400">
+          <input
+            type="checkbox"
+            class="rounded border-gray-300"
+            :checked="managerTriageEnabled"
+            :disabled="!canManage || !hasManagerAgent"
+            @change="managerTriageEnabled = ($event.target as HTMLInputElement).checked"
+          />
+          经理自动分诊
+        </label>
+        <p v-if="!hasManagerAgent" class="text-xs text-gray-500">先指定一名经理 agent，才能开启自动分诊。</p>
+        <p v-else-if="!canManage" class="text-xs text-gray-500">仅频道所有者或管理员可更改此开关。</p>
+        <p v-else class="text-xs text-gray-500">开启后，无人 @ agent 的顶层消息会交给频道经理分诊（自己回、派单或沉默）。</p>
       </div>
 
       <p v-if="error" class="text-sm text-red-500">{{ error }}</p>

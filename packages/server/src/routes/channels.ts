@@ -66,7 +66,7 @@ export async function channelRoutes(app: FastifyInstance) {
     if (!(await canManageChannel(app, channelId, req.user.sub))) {
       return reply.status(403).send({ error: "only channel admins can modify this channel" });
     }
-    const { description, type, visibility, archived } = req.body as Record<string, unknown>;
+    const { description, type, visibility, archived, managerTriageEnabled } = req.body as Record<string, unknown>;
     const sets: string[] = [];
     const params: any[] = [];
     let p = 1;
@@ -82,6 +82,24 @@ export async function channelRoutes(app: FastifyInstance) {
     if (archived !== undefined) {
       sets.push(`archived = $${p++}`);
       params.push(!!archived);
+    }
+    if (managerTriageEnabled !== undefined) {
+      if (typeof managerTriageEnabled !== "boolean") {
+        return reply.status(400).send({ error: "managerTriageEnabled must be boolean" });
+      }
+      if (managerTriageEnabled) {
+        const mgr = await app.pg.query(
+          `SELECT 1 FROM channel_members
+            WHERE channel_id = $1 AND member_type = 'agent' AND is_manager = true
+            LIMIT 1`,
+          [channelId],
+        );
+        if (mgr.rows.length === 0) {
+          return reply.status(400).send({ error: "channel has no manager agent" });
+        }
+      }
+      sets.push(`manager_triage_enabled = $${p++}`);
+      params.push(managerTriageEnabled);
     }
     if (sets.length === 0) return reply.status(400).send({ error: "no fields to update" });
     sets.push(`updated_at = now()`);

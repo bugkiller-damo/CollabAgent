@@ -72,6 +72,8 @@ export interface Channel {
   archived: boolean;
   memberCount: number;
   createdAt: ISO8601;
+  /** T8：频道经理自动分诊开关（DB 列 manager_triage_enabled；默认关） */
+  managerTriageEnabled?: boolean;
 }
 
 export type MemberRole = "owner" | "admin" | "member";
@@ -280,6 +282,8 @@ export interface WsDeliverMessage {
   dmPeerHandle?: string;
   /** 经理/worker 派发通知的显式路由目标（绕开 daemon 防自环） */
   forceDeliverTo?: string;
+  /** T8：无 @ 顶层消息的单选分诊经理（server 按 is_manager 最早加入者选出） */
+  triageAgents?: string[];
 }
 
 /** B1 结构化观察帧——规范定义在 shared，daemon agent-observation.ts 从此 re-export */

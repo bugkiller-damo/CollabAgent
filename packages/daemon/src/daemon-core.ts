@@ -2,8 +2,11 @@ import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { WsFromDaemonMessage, WsToDaemonMessage } from "@collabagent/shared";
 import { WebSocket } from "ws";
+import { createJsonCostTracker, defaultCostStorePath } from "./agent-cost-tracker.js";
 import { createJsonRunStore, defaultStorePath } from "./agent-run-store.js";
 import { createAgentRuntime, type IAgentRuntime } from "./agent-runtime.js";
+import { pickLocalTriageAgent } from "./agent-runtime-dispatch.js";
+import { createJsonThreadSessionStore, defaultThreadSessionStorePath } from "./agent-thread-sessions.js";
 import { createAgentTokenRegistry } from "./agent-tokens.js";
 import { probeClaude } from "./drivers/probe.js";
 import { createLiveRunRegistry } from "./live-run-registry.js";
@@ -34,6 +37,8 @@ export class DaemonCore {
     const tokenRegistry = createAgentTokenRegistry();
     const liveRunRegistry = createLiveRunRegistry();
     const runStore = createJsonRunStore(defaultStorePath());
+    const costTracker = createJsonCostTracker(defaultCostStorePath());
+    const threadSessions = createJsonThreadSessionStore(defaultThreadSessionStorePath());
     // 「计划内重启」标记（supervisor watch 重启 / 上次优雅 stop 写入）：
     // 有标记说明上次不是崩溃——run 记录虽然是 stale 的，但那是故意停掉的，
     // 不该触发 autostart 把 agent 全部拉起一遍（2026-07-18 实测：热重启后
@@ -94,40 +99,52 @@ export class DaemonCore {
             time: new Date().toISOString(),
           });
         },
-        // 回复守卫代发：回合结束但 agent 没调 send_message 时，daemon 以 agent
-        // 身份把最终正文直接发到频道（mint scoped token → POST send）。
-        // 比追问省一整轮 LLM，且不受追问回合被超时杀掉的二次失败影响。
+        // 回复守卫代发 / D3 成本熔断：daemon 以 agent 身份 POST 到频道
+        // （mint scoped token → POST send）。零额外 LLM 回合。
         onReplyMissing: (agentName, channel, content) => {
-          void (async () => {
-            try {
-              const agentId = this.runtime.resolveAgentId(agentName);
-              if (!agentId) {
-                console.warn(`[Daemon] reply-guard: no agentId for @${agentName}, cannot auto-post`);
-                return;
-              }
-              const mint = await fetch(`${this.serverUrl}/internal/agent/${agentId}/credentials`, {
-                method: "POST",
-                headers: { Authorization: `Bearer ${this.apiKey}` },
-              });
-              if (!mint.ok) throw new Error(`mint credential ${mint.status}`);
-              const { token } = (await mint.json()) as { token: string };
-              const res = await fetch(`${this.serverUrl}/internal/agent/${agentId}/send`, {
-                method: "POST",
-                headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
-                body: JSON.stringify({ target: channel, content }),
-              });
-              if (!res.ok) throw new Error(`send ${res.status} ${await res.text().catch(() => "")}`);
-              console.log(`[Daemon] reply-guard auto-posted for @${agentName} -> ${channel} (${content.length} chars)`);
-            } catch (err: any) {
-              console.error(`[Daemon] reply-guard auto-post failed for @${agentName}:`, err?.message ?? err);
-            }
-          })();
+          this.postAsAgent(agentName, channel, content, "reply-guard");
         },
+        onCircuitBreak: (agentName, channel, content) => {
+          this.postAsAgent(agentName, channel, content, "cost-circuit");
+        },
+        costTracker,
+        threadSessions,
       },
       tokenRegistry,
       liveRunRegistry,
       runStore,
     );
+  }
+
+  /**
+   * 以 agent 身份往频道发一条消息（mint scoped token → POST /send）。
+   * 回复守卫代发与 D3 成本熔断共用：都不走 LLM 回合。
+   */
+  private postAsAgent(agentName: string, channel: string, content: string, reason: string): void {
+    void (async () => {
+      try {
+        const agentId = this.runtime.resolveAgentId(agentName);
+        if (!agentId) {
+          console.warn(`[Daemon] ${reason}: no agentId for @${agentName}, cannot post`);
+          return;
+        }
+        const mint = await fetch(`${this.serverUrl}/internal/agent/${agentId}/credentials`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${this.apiKey}` },
+        });
+        if (!mint.ok) throw new Error(`mint credential ${mint.status}`);
+        const { token } = (await mint.json()) as { token: string };
+        const res = await fetch(`${this.serverUrl}/internal/agent/${agentId}/send`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+          body: JSON.stringify({ target: channel, content }),
+        });
+        if (!res.ok) throw new Error(`send ${res.status} ${await res.text().catch(() => "")}`);
+        console.log(`[Daemon] ${reason} posted for @${agentName} -> ${channel} (${content.length} chars)`);
+      } catch (err: any) {
+        console.error(`[Daemon] ${reason} post failed for @${agentName}:`, err?.message ?? err);
+      }
+    })();
   }
 
   async start(): Promise<void> {
@@ -358,7 +375,15 @@ export class DaemonCore {
             const senderName = (m.senderName as string) || (m.senderId as string) || "unknown";
             console.log(`[Daemon] Dispatch message for @${forceTarget} in ${replyTarget}: ${content.slice(0, 50)}`);
             try {
-              await this.runtime.runAgent(forceTarget, channelName, replyTarget, senderName, content);
+              await this.runtime.runAgent(
+                forceTarget,
+                channelName,
+                replyTarget,
+                senderName,
+                content,
+                threadId || undefined,
+                typeof m.id === "string" ? m.id : undefined,
+              );
             } catch (err: any) {
               console.error("[Daemon] Dispatch routing failed:", err?.message);
             }
@@ -391,22 +416,51 @@ export class DaemonCore {
         const target = Array.isArray(deliverList)
           ? deliverList.find((n) => this.runtime.hasAgent(n))
           : this.runtime.findMentionedAgent(content || "");
-        if (!target) break;
         const rawChannel = (m.channelId as string) || "general";
         const channelName = rawChannel.replace(/^#/, "").split(":")[0];
         const threadId = (m.threadId as string) || (m.thread_id as string) || "";
         const replyTarget = threadId ? `#${channelName}:${threadId.slice(0, 8)}` : `#${channelName}`;
         const senderName = (m.senderName as string) || (m.senderId as string) || "unknown";
-        console.log(`[Daemon] Message from @${senderName} in ${replyTarget}: ${content?.slice(0, 50)}`);
 
-        if (m.senderId === this.agentId || !content || typeof content !== "string") break;
-        if (content.startsWith("🤖 ")) break;
+        if (target) {
+          console.log(`[Daemon] Message from @${senderName} in ${replyTarget}: ${content?.slice(0, 50)}`);
+          if (m.senderId === this.agentId || !content || typeof content !== "string") break;
+          if (content.startsWith("🤖 ")) break;
+          try {
+            console.log(`[Daemon] Routing to agent @${target} -> ${replyTarget}`);
+            await this.runtime.runAgent(
+              target,
+              channelName,
+              replyTarget,
+              senderName,
+              content,
+              threadId || undefined,
+              typeof m.id === "string" ? m.id : undefined,
+            );
+          } catch (err: any) {
+            console.error("[Daemon] Failed:", err.message);
+          }
+          break;
+        }
 
-        try {
-          console.log(`[Daemon] Routing to agent @${target} -> ${replyTarget}`);
-          await this.runtime.runAgent(target, channelName, replyTarget, senderName, content);
-        } catch (err: any) {
-          console.error("[Daemon] Failed:", err.message);
+        // T8：mention 未命中后的第四唤醒源——server 单选的分诊经理。
+        // 位于 senderType==='agent' / DM / 🤖 拦截之后，agent 消息天然不触发。
+        const triageTarget = pickLocalTriageAgent(m.triageAgents, (n) => this.runtime.hasAgent(n));
+        if (triageTarget) {
+          console.log(`[Daemon] Triage for @${triageTarget} in ${replyTarget}: ${content.slice(0, 50)}`);
+          try {
+            await this.runtime.runAgentTriage(
+              triageTarget,
+              channelName,
+              replyTarget,
+              senderName,
+              content,
+              threadId || undefined,
+              typeof m.id === "string" ? m.id : undefined,
+            );
+          } catch (err: any) {
+            console.error("[Daemon] Triage routing failed:", err?.message);
+          }
         }
         break;
       }

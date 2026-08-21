@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
+import type { ICostTracker } from "./agent-cost-tracker.js";
 import { createAgentManager } from "./agent-manager.js";
 import { createObservationBus, type ObservationBus } from "./agent-observation.js";
 import { createCredentialsClient } from "./agent-runtime-credentials.js";
@@ -31,6 +32,7 @@ export { BUSY_MARKER_RE, PROMPT_RE };
 // 回合结束检测用到的 BUSY_MARKER_RE/PROMPT_RE + pending/busyObserved 状态已拆到
 // agent-runtime-turn-tracker.ts
 
+// biome-ignore lint/correctness/noUnusedVariables: frozen PTY leftover (Step 3); do not delete yet
 const PTY_COMMAND = "claude"; // TODO: read from command-resolver
 
 // ANSI CSI 序列（ESC [ 参数 结尾字母）匹配——stuck 检测里剥 raw tail 用。
@@ -119,20 +121,37 @@ export interface AgentRuntimeOptions {
   ) => void;
   /** 回复守卫代发（headless）：回合结束但未 send_message 时，daemon 以 agent 身份代发最终正文 */
   onReplyMissing?: (agentName: string, channel: string, content: string) => void;
+  /** D3：成本记账（daemon-core 注入；测试可不传，缺省则不落库不熔断） */
+  costTracker?: ICostTracker;
+  /** D3：预算熔断时往频道发可见消息（零 LLM，走与 reply-guard 相同的 POST send） */
+  onCircuitBreak?: (agentName: string, channel: string, content: string) => void;
+  /** D2：threadId → sessionId（独立 JSON；测试可不传） */
+  threadSessions?: import("./agent-thread-sessions.js").IThreadSessionStore;
 }
 
 export interface IAgentRuntime {
   // 消息分发
-  dispatchToAgent(agentName: string, channelName: string, userMsg: string): Promise<void>;
+  dispatchToAgent(agentName: string, channelName: string, userMsg: string, threadId?: string): Promise<void>;
   runAgent(
     agentName: string,
     channelName: string,
     replyTarget: string,
     senderName: string,
     content: string,
+    threadId?: string,
+    messageId?: string,
   ): Promise<void>;
   runAgentDm(agentName: string, replyTarget: string, senderName: string, content: string): Promise<void>;
   runAgentReminder(agentName: string, reminder: ReminderFirePayload): Promise<void>;
+  runAgentTriage(
+    agentName: string,
+    channelName: string,
+    replyTarget: string,
+    senderName: string,
+    content: string,
+    threadId?: string,
+    messageId?: string,
+  ): Promise<void>;
   // 注：原 autostartAgent（崩溃恢复主动拉起 + 注入"安静等待"恢复消息）已于
   // 2026-07-29 移除——那条恢复消息是一整个 agent 回合且 99% 空转（实测 55k 输出），
   // 改为 lazy spawn + session resume（见 daemon-core.autostartCrashedAgents）。
@@ -403,7 +422,7 @@ export const createAgentRuntime = (
   });
 
   // ---- 消息分发核心（见 agent-runtime-dispatch.ts）----
-  const { dispatchToAgent, runAgent, runAgentDm, runAgentReminder } = createDispatch({
+  const { dispatchToAgent, runAgent, runAgentDm, runAgentReminder, runAgentTriage } = createDispatch({
     options,
     stateMachine,
     turnTracker,
@@ -424,6 +443,9 @@ export const createAgentRuntime = (
     observationBus,
     onToolCall: options.onToolCall,
     onReplyMissing: options.onReplyMissing,
+    costTracker: options.costTracker,
+    onCircuitBreak: options.onCircuitBreak,
+    threadSessions: options.threadSessions,
   });
 
   // ---- 公开接口 ----
@@ -433,6 +455,7 @@ export const createAgentRuntime = (
     runAgent,
     runAgentDm,
     runAgentReminder,
+    runAgentTriage,
 
     registerAgent(
       id: string,

@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { Command } from "commander";
-import { AgentBootstrapError, loadAgentContext } from "./auth.js";
+import { createJsonCostTracker, defaultCostStorePath, parseCostBudgetUsd } from "./agent-cost-tracker.js";
+import { createJsonThreadSessionStore, defaultThreadSessionStorePath } from "./agent-thread-sessions.js";
+import { loadAgentContext } from "./auth.js";
 import { ApiClient } from "./client.js";
 import { CliExit, emit, fail } from "./output.js";
 
@@ -299,7 +301,6 @@ function registerAttachmentView(parent: Command) {
     .requiredOption("--output <path>", "Local path to save the file")
     .action(async (opts: { id: string; output: string }) => {
       const ctx = loadAgentContext();
-      const client = new ApiClient(ctx);
       const res = await fetch(`${ctx.serverUrl}/api/attachments/${opts.id}`, {
         headers: { Authorization: `Bearer ${ctx.token}` },
       });
@@ -901,6 +902,36 @@ function parseDuration(duration: string): number {
 }
 
 // ---------------------------------------------------------------------------
+// Cost (D3)：读 daemon 本地 .slock/daemon-costs.json，不打 server
+// ---------------------------------------------------------------------------
+function registerCostShow(parent: Command) {
+  parent
+    .command("show", { isDefault: true })
+    .description("Show local daemon spend totals (UTC days, default last 7)")
+    .option("--days <n>", "Lookback days including today (UTC)", "7")
+    .option("--agent <name>", "Filter to one agent name")
+    .action((opts: { days: string; agent?: string }) => {
+      const days = Math.max(1, Math.floor(Number(opts.days) || 7));
+      const tracker = createJsonCostTracker(defaultCostStorePath());
+      let rows = tracker.spendByAgent(days);
+      if (opts.agent) rows = rows.filter((r) => r.agentName === opts.agent);
+      process.stdout.write(
+        JSON.stringify(
+          {
+            ok: true,
+            days,
+            budgetUsd: parseCostBudgetUsd(),
+            store: defaultCostStorePath(),
+            rows,
+          },
+          null,
+          2,
+        ) + "\n",
+      );
+    });
+}
+
+// ---------------------------------------------------------------------------
 // Program entry
 // ---------------------------------------------------------------------------
 const program = new Command();
@@ -973,6 +1004,24 @@ registerPatrolLog(patrolCmd);
 
 const actionCmd = program.command("action").description("Action card operations");
 registerActionPrepare(actionCmd);
+
+function registerSessionShow(parent: Command) {
+  parent
+    .command("show", { isDefault: true })
+    .description("Show local threadId → sessionId map (D2 prompt-isolation store)")
+    .option("--agent <name>", "Filter to one agent name")
+    .action((opts: { agent?: string }) => {
+      const store = createJsonThreadSessionStore(defaultThreadSessionStorePath());
+      const rows = store.list(opts.agent ? { agentName: opts.agent } : undefined);
+      process.stdout.write(JSON.stringify({ ok: true, store: defaultThreadSessionStorePath(), rows }, null, 2) + "\n");
+    });
+}
+
+const costCmd = program.command("cost").description("Local daemon cost accounting (D3)");
+registerCostShow(costCmd);
+
+const sessionCmd = program.command("session").description("Local thread↔session map (D2)");
+registerSessionShow(sessionCmd);
 
 program.parseAsync().catch((err) => {
   if (err instanceof CliExit) {

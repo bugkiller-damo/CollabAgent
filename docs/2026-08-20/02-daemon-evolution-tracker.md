@@ -11,8 +11,7 @@
 
 ## ★ 当前焦点
 
-> **Step 3 · ✅ 完成**（2026-08-20，PTY 冻结隔离：9 文件 legacy 标记 + 分支标注 +
-> 启动警告；build + 160 测试全绿，改动待 commit）。**下一步：Step 4 · 成本记账（并行轨道）**
+> **Step 6 · ✅ 完成**（2026-08-21，D1 线程追问注入 + D2 prompt 隔离；不做进程池；待 commit）。**下一步：Step 7 · T4**
 
 ---
 
@@ -152,42 +151,62 @@ grep 每个 PTY 文件都有 legacy 标记。
 
 ---
 
-## Step 4 · 成本记账 + 熔断（并行轨道，独立）☐
+## Step 4 · 成本记账 + 熔断（并行轨道，独立）✅ 2026-08-20
 
-- [ ] S4.1 `agent-observation.ts` result 事件的 `total_cost_usd/duration_ms/num_turns`
-      落库（runStore 或 SQLite），按 (agent, channel, day) 累计
-- [ ] S4.2 `SLOCK_COST_BUDGET_USD` 阈值熔断：超限 → A1 队列拒投 + 频道发熔断消息
-- [ ] S4.3 查询面：`slock` CLI 或管理后台能查「某 agent 最近 7 天花费」
+- [x] S4.1 `agent-observation.ts` result 事件的 `total_cost_usd/duration_ms/num_turns`
+      落库，按 (agent, channel, UTC day) 累计
+      → **独立文件** `.slock/daemon-costs.json`（`agent-cost-tracker.ts`），不挂
+      `AgentRunRecord`：headless 默认路径从不 `insertAgentRun`（那是 PTY spawn
+      专属）。插入点：`handleStreamEvent` 的 `result` 分支、`turnGuards.delete` 之前
+      （channel 取自 turnGuard，是频道名不是 server UUID）
+- [x] S4.2 `SLOCK_COST_BUDGET_USD` 阈值熔断：超限 → A1 队列拒投 + 频道发熔断消息
+      → 入队前 `evaluateCostGate`（`dispatchToAgent` 漏斗，覆盖 DM/reminder/patrol）；
+      未设 / 非正数 = 不熔断（opt-in）；同 agent 同 UTC 日最多一条熔断消息，
+      经 `daemon-core.postAsAgent`（与 reply-guard 共用 mint token → POST /send，零 LLM）
+- [x] S4.3 查询面：`slock cost show [--days 7] [--agent name]` 读本地 costs 文件
+      （不打 server；`slock cost` 默认即 show）
 
-**验收**：超限自动停投且频道可见；查询面可用。
-**时序约束**：必须早于 Step 6（D1）上线。
+**验收**：超限自动停投且频道可见；查询面可用。 ✅
+（`pnpm --filter @collabagent/daemon typecheck` 绿；vitest 20 文件 / **177 例**全绿，
+净增 `test/agent-cost-tracker.test.ts` 17 例）
+**时序约束**：必须早于 Step 6（D1）上线。 ✅ 已满足
+
+> **📌 粒度备注**：聚合键的 channel 是 daemon 侧频道名（`general` / `dm:@handle`），
+> 不是 server UUID。one-shot / PTY 路径没有 stream-json result，本批只覆盖
+> headless persistent 默认路径。
 
 ---
 
-## Step 5 · T8 经理分诊（按既有设计文档）☐
+## Step 5 · T8 经理分诊（按既有设计文档）✅ 2026-08-21
 
 - 依据：`docs/2026-08-19/03-t8-manager-triage-design.md`（任务分解以该文档为准，
   本文不重复）。
 - **前置**：Step 3 合并（dispatch 层单路径）。
 - **并行**：Step 6 设计文档可在本 Step 期间撰写。
+- [x] T8.1 migration `013_manager_triage.sql` + canonical schema ALTER
+- [x] T8.2 `messages.ts` 无 agent 唤醒 + 顶层消息 + 开关 → `triageAgents`（纯函数 `computeTriageAgents`）
+- [x] T8.3 daemon `agent:deliver` mention 未命中后第四唤醒源 `runAgentTriage`
+- [x] T8.4 `buildTriagePrompt`（三选一 + 沉默协议）；分诊/巡检回合跳过 reply-guard 代发
+- [x] T8.5 PATCH `managerTriageEnabled`：`canManageChannel`（owner/admin）；开启校验至少一名经理 agent
+- [x] T8.6 ChannelSettingsModal 开关（无经理置灰；非管理员只读提示）；不做 header badge
+- [x] T8.7 L1 单测（server `manager-triage.test.ts` + daemon `triage-prompt.test.ts`）；不做 L4 `triageWoken`
+
+**验收（L1）**：路由纯函数覆盖无 @ / @人空名单 / 有 @ agent / 线程 / 开关关 / DM / 无经理；
+daemon prompt 含三选一与沉默协议。L3 手动 E2E 待上线走剧本。
 
 ---
 
-## Step 6 · D1 Context Builder + D2 thread↔session 亲和（同批）☐
+## Step 6 · D1 Context Builder + D2 thread↔session 亲和（同批）✅ 2026-08-21
 
-设计（可在 Step 5 期间并行）：
-- [ ] S6.0 设计文档（`docs/2026-08-2x/`）：Context Builder 职责边界、与 T8 triage
-      prompt 的组装关系、thread↔session 映射表结构、回收策略
+设计：`docs/2026-08-21/01-d1-d2-context-session-design.md`。用户确认：仅 prompt 隔离（不拆进程池）；仅线程追问注入；截断不摘要。
 
-实施（T8 合并后）：
-- [ ] S6.1 Context Builder 插入 dispatch 前置（`agent:deliver` 后、A1 入队前）：
-      相关性筛选 → 线程化重组 → 超窗压缩（经 server 历史 API）
-- [ ] S6.2 `agent_run_store` 增加 `threadId → sessionId` 映射；同 thread 追问
-      `--resume` 同 session；persistent 按 (agent, thread) 缓存/回收
-- [ ] S6.3 联通 Step 4 成本数据：Context Builder 注入量纳入预算统计
+- [x] S6.0 设计文档
+- [x] S6.1 Context Builder：`runAgent`/`runAgentTriage` 入 A1 前拉 `GET /history?threadId=`，条数/字符截断 + 隔离信封；顶层 @ / DM / 巡检不注入；`SLOCK_CONTEXT_BUILDER=0` 关闭
+- [x] S6.2 `daemon-thread-sessions.json`（独立，不挂 AgentRunRecord）；one-shot 同 thread `--resume`；Persistent 仍每 agent 一进程；idle 仍 per-agent。**不做 (agent, thread) 进程池**
+- [x] S6.3 `recordContext` 累计 contextChars/Messages/Dropped/Turns；`slock cost show` 带出；`slock session show`
 
-**验收**：无线程内 @ 时 agent 能引用早前消息作答；thread A 追问不进 thread B 上下文；
-token 消耗在成本查询面可见。
+**验收**：长线程 @ 的 prompt 含早前消息；thread A/B 注入块互不包含；无 threadId 不注入；typecheck + vitest 绿。弱隔离：Claude 会话记忆仍可能跨线程泄漏。
+**改动待 commit**。
 
 ---
 
@@ -216,4 +235,6 @@ token 消耗在成本查询面可见。
 | Step 1 | 2026-08-20 | `dffb5f8` | 覆盖盘点后只补真空：新增 agent-runtime-state(16 例)+persistent-claude(9 例)；S1.1/S1.4 已覆盖免做；160 全绿；发现 1 个 exit-handler 竞态遗留观察 |
 | Step 2 | 2026-08-20 | `dffb5f8` | shared WS 段重写为四方向 union；daemon/server 接线（sendWs 唯一出口 + 参数类型化）；删 server 死 case agent:activity；全仓 build + daemon 160 全绿；server 套件受环境（PG/:3001）阻塞待复验 |
 | Step 3 | 2026-08-20 | `a65f60c` | PTY 冻结隔离（不删代码）：7 纯 PTY 文件 + 3 混合文件 legacy 标记；SLOCK_USE_PTY=1 启动警告；terminal-log.ts/writeMcpConfig 确认共享不冻结；全仓 build + 160 测试全绿 |
-| — | 2026-08-20 | `f136641` | （旁证）T2 agent 巡检既有改动同批提交：migration 012 + scheduler 护栏 + patrol prompt 分流 + CLI + 面板 + T8 设计文档 |
+| Step 4 | 2026-08-20 | 待 commit | D3 成本记账：`agent-cost-tracker.ts` 独立 JSON 按 (agent, channel, UTC day) 累计；`SLOCK_COST_BUDGET_USD` 入队前熔断 + `postAsAgent` 频道可见；`slock cost show`；typecheck + 177 测试全绿 |
+| Step 5 | 2026-08-21 | 待 commit | T8 经理分诊：013 开关列；`triageAgents` 第四唤醒源；分诊 prompt + reply-guard 豁免；PATCH owner/admin + 经理校验；设置面板开关；L1 14 例；不做 badge/L4 |
+| Step 6 | 2026-08-21 | 待 commit | D1 线程追问 Context Builder（截断注入）+ D2 prompt 隔离与 thread-session JSON；history/MCP `threadId`；`recordContext`；不做进程池 |

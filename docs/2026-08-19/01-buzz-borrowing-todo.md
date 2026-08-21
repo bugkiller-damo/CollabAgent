@@ -41,7 +41,11 @@
 - **验收**：agent 能按 cron 自主发消息/推进任务，无人对话时自动休眠。
 - **预估**：中 | 依赖：reminder scheduler、A1 队列、idle-reclaimer。
 
-### T8【🔴 高】频道经理自动分诊——无 @ 消息经理接活/派单（2026-08-19 讨论增补）
+### T8【🔴 高】频道经理自动分诊——无 @ 消息经理接活/派单（2026-08-19 讨论增补）✅ 已落地 2026-08-21
+- **落地**：migration `013_manager_triage.sql`；`messages.ts` 无 @ 顶层消息附 `triageAgents`；
+  daemon `runAgentTriage` + 沉默协议 prompt；`PATCH /api/channels/:id` owner/admin 开关（开前校验经理）；
+  频道设置「经理自动分诊」；L1 单测（server computeTriageAgents + daemon prompt）。不做 header badge / L4 counter。
+- **遗留**：L3 手动 E2E 剧本（闲聊沉默 / 连发合并 / 线程不触发）靠上线后走一遍；server PG 集成套件随环境。
 - **来源**：T2 讨论中暴露的事件触发缺口——T2 是「到点自己来」，频道里「有事立刻来」
   需要事件触发；对齐 Buzz 远程 agent 团队「经理路由」愿景。
 - **slock 现状**：无 @ 消息不唤醒任何 agent（`messages.ts` 只在 `content.includes("@")`
@@ -108,7 +112,7 @@
 |---|---|---|---|---|---|
 | T1 | YAML 工作流引擎 + 审批门 + Trace | 🔴 高 | 大 | O2 events ✅ | ☐ |
 | T2 | agent 自主巡检 / cron 主动发起 | 🔴 高 | 中 | A1 ✅ / scheduler ✅ | ✅ 2026-08-19 |
-| T8 | 频道经理自动分诊（无 @ 接活/派单） | 🔴 高 | 小 | A1 ✅ / dispatch ✅ | ☐ |
+| T8 | 频道经理自动分诊（无 @ 接活/派单） | 🔴 高 | 小 | A1 ✅ / dispatch ✅ | ✅ 2026-08-21 |
 | T3 | 任务活动馈送（动词+对象+结果卡） | 🟡 中 | 中 | O2 events ✅ | ☐ |
 | T4 | 观察帧升级为产品级活动面板 | 🟡 中 | 中 | B1 ✅ | ☐ |
 | T5 | Forge / 代码协作面（**待产品决策**） | 🟡 中 | 大 | — | 🔶 待定 |
