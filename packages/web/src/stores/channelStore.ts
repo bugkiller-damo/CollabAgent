@@ -41,7 +41,7 @@ export const useChannelStore = defineStore("channels", () => {
 
   async function updateChannel(
     channelId: string,
-    patch: { description?: string; type?: "public" | "private"; archived?: boolean },
+    patch: { description?: string; type?: "public" | "private"; archived?: boolean; managerTriageEnabled?: boolean },
   ): Promise<void> {
     await apiPatch(`/api/channels/${channelId}`, patch);
     await fetchChannels();

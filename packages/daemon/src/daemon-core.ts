@@ -1,8 +1,12 @@
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type { WsFromDaemonMessage, WsToDaemonMessage } from "@collabagent/shared";
 import { WebSocket } from "ws";
+import { createJsonCostTracker, defaultCostStorePath } from "./agent-cost-tracker.js";
 import { createJsonRunStore, defaultStorePath } from "./agent-run-store.js";
 import { createAgentRuntime, type IAgentRuntime } from "./agent-runtime.js";
+import { pickLocalTriageAgent } from "./agent-runtime-dispatch.js";
+import { createJsonThreadSessionStore, defaultThreadSessionStorePath } from "./agent-thread-sessions.js";
 import { createAgentTokenRegistry } from "./agent-tokens.js";
 import { probeClaude } from "./drivers/probe.js";
 import { createLiveRunRegistry } from "./live-run-registry.js";
@@ -33,6 +37,8 @@ export class DaemonCore {
     const tokenRegistry = createAgentTokenRegistry();
     const liveRunRegistry = createLiveRunRegistry();
     const runStore = createJsonRunStore(defaultStorePath());
+    const costTracker = createJsonCostTracker(defaultCostStorePath());
+    const threadSessions = createJsonThreadSessionStore(defaultThreadSessionStorePath());
     // 「计划内重启」标记（supervisor watch 重启 / 上次优雅 stop 写入）：
     // 有标记说明上次不是崩溃——run 记录虽然是 stale 的，但那是故意停掉的，
     // 不该触发 autostart 把 agent 全部拉起一遍（2026-07-18 实测：热重启后
@@ -65,75 +71,80 @@ export class DaemonCore {
         // 注意 connect() 在 start() 里先于 loadExistingAgents 调用，但回调触发
         // 只在消息到达后，此时 this.ws 必然已就绪；ws 未 OPEN 时静默丢弃即可。
         onDeliveryQueued: (agentName, channelName) => {
-          if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-          this.ws.send(JSON.stringify({ type: "agent:delivery-queued", agentName, channelName }));
+          this.sendWs({ type: "agent:delivery-queued", agentName, channelName });
         },
         // A1 派发队列死信：重试耗尽/不可投递的消息经 WS 上报 server，
         // 由 server 标记 delivery_failed（不自动重投，避免死信循环）。
         onDeliveryDeadLetter: (agentName, channelName, err) => {
-          if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-          this.ws.send(
-            JSON.stringify({
-              type: "agent:delivery-dead-letter",
-              agentName,
-              channelName,
-              error: String((err as any)?.message ?? err).slice(0, 300),
-            }),
-          );
+          this.sendWs({
+            type: "agent:delivery-dead-letter",
+            agentName,
+            channelName,
+            error: String((err as any)?.message ?? err).slice(0, 300),
+          });
         },
         // C1：agent 本地工具调用生命周期进审计流（仅 headless 路径有结构化事件源）。
         // 参数/结果摘要已在上游截断（agent-observation.ts 的 truncate 纪律），
         // 完整内容留在本地 run 历史，不上 WS。
         onToolCall: (agentName, info) => {
-          if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-          this.ws.send(
-            JSON.stringify({
-              type: "agent:tool-call",
-              agentName,
-              // server 审计链需要稳定 actorId（名字可改，id 不变）
-              agentId: this.runtime.resolveAgentId(agentName),
-              toolName: info.toolName ?? null,
-              toolUseId: info.toolUseId ?? null,
-              status: info.status,
-              text: info.text ?? null,
-              time: new Date().toISOString(),
-            }),
-          );
+          this.sendWs({
+            type: "agent:tool-call",
+            agentName,
+            // server 审计链需要稳定 actorId（名字可改，id 不变）
+            agentId: this.runtime.resolveAgentId(agentName) || agentName,
+            toolName: info.toolName ?? null,
+            toolUseId: info.toolUseId ?? null,
+            status: info.status,
+            text: info.text ?? null,
+            time: new Date().toISOString(),
+          });
         },
-        // 回复守卫代发：回合结束但 agent 没调 send_message 时，daemon 以 agent
-        // 身份把最终正文直接发到频道（mint scoped token → POST send）。
-        // 比追问省一整轮 LLM，且不受追问回合被超时杀掉的二次失败影响。
+        // 回复守卫代发 / D3 成本熔断：daemon 以 agent 身份 POST 到频道
+        // （mint scoped token → POST send）。零额外 LLM 回合。
         onReplyMissing: (agentName, channel, content) => {
-          void (async () => {
-            try {
-              const agentId = this.runtime.resolveAgentId(agentName);
-              if (!agentId) {
-                console.warn(`[Daemon] reply-guard: no agentId for @${agentName}, cannot auto-post`);
-                return;
-              }
-              const mint = await fetch(`${this.serverUrl}/internal/agent/${agentId}/credentials`, {
-                method: "POST",
-                headers: { Authorization: `Bearer ${this.apiKey}` },
-              });
-              if (!mint.ok) throw new Error(`mint credential ${mint.status}`);
-              const { token } = (await mint.json()) as { token: string };
-              const res = await fetch(`${this.serverUrl}/internal/agent/${agentId}/send`, {
-                method: "POST",
-                headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
-                body: JSON.stringify({ target: channel, content }),
-              });
-              if (!res.ok) throw new Error(`send ${res.status} ${await res.text().catch(() => "")}`);
-              console.log(`[Daemon] reply-guard auto-posted for @${agentName} -> ${channel} (${content.length} chars)`);
-            } catch (err: any) {
-              console.error(`[Daemon] reply-guard auto-post failed for @${agentName}:`, err?.message ?? err);
-            }
-          })();
+          this.postAsAgent(agentName, channel, content, "reply-guard");
         },
+        onCircuitBreak: (agentName, channel, content) => {
+          this.postAsAgent(agentName, channel, content, "cost-circuit");
+        },
+        costTracker,
+        threadSessions,
       },
       tokenRegistry,
       liveRunRegistry,
       runStore,
     );
+  }
+
+  /**
+   * 以 agent 身份往频道发一条消息（mint scoped token → POST /send）。
+   * 回复守卫代发与 D3 成本熔断共用：都不走 LLM 回合。
+   */
+  private postAsAgent(agentName: string, channel: string, content: string, reason: string): void {
+    void (async () => {
+      try {
+        const agentId = this.runtime.resolveAgentId(agentName);
+        if (!agentId) {
+          console.warn(`[Daemon] ${reason}: no agentId for @${agentName}, cannot post`);
+          return;
+        }
+        const mint = await fetch(`${this.serverUrl}/internal/agent/${agentId}/credentials`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${this.apiKey}` },
+        });
+        if (!mint.ok) throw new Error(`mint credential ${mint.status}`);
+        const { token } = (await mint.json()) as { token: string };
+        const res = await fetch(`${this.serverUrl}/internal/agent/${agentId}/send`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+          body: JSON.stringify({ target: channel, content }),
+        });
+        if (!res.ok) throw new Error(`send ${res.status} ${await res.text().catch(() => "")}`);
+        console.log(`[Daemon] ${reason} posted for @${agentName} -> ${channel} (${content.length} chars)`);
+      } catch (err: any) {
+        console.error(`[Daemon] ${reason} post failed for @${agentName}:`, err?.message ?? err);
+      }
+    })();
   }
 
   async start(): Promise<void> {
@@ -181,15 +192,13 @@ export class DaemonCore {
         if (this.lastReportedByAgent.get(name) === key) continue;
         this.lastReportedByAgent.set(name, key);
         const agentId = this.runtime.resolveAgentId(name);
-        this.ws.send(
-          JSON.stringify({
-            type: "agent:status",
-            agentId: agentId || name,
-            agentName: name,
-            status,
-            detail: lastLine,
-          }),
-        );
+        this.sendWs({
+          type: "agent:status",
+          agentId: agentId || name,
+          agentName: name,
+          status,
+          detail: lastLine,
+        });
       }
     };
     this.statusReporter = setInterval(tick, 3000);
@@ -256,6 +265,12 @@ export class DaemonCore {
     await setupSlockWrapper(this.agentId, this.serverUrl);
   }
 
+  /** daemon→server 出站消息唯一出口：OPEN 检查 + 线协议类型（S2.3，shared WsFromDaemonMessage） */
+  private sendWs(ev: WsFromDaemonMessage): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    this.ws.send(JSON.stringify(ev));
+  }
+
   private connect(): void {
     const url = new URL("/ws", this.config.serverUrl);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
@@ -265,15 +280,13 @@ export class DaemonCore {
     this.ws.on("open", () => {
       console.log("[Daemon] Connected to server");
       this.reconnectDelay = 1000;
-      this.ws?.send(
-        JSON.stringify({
-          type: "ready",
-          capabilities: ["send", "read"],
-          runtimes: ["daemon-cli"],
-          hostname: process.env.COMPUTERNAME || "unknown",
-          daemonVersion: "0.1.0",
-        }),
-      );
+      this.sendWs({
+        type: "ready",
+        capabilities: ["send", "read"],
+        runtimes: ["daemon-cli"],
+        hostname: process.env.COMPUTERNAME || "unknown",
+        daemonVersion: "0.1.0",
+      });
     });
     this.ws.on("message", (data) => {
       try {
@@ -317,7 +330,10 @@ export class DaemonCore {
     }, this.reconnectDelay);
   }
 
-  private async handleMessage(msg: Record<string, unknown>): Promise<void> {
+  private async handleMessage(msgWire: WsToDaemonMessage): Promise<void> {
+    // 接收体保留防御性解析：线协议有松散变体（thread_id 蛇形、msg.message||msg
+    // 双路径、agent:start 三种变体），规范类型约束在发送侧生效（sendWs）。
+    const msg = msgWire as Record<string, unknown>;
     const type = msg.type as string | undefined;
     switch (type) {
       case "agent:start": {
@@ -359,7 +375,15 @@ export class DaemonCore {
             const senderName = (m.senderName as string) || (m.senderId as string) || "unknown";
             console.log(`[Daemon] Dispatch message for @${forceTarget} in ${replyTarget}: ${content.slice(0, 50)}`);
             try {
-              await this.runtime.runAgent(forceTarget, channelName, replyTarget, senderName, content);
+              await this.runtime.runAgent(
+                forceTarget,
+                channelName,
+                replyTarget,
+                senderName,
+                content,
+                threadId || undefined,
+                typeof m.id === "string" ? m.id : undefined,
+              );
             } catch (err: any) {
               console.error("[Daemon] Dispatch routing failed:", err?.message);
             }
@@ -392,22 +416,51 @@ export class DaemonCore {
         const target = Array.isArray(deliverList)
           ? deliverList.find((n) => this.runtime.hasAgent(n))
           : this.runtime.findMentionedAgent(content || "");
-        if (!target) break;
         const rawChannel = (m.channelId as string) || "general";
         const channelName = rawChannel.replace(/^#/, "").split(":")[0];
         const threadId = (m.threadId as string) || (m.thread_id as string) || "";
         const replyTarget = threadId ? `#${channelName}:${threadId.slice(0, 8)}` : `#${channelName}`;
         const senderName = (m.senderName as string) || (m.senderId as string) || "unknown";
-        console.log(`[Daemon] Message from @${senderName} in ${replyTarget}: ${content?.slice(0, 50)}`);
 
-        if (m.senderId === this.agentId || !content || typeof content !== "string") break;
-        if (content.startsWith("🤖 ")) break;
+        if (target) {
+          console.log(`[Daemon] Message from @${senderName} in ${replyTarget}: ${content?.slice(0, 50)}`);
+          if (m.senderId === this.agentId || !content || typeof content !== "string") break;
+          if (content.startsWith("🤖 ")) break;
+          try {
+            console.log(`[Daemon] Routing to agent @${target} -> ${replyTarget}`);
+            await this.runtime.runAgent(
+              target,
+              channelName,
+              replyTarget,
+              senderName,
+              content,
+              threadId || undefined,
+              typeof m.id === "string" ? m.id : undefined,
+            );
+          } catch (err: any) {
+            console.error("[Daemon] Failed:", err.message);
+          }
+          break;
+        }
 
-        try {
-          console.log(`[Daemon] Routing to agent @${target} -> ${replyTarget}`);
-          await this.runtime.runAgent(target, channelName, replyTarget, senderName, content);
-        } catch (err: any) {
-          console.error("[Daemon] Failed:", err.message);
+        // T8：mention 未命中后的第四唤醒源——server 单选的分诊经理。
+        // 位于 senderType==='agent' / DM / 🤖 拦截之后，agent 消息天然不触发。
+        const triageTarget = pickLocalTriageAgent(m.triageAgents, (n) => this.runtime.hasAgent(n));
+        if (triageTarget) {
+          console.log(`[Daemon] Triage for @${triageTarget} in ${replyTarget}: ${content.slice(0, 50)}`);
+          try {
+            await this.runtime.runAgentTriage(
+              triageTarget,
+              channelName,
+              replyTarget,
+              senderName,
+              content,
+              threadId || undefined,
+              typeof m.id === "string" ? m.id : undefined,
+            );
+          } catch (err: any) {
+            console.error("[Daemon] Triage routing failed:", err?.message);
+          }
         }
         break;
       }
@@ -423,13 +476,15 @@ export class DaemonCore {
       case "reminder.fire": {
         const remAgentId = msg.agentId as string;
         const reminder = (msg.reminder as any) || {};
-        // 尝试用 agentId 作为 name（agent:deliver 场景），也可能是未知 agent
-        if (!this.runtime.hasAgent(remAgentId)) {
+        // 注册表以 name 为键,入信只有 agentId(UUID)——先反查注册名
+        // （此前直接用 UUID 查 hasAgent 必 false,agent 提醒静默丢弃,2026-08-19 E2E 实锤）
+        const remName = this.runtime.resolveAgentName(remAgentId);
+        if (!remName) {
           console.log("[Daemon] reminder.fire for unknown agent", remAgentId);
           break;
         }
-        console.log(`[Daemon] reminder fired for @${remAgentId}: ${reminder.title}`);
-        await this.runtime.runAgentReminder(remAgentId, reminder);
+        console.log(`[Daemon] reminder fired for @${remName}: ${reminder.title} (${reminder.kind || "reminder"})`);
+        await this.runtime.runAgentReminder(remName, reminder);
         break;
       }
       case "terminal:watch": {
@@ -446,11 +501,10 @@ export class DaemonCore {
           const obsBus = this.runtime.__getObservationBus();
           const replay = obsBus.replay(agentName);
           if (replay.length > 0) {
-            this.ws?.send(JSON.stringify({ type: "terminal:obs-history", agentName, frames: replay }));
+            this.sendWs({ type: "terminal:obs-history", agentName, frames: replay });
           }
           const unsub = obsBus.subscribe(agentName, (f) => {
-            if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-            this.ws.send(JSON.stringify({ type: "terminal:obs-frame", agentName, frame: f }));
+            this.sendWs({ type: "terminal:obs-frame", agentName, frame: f });
           });
           this.terminalObsUnsubs.set(agentName, unsub);
         }
@@ -463,7 +517,7 @@ export class DaemonCore {
           const obsTranscript = this.runtime.__getObservationBus().transcript(agentName, 60_000);
           const historyText = run?.historyText || obsTranscript || readTerminalLogTail(agentName, 60_000);
           if (historyText.trim()) {
-            this.ws?.send(JSON.stringify({ type: "terminal:history", agentName, text: historyText }));
+            this.sendWs({ type: "terminal:history", agentName, text: historyText });
           }
         }
         const tick = () => {
@@ -478,15 +532,13 @@ export class DaemonCore {
           const key = status + "|" + screen;
           if (this.terminalLastFrame.get(agentName) === key) return;
           this.terminalLastFrame.set(agentName, key);
-          this.ws?.send(
-            JSON.stringify({
-              type: "terminal:frame",
-              agentName,
-              screen,
-              status,
-              time: new Date().toISOString(),
-            }),
-          );
+          this.sendWs({
+            type: "terminal:frame",
+            agentName,
+            screen,
+            status,
+            time: new Date().toISOString(),
+          });
         };
         tick(); // 立即推一帧，观众打开就能看到当前屏
         this.terminalWatchers.set(agentName, setInterval(tick, 400));
@@ -498,7 +550,7 @@ export class DaemonCore {
         const agentName = msg.agentName as string;
         if (!agentName) break;
         const text = readTerminalLogTail(agentName);
-        this.ws?.send(JSON.stringify({ type: "terminal:history", agentName, text }));
+        this.sendWs({ type: "terminal:history", agentName, text });
         break;
       }
       case "terminal:unwatch": {
@@ -528,7 +580,7 @@ export class DaemonCore {
         break;
       }
       case "ping":
-        this.ws?.send(JSON.stringify({ type: "pong" }));
+        this.sendWs({ type: "pong" });
         break;
     }
   }

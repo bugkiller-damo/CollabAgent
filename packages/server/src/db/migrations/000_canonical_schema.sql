@@ -87,6 +87,7 @@ CREATE TABLE IF NOT EXISTS channels (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE channels ADD COLUMN IF NOT EXISTS manager_triage_enabled BOOLEAN NOT NULL DEFAULT false;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_channels_server_name ON channels (server_id, lower(name));
 
 -- ---- channel_members ----

@@ -387,11 +387,13 @@ server.registerTool(
     inputSchema: {
       channel: z.string().describe('目标：频道（如 "#general"）或私信（如 "dm:@handle"）'),
       limit: z.number().int().min(1).max(100).optional().describe("条数（默认 30，上限 100）"),
+      threadId: z.string().optional().describe("可选：线程 id（父帖 UUID 或短前缀）；缺省只返回顶层消息"),
     },
   },
-  async ({ channel, limit }) => {
+  async ({ channel, limit, threadId }) => {
     try {
       const qs = new URLSearchParams({ channel, limit: String(limit || 30) });
+      if (threadId) qs.set("threadId", threadId);
       const result = await callSlock(`/history?${qs.toString()}`);
       return ok(result);
     } catch (err) {

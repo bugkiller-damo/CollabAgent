@@ -1,3 +1,12 @@
+/**
+ * ⚠️ 混合文件（2026-08-20，演进 Step 3 标注）
+ * - `writeMcpConfig`：headless 路径也在用（agent-runtime-dispatch.ts MCP 配置注入），
+ *   **不在冻结范围**，正常维护；
+ * - 其余（`buildPtyEnv` / `SpawnPtyForAgentDeps` / `SpawnPtyForAgent` /
+ *   `createSpawnPtyForAgent`）仅服务 PTY fallback（SLOCK_USE_PTY=1），
+ *   为 ❄️ LEGACY / FROZEN：不接受新功能与非缺陷改动，删除评估见
+ *   docs/2026-08-20/02-daemon-evolution-tracker.md Step 3（2026-09 底）。
+ */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { IExitChain } from "./agent-runtime-exit.js";

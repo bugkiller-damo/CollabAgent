@@ -1,9 +1,10 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
+import type { ICostTracker } from "./agent-cost-tracker.js";
 import { createAgentManager } from "./agent-manager.js";
 import { createObservationBus, type ObservationBus } from "./agent-observation.js";
 import { createCredentialsClient } from "./agent-runtime-credentials.js";
-import { createDispatch } from "./agent-runtime-dispatch.js";
+import { createDispatch, type ReminderFirePayload } from "./agent-runtime-dispatch.js";
 import { createExitChain } from "./agent-runtime-exit.js";
 import { createSpawnPtyForAgent } from "./agent-runtime-spawn.js";
 import { createAgentStateMachine } from "./agent-runtime-state.js";
@@ -31,6 +32,7 @@ export { BUSY_MARKER_RE, PROMPT_RE };
 // 回合结束检测用到的 BUSY_MARKER_RE/PROMPT_RE + pending/busyObserved 状态已拆到
 // agent-runtime-turn-tracker.ts
 
+// biome-ignore lint/correctness/noUnusedVariables: frozen PTY leftover (Step 3); do not delete yet
 const PTY_COMMAND = "claude"; // TODO: read from command-resolver
 
 // ANSI CSI 序列（ESC [ 参数 结尾字母）匹配——stuck 检测里剥 raw tail 用。
@@ -119,20 +121,37 @@ export interface AgentRuntimeOptions {
   ) => void;
   /** 回复守卫代发（headless）：回合结束但未 send_message 时，daemon 以 agent 身份代发最终正文 */
   onReplyMissing?: (agentName: string, channel: string, content: string) => void;
+  /** D3：成本记账（daemon-core 注入；测试可不传，缺省则不落库不熔断） */
+  costTracker?: ICostTracker;
+  /** D3：预算熔断时往频道发可见消息（零 LLM，走与 reply-guard 相同的 POST send） */
+  onCircuitBreak?: (agentName: string, channel: string, content: string) => void;
+  /** D2：threadId → sessionId（独立 JSON；测试可不传） */
+  threadSessions?: import("./agent-thread-sessions.js").IThreadSessionStore;
 }
 
 export interface IAgentRuntime {
   // 消息分发
-  dispatchToAgent(agentName: string, channelName: string, userMsg: string): Promise<void>;
+  dispatchToAgent(agentName: string, channelName: string, userMsg: string, threadId?: string): Promise<void>;
   runAgent(
     agentName: string,
     channelName: string,
     replyTarget: string,
     senderName: string,
     content: string,
+    threadId?: string,
+    messageId?: string,
   ): Promise<void>;
   runAgentDm(agentName: string, replyTarget: string, senderName: string, content: string): Promise<void>;
-  runAgentReminder(agentName: string, reminder: { title?: string; channel?: string }): Promise<void>;
+  runAgentReminder(agentName: string, reminder: ReminderFirePayload): Promise<void>;
+  runAgentTriage(
+    agentName: string,
+    channelName: string,
+    replyTarget: string,
+    senderName: string,
+    content: string,
+    threadId?: string,
+    messageId?: string,
+  ): Promise<void>;
   // 注：原 autostartAgent（崩溃恢复主动拉起 + 注入"安静等待"恢复消息）已于
   // 2026-07-29 移除——那条恢复消息是一整个 agent 回合且 99% 空转（实测 55k 输出），
   // 改为 lazy spawn + session resume（见 daemon-core.autostartCrashedAgents）。
@@ -142,6 +161,8 @@ export interface IAgentRuntime {
   unregisterAgent(name: string): void;
   loadExistingAgents(): Promise<void>;
   resolveAgentId(agentName: string): string | null;
+  /** 反查:agentId(UUID) → 注册名(reminder.fire 等只带 id 的入信用) */
+  resolveAgentName(agentId: string): string | null;
   findMentionedAgent(content: string): string | null;
   mentionedAgentNames(content: string): string[];
   /** 全部已注册 agent 的名字列表（G7 状态栏轮询用） */
@@ -201,6 +222,14 @@ export const createAgentRuntime = (
   // B1 观察帧 + A1 队列经七轮真机回归后执行本切换。
   // SLOCK_PERSISTENT_CLAUDE=1 是旧开关，效果与默认一致（保留兼容，不再读取）。
   const usePty = process.env.SLOCK_USE_PTY === "1";
+  if (usePty) {
+    // ❄️ LEGACY（2026-08-20 Step 3）：PTY 代码已冻结保留（headless 未过长期验证，
+    // 留作回退），启用者必须明确知情。删除评估：2026-09 底，见 tracker Step 3。
+    console.warn(
+      "[Runtime] ⚠️ SLOCK_USE_PTY=1：PTY legacy fallback 已启用（冻结保留，仅调试/回退用）；" +
+        "受支持路径是 headless（默认）。删除评估见 docs/2026-08-20/02 Step 3。",
+    );
+  }
 
   // ---- Per-agent-run scoped token（见 agent-runtime-credentials.ts）----
   const credentialsClient = createCredentialsClient(options.serverUrl, options.apiKey);
@@ -264,6 +293,16 @@ export const createAgentRuntime = (
   const resolveAgentId = (agentName: string): string | null => {
     if (agentNameToId.has(agentName)) return agentNameToId.get(agentName)!;
     if (/^[0-9a-f-]{36}$/i.test(agentName)) return agentName;
+    return null;
+  };
+
+  // reminder.fire 等链路只带 agentId(UUID)——注册表以 name 为键,反查注册名;
+  // 查不到返回 null(调用方按 unknown agent 处理,不 spawn)。
+  const resolveAgentName = (agentId: string): string | null => {
+    if (agentDrivers.has(agentId)) return agentId; // 已经是 name
+    for (const [name, id] of agentNameToId.entries()) {
+      if (String(id) === String(agentId)) return name;
+    }
     return null;
   };
 
@@ -383,7 +422,7 @@ export const createAgentRuntime = (
   });
 
   // ---- 消息分发核心（见 agent-runtime-dispatch.ts）----
-  const { dispatchToAgent, runAgent, runAgentDm, runAgentReminder } = createDispatch({
+  const { dispatchToAgent, runAgent, runAgentDm, runAgentReminder, runAgentTriage } = createDispatch({
     options,
     stateMachine,
     turnTracker,
@@ -404,6 +443,9 @@ export const createAgentRuntime = (
     observationBus,
     onToolCall: options.onToolCall,
     onReplyMissing: options.onReplyMissing,
+    costTracker: options.costTracker,
+    onCircuitBreak: options.onCircuitBreak,
+    threadSessions: options.threadSessions,
   });
 
   // ---- 公开接口 ----
@@ -413,6 +455,7 @@ export const createAgentRuntime = (
     runAgent,
     runAgentDm,
     runAgentReminder,
+    runAgentTriage,
 
     registerAgent(
       id: string,
@@ -496,6 +539,7 @@ export const createAgentRuntime = (
     resolveAgentId,
     findMentionedAgent,
     mentionedAgentNames,
+    resolveAgentName,
     listAgentNames: () => Array.from(agentDrivers.keys()),
     setPreferredTermSize: (agentName, size) => {
       preferredTermSize.set(agentName, size);

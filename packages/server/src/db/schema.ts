@@ -1,7 +1,6 @@
 import {
   bigint,
   boolean,
-  foreignKey,
   index,
   integer,
   jsonb,
@@ -83,6 +82,7 @@ export const channels = pgTable(
     description: text("description"),
     type: varchar("type", { length: 20 }).default("public").notNull(),
     archived: boolean("archived").default(false).notNull(),
+    managerTriageEnabled: boolean("manager_triage_enabled").default(false).notNull(),
     createdBy: uuid("created_by").references(() => users.id),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),

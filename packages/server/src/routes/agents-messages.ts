@@ -51,7 +51,7 @@ export async function agentMessageRoutes(app: FastifyInstance) {
       "INSERT INTO messages (channel_id, server_id, sender_id, sender_type, content, thread_id) VALUES ($1, $2, $3, 'agent', $4, $5) RETURNING id, seq, created_at",
       [channelDbId, serverId, agentId, (content as string) || "", resolvedThreadId],
     );
-    const msg = result.rows[0];
+    const msg = result.rows[0] as { id: string; seq: number; created_at: string };
     let attachments: any[] = [];
     if (attIds.length > 0) {
       for (const aid of attIds)
@@ -120,15 +120,30 @@ export async function agentMessageRoutes(app: FastifyInstance) {
 
   app.get("/:agentId/history", { preHandler: [app.authenticate, requireOwnAgent] }, async (req, reply) => {
     const agentId = (req.params as Record<string, string>).agentId;
-    const { channel, limit } = req.query as Record<string, string>;
+    const { channel, limit, threadId } = req.query as Record<string, string>;
     if (!channel) return reply.status(400).send({ error: "channel required" });
     const channelDbId = await resolveAgentChannelDbId(app, agentId, channel);
     if (!channelDbId) return reply.status(404).send({ error: "channel not found" });
     if (!(await agentCanAccessChannel(app, channelDbId, agentId)))
       return reply.status(403).send({ error: "no access" });
+    const historySelect = `SELECT m.id, m.seq, CASE WHEN c.type = 'dm' THEN 'dm:@' || (SELECT COALESCE(u2.handle, a2.name) FROM channel_members cm2 LEFT JOIN users u2 ON cm2.member_type='human' AND cm2.member_id=u2.id LEFT JOIN agents a2 ON cm2.member_type='agent' AND cm2.member_id=a2.id WHERE cm2.channel_id = c.id AND cm2.member_id::text <> $3::text LIMIT 1) ELSE '#' || c.name END as "channelId", COALESCE(u.display_name, u.handle, ag.display_name, ag.name, '?') as "senderName", m.sender_type as "senderType", m.content, m.created_at as time, ${attachmentsJson()} FROM messages m JOIN channels c ON c.id = m.channel_id LEFT JOIN users u ON m.sender_id = u.id LEFT JOIN agents ag ON m.sender_id = ag.id`;
+    const lim = Number(limit) || 50;
+    if (threadId) {
+      const parent = await app.pg.query<{ id: string }>(
+        "SELECT id FROM messages WHERE channel_id = $1 AND (id::text = $2 OR id::text LIKE $3) ORDER BY seq ASC LIMIT 1",
+        [channelDbId, threadId, threadId + "%"],
+      );
+      const parentId = parent.rows[0]?.id;
+      if (!parentId) return { messages: [] };
+      const result = await app.pg.query(
+        `${historySelect} WHERE m.channel_id = $1 AND (m.id = $4::uuid OR m.thread_id = $4::uuid) ORDER BY m.seq DESC LIMIT $2`,
+        [channelDbId, lim, agentId, parentId],
+      );
+      return { messages: result.rows.reverse() };
+    }
     const result = await app.pg.query(
-      `SELECT m.id, m.seq, CASE WHEN c.type = 'dm' THEN 'dm:@' || (SELECT COALESCE(u2.handle, a2.name) FROM channel_members cm2 LEFT JOIN users u2 ON cm2.member_type='human' AND cm2.member_id=u2.id LEFT JOIN agents a2 ON cm2.member_type='agent' AND cm2.member_id=a2.id WHERE cm2.channel_id = c.id AND cm2.member_id::text <> $3::text LIMIT 1) ELSE '#' || c.name END as "channelId", COALESCE(u.display_name, u.handle, ag.display_name, ag.name, '?') as "senderName", m.sender_type as "senderType", m.content, m.created_at as time, ${attachmentsJson()} FROM messages m JOIN channels c ON c.id = m.channel_id LEFT JOIN users u ON m.sender_id = u.id LEFT JOIN agents ag ON m.sender_id = ag.id WHERE m.channel_id = $1 AND m.thread_id IS NULL ORDER BY m.seq DESC LIMIT $2`,
-      [channelDbId, Number(limit) || 50, agentId],
+      `${historySelect} WHERE m.channel_id = $1 AND m.thread_id IS NULL ORDER BY m.seq DESC LIMIT $2`,
+      [channelDbId, lim, agentId],
     );
     return { messages: result.rows.reverse() };
   });

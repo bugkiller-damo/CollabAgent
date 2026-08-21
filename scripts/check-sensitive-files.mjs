@@ -29,6 +29,12 @@ for (const file of staged) {
     hits.push(`${file}  （敏感文件名模式）`);
     continue;
   }
+  // 测试夹具允许假 runtime token；文件名黑名单仍生效。
+  // 本脚本自身含模式字面量，跳过内容扫描以免自击。
+  const posix = file.replace(/\\/g, "/");
+  if (name === "check-sensitive-files.mjs" || /\.test\.[cm]?[jt]sx?$/i.test(name) || /(^|\/)test(\/)/.test(posix)) {
+    continue;
+  }
   // 内容扫描：只读前 256KB，跳过二进制/不存在（删除中的文件）
   let head = "";
   try {

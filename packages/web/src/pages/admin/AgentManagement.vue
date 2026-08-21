@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from "vue";
 import { apiClient, apiGet, apiPatch, apiPost } from "../../api";
+import AgentPatrolPanel from "../../components/admin/AgentPatrolPanel.vue";
 import OrgMembersPanel from "../../components/admin/OrgMembersPanel.vue";
 import ConfirmDialog from "../../components/ConfirmDialog.vue";
 import EmptyState from "../../components/EmptyState.vue";
@@ -38,6 +39,8 @@ const avatarUrl = ref("");
 const runtime = ref("claude");
 const model = ref("sonnet");
 const confirmDelete = ref<Agent | null>(null);
+// T2:当前展开巡检面板的 agent(面板复用 /internal/agent/:id/reminders 路由族)
+const patrolAgent = ref<Agent | null>(null);
 
 async function loadAgents() {
   try {
@@ -189,6 +192,7 @@ function handleConfirmDelete() {
           <p class="text-xs text-gray-400 dark:text-gray-500">{{ a.runtime }} / {{ a.model }}</p>
         </div>
         <div class="flex shrink-0 gap-2">
+          <Button variant="secondary" size="sm" @click="patrolAgent = patrolAgent?.id === a.id ? null : a">巡检</Button>
           <Button variant="secondary" size="sm" @click="uiStore.openTerminal(a.name)">终端</Button>
           <Button variant="secondary" size="sm" @click="openEdit(a)">编辑</Button>
           <Button variant="ghost" size="sm" class="text-red-500 hover:text-red-600" @click="confirmDelete = a">删除</Button>
@@ -204,6 +208,8 @@ function handleConfirmDelete() {
         @action="openCreate"
       />
     </div>
+
+    <AgentPatrolPanel v-if="patrolAgent" :agent="patrolAgent" @close="patrolAgent = null" />
 
     <ConfirmDialog
       v-if="confirmDelete"

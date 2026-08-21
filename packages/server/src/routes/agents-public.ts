@@ -98,7 +98,7 @@ export async function agentPublicRoutes(app: FastifyInstance) {
         sql.json({ runtime: runtime || "claude", model: model || "sonnet" }),
       ],
     );
-    const agent = result.rows[0];
+    const agent = result.rows[0] as any;
 
     // Auto-start: notify this agent's owning daemon to spawn it（不广播——见 agents.ts
     // 对应 call site 的注释：广播会让别的 daemon 误注册这个 agent，hasAgent() 谎报，
@@ -161,7 +161,7 @@ export async function agentPublicRoutes(app: FastifyInstance) {
     const r = await app.pg.query(`UPDATE agents SET ${sets.join(", ")} WHERE id = $${p} RETURNING *`, params);
     if (r.rows.length === 0) return reply.status(404).send({ error: "agent not found" });
 
-    const agent = r.rows[0];
+    const agent = r.rows[0] as any;
     const rp = parseRuntimeProfile(agent.runtime_profile);
     sendToDaemon(String(agent.user_id), {
       type: "agent:start",

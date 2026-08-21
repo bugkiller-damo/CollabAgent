@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { Command } from "commander";
-import { AgentBootstrapError, loadAgentContext } from "./auth.js";
+import { createJsonCostTracker, defaultCostStorePath, parseCostBudgetUsd } from "./agent-cost-tracker.js";
+import { createJsonThreadSessionStore, defaultThreadSessionStorePath } from "./agent-thread-sessions.js";
+import { loadAgentContext } from "./auth.js";
 import { ApiClient } from "./client.js";
 import { CliExit, emit, fail } from "./output.js";
 
@@ -299,7 +301,6 @@ function registerAttachmentView(parent: Command) {
     .requiredOption("--output <path>", "Local path to save the file")
     .action(async (opts: { id: string; output: string }) => {
       const ctx = loadAgentContext();
-      const client = new ApiClient(ctx);
       const res = await fetch(`${ctx.serverUrl}/api/attachments/${opts.id}`, {
         headers: { Authorization: `Bearer ${ctx.token}` },
       });
@@ -699,6 +700,161 @@ function registerReminderLog(parent: Command) {
 }
 
 // ---------------------------------------------------------------------------
+// Patrol (T2): agent 定时巡检任务 —— create, list, pause, resume, cancel, update, log
+// 底层复用 /internal/agent/:id/reminders 路由族(kind=patrol),与人的小闹钟语义分离。
+// 设计:docs/2026-08-19/02-t2-agent-patrol-design.md
+// ---------------------------------------------------------------------------
+function registerPatrolCreate(parent: Command) {
+  parent
+    .command("create")
+    .description("Create a patrol job (recurring proactive check)")
+    .requiredOption("--title <t>", "Short patrol title")
+    .requiredOption("--instructions <text>", "What to check / when to report / when to stay silent")
+    .option("--every <duration>", "Repeat interval sugar (e.g. 30m, 2h, 1d; min 5m)")
+    .option("--cadence <rule>", "Raw recurrence rule (e.g. every:2h, daily@09:00)")
+    .option("--channel <ch>", "Report channel (e.g. #security)")
+    .option("--max-silent <n>", "Auto-pause after N consecutive silent runs (default 5)")
+    .action(
+      async (opts: {
+        title: string;
+        instructions: string;
+        every?: string;
+        cadence?: string;
+        channel?: string;
+        maxSilent?: string;
+      }) => {
+        const ctx = loadAgentContext();
+        const client = new ApiClient(ctx);
+        const repeat = opts.cadence || (opts.every ? `every:${opts.every}` : undefined);
+        const body: Record<string, unknown> = {
+          title: opts.title,
+          instructions: opts.instructions,
+          kind: "patrol",
+        };
+        if (repeat) body.repeat = repeat;
+        if (opts.channel) body.channel = opts.channel;
+        if (opts.maxSilent) body.maxConsecutiveSilent = Number(opts.maxSilent);
+        const res = await client.request("POST", `/internal/agent/${encodeURIComponent(ctx.agentId)}/reminders`, body);
+        if (!res.ok) fail("PATROL_CREATE_FAILED", res.error ?? `HTTP ${res.status}`);
+        process.stdout.write(JSON.stringify(res.data, null, 2) + "\n");
+      },
+    );
+}
+
+function registerPatrolList(parent: Command) {
+  parent
+    .command("list")
+    .description("List your patrol jobs")
+    .option("--all", "Include cancelled patrols")
+    .action(async (opts: { all?: boolean }) => {
+      const ctx = loadAgentContext();
+      const client = new ApiClient(ctx);
+      const path =
+        `/internal/agent/${encodeURIComponent(ctx.agentId)}/reminders?kind=patrol` + (opts.all ? "&status=all" : "");
+      const res = await client.request("GET", path);
+      if (!res.ok) fail("PATROL_LIST_FAILED", res.error ?? `HTTP ${res.status}`);
+      process.stdout.write(JSON.stringify(res.data, null, 2) + "\n");
+    });
+}
+
+function registerPatrolPause(parent: Command) {
+  parent
+    .command("pause")
+    .description("Pause a patrol job (stays in place, not scheduled)")
+    .requiredOption("--id <id>", "Patrol ID")
+    .action(async (opts: { id: string }) => {
+      const ctx = loadAgentContext();
+      const client = new ApiClient(ctx);
+      const res = await client.request(
+        "POST",
+        `/internal/agent/${encodeURIComponent(ctx.agentId)}/reminders/${opts.id}/pause`,
+      );
+      if (!res.ok) fail("PATROL_PAUSE_FAILED", res.error ?? `HTTP ${res.status}`);
+      process.stdout.write(JSON.stringify(res.data, null, 2) + "\n");
+    });
+}
+
+function registerPatrolResume(parent: Command) {
+  parent
+    .command("resume")
+    .description("Resume a paused patrol job (fresh schedule, silent counter reset)")
+    .requiredOption("--id <id>", "Patrol ID")
+    .action(async (opts: { id: string }) => {
+      const ctx = loadAgentContext();
+      const client = new ApiClient(ctx);
+      const res = await client.request(
+        "POST",
+        `/internal/agent/${encodeURIComponent(ctx.agentId)}/reminders/${opts.id}/resume`,
+      );
+      if (!res.ok) fail("PATROL_RESUME_FAILED", res.error ?? `HTTP ${res.status}`);
+      process.stdout.write(JSON.stringify(res.data, null, 2) + "\n");
+    });
+}
+
+function registerPatrolCancel(parent: Command) {
+  parent
+    .command("cancel")
+    .description("Cancel a patrol job permanently")
+    .requiredOption("--id <id>", "Patrol ID")
+    .action(async (opts: { id: string }) => {
+      const ctx = loadAgentContext();
+      const client = new ApiClient(ctx);
+      const res = await client.request(
+        "DELETE",
+        `/internal/agent/${encodeURIComponent(ctx.agentId)}/reminders/${opts.id}`,
+      );
+      if (!res.ok) fail("PATROL_CANCEL_FAILED", res.error ?? `HTTP ${res.status}`);
+      process.stdout.write("Patrol cancelled\n");
+    });
+}
+
+function registerPatrolUpdate(parent: Command) {
+  parent
+    .command("update")
+    .description("Update a patrol job")
+    .requiredOption("--id <id>", "Patrol ID")
+    .option("--title <text>", "New title")
+    .option("--instructions <text>", "New instructions")
+    .option("--cadence <rule>", "New recurrence rule (validated, min 5m)")
+    .option("--max-silent <n>", "New auto-pause threshold")
+    .action(
+      async (opts: { id: string; title?: string; instructions?: string; cadence?: string; maxSilent?: string }) => {
+        const ctx = loadAgentContext();
+        const client = new ApiClient(ctx);
+        const body: Record<string, unknown> = {};
+        if (opts.title) body.title = opts.title;
+        if (opts.instructions) body.instructions = opts.instructions;
+        if (opts.cadence) body.repeat = opts.cadence;
+        if (opts.maxSilent) body.maxConsecutiveSilent = Number(opts.maxSilent);
+        const res = await client.request(
+          "PATCH",
+          `/internal/agent/${encodeURIComponent(ctx.agentId)}/reminders/${opts.id}`,
+          body,
+        );
+        if (!res.ok) fail("PATROL_UPDATE_FAILED", res.error ?? `HTTP ${res.status}`);
+        process.stdout.write(JSON.stringify(res.data, null, 2) + "\n");
+      },
+    );
+}
+
+function registerPatrolLog(parent: Command) {
+  parent
+    .command("log")
+    .description("Show lifecycle events for a patrol job (fired/outcome/paused/resumed/auto_paused)")
+    .requiredOption("--id <id>", "Patrol ID")
+    .action(async (opts: { id: string }) => {
+      const ctx = loadAgentContext();
+      const client = new ApiClient(ctx);
+      const res = await client.request(
+        "GET",
+        `/internal/agent/${encodeURIComponent(ctx.agentId)}/reminders/${opts.id}/log`,
+      );
+      if (!res.ok) fail("PATROL_LOG_FAILED", res.error ?? `HTTP ${res.status}`);
+      process.stdout.write(JSON.stringify(res.data, null, 2) + "\n");
+    });
+}
+
+// ---------------------------------------------------------------------------
 // Action: prepare
 // ---------------------------------------------------------------------------
 function registerActionPrepare(parent: Command) {
@@ -743,6 +899,36 @@ function parseDuration(duration: string): number {
     default:
       return value;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Cost (D3)：读 daemon 本地 .slock/daemon-costs.json，不打 server
+// ---------------------------------------------------------------------------
+function registerCostShow(parent: Command) {
+  parent
+    .command("show", { isDefault: true })
+    .description("Show local daemon spend totals (UTC days, default last 7)")
+    .option("--days <n>", "Lookback days including today (UTC)", "7")
+    .option("--agent <name>", "Filter to one agent name")
+    .action((opts: { days: string; agent?: string }) => {
+      const days = Math.max(1, Math.floor(Number(opts.days) || 7));
+      const tracker = createJsonCostTracker(defaultCostStorePath());
+      let rows = tracker.spendByAgent(days);
+      if (opts.agent) rows = rows.filter((r) => r.agentName === opts.agent);
+      process.stdout.write(
+        JSON.stringify(
+          {
+            ok: true,
+            days,
+            budgetUsd: parseCostBudgetUsd(),
+            store: defaultCostStorePath(),
+            rows,
+          },
+          null,
+          2,
+        ) + "\n",
+      );
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -806,8 +992,36 @@ registerReminderSnooze(reminderCmd);
 registerReminderUpdate(reminderCmd);
 registerReminderLog(reminderCmd);
 
+// T2 patrol:agent 定时巡检(与人用小闹钟 reminder 语义分离,共享同一路由族 kind=patrol)
+const patrolCmd = program.command("patrol").description("Proactive patrol jobs (agent cron)");
+registerPatrolCreate(patrolCmd);
+registerPatrolList(patrolCmd);
+registerPatrolPause(patrolCmd);
+registerPatrolResume(patrolCmd);
+registerPatrolCancel(patrolCmd);
+registerPatrolUpdate(patrolCmd);
+registerPatrolLog(patrolCmd);
+
 const actionCmd = program.command("action").description("Action card operations");
 registerActionPrepare(actionCmd);
+
+function registerSessionShow(parent: Command) {
+  parent
+    .command("show", { isDefault: true })
+    .description("Show local threadId → sessionId map (D2 prompt-isolation store)")
+    .option("--agent <name>", "Filter to one agent name")
+    .action((opts: { agent?: string }) => {
+      const store = createJsonThreadSessionStore(defaultThreadSessionStorePath());
+      const rows = store.list(opts.agent ? { agentName: opts.agent } : undefined);
+      process.stdout.write(JSON.stringify({ ok: true, store: defaultThreadSessionStorePath(), rows }, null, 2) + "\n");
+    });
+}
+
+const costCmd = program.command("cost").description("Local daemon cost accounting (D3)");
+registerCostShow(costCmd);
+
+const sessionCmd = program.command("session").description("Local thread↔session map (D2)");
+registerSessionShow(sessionCmd);
 
 program.parseAsync().catch((err) => {
   if (err instanceof CliExit) {

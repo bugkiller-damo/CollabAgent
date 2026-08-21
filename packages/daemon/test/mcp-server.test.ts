@@ -237,6 +237,25 @@ describe("slock-mcp-server (bundled, spawned as a real child process)", () => {
   );
 
   it(
+    "read_history forwards optional threadId as a query param",
+    async () => {
+      nextStatus = 200;
+      nextBody = { messages: [] };
+      const client = await spawnMcpClient();
+      try {
+        await client.callTool("read_history", { channel: "#general", limit: 10, threadId: "abc12345" });
+        expect(lastRequest?.method).toBe("GET");
+        expect(lastRequest?.path).toContain("/internal/agent/agent-under-test/history?");
+        expect(lastRequest?.path).toContain("channel=%23general");
+        expect(lastRequest?.path).toContain("threadId=abc12345");
+      } finally {
+        client.close();
+      }
+    },
+    SPAWN_TEST_TIMEOUT,
+  );
+
+  it(
     "surfaces a non-2xx HTTP response as isError:true with the server's error text, not a crash",
     async () => {
       nextStatus = 403;

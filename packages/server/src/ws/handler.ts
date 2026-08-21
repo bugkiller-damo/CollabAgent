@@ -1,3 +1,10 @@
+import type {
+  WsChannelBroadcast,
+  WsFromBrowserMessage,
+  WsFromDaemonMessage,
+  WsToBrowserMessage,
+  WsToDaemonMessage,
+} from "@collabagent/shared";
 import jwt from "jsonwebtoken";
 import type { WebSocket } from "ws";
 import { appendEvent } from "../lib/audit.js";
@@ -182,7 +189,7 @@ function registerConnection(connection: WebSocket, userId: string, isDaemon: boo
 
     connection.on("message", (raw) => {
       try {
-        const msg = JSON.parse(raw.toString());
+        const msg = JSON.parse(raw.toString()) as WsFromDaemonMessage;
         switch (msg.type) {
           case "ready": {
             console.log(`[WS] Daemon ready: runtimes=${msg.runtimes}`);
@@ -241,9 +248,6 @@ function registerConnection(connection: WebSocket, userId: string, isDaemon: boo
             }
             break;
           }
-          case "agent:activity":
-            console.log(`[WS] Agent activity: ${msg.activity}`);
-            break;
           case "terminal:frame": {
             // daemon 推来的终端帧 → 只发给这个 agent 的观众（不是所有浏览器连接）。
             // O1：经 pub/sub 发布，观众无论在哪个实例都能收到（本地观众由发布者直投覆盖）。
@@ -290,7 +294,7 @@ function registerConnection(connection: WebSocket, userId: string, isDaemon: boo
 
     connection.on("message", (raw) => {
       try {
-        const msg = JSON.parse(raw.toString());
+        const msg = JSON.parse(raw.toString()) as WsFromBrowserMessage;
         if (msg.type === "pong") return;
         // 终端观察（G3）：浏览器请求观看/停止观看某个 agent 的终端
         if (msg.type === "terminal:watch" && typeof msg.agentName === "string") {
@@ -342,7 +346,7 @@ export function setWsPg(pg: typeof wsPg) {
  * O1：改为跨实例 pub/sub —— 本实例解析完成员后，把「信封」发布到 Valkey channel，
  * 每个实例（含本实例）订阅后按各自的本地 socket 表投递。多实例部署时实例间不再互相看不见。
  */
-export async function broadcast(channelId: string, event: any) {
+export async function broadcast(channelId: string, event: WsChannelBroadcast) {
   let allowedHumanIds: string[] | null = null; // null = 不限制（公开）
   try {
     if (wsPg && channelId) {
@@ -365,7 +369,7 @@ export async function broadcast(channelId: string, event: any) {
 }
 
 /** Send a message to a specific daemon */
-export function sendToDaemon(userId: string, event: any) {
+export function sendToDaemon(userId: string, event: WsToDaemonMessage) {
   publish({ kind: "daemon", userId, event });
 }
 
@@ -375,7 +379,7 @@ export function broadcastToDaemons(event: any) {
 }
 
 /** Send a message to a specific user's browser clients */
-export function sendToUser(userId: string, event: any) {
+export function sendToUser(userId: string, event: WsToBrowserMessage) {
   publish({ kind: "user", userId, event });
 }
 

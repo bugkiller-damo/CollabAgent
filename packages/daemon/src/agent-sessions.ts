@@ -27,6 +27,10 @@ import { join, resolve } from "node:path";
  * 状态更新（2026-08-18 B2）：条件 a) 已达成——headless 默认路径的 session id
  * 来自 stream-json system init 事件（精确来源），本启发式仅服务
  * `SLOCK_USE_PTY=1` fallback。彻底删除条件 = PTY 模式整体退役。
+ * 冻结状态（2026-08-20 Step 3）：随 PTY fallback 一并 ❄️ 冻结保留（headless
+ * 未过长期验证），删除评估 2026-09 底，见 docs/2026-08-20/02 Step 3。
+ * 注意：本文件为混合文件——mangleClaudeProjectPath/listSessions/isValidSessionId
+ * 等与路径无关的工具函数不在冻结范围，正常维护。
  */
 
 /** Claude Code 生成 `~/.claude/projects/` 子目录名的规则：见上方注释。 */

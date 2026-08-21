@@ -24,6 +24,8 @@ export interface DispatchQueueItem {
   content: string;
   enqueuedAt: number;
   attempts: number;
+  /** D1/D2：本条所属线程（合并批次取第一项） */
+  threadId?: string;
 }
 
 /** 投递执行器：items 长度 >1 时表示合并投递。失败必须 reject，队列据此重试。 */
@@ -63,6 +65,7 @@ export interface AgentDispatchQueue {
     channelName: string;
     content: string;
     kind?: DispatchQueueItem["kind"];
+    threadId?: string;
   }): EnqueueStatus;
   /** 指定 agent（或全部）的 pending 数量 */
   depth(agentName?: string): number;
@@ -227,6 +230,7 @@ export const createAgentDispatchQueue = (opts: DispatchQueueOptions): AgentDispa
           content: input.content,
           enqueuedAt: now(),
           attempts: maxRetries,
+          threadId: input.threadId,
         };
         safe(() => opts.onDeadLetter?.(agentName, item, err));
         return { status: "dead", err };
@@ -249,6 +253,7 @@ export const createAgentDispatchQueue = (opts: DispatchQueueOptions): AgentDispa
         content: input.content,
         enqueuedAt: now(),
         attempts: 0,
+        threadId: input.threadId,
       };
       const done = new Promise<void>((r) => doneResolvers.set(item.id, r));
       s.pending.push(item);

@@ -36,7 +36,7 @@ async function insertAndDeliver(
     "INSERT INTO messages (channel_id, server_id, sender_id, sender_type, content) VALUES ($1, $2, $3, 'agent', $4) RETURNING id, seq, created_at",
     [channelId, serverId, senderId, content],
   );
-  const msg = result.rows[0];
+  const msg = result.rows[0] as { id: string; seq: number; created_at: string };
   broadcast(channelId, {
     type: "agent:deliver",
     seq: msg.seq,

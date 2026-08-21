@@ -14,23 +14,11 @@
  *   后续 web 的结构化流视图（tool_use 折叠卡片）改为直接消费帧
  */
 
-export interface ObservationFrame {
-  agentName: string;
-  /** 总线内自增序号（跨 agent 全局唯一，便于排序/去重） */
-  seq: number;
-  timestamp: number;
-  kind: "system" | "text" | "thinking" | "tool_use" | "tool_result" | "turn_start" | "turn_end" | "error";
-  /** 回合标识：stream-json 里 assistant message 的 id（没有则为 null） */
-  turnId: string | null;
-  payload: {
-    text?: string;
-    toolName?: string;
-    toolUseId?: string;
-    toolInput?: unknown;
-    /** turn_end 时的结果摘要（耗时/cost/成功与否） */
-    summary?: string;
-  };
-}
+// ObservationFrame 规范定义在 @collabagent/shared（WS 线协议 terminal:obs-frame
+// 的载荷类型，2026-08-20 S2.3 收敛）。此处 re-export，既有 import 方不用改路径。
+import type { ObservationFrame } from "@collabagent/shared";
+
+export type { ObservationFrame };
 
 type ObservationListener = (frame: ObservationFrame) => void;
 
@@ -109,6 +97,8 @@ export const streamEventToFrames = (agentName: string, ev: any, allocSeq: () => 
       break;
     }
     case "result": {
+      // 数值 cost/duration/turns 只进 summary 字符串；落库在
+      // agent-runtime-dispatch.handleStreamEvent（D3 / Step 4）。
       const ok = ev.subtype === "success";
       const summary = [
         ok ? "success" : `error (${ev.subtype ?? "?"})`,

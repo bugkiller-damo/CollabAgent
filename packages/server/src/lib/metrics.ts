@@ -5,6 +5,9 @@ type CounterName =
   | "messagesSent"
   | "dmSent"
   | "remindersFired"
+  | "patrolPosted"
+  | "patrolSilent"
+  | "patrolAutoPaused"
   | "errors"
   | "logins"
   | "machineAuthBcryptScans"
@@ -14,6 +17,9 @@ const counters: Record<CounterName, number> = {
   messagesSent: 0,
   dmSent: 0,
   remindersFired: 0,
+  patrolPosted: 0,
+  patrolSilent: 0,
+  patrolAutoPaused: 0,
   errors: 0,
   logins: 0,
   machineAuthBcryptScans: 0,
