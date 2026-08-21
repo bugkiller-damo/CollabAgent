@@ -11,7 +11,7 @@
 
 ## ★ 当前焦点
 
-> **Step 6 · ✅ 完成**（2026-08-21，D1 线程追问注入 + D2 prompt 隔离；不做进程池；待 commit）。**下一步：Step 7 · T4**
+> **Step 7 · T4 观察帧产品化（D4 并入）** — 未开工。Step 4–6 已落地于 `ae29832`。
 
 ---
 
@@ -206,7 +206,7 @@ daemon prompt 含三选一与沉默协议。L3 手动 E2E 待上线走剧本。
 - [x] S6.3 `recordContext` 累计 contextChars/Messages/Dropped/Turns；`slock cost show` 带出；`slock session show`
 
 **验收**：长线程 @ 的 prompt 含早前消息；thread A/B 注入块互不包含；无 threadId 不注入；typecheck + vitest 绿。弱隔离：Claude 会话记忆仍可能跨线程泄漏。
-**改动待 commit**。
+**落地**：`ae29832`（与 Step 4/5 同提交，工作树无法拆成可独立编译的逐步提交）。
 
 ---
 
@@ -235,6 +235,6 @@ daemon prompt 含三选一与沉默协议。L3 手动 E2E 待上线走剧本。
 | Step 1 | 2026-08-20 | `dffb5f8` | 覆盖盘点后只补真空：新增 agent-runtime-state(16 例)+persistent-claude(9 例)；S1.1/S1.4 已覆盖免做；160 全绿；发现 1 个 exit-handler 竞态遗留观察 |
 | Step 2 | 2026-08-20 | `dffb5f8` | shared WS 段重写为四方向 union；daemon/server 接线（sendWs 唯一出口 + 参数类型化）；删 server 死 case agent:activity；全仓 build + daemon 160 全绿；server 套件受环境（PG/:3001）阻塞待复验 |
 | Step 3 | 2026-08-20 | `a65f60c` | PTY 冻结隔离（不删代码）：7 纯 PTY 文件 + 3 混合文件 legacy 标记；SLOCK_USE_PTY=1 启动警告；terminal-log.ts/writeMcpConfig 确认共享不冻结；全仓 build + 160 测试全绿 |
-| Step 4 | 2026-08-20 | 待 commit | D3 成本记账：`agent-cost-tracker.ts` 独立 JSON 按 (agent, channel, UTC day) 累计；`SLOCK_COST_BUDGET_USD` 入队前熔断 + `postAsAgent` 频道可见；`slock cost show`；typecheck + 177 测试全绿 |
-| Step 5 | 2026-08-21 | 待 commit | T8 经理分诊：013 开关列；`triageAgents` 第四唤醒源；分诊 prompt + reply-guard 豁免；PATCH owner/admin + 经理校验；设置面板开关；L1 14 例；不做 badge/L4 |
-| Step 6 | 2026-08-21 | 待 commit | D1 线程追问 Context Builder（截断注入）+ D2 prompt 隔离与 thread-session JSON；history/MCP `threadId`；`recordContext`；不做进程池 |
+| Step 4 | 2026-08-20 | `ae29832` | D3 成本记账：`agent-cost-tracker.ts` 独立 JSON 按 (agent, channel, UTC day) 累计；`SLOCK_COST_BUDGET_USD` 入队前熔断 + `postAsAgent` 频道可见；`slock cost show`；typecheck + 177 测试全绿 |
+| Step 5 | 2026-08-21 | `ae29832` | T8 经理分诊：013 开关列；`triageAgents` 第四唤醒源；分诊 prompt + reply-guard 豁免；PATCH owner/admin + 经理校验；设置面板开关；L1 14 例；不做 badge/L4 |
+| Step 6 | 2026-08-21 | `ae29832` | D1 线程追问 Context Builder（截断注入）+ D2 prompt 隔离与 thread-session JSON；history/MCP `threadId`；`recordContext`；不做进程池 |
