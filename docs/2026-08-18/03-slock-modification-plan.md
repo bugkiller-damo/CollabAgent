@@ -88,6 +88,9 @@ Phase A 落地时先以 `warn-only` 模式跑一轮（构建白名单 env 但对
 **验收**：env diff 日志无意外缺失项后默认收紧；`SLOCK_AGENT_TOKEN` 明文
 不出现在任何子进程 env（O11 语义保持）；单测覆盖白名单构造。
 
+> **✅ 2026-08-25 翻正**（评估报告 P0.4）：默认已改为 `whitelist`；
+> `SLOCK_ENV_INHERIT=1` 仍为排障回退；`SLOCK_ENV_WHITELIST=1` 保留为兼容 no-op。
+
 ## 2. Phase B：headless 观察遥测补齐 → 默认路径切换
 
 ### B1 PersistentClaude 结构化观察帧（headless 化的前置）

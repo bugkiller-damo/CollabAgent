@@ -110,8 +110,7 @@ export class PersistentClaude {
         cwd: this.opts.cwd,
         shell: true,
         windowsHide: true,
-        // A2：env 白名单化（默认 warn-only，SLOCK_ENV_WHITELIST=1 收紧），
-        // 见 agent-env-whitelist.ts
+        // A2 / P0.4：默认 whitelist；SLOCK_ENV_INHERIT=1 才全量继承。
         env: applyAgentEnv(this.opts.env, `Persistent${this.opts.label ? " " + this.opts.label : ""}`),
       });
     } catch (err: any) {

@@ -23,7 +23,7 @@ AI agents, and routes messages between them.
 - **A1 派发队列**：`agent-dispatch-queue.ts` 串行派发 + 指数退避重试 + 死信上报 +
   15s 去重 + 忙碌合并。
 - **安全**：scoped runtime token（`agent-tokens.ts` + `agent-token-file.ts` 0600）、
-  `--allowedTools` 白名单 fail-closed（`command-presets.ts`）、env 白名单（A2）。
+  `--allowedTools` 白名单 fail-closed（`command-presets.ts`）、env 白名单默认开启（A2 / P0.4；`SLOCK_ENV_INHERIT=1` 排障回退）。
 - **状态机**：`agent-runtime-state.ts` 五态（uninit/idle/starting/working/stopped）。
 - **观察**：stream-json 事件 → `agent-observation.ts` 观察帧 → WS 进 web 面板；
   tool_call 经 C1 进审计流。

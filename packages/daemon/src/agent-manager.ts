@@ -42,9 +42,9 @@ export const createAgentManager = (): IAgentManager => {
       const rows = input.rows ?? 24;
 
       // node-pty 直连子进程，不经 cmd.exe 间接启动
-      // A2：env 白名单化（默认 warn-only，SLOCK_ENV_WHITELIST=1 收紧）；
-      // input.env 已是 buildPtyEnv 的产物（SLOCK_* + TERM 系列），白名单模式下
-      // 作为 overrides 显式追加，O11 语义不变（明文 token 在 applyAgentEnv 里剔除）
+      // A2 / P0.4：默认 whitelist；input.env 已是 buildPtyEnv 的产物
+      //（SLOCK_* + TERM 系列），作为 overrides 显式追加。O11：明文 token 在
+      // applyAgentEnv 里剔除。SLOCK_ENV_INHERIT=1 才全量继承。
       const pty: IPty = spawn(input.agentName, input.args ?? [], {
         cwd: input.workspaceDir,
         env: applyAgentEnv((input.env ?? {}) as Record<string, string>, `PTY:${input.agentName}`),

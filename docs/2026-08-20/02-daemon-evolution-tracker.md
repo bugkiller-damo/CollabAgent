@@ -11,8 +11,8 @@
 
 ## ★ 当前焦点
 
-> **评估报告 P0.4 · 收紧 env 白名单默认** — 下一焦点。
-> P0.1–P0.3 已落地并提交（见文末完成记录）。
+> **评估报告 P0.5 · 验证 `total_cost_usd` 语义** — 下一焦点。
+> P0.1–P0.4 已落地（见文末完成记录）。
 > 注意：与本文件「方案 P0.1 = PTY 冻结」（Step 3，已完成）不是同一件事。
 
 ---
@@ -256,3 +256,4 @@ daemon prompt 含三选一与沉默协议。L3 手动 E2E 待上线走剧本。
 | 评估 P0.1 | 2026-08-24 | （待提交） | PersistentClaude kill→exit 竞态：`procGen` 绑定回合；超时立即 settle；迟到 exit/stdout 忽略；dispatch catch 补 `idleReclaimer.touch`；12 例全绿 |
 | 评估 P0.2 | 2026-08-24 | （待提交） | headless idleReclaimer：`reclaimIdleAgent` 停 PersistentClaude 并踢 `persistentSessions`；working/starting 返回 false 保留跟踪；headless 入 working / starting 时 untrack |
 | 评估 P0.3 | 2026-08-25 | （待提交） | 统一 stop 状态机：`haltAgent` 先 bump 代次再切 idle（stopAgent）/stopped（unregister、stopAll）；清 startupTimer + 队列 epoch；dispatch 跨 await 对照代次不复活；`test/agent-runtime-stop.test.ts` |
+| 评估 P0.4 | 2026-08-25 | （待提交） | env 白名单默认翻正：`resolveAgentEnvMode` 默认 `whitelist`；`SLOCK_ENV_INHERIT=1` 排障回退（仍剥 token）；`SLOCK_ENV_WHITELIST=1` 兼容 no-op；warn-only 路径删除 |

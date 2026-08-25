@@ -17,7 +17,7 @@
 | 架构与模块组织 | 7.0 / 10 | 职责拆分清晰，但 headless 默认路径仍被 PTY 实现污染，配置读取极度分散，核心入口过于臃肿。 |
 | 运行时生命周期与状态机 | 6.0 / 10 | 回合级 Promise、派发串行化已落地，但存在可复现的 kill→exit 竞态、headless 空闲回收失效、stop 路径状态机不一致。 |
 | 派发队列与 T8 经理分诊 | 7.5 / 10 | A1 队列纪律与 T8 触发面完整，但成本门不拦截已入队积压、去重窗口在死信路径上有副作用。 |
-| 安全与权限模型 | 6.0 / 10 | scoped token、MCP 鉴权、白名单框架已落地，但默认 env 白名单未生效、本地 token 注册表与真实吊销路径脱节。 |
+| 安全与权限模型 | 6.0 / 10 | scoped token、MCP 鉴权、白名单框架已落地；~~默认 env 白名单未生效~~ **✅ P0.4**；本地 token 注册表与真实吊销路径脱节。 |
 | 成本 / 上下文 / 进度产品化 | 7.0 / 10 | 功能完整且旁路接入，但 `total_cost_usd` 语义未验证、预算熔断有透支窗口、CLI 查询面较粗。 |
 | 测试覆盖与代码质量 | 6.5 / 10 | 核心旁路模块测试扎实，但编排核心（runtime/dispatch/daemon-core/cli）是真空，巨型函数与 `any`/`as` 较多。 |
 | **综合评分** | **6.7 / 10** | 基础设施与产品化能力已成型，核心运行时鲁棒性和架构解耦仍是最大短板。 |
@@ -27,7 +27,7 @@
 1. **产品化能力已追上需求**：D3 成本记账、D1 上下文构建、D2 thread-session、T4/D4 观察帧进度、T8 经理分诊均已落地，单测覆盖扎实，对核心派发链路侵入较小。
 2. **核心运行时尚未达到生产级鲁棒**：`PersistentClaude` 的 kill→exit 竞态、`idleReclaimer` 对 headless 失效、`stopAgent` 不驱动状态机，是三个可能在线上报错/漏回收/状态漂移的 P0 缺陷。
 3. **架构上的“headless 默认”声明与实现不符**：启动时仍无条件实例化 PTY 管理器、加载 node-pty 原生模块，冻结代码仍处在热路径。
-4. **安全模型有框架但默认未收紧**：env 白名单默认 `warn` 模式导致 secrets 直接流入子进程；`agent-tokens.ts` 本地注册表与真实 server 吊销路径脱节。
+4. **安全模型有框架但默认未收紧**：~~env 白名单默认 `warn` 模式导致 secrets 直接流入子进程~~ **✅ 2026-08-25 已修**（P0.4）；`agent-tokens.ts` 本地注册表与真实 server 吊销路径脱节。
 5. **测试覆盖呈现“旁路厚、核心薄”**：队列、状态机、观察帧、成本、Context Builder 均有高覆盖测试，但 `agent-runtime.ts`、`agent-runtime-dispatch.ts`、`daemon-core.ts`、`cli.ts` 等最大文件零单测。
 
 ### 1.3 最高优先级行动项（P0）
@@ -37,7 +37,7 @@
 | P0.1 | 修复 `PersistentClaude` kill→exit 竞态（旧进程 exit 误 reject 新回合） | `drivers/persistent-claude.ts` | 消除长回合/超时场景下的误重试与死信 | ✅ 2026-08-24：`procGen` + turn.gen；超时立即 settle；迟到 exit 忽略 |
 | P0.2 | 让 `idleReclaimer` 同时回收 headless 会话 | `agent-runtime.ts` | 避免 headless 子进程永久泄漏 | ✅ 2026-08-24：`reclaimIdleAgent` 停 PersistentClaude；working/starting 跳过；headless 入 working 时 untrack |
 | P0.3 | 统一 `stopAgent`/`stopAll` 状态机语义 | `agent-runtime.ts` | 消除“working 但无进程”的幽灵状态 | ✅ 2026-08-25：`haltAgent` 先 bump 代次再切 idle/stopped；清 startupTimer + 队列；in-flight 不复活 |
-| P0.4 | 收紧 env 白名单为默认开启 | `agent-env-whitelist.ts` | 阻止 daemon secrets 流入 agent 子进程 |
+| P0.4 | 收紧 env 白名单为默认开启 | `agent-env-whitelist.ts` | 阻止 daemon secrets 流入 agent 子进程 | ✅ 2026-08-25：默认 `whitelist`；`SLOCK_ENV_INHERIT=1` 排障回退；`SLOCK_ENV_WHITELIST=1` 兼容 no-op |
 | P0.5 | 验证 `total_cost_usd` 是会话累计还是单回合成本 | `agent-cost-tracker.ts` | 确保成本数据与预算熔断可信 |
 | P0.6 | 在队列 `drain` 与 `doDispatch` 执行前补成本门 | `agent-runtime-dispatch.ts` / `agent-dispatch-queue.ts` | 让熔断真正止血，而非只拦截新入队 |
 | P0.7 | 让 headless 默认路径真正与 PTY 解耦 | `agent-runtime.ts` / `agent-runtime-spawn.ts` / `daemon-core.ts` | 减少原生依赖、内存占用与冻结代码热路径污染 |
@@ -162,7 +162,7 @@
 
 | 严重度 | 文件:行号 | 问题 | 后果 |
 |---|---|---|---|
-| 高 | `agent-env-whitelist.ts:97-119` | 默认 `warn` 模式调用 `diffAgentEnv` 后仍返回全量 `process.env`；只有显式 `SLOCK_ENV_WHITELIST=1` 才收紧 | agent 子进程可读取 daemon 的 `SLOCK_API_KEY`、云凭证、SSH key、`.env` 等所有环境变量 |
+| 高 | `agent-env-whitelist.ts` | ~~默认 `warn` 模式调用 `diffAgentEnv` 后仍返回全量 `process.env`；只有显式 `SLOCK_ENV_WHITELIST=1` 才收紧~~ **✅ 2026-08-25 已修**（P0.4）：默认 `whitelist`；`SLOCK_ENV_INHERIT=1` 才全量继承（仍剥 `SLOCK_AGENT_TOKEN`） | agent 子进程可读取 daemon 的 `SLOCK_API_KEY`、云凭证、SSH key、`.env` 等所有环境变量 |
 | 高 | `agent-tokens.ts` 全篇 / `exit-handler.ts:28` / `agent-runtime-exit.ts:104` | `tokenRegistry.issue()` 在产线代码中从未被调用；exit handler 用 `revokeIfMatches` 检查的是一个空 Map | 真实吊销完全依赖 server HTTP DELETE；若 daemon 崩溃/网络抖动导致 DELETE 未发出，本地没有兜底；文档与实现不一致 |
 | 中 | `command-presets.ts:17` | 默认 `--allowedTools` 含 `Bash` | agent 可执行任意 shell 命令，通过 `curl`/`wget` 绕过 WebFetch 限制，或运行任意下载脚本 |
 | 中 | `agent-runtime-dispatch.ts:471-478` | headless 路径每次 dispatch 都 `mintAgentCredential` + `writeAgentTokenFile`，即使复用已有 PersistentClaude 会话 | 高频覆盖增加 race 窗口；旧会话若短暂存活，其 MCP server 可能读到新 token（功能上无害但扩大暴露面） |
@@ -176,7 +176,7 @@
 
 #### 改进建议
 
-- **P0**：将 `resolveAgentEnvMode()` 默认值改为 `whitelist`，保留 `SLOCK_ENV_INHERIT=1` 作为显式排障回退。
+- **P0**：~~将 `resolveAgentEnvMode()` 默认值改为 `whitelist`，保留 `SLOCK_ENV_INHERIT=1` 作为显式排障回退。~~ **✅ 2026-08-25 已修**（P0.4）。
 - **P0**：统一 token 吊销路径：要么让 `agent-runtime-dispatch.ts` 在 mint 后将 token 注册到 `agent-tokens.ts` 并确保 exit handler 双吊销，要么移除 `agent-tokens.ts` 并更新文档，明确吊销完全由 server 承担。
 - **P1**：关闭或最小化 `shell: true`；对 observation / terminal-log / audit 流增加 token 脱敏（匹配 `sk_agent_[a-z0-9]+` 模式）；显式设置 `.slock` 目录权限 0700。
 - **P1**：对用户注入内容做 prompt 边界包装（XML/分隔符），降低 prompt 注入成功率。
@@ -260,7 +260,7 @@
 |---|---|---|---|---|
 | headless 子进程泄漏 | 运行时、架构 | ✅ 2026-08-24 已修（P0.2） | 任何 headless agent 完成一轮对话后空闲 | 长期运行积累大量 `claude` 子进程，内存/句柄耗尽 |
 | 预算熔断后仍透支 | 派发队列、产品化 | 已确认 | 预算在队列积压或重试期间被耗尽 | 成本失控，熔断消息成虚假承诺 |
-| secrets 流入 agent | 安全 | 已确认 | 默认启动，未设 `SLOCK_ENV_WHITELIST=1` | agent 可读取 daemon 的 API key、云凭证等 |
+| secrets 流入 agent | 安全 | ✅ 2026-08-25 已修（P0.4） | 默认启动，未设 `SLOCK_ENV_WHITELIST=1` | agent 可读取 daemon 的 API key、云凭证等 |
 | kill→exit 竞态误伤新回合 | 运行时 | 已确认 | 回合超时 kill 且队列有后续消息 | 合法消息被反复重试甚至死信 |
 | 成本数据重复计费 | 产品化 | 待验证 | 取决于 Claude Code `total_cost_usd` 语义 | 预算严重虚高或虚低 |
 | 核心编排器无单测 | 代码质量 | 已确认 | 任何对 runtime/dispatch/daemon-core 的修改 | 回归只能靠集成测试和人工发现 |
@@ -276,7 +276,7 @@
 1. **修复 PersistentClaude kill→exit 竞态** —— 给 turn 绑定进程 token，exit handler 只 reject 对应进程。
 2. **~~修复 headless 空闲回收失效~~** —— ✅ 2026-08-24：`reclaimIdleAgent` 同时回收 `persistentSessions`。
 3. **~~统一 stop 路径状态机语义~~** —— ✅ 2026-08-25：`haltAgent` 驱动 `transitionState`，清 `startupTimer`/`dispatchQueue`，in-flight 对照代次。
-4. **收紧 env 白名单默认** —— 默认 `whitelist` 模式，`SLOCK_ENV_INHERIT=1` 作为显式回退。
+4. **~~收紧 env 白名单默认~~** —— ✅ 2026-08-25：默认 `whitelist`；`SLOCK_ENV_INHERIT=1` 排障回退。
 5. **验证 `total_cost_usd` 语义** —— 真机对比连续两次 `result` 事件的差值；若是累计则改差值逻辑。
 6. **让成本门覆盖已入队/重试任务** —— 在 `doDispatch` 开头与队列 `drain` 出队前再次调用 `evaluateCostGate`。
 7. **headless 路径与 PTY 解耦** —— 懒加载/注入 `IAgentManager`；把 `writeMcpConfig` 迁出冻结文件。
