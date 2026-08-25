@@ -3,10 +3,16 @@ import { dirname, join } from "node:path";
 
 /**
  * D3 成本记账（Step 4）：按 (agent, channel, day) 累计 stream-json `result`
- * 事件里的 total_cost_usd / duration_ms / num_turns。
+ * 事件里的成本 / 时长 / 工具轮次。
  *
  * 独立 JSON 文件，不挂在 AgentRunRecord 上——headless 默认路径从不
  * insertAgentRun（那是 PTY spawn 专属），往 runs 上长字段会空转。
+ *
+ * P0.5（2026-08-25）：Claude Code `result.total_cost_usd` 是**会话累计**
+ * （常驻进程内单调不减；CLI `us()` 用进程级 `totalCostUsd` 覆盖 result）。
+ * 直接累加会把历史再算一遍，落库前必须对每个常驻进程做「本次 − 上次」。
+ * `duration_ms` / `num_turns` 是本回合墙钟 / 本回合工具轮次，按原值累加。
+ * one-shot / 首条 result 没有上次基线，差值 = 本次原值。
  *
  * 熔断：SLOCK_COST_BUDGET_USD（每 agent 每个 UTC 日，>0 才生效）超限后
  * A1 队列拒投；频道熔断文案由 daemon-core.postAsAgent 代发（零 LLM）。
@@ -87,7 +93,7 @@ const asFiniteNumber = (v: unknown): number | null => {
   return null;
 };
 
-/** stream-json `result` 事件 → 数值指标；非 result 返回 null。缺字段为 null 而非 0。 */
+/** stream-json `result` 事件上的累计值；非 result 返回 null。缺字段为 null 而非 0。 */
 export const extractResultMetrics = (
   ev: any,
 ): { costUsd: number | null; durationMs: number | null; numTurns: number | null } | null => {
@@ -96,6 +102,40 @@ export const extractResultMetrics = (
     costUsd: asFiniteNumber(ev.total_cost_usd),
     durationMs: asFiniteNumber(ev.duration_ms),
     numTurns: asFiniteNumber(ev.num_turns),
+  };
+};
+
+const clampNonNeg = (v: number): number => (v > 0 ? v : 0);
+
+/**
+ * 把会话累计 `total_cost_usd` 换成「本回合增量」。
+ *
+ * - `costUsd == null`：本回合不记成本，基线也不更新。
+ * - 累计回退（新进程 / 计量抖动）：按本次原值记账，并重置基线。
+ * - 调用方必须在进程被 stop / reclaim 时 `forget(agentName)`，
+ *   否则新进程的首条累计会被当成旧进程的增量而少记。
+ *   PersistentClaude 内部换进程（沉默超时）不 forget——回退分支会按原值记账。
+ */
+export const createSessionCostDelta = (): {
+  next: (agentName: string, costUsd: number | null) => number | null;
+  forget: (agentName: string) => void;
+  peek: (agentName: string) => number | undefined;
+} => {
+  const last = new Map<string, number>();
+  return {
+    next(agentName, costUsd) {
+      if (costUsd == null) return null;
+      const baseline = last.get(agentName) ?? 0;
+      const delta = costUsd < baseline ? costUsd : clampNonNeg(costUsd - baseline);
+      last.set(agentName, costUsd);
+      return delta;
+    },
+    forget(agentName) {
+      last.delete(agentName);
+    },
+    peek(agentName) {
+      return last.get(agentName);
+    },
   };
 };
 

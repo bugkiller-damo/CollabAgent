@@ -129,6 +129,70 @@ describe("agent-dispatch-queue", () => {
     q.dispose();
   });
 
+  it("P0.6：deliveryGate 阻塞时 drain 丢弃批次——不投递、不重试、done 照常 resolve", async () => {
+    const deliver = vi.fn().mockResolvedValue(undefined);
+    const onDeliveryBlocked = vi.fn();
+    const onRetry = vi.fn();
+    const q = createAgentDispatchQueue({
+      deliver,
+      onDeliveryBlocked,
+      onRetry,
+      deliveryGate: () => ({ blocked: true, reason: "cost circuit-break" }),
+    });
+    const res = q.enqueue(makeItem());
+    expect(res.status).toBe("queued"); // 入队不查 gate，drain 时才拦
+    if (res.status !== "queued") throw new Error("expected queued");
+    await flush();
+    expect(deliver).not.toHaveBeenCalled();
+    expect(onRetry).not.toHaveBeenCalled();
+    expect(onDeliveryBlocked).toHaveBeenCalledTimes(1);
+    expect(onDeliveryBlocked.mock.calls[0][1]).toHaveLength(1);
+    expect(onDeliveryBlocked.mock.calls[0][2]).toBe("cost circuit-break");
+    await expect(res.done).resolves.toBeUndefined(); // await 方不挂住
+    expect(q.depth("alice")).toBe(0);
+    q.dispose();
+  });
+
+  it("P0.6：退避期间预算耗尽——重试出队前被 gate 拦下", async () => {
+    // 第一次投递失败进入退避；退避结束后 drain 重估 gate，此时已熔断 → 丢弃而非重投
+    const deliver = vi.fn().mockRejectedValueOnce(new Error("boom")).mockResolvedValue(undefined);
+    const onDeliveryBlocked = vi.fn();
+    let blocked = false;
+    const q = createAgentDispatchQueue({
+      deliver,
+      onDeliveryBlocked,
+      // 退避窗口 40–60ms（50 ±20% jitter），与下方 flush(10)/flush(150) 拉开安全距离
+      baseDelayMs: 50,
+      maxDelayMs: 50,
+      maxRetries: 3,
+      deliveryGate: () => ({ blocked, reason: "cost circuit-break" }),
+    });
+    q.enqueue(makeItem());
+    await flush(10);
+    expect(deliver).toHaveBeenCalledTimes(1); // 首投失败
+    blocked = true; // 退避期间预算耗尽
+    await flush(150); // 等退避结束触发 drain
+    expect(deliver).toHaveBeenCalledTimes(1); // 没有重投
+    expect(onDeliveryBlocked).toHaveBeenCalledTimes(1);
+    expect(q.isBusy("alice")).toBe(false);
+    q.dispose();
+  });
+
+  it("P0.6：gate 解除后新消息正常投递（阻塞不污染队列状态）", async () => {
+    const deliver = vi.fn().mockResolvedValue(undefined);
+    let blocked = true;
+    const q = createAgentDispatchQueue({ deliver, deliveryGate: () => ({ blocked }) });
+    q.enqueue({ ...makeItem(), content: "m1" });
+    await flush();
+    expect(deliver).not.toHaveBeenCalled();
+    blocked = false;
+    q.enqueue({ ...makeItem(), content: "m2" });
+    await flush();
+    expect(deliver).toHaveBeenCalledTimes(1);
+    expect(deliver.mock.calls[0][1][0].content).toBe("m2");
+    q.dispose();
+  });
+
   it("clear 丢弃 pending，dispose 清掉退避定时器", async () => {
     let release!: () => void;
     const deliver = vi.fn().mockImplementationOnce(() => new Promise<void>((r) => (release = r)));

@@ -1,6 +1,7 @@
 /**
  * 子进程 env 默认清空 + 显式白名单（改造方案 A2，见
- * docs/2026-08-18/03-slock-modification-plan.md §1.A2）。
+ * docs/2026-08-18/03-slock-modification-plan.md §1.A2；评估报告 P0.4
+ * 于 2026-08-25 将默认从 warn-only 翻正为 whitelist）。
  *
  * 问题：三处 spawn（PTY / PersistentClaude / claudePrint）历来用
  * `{ ...process.env, ...overrides }` 全量继承 daemon 环境——daemon 进程里有
@@ -8,15 +9,14 @@
  * MCP 子进程（同机进程 env 可被跨进程读取）。buzz 侧的纪律是 env_clear() +
  * WINDOWS_SHELL_RESOLUTION_ENV 显式转发（见 02 对比文档 §1.4），本模块对齐。
  *
- * 灰度策略（收紧前要先观测，防止白名单漏项把 git/代理/工具链打断）：
- * - 默认 warn-only：构造白名单 env 并与全量 env 做 diff，console.warn 打出
- *   「如果收紧会被剔除的键」，但实际仍传全量 env（行为不变）。
- * - SLOCK_ENV_WHITELIST=1：真正传白名单 env（收紧）。
- * - SLOCK_ENV_INHERIT=1：显式回到全量继承（排障回退用）。
+ * 模式：
+ * - 默认 whitelist：只转发 BASE_WHITELIST + 已存在的代理键 + 调用方 overrides。
+ * - SLOCK_ENV_INHERIT=1：显式回到全量继承（排障回退；明文 token 仍剔除）。
+ * - SLOCK_ENV_WHITELIST=1：兼容别名，与默认同为 whitelist（A2 灰度期开关，现为 no-op）。
  */
 
 /** Windows 上 spawn claude.cmd / node / git 能正常工作的最小键集。
- *  每条键的理由写在注释里；新增键前先确认 warn-only 日志里确实有工具需要它。 */
+ *  每条键的理由写在注释里；新增键前先确认工具确实需要它（可用 `diffAgentEnv` 对照）。 */
 const BASE_WHITELIST = new Set([
   "SYSTEMROOT", // cmd.exe / 大量 Win32 API 的定位锚，缺了 shell 直接起不来
   "SYSTEMDRIVE", // 部分安装器/路径解析引用
@@ -44,13 +44,12 @@ const BASE_WHITELIST = new Set([
 /** 代理变量：仅当 daemon 自身 env 里存在才转发（公司网络/本地代理场景） */
 const PROXY_KEYS = ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy"];
 
-export type AgentEnvMode = "warn" | "whitelist" | "inherit";
+export type AgentEnvMode = "whitelist" | "inherit";
 
 /** 每次调用时读 env（仓内惯例：测试在 beforeEach 里改 process.env 即可生效） */
 export const resolveAgentEnvMode = (): AgentEnvMode => {
   if (process.env.SLOCK_ENV_INHERIT === "1") return "inherit";
-  if (process.env.SLOCK_ENV_WHITELIST === "1") return "whitelist";
-  return "warn";
+  return "whitelist";
 };
 
 /**
@@ -78,7 +77,7 @@ export const buildAgentEnv = (
   return env;
 };
 
-/** warn-only 用：返回「收紧后会被剔除」的键名列表（只返回键名，不碰值——值可能敏感） */
+/** 对照用：返回「白名单模式下会被剔除」的键名列表（只返回键名，不碰值——值可能敏感） */
 export const diffAgentEnv = (
   whitelisted: Record<string, string>,
   fullEnv: NodeJS.ProcessEnv = process.env,
@@ -92,29 +91,22 @@ export const diffAgentEnv = (
 
 /**
  * 三处 spawn 的统一入口：按模式返回最终给子进程的 env。
- * warn 模式打 diff 日志后仍返回全量继承（行为不变，先观测）。
+ * 默认 whitelist；`SLOCK_ENV_INHERIT=1` 才全量继承（明文 token 仍剔除）。
  */
 export const applyAgentEnv = (overrides: Record<string, string>, label: string): Record<string, string> => {
   const mode = resolveAgentEnvMode();
-  // 过滤 undefined 值（process.env 的类型是 string | undefined）
-  const full: Record<string, string> = {};
-  for (const [key, value] of Object.entries(process.env)) {
-    if (value !== undefined) full[key] = value;
-  }
-  Object.assign(full, overrides);
-  // O11：任何模式下明文 token 都不进子进程（继承模式也不例外——继承模式是
-  // 排障回退，不是安全回退）
-  delete full.SLOCK_AGENT_TOKEN;
-  if (mode === "inherit") return full;
-  const whitelisted = buildAgentEnv(overrides);
-  if (mode === "whitelist") return whitelisted;
-  const dropped = diffAgentEnv(whitelisted);
-  if (dropped.length > 0) {
+  if (mode === "inherit") {
     console.warn(
-      `[EnvWhitelist] (${label}) warn-only: ${dropped.length} keys would be dropped under SLOCK_ENV_WHITELIST=1: ` +
-        dropped.slice(0, 40).join(",") +
-        (dropped.length > 40 ? ` … +${dropped.length - 40} more` : ""),
+      `[EnvWhitelist] (${label}) SLOCK_ENV_INHERIT=1: passing full daemon env (SLOCK_AGENT_TOKEN still stripped)`,
     );
+    const full: Record<string, string> = {};
+    for (const [key, value] of Object.entries(process.env)) {
+      if (value !== undefined) full[key] = value;
+    }
+    Object.assign(full, overrides);
+    // O11：继承模式是排障回退，不是安全回退——明文 token 仍不进子进程。
+    delete full.SLOCK_AGENT_TOKEN;
+    return full;
   }
-  return full;
+  return buildAgentEnv(overrides);
 };

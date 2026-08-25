@@ -1,13 +1,19 @@
 import { buildThreadContextEnvelope } from "./agent-context-builder.js";
-import { evaluateCostGate, extractResultMetrics, type ICostTracker } from "./agent-cost-tracker.js";
+import {
+  type CostGateDecision,
+  createSessionCostDelta,
+  evaluateCostGate,
+  extractResultMetrics,
+  type ICostTracker,
+} from "./agent-cost-tracker.js";
 import { createAgentDispatchQueue } from "./agent-dispatch-queue.js";
+import { writeMcpConfig } from "./agent-mcp-config.js";
 import { createSeqAllocator, type ObservationBus, streamEventToFrames } from "./agent-observation.js";
 import { channelProgressEnabled, createProgressTurn, type ProgressTurn } from "./agent-progress.js";
 import type { AgentRuntimeOptions } from "./agent-runtime.js";
 import type { ICredentialsClient } from "./agent-runtime-credentials.js";
 import type { IExitChain } from "./agent-runtime-exit.js";
 import type { SpawnPtyForAgent } from "./agent-runtime-spawn.js";
-import { writeMcpConfig } from "./agent-runtime-spawn.js";
 import type { IAgentStateMachine } from "./agent-runtime-state.js";
 import type { ITurnTracker } from "./agent-runtime-turn-tracker.js";
 import { createWorkspaceDir, fetchDispatchContext, writeSystemPromptFile } from "./agent-startup.js";
@@ -107,6 +113,8 @@ export interface IDispatch {
   clearAgentQueue(agentName: string): number;
   /** P0.3：daemon 关闭时清掉全部队列与退避定时器 */
   disposeQueue(): void;
+  /** P0.5：常驻进程被停/回收后清会话累计基线，避免新进程少记成本 */
+  forgetSessionCost(agentName: string): void;
 }
 
 export interface DispatchDeps {
@@ -197,6 +205,8 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
     dispatchPromises,
   } = deps;
   const { transitionState, clearStartupTimer } = stateMachine;
+  // P0.5：result.total_cost_usd 是会话累计；按 agent 记上次值，落库只写差值。
+  const sessionCostDelta = createSessionCostDelta();
   // P0.3：stopAll/unregister 会先切到 stopped。in-flight 的 spawn 失败 / 超时 /
   // send reject / 成功进入 working 都不能再改状态，否则「已停止」被复活。
   const isStopped = (agentName: string): boolean => stateMachine.getState(agentName) === "stopped";
@@ -225,6 +235,18 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
   const obsSeq = createSeqAllocator();
   /** D3：每个 agent 每个 UTC 日最多往频道发一条熔断消息，避免 @ 刷屏 */
   const circuitNotified = new Set<string>();
+  /** D3/P0.6：熔断通知收口——入队门、drain 门、doDispatch 门共用一套去重与旁路 */
+  const notifyCircuitBreak = (agentName: string, channelName: string, gate: CostGateDecision): void => {
+    const key = `${agentName}\0${gate.day}`;
+    if (circuitNotified.has(key) || !gate.message) return;
+    circuitNotified.add(key);
+    console.warn(`[Daemon] @${agentName} cost circuit-break — refusing dispatch (${gate.message})`);
+    try {
+      (deps.onCircuitBreak ?? deps.onReplyMissing)?.(agentName, channelName, gate.message);
+    } catch {
+      /* 熔断旁路不阻塞主链路 */
+    }
+  };
 
   // ---- 回复守卫（reply guard，headless 路径）----
   // 弱模型实证问题（2026-08-18 真机三次）：回合查到了答案但全程没调
@@ -292,7 +314,9 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
         }
       }
     }
-    // D3：result 事件落库（在 turnGuards.delete 之前取 channel）。无 tracker 时跳过。
+    // D3 / P0.5：result.total_cost_usd 是会话累计，落库前换成相对上次的增量。
+    // duration_ms / num_turns 是本回合值，原样累加。无 tracker 时跳过。
+    // 必须在 turnGuards.delete 之前取 channel。
     if (ev?.type === "result") {
       try {
         const metrics = extractResultMetrics(ev);
@@ -302,7 +326,7 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
             agentName,
             agentId: resolveAgentId(agentName),
             channel,
-            costUsd: metrics.costUsd,
+            costUsd: sessionCostDelta.next(agentName, metrics.costUsd),
             durationMs: metrics.durationMs,
             numTurns: metrics.numTurns,
           });
@@ -389,6 +413,15 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
     userMsg: string,
     threadId?: string,
   ): Promise<void> => {
+    // P0.6：执行前成本门。队列模式 drain 已拦过一次，这里是兜底——覆盖
+    // SLOCK_DISPATCH_QUEUE=0 旧链路径与「drain 检查后才耗尽预算」的竞态窗口。
+    // 熔断是有意丢弃（已通知频道），不是投递错误，所以 return 而非 throw。
+    const costGate = evaluateCostGate(deps.costTracker, agentName);
+    if (costGate.blocked) {
+      notifyCircuitBreak(agentName, channelName, costGate);
+      return;
+    }
+
     const agentId = resolveAgentId(agentName);
     if (!agentId) {
       // A1：抛错而非静默 return——队列模式靠 reject 触发死信；旧链模式由
@@ -705,6 +738,16 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
         },
         isDeliverable: (agentName) =>
           stateMachine.getState(agentName) !== "stopped" && resolveAgentId(agentName) !== null,
+        // P0.6：drain 出队前再过一次成本门——入队时放行、排空时已熔断的积压/
+        // 退避消息在此被拦下，熔断真正止血（不只拦截新入队）。
+        deliveryGate: (agentName) => {
+          const g = evaluateCostGate(deps.costTracker, agentName);
+          return { blocked: g.blocked, reason: g.message ?? undefined };
+        },
+        onDeliveryBlocked: (agentName, items) => {
+          const g = evaluateCostGate(deps.costTracker, agentName);
+          if (g.blocked) notifyCircuitBreak(agentName, items[0]?.channelName ?? "", g);
+        },
         onRetry: (agentName, item, err, nextDelayMs) => {
           console.warn(
             `[Daemon] @${agentName} dispatch attempt ${item.attempts} failed, retry in ${nextDelayMs}ms:`,
@@ -733,16 +776,7 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
   ): Promise<void> => {
     const gate = evaluateCostGate(deps.costTracker, agentName);
     if (gate.blocked) {
-      const key = `${agentName}\0${gate.day}`;
-      if (!circuitNotified.has(key) && gate.message) {
-        circuitNotified.add(key);
-        console.warn(`[Daemon] @${agentName} cost circuit-break — refusing dispatch (${gate.message})`);
-        try {
-          (deps.onCircuitBreak ?? deps.onReplyMissing)?.(agentName, channelName, gate.message);
-        } catch {
-          /* 熔断旁路不阻塞主链路 */
-        }
-      }
+      notifyCircuitBreak(agentName, channelName, gate);
       return Promise.resolve();
     }
 
@@ -906,6 +940,9 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
     disposeQueue: () => {
       dispatchPromises.clear();
       dispatchQueue?.dispose();
+    },
+    forgetSessionCost: (agentName) => {
+      sessionCostDelta.forget(agentName);
     },
   };
 };

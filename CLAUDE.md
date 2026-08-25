@@ -23,13 +23,14 @@ AI agents, and routes messages between them.
 - **A1 派发队列**：`agent-dispatch-queue.ts` 串行派发 + 指数退避重试 + 死信上报 +
   15s 去重 + 忙碌合并。
 - **安全**：scoped runtime token（`agent-tokens.ts` + `agent-token-file.ts` 0600）、
-  `--allowedTools` 白名单 fail-closed（`command-presets.ts`）、env 白名单（A2）。
+  `--allowedTools` 白名单 fail-closed（`command-presets.ts`）、env 白名单默认开启（A2 / P0.4；`SLOCK_ENV_INHERIT=1` 排障回退）。
 - **状态机**：`agent-runtime-state.ts` 五态（uninit/idle/starting/working/stopped）。
 - **观察**：stream-json 事件 → `agent-observation.ts` 观察帧 → WS 进 web 面板；
   tool_call 经 C1 进审计流。
-- **成本记账（D3，2026-08-20 Step 4）**：`agent-cost-tracker.ts` 按
-  (agent, channel, UTC day) 累计 result 事件的 `total_cost_usd`；
-  `SLOCK_COST_BUDGET_USD` 超限 → A1 拒投 + 频道熔断消息；`slock cost show` 查近 7 天。
+- **成本记账（D3，2026-08-20 Step 4；P0.5 2026-08-25）**：`agent-cost-tracker.ts` 按
+  (agent, channel, UTC day) 累计；`result.total_cost_usd` 是会话累计，落库前做
+  「本次 − 上次」差值（`createSessionCostDelta`）；`SLOCK_COST_BUDGET_USD` 超限 →
+  A1 拒投 + 频道熔断消息；`slock cost show` 查近 7 天。
 - **Context Builder（D1，2026-08-21 Step 6）**：线程追问入队前拉该线程历史并截断注入；
   顶层 @ / DM / 巡检不注入。D2 本批仅 prompt 隔离 + `daemon-thread-sessions.json`
   （不拆 (agent, thread) 进程池）。
@@ -53,8 +54,10 @@ AI agents, and routes messages between them.
 | 会话 | `agent-sessions.ts`（sessionId 捕获/恢复）/ `agent-dir-name.ts` |
 | 其他 | `client.ts` / `proxy.ts` / `exit-coordinator.ts` / `exit-handler.ts` / `output.ts` / `types/index.ts` |
 
-\* `terminal-log.ts` 为共享文件（headless 的 `terminal:history` 也用它读落盘日志），不在冻结范围；
-`agent-runtime-spawn.ts` 同理仅 `createSpawnPtyForAgent`/`buildPtyEnv` 冻结，`writeMcpConfig` 正常维护。
+\* `terminal-log.ts` 为共享文件（headless 的 `terminal:history` 也用它读落盘日志），不在冻结范围。
+P0.7（2026-08-25）解耦：`agent-manager-lazy.ts` 把真实 PTY manager 推迟到首次 spawn 才动态
+import（headless 全程不加载 node-pty）；`agent-runtime-spawn.ts` 已纯化为全冻结（`writeMcpConfig`
+迁出到非冻结的 `agent-mcp-config.ts`，headless/PTY 共用）。
 
 ## 当前执行跟踪
 

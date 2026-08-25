@@ -2,7 +2,8 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { buildPtyEnv, writeMcpConfig } from "../src/agent-runtime-spawn.js";
+import { writeMcpConfig } from "../src/agent-mcp-config.js";
+import { buildPtyEnv } from "../src/agent-runtime-spawn.js";
 
 // O11：子进程边界的凭据脱敏——PTY env 不含明文 token；.mcp.json 只含 token 文件路径
 const tmpDirs: string[] = [];

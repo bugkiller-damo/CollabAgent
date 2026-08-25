@@ -99,7 +99,7 @@
 
 | # | 事项 | 说明 | 建议 |
 |---|---|---|---|
-| L1 | A2 env 白名单**默认值翻正** | 当前默认 warn-only；翻正=默认收紧，`SLOCK_ENV_INHERIT=1` 降级 | `SLOCK_ENV_WHITELIST=1` 跑一段时间无工具链断裂后翻正 |
+| L1 | A2 env 白名单**默认值翻正** | ✅ 2026-08-25（评估报告 P0.4）：默认 `whitelist`；`SLOCK_ENV_INHERIT=1` 排障回退；`SLOCK_ENV_WHITELIST=1` 兼容 no-op | 已落地 |
 | L2 | **Steer 语义**（进行中回合注入） | 回复守卫已验证回合边界注入；真 steer 依赖 claude stream-json 能力 | 远期，先验证 claude CLI 能力再立项 |
 | L3 | **PTY 模式整体退役** | 4 个 workaround 的最终删除条件 | headless 长期稳定后评估 |
 | L4 | agent 引导层加固 | 系统提示加「网络命令必须带 `--max-time`」（curl 挂死=回合挂死源） | 随手可做，低风险 |
@@ -119,7 +119,7 @@
 | T5 | Forge / 代码协作面（**待产品决策**） | 🟡 中 | 大 | — | 🔶 待定 |
 | T6 | URL 即社区 / 主权部署 | 🟡 中 | 中 | O3 ✅ | ☐ |
 | T7 | mesh 算力 / huddle | 🟢 低 | 大 | — | 🧊 冻结 |
-| L1 | env 白名单默认值翻正 | 🟡 中 | 小 | — | ☐ |
+| L1 | env 白名单默认值翻正 | 🟡 中 | 小 | — | ✅ 2026-08-25 P0.4 |
 | L2 | Steer 语义 | 🟢 低 | 待验证 | claude 能力 | ☐ |
 | L3 | PTY 模式退役 | 🟢 低 | 中 | headless 稳定 | ☐ |
 | L4 | 网络命令 `--max-time` 引导加固 | 🟢 低 | 随手 | — | ☐ |
