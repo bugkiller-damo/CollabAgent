@@ -2,6 +2,7 @@ import { buildThreadContextEnvelope } from "./agent-context-builder.js";
 import { evaluateCostGate, extractResultMetrics, type ICostTracker } from "./agent-cost-tracker.js";
 import { createAgentDispatchQueue } from "./agent-dispatch-queue.js";
 import { createSeqAllocator, type ObservationBus, streamEventToFrames } from "./agent-observation.js";
+import { channelProgressEnabled, createProgressTurn, type ProgressTurn } from "./agent-progress.js";
 import type { AgentRuntimeOptions } from "./agent-runtime.js";
 import type { ICredentialsClient } from "./agent-runtime-credentials.js";
 import type { IExitChain } from "./agent-runtime-exit.js";
@@ -102,6 +103,10 @@ export interface IDispatch {
     threadId?: string,
     messageId?: string,
   ): Promise<void>;
+  /** P0.3：丢弃某 agent 的 pending（stop/unregister）；返回丢弃条数 */
+  clearAgentQueue(agentName: string): number;
+  /** P0.3：daemon 关闭时清掉全部队列与退避定时器 */
+  disposeQueue(): void;
 }
 
 export interface DispatchDeps {
@@ -115,6 +120,10 @@ export interface DispatchDeps {
   spawnPtyForAgent: SpawnPtyForAgent;
   usePty: boolean;
   resolveAgentId(agentName: string): string | null;
+  /** P0.3：stop/unregister/stopAll 递增；doDispatch 跨 await 后对照，防止复活已停 agent */
+  getStopGeneration?(agentName: string): number;
+  /** P0.3：spawn 完成后才发现已被 stop 时，拆掉刚拉起的进程 */
+  abortAgentProcess?(agentName: string): void;
   /** agentName -> displayName/description（PTY 环境准备用） */
   agentInfo: Map<string, { displayName?: string; description?: string }>;
   /** agentName -> runId 缓存（常驻 PTY） */
@@ -159,6 +168,10 @@ export interface DispatchDeps {
   onCircuitBreak?: (agentName: string, channel: string, content: string) => void;
   /** D2：threadId → sessionId（独立 JSON；测试可不传） */
   threadSessions?: IThreadSessionStore;
+  /** D4：按 agent 绑定进度条发/改/删 */
+  createProgressPoster?: (agentName: string) => import("./agent-progress.js").ProgressPoster;
+  /** T4：顶栏 headline（不落库） */
+  onProgress?: (agentName: string, channelName: string, headline: string, phase: "start" | "update" | "end") => void;
 }
 
 /**
@@ -184,6 +197,29 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
     dispatchPromises,
   } = deps;
   const { transitionState, clearStartupTimer } = stateMachine;
+  // P0.3：stopAll/unregister 会先切到 stopped。in-flight 的 spawn 失败 / 超时 /
+  // send reject / 成功进入 working 都不能再改状态，否则「已停止」被复活。
+  const isStopped = (agentName: string): boolean => stateMachine.getState(agentName) === "stopped";
+  const releaseToIdle = (agentName: string): void => {
+    clearStartupTimer(agentName);
+    if (isStopped(agentName)) return;
+    transitionState(agentName, "idle");
+  };
+  const enterWorking = (agentName: string, expectedGen?: number): boolean => {
+    if (isStopped(agentName)) {
+      clearStartupTimer(agentName);
+      deps.abortAgentProcess?.(agentName);
+      return false;
+    }
+    if (expectedGen !== undefined && (deps.getStopGeneration?.(agentName) ?? 0) !== expectedGen) {
+      clearStartupTimer(agentName);
+      deps.abortAgentProcess?.(agentName);
+      return false;
+    }
+    clearStartupTimer(agentName);
+    transitionState(agentName, "working");
+    return true;
+  };
   const { mintAgentCredential } = credentialsClient;
   // B1：观察帧序号分配器（保证帧全局单调，便于排序/去重）
   const obsSeq = createSeqAllocator();
@@ -206,8 +242,11 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
     lastText?: string;
     /** D1/D2：本回合所属线程（无则顶层/DM/巡检） */
     threadId?: string;
+    /** D4：本回合频道内进度条 */
+    progress?: ProgressTurn;
   }
   const turnGuards = new Map<string, TurnGuard>();
+  const progressTurns = new Map<string, ProgressTurn>();
   const isSendToolFrame = (frame: { payload: { toolName?: string; text?: string } }): boolean => {
     const name = frame.payload.toolName ?? "";
     if (name.includes("send_message")) return true; // mcp__slock__send_message
@@ -244,6 +283,12 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
           } catch {
             /* 审计旁路不阻塞主链路 */
           }
+        }
+        // D4：节流聚合进频道进度条（分诊/巡检 isNudge 不写频道，但仍推顶栏）
+        try {
+          (progressTurns.get(agentName) ?? turnGuards.get(agentName)?.progress)?.note(frame);
+        } catch {
+          /* 进度旁路不阻塞 */
         }
       }
     }
@@ -287,33 +332,54 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
       // 回复守卫判定：整回合没有发送动作且不是追问本身 → 优先代发，其次追问
       const guard = turnGuards.get(agentName);
       turnGuards.delete(agentName);
-      if (guard && !guard.hadSend && !guard.isNudge && process.env.SLOCK_REPLY_GUARD !== "0") {
-        const answer = guard.lastText?.trim();
-        if (answer && deps.onReplyMissing) {
-          // 代发（2026-08-18 真机修正）：弱模型把答案当纯文本打完就结束回合是
-          // 高频行为，追问要烧一整轮 LLM（实测 $0.5+/次）且追问回合本身可能被
-          // 不活跃超时杀掉——二次失败。result 事件里已有最终正文，daemon 直接
-          // 以 agent 身份 POST 到频道：零额外回合、确定性送达。
-          console.warn(
-            `[Daemon] @${agentName} reply-guard: turn ended without send_message, auto-posting final text (${answer.length} chars)`,
-          );
+      progressTurns.delete(agentName);
+      void (async () => {
+        let rewritten = false;
+        if (guard?.progress) {
+          const answer = !guard.hadSend && !guard.isNudge ? guard.lastText?.trim() : undefined;
           try {
-            deps.onReplyMissing(agentName, guard.channel, answer);
+            const fin = await guard.progress.finish({
+              hadSend: guard.hadSend || guard.isNudge,
+              rewrite: answer || undefined,
+            });
+            rewritten = fin.rewritten;
           } catch {
-            /* 代发失败走 console，不再追问 */
+            /* 进度收尾失败不阻断回复守卫 */
           }
-        } else {
-          // 没有任何正文可代发（纯工具回合）→ 保留追问兜底
-          console.warn(`[Daemon] @${agentName} reply-guard: turn ended without send_message and no text, nudging once`);
-          const nudge =
-            `${REPLY_GUARD_PREFIX} 系统检测到你上一个回合没有调用 send_message（或 slock message send）——` +
-            `你直接打的字不会送到频道，对方还在等回复。请现在把上一条问题的答案用 ` +
-            `\`mcp__slock__send_message\`（target="${guard.channel}"）补发出去。` +
-            `（触发于 ${new Date().toISOString()}）`; // 时间戳防 dedup 吞掉连续追问
-          // fire-and-forget：走正常队列，不和当前回合处理抢顺序
-          void dispatchToAgent(agentName, guard.channel, nudge).catch(() => {});
+          try {
+            deps.onProgress?.(agentName, guard.channel, "", "end");
+          } catch {
+            /* ignore */
+          }
         }
-      }
+        if (guard && !guard.hadSend && !guard.isNudge && process.env.SLOCK_REPLY_GUARD !== "0") {
+          const answer = guard.lastText?.trim();
+          if (answer && rewritten) {
+            console.warn(
+              `[Daemon] @${agentName} reply-guard: reused progress message as final reply (${answer.length} chars)`,
+            );
+          } else if (answer && deps.onReplyMissing) {
+            console.warn(
+              `[Daemon] @${agentName} reply-guard: turn ended without send_message, auto-posting final text (${answer.length} chars)`,
+            );
+            try {
+              deps.onReplyMissing(agentName, guard.channel, answer);
+            } catch {
+              /* 代发失败走 console，不再追问 */
+            }
+          } else if (!answer) {
+            console.warn(
+              `[Daemon] @${agentName} reply-guard: turn ended without send_message and no text, nudging once`,
+            );
+            const nudge =
+              `${REPLY_GUARD_PREFIX} 系统检测到你上一个回合没有调用 send_message（或 slock message send）——` +
+              `你直接打的字不会送到频道，对方还在等回复。请现在把上一条问题的答案用 ` +
+              `\`mcp__slock__send_message\`（target="${guard.channel}"）补发出去。` +
+              `（触发于 ${new Date().toISOString()}）`;
+            void dispatchToAgent(agentName, guard.channel, nudge).catch(() => {});
+          }
+        }
+      })();
     }
   };
 
@@ -330,9 +396,15 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
       throw new Error(`[Daemon] No agent id for @${agentName}, skip dispatch`);
     }
 
-    if (stateMachine.getState(agentName) === "stopped") {
+    if (isStopped(agentName)) {
       throw new Error(`[Daemon] @${agentName} is stopped, cannot dispatch`);
     }
+    const haltGen = deps.getStopGeneration?.(agentName) ?? 0;
+    const assertLive = (): void => {
+      if (isStopped(agentName) || (deps.getStopGeneration?.(agentName) ?? 0) !== haltGen) {
+        throw new Error(`[Daemon] @${agentName} is stopped, cannot dispatch`);
+      }
+    };
 
     if (usePty) {
       // ---- PTY 模式 ----
@@ -347,8 +419,7 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
           transitionState(agentName, "starting");
           // 启动超时 15s
           const timer = setTimeout(() => {
-            clearStartupTimer(agentName);
-            transitionState(agentName, "idle");
+            releaseToIdle(agentName);
             console.warn(`[Daemon] @${agentName} PTY startup timed out (15s)`);
           }, 15000);
           stateMachine.setStartupTimer(agentName, timer);
@@ -362,6 +433,7 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
             // slock message send，不如现在就失败得明确，而不是悄悄退回共享
             // apiKey（那正是这套机制想关掉的安全洞）。
             const runtimeToken = await mintAgentCredential(agentId);
+            assertLive();
             // O11：token 落盘（workspace/.slock/agent-token, 0600），子进程 env 只带
             // 文件路径不带明文。env 对象里保留 SLOCK_AGENT_TOKEN 是给 daemon 内部用的
             // （spawn 侧 registerRunContext → 退出时 tokenRegistry.revokeIfMatches），
@@ -371,6 +443,7 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
             // 系统提示里当确定事实，而不是让 agent 自己猜（见 agent-startup.ts
             // fetchDispatchContext 注释）。查询失败时退回通用提示文案，不阻塞启动。
             const dispatchContext = await fetchDispatchContext(options.serverUrl, options.apiKey, agentId, channelName);
+            assertLive();
             const promptFile = writeSystemPromptFile(agentName, channelName, true, info, dispatchContext);
             const env = {
               SLOCK_AGENT_ID: agentId,
@@ -379,20 +452,22 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
               SLOCK_SERVER_URL: options.serverUrl,
             };
             const runId = await spawnPtyForAgent(agentName, agentId, workspace, promptFile, env, userMsg);
-            clearStartupTimer(agentName);
-            transitionState(agentName, "working");
+            if (!enterWorking(agentName, haltGen)) {
+              throw new Error(`[Daemon] @${agentName} is stopped, cannot dispatch`);
+            }
             idleReclaimer.untrack(agentName);
             exitChain.incrementMessagesProcessed(runId);
             console.log(`[Daemon] @${agentName} message dispatched (pty, bootstrap+first msg)`);
           } catch (err: any) {
-            clearStartupTimer(agentName);
-            transitionState(agentName, "idle");
+            releaseToIdle(agentName);
             console.error(`[Daemon] @${agentName} PTY start failed:`, err?.message ?? err);
             // A1：抛出让派发队列重试（token 换取失败、spawn 失败都可能是瞬时的）
             throw err;
           }
         } else {
-          transitionState(agentName, "working");
+          if (!enterWorking(agentName, haltGen)) {
+            throw new Error(`[Daemon] @${agentName} is stopped, cannot dispatch`);
+          }
           idleReclaimer.untrack(agentName);
 
           // 写入用户消息（内部已用 postStartWriter 等提示符）
@@ -407,8 +482,7 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
           console.log(`[Daemon] @${agentName} message dispatched (pty)`);
         }
       } catch (err: any) {
-        clearStartupTimer(agentName);
-        transitionState(agentName, "idle");
+        releaseToIdle(agentName);
         console.error("[Daemon] dispatchToAgent (pty) failed:", err?.message ?? err);
         throw err;
       }
@@ -416,12 +490,14 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
     }
 
     // ---- 兜底：PersistentClaude / claudePrint 路径 ----
+    // 整段 dispatch（含 await mint）期间不计入空闲，避免复用路径上
+    // mint 等待时扫描把即将 send 的常驻进程杀掉（P0.2）。
+    idleReclaimer.untrack(agentName);
     const needsSpawn = !persistentSessions.has(agentName);
     if (needsSpawn) {
       transitionState(agentName, "starting");
       const timer = setTimeout(() => {
-        clearStartupTimer(agentName);
-        transitionState(agentName, "idle");
+        releaseToIdle(agentName);
         console.warn(`[Daemon] @${agentName} startup timed out (15s)`);
       }, 15000);
       stateMachine.setStartupTimer(agentName, timer);
@@ -436,6 +512,7 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
       // runtime token；这条兜底路径较少用，直接每次都换一个（幂等 upsert，
       // 覆盖上一条也无妨）
       const runtimeToken = await mintAgentCredential(agentId);
+      assertLive();
       // O11：这条路径的 env 直接进子进程（PersistentClaude / claudePrint），
       // 只放 token 文件路径，不放明文 token。
       const env = {
@@ -464,6 +541,7 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
           `[Daemon] @${agentName} MCP config setup failed (headless), CLI-only fallback: ${err?.message ?? err}`,
         );
       }
+      assertLive();
 
       const usePersistent = process.env.SLOCK_ONESHOT_CLAUDE !== "1";
       if (usePersistent) {
@@ -475,41 +553,96 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
             env,
             label: "@" + agentName,
             onStreamEvent: (ev) => handleStreamEvent(agentName, ev),
-            // 进程退出（含 turn timeout 误杀/崩溃）：headless 下不会再有 result
-            // 事件，状态机靠这个回调从 working 解封，否则永久卡住（STUCK 刷屏）
+            // 当前进程崩溃 / 外部 kill：headless 下不会再有 result 事件，状态机
+            // 靠这个回调从 working 解封。沉默超时由 session.send reject → 下方
+            // catch 解封，不走本回调（P0.1：迟到 onExit 会拆掉新回合的进度条）。
             onExit: () => {
               if (stateMachine.getState(agentName) === "working") {
                 transitionState(agentName, "idle");
                 idleReclaimer.touch(agentName);
                 console.log(`[Daemon] @${agentName} persistent process exited mid-turn, state -> idle`);
               }
+              const g = turnGuards.get(agentName);
+              turnGuards.delete(agentName);
+              progressTurns.delete(agentName);
+              void g?.progress?.abort();
+              if (g) {
+                try {
+                  deps.onProgress?.(agentName, g.channel, "", "end");
+                } catch {
+                  /* ignore */
+                }
+              }
             },
           });
           persistentSessions.set(agentName, session);
         }
-        clearStartupTimer(agentName);
-        transitionState(agentName, "working");
+        if (!enterWorking(agentName, haltGen)) {
+          throw new Error(`[Daemon] @${agentName} is stopped, cannot dispatch`);
+        }
+        if (persistentSessions.get(agentName) !== session) {
+          releaseToIdle(agentName);
+          throw new Error(`[Daemon] @${agentName} session was stopped during spawn`);
+        }
+        // 与 PTY 复用分支对齐：进入 working 后从空闲计时器摘掉，
+        // 否则上一回合 touch 的倒计时会在本回合中途把常驻进程杀掉（P0.2）。
+        idleReclaimer.untrack(agentName);
         // 回复守卫登记（headless）：本回合结束时会检查是否有 send_message 动作
-        turnGuards.set(agentName, {
+        const isNudge =
+          userMsg.startsWith(REPLY_GUARD_PREFIX) ||
+          userMsg.startsWith("【频道分诊】") ||
+          userMsg.startsWith("【定时巡检】") ||
+          userMsg.includes("【频道分诊】") ||
+          userMsg.includes("【定时巡检】");
+        const progress = createProgressTurn({
+          agentName,
+          channel: channelName,
+          threadId,
+          // 分诊/巡检不往频道写进度条（沉默是合法产出），仍推顶栏；
+          // SLOCK_CHANNEL_PROGRESS=0 关频道进度（顶栏仍走 onHeadline）。
+          enabled: !isNudge && channelProgressEnabled(process.env),
+          poster: deps.createProgressPoster?.(agentName) ?? {
+            async post() {
+              return undefined;
+            },
+            async edit() {
+              return false;
+            },
+            async remove() {
+              return false;
+            },
+          },
+          onHeadline: (headline) => {
+            try {
+              deps.onProgress?.(agentName, channelName, headline, "update");
+            } catch {
+              /* ignore */
+            }
+          },
+        });
+        try {
+          deps.onProgress?.(agentName, channelName, "思考", "start");
+        } catch {
+          /* ignore */
+        }
+        const guard: TurnGuard = {
           channel: channelName,
           hadSend: false,
           threadId,
-          // 分诊/巡检沉默是合法产出：不能把纯文本思考代发到频道，也不能再追问一轮。
-          isNudge:
-            userMsg.startsWith(REPLY_GUARD_PREFIX) ||
-            userMsg.startsWith("【频道分诊】") ||
-            userMsg.startsWith("【定时巡检】") ||
-            userMsg.includes("【频道分诊】") ||
-            userMsg.includes("【定时巡检】"),
-        });
+          isNudge,
+          progress,
+        };
+        turnGuards.set(agentName, guard);
+        progressTurns.set(agentName, progress);
         // 回合级交付：await 到 result 事件（进程 mid-turn 退出则 reject → A1 队列
         // 退避重试，换 fresh 会话重投这条消息）。状态机回 idle 由 handleStreamEvent
         // 的 result 分支负责（早于这里的 resolve，顺序无害）。
         await session.send(userMsg);
         console.log(`[Daemon] @${agentName} turn finished (persistent)`);
       } else {
-        clearStartupTimer(agentName);
-        transitionState(agentName, "working");
+        if (!enterWorking(agentName, haltGen)) {
+          throw new Error(`[Daemon] @${agentName} is stopped, cannot dispatch`);
+        }
         const sid = threadId
           ? (deps.threadSessions?.lookup(agentName, threadId)?.sessionId ?? agentSessions.get(agentName))
           : agentSessions.get(agentName);
@@ -519,11 +652,24 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
           if (threadId) deps.threadSessions?.remember(agentName, threadId, claude.sessionId);
         }
         console.log(`[Daemon] @${agentName} turn finished (one-shot)`);
-        transitionState(agentName, "idle");
+        releaseToIdle(agentName);
+        // one-shot 不留常驻进程，无需 touch；显式 untrack 以免上一路径残留计时。
+        idleReclaimer.untrack(agentName);
       }
     } catch (err: any) {
-      clearStartupTimer(agentName);
-      transitionState(agentName, "idle");
+      releaseToIdle(agentName);
+      idleReclaimer.touch(agentName);
+      const g = turnGuards.get(agentName);
+      turnGuards.delete(agentName);
+      progressTurns.delete(agentName);
+      void g?.progress?.abort();
+      if (g) {
+        try {
+          deps.onProgress?.(agentName, g.channel, "", "end");
+        } catch {
+          /* ignore */
+        }
+      }
       console.error("[Daemon] dispatchToAgent failed:", err?.message);
       throw err;
     }
@@ -747,5 +893,19 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
     await dispatchToAgent(agentName, channelName, packed.userMsg, packed.threadId);
   };
 
-  return { dispatchToAgent, runAgent, runAgentDm, runAgentReminder, runAgentTriage };
+  return {
+    dispatchToAgent,
+    runAgent,
+    runAgentDm,
+    runAgentReminder,
+    runAgentTriage,
+    clearAgentQueue: (agentName) => {
+      dispatchPromises.delete(agentName);
+      return dispatchQueue?.clear(agentName) ?? 0;
+    },
+    disposeQueue: () => {
+      dispatchPromises.clear();
+      dispatchQueue?.dispose();
+    },
+  };
 };

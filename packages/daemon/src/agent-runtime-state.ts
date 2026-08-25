@@ -49,25 +49,12 @@ export interface IAgentStateMachine {
   clearStartupTimer(name: string): void;
   /** 当前处于 "working" 状态的 agent 列表（installStuckDetector 用） */
   getWorkingAgents(): WorkingAgentInfo[];
+  /** 已落账的全部 agent 名（stopAll 遍历用） */
+  listKnown(): string[];
 }
 
 export const createAgentStateMachine = (): IAgentStateMachine => {
   const agentStates = new Map<string, AgentState>();
-
-  const transitionState = (name: string, to: AgentStatus): void => {
-    const current = agentStates.get(name);
-    const from: AgentStatus = current?.status ?? "uninit";
-    // 同态迁移是 no-op（退出清理链等会对已是 idle 的 agent 再转一次 idle），
-    // 直接放行，不打扰 assertTransition 的警告日志。
-    if (from === to) return;
-    try {
-      assertTransition(from, to);
-    } catch {
-      return;
-    }
-    agentStates.set(name, { status: to, lastTransitionAt: Date.now(), startupTimer: null });
-    console.log(`[Runtime] @${name} ${STATE_LABEL[from]} → ${STATE_LABEL[to]}`);
-  };
 
   const clearStartupTimer = (name: string): void => {
     const st = agentStates.get(name);
@@ -75,6 +62,29 @@ export const createAgentStateMachine = (): IAgentStateMachine => {
       clearTimeout(st.startupTimer);
       st.startupTimer = null;
     }
+  };
+
+  const transitionState = (name: string, to: AgentStatus): void => {
+    const current = agentStates.get(name);
+    const from: AgentStatus = current?.status ?? "uninit";
+    // 同态迁移是 no-op（退出清理链等会对已是 idle 的 agent 再转一次 idle），
+    // 直接放行，不打扰 assertTransition 的警告日志。
+    // P0.3：同态也必须清掉 startupTimer——stopAgent 在已 idle 时若留下
+    // starting 超时，回调会合法地 stopped/idle → idle，把「已 stop」意图冲掉。
+    if (from === to) {
+      clearStartupTimer(name);
+      return;
+    }
+    try {
+      assertTransition(from, to);
+    } catch {
+      return;
+    }
+    // 换对象前先 clearTimeout：否则旧 handle 仍会触发，且新 state.startupTimer
+    // 是 null，clearStartupTimer 找不到它。
+    clearStartupTimer(name);
+    agentStates.set(name, { status: to, lastTransitionAt: Date.now(), startupTimer: null });
+    console.log(`[Runtime] @${name} ${STATE_LABEL[from]} → ${STATE_LABEL[to]}`);
   };
 
   return {
@@ -92,5 +102,6 @@ export const createAgentStateMachine = (): IAgentStateMachine => {
       }
       return result;
     },
+    listKnown: () => Array.from(agentStates.keys()),
   };
 };

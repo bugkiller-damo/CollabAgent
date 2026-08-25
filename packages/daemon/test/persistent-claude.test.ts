@@ -25,11 +25,12 @@ class FakeProc extends EventEmitter {
 
 const spawnMock = vi.mocked(spawn);
 let procs: FakeProc[];
+let drivers: PersistentClaude[];
 
 const flush = (ms = 30) => new Promise((r) => setTimeout(r, ms));
 
-const makeDriver = (overrides: Partial<PersistentClaudeOpts> = {}) =>
-  new PersistentClaude({
+const makeDriver = (overrides: Partial<PersistentClaudeOpts> = {}) => {
+  const d = new PersistentClaude({
     cwd: "D:\\tmp",
     env: {},
     label: "T",
@@ -37,6 +38,9 @@ const makeDriver = (overrides: Partial<PersistentClaudeOpts> = {}) =>
     startupDelayMs: 1,
     ...overrides,
   });
+  drivers.push(d);
+  return d;
+};
 
 const lastProc = () => procs[procs.length - 1]!;
 
@@ -50,6 +54,7 @@ describe("PersistentClaude", () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
     procs = [];
+    drivers = [];
     spawnMock.mockReset();
     spawnMock.mockImplementation(() => {
       const p = new FakeProc();
@@ -59,6 +64,7 @@ describe("PersistentClaude", () => {
   });
 
   afterEach(() => {
+    for (const d of drivers) d.stop();
     vi.restoreAllMocks();
   });
 
@@ -105,20 +111,96 @@ describe("PersistentClaude", () => {
     d.stop();
   });
 
-  it("沉默超时 kill：回合随 exit reject；后续消息换新进程继续排空", async () => {
-    const d = makeDriver({ turnTimeoutMs: 30 });
+  it("沉默超时 kill：立即 reject 当前回合；后续消息换新进程继续排空", async () => {
+    const d = makeDriver({ turnTimeoutMs: 80 });
     const p1 = d.send("m1");
-    await flush(20); // m1 in-flight，30ms 沉默计时启动
-    await flush(60); // 超时 → kill
+    const p1Rejected = expect(p1).rejects.toThrow(/mid-turn/);
+    await flush(20); // m1 in-flight，80ms 沉默计时启动
+    await flush(100); // 超时 → settle + kill，不再等 exit
     expect(lastProc().kill).toHaveBeenCalledTimes(1);
-
-    lastProc().emit("exit", 143); // kill 后的 exit → m1 reject
-    await expect(p1).rejects.toThrow(/mid-turn/);
+    await p1Rejected;
 
     // 后续消息应触发一次新 spawn（旧进程已死）
     const p2 = d.send("m2");
     await flush(30);
     expect(procs).toHaveLength(2);
+    emitLine(lastProc(), { type: "result" });
+    await expect(p2).resolves.toBeUndefined();
+    d.stop();
+  });
+
+  it("P0.1：旧进程迟到的 exit/stdout 不得 reject/resolve 新回合，也不得触发 onExit", async () => {
+    const onExit = vi.fn();
+    const onStreamEvent = vi.fn();
+    // 200ms 超时：给「杀旧 → 启新 → 灌迟到事件 → result」留出窗口，避免新回合自己超时
+    const d = makeDriver({ turnTimeoutMs: 200, startupDelayMs: 1, onExit, onStreamEvent });
+    const p1 = d.send("m1");
+    const p2 = d.send("m2");
+    const p1Rejected = expect(p1).rejects.toThrow(/silence-timeout|mid-turn/);
+    await flush(20);
+    const oldProc = lastProc();
+    expect(procs).toHaveLength(1);
+
+    await flush(220); // 沉默超时：settle m1、kill P1、pump 换 P2
+    await p1Rejected;
+    await flush(30); // 等 P2 spawn + startupDelay + 写出 m2
+    expect(procs).toHaveLength(2);
+    const newProc = lastProc();
+    expect(newProc).not.toBe(oldProc);
+    expect(newProc.stdin.write).toHaveBeenCalledTimes(1);
+
+    // 旧进程迟到事件（真实 kill 后 exit/stdout 可能在新回合 in-flight 之后才到）
+    oldProc.emit("exit", 143);
+    emitLine(oldProc, { type: "result" });
+    await flush(10);
+
+    expect(onExit).not.toHaveBeenCalled();
+    // 新回合必须仍可正常完结——若旧 exit 误 reject / 旧 result 误 resolve，这里会失败
+    emitLine(newProc, { type: "result" });
+    await expect(p2).resolves.toBeUndefined();
+    expect(onStreamEvent).toHaveBeenCalled();
+    d.stop();
+  });
+
+  it("P0.1：旧进程迟到 exit 发生在新进程 starting 窗口内，不得 cleanup 掉新进程", async () => {
+    const onExit = vi.fn();
+    const d = makeDriver({ turnTimeoutMs: 80, startupDelayMs: 80, onExit });
+    const p1 = d.send("m1");
+    const p2 = d.send("m2");
+    const p1Rejected = expect(p1).rejects.toThrow(/mid-turn/);
+    await flush(20);
+    const oldProc = lastProc();
+
+    await flush(100); // 超时 → pump → spawn P2，但 80ms startup 尚未结束
+    await p1Rejected;
+    expect(procs).toHaveLength(2);
+    const newProc = lastProc();
+
+    oldProc.emit("exit", 143); // starting 窗口内的迟到 exit
+    await flush(10);
+    expect(onExit).not.toHaveBeenCalled();
+
+    await flush(100); // 等 startupDelay 结束并写出 m2
+    expect(newProc.stdin.write).toHaveBeenCalledTimes(1);
+    emitLine(newProc, { type: "result" });
+    await expect(p2).resolves.toBeUndefined();
+    d.stop();
+  });
+
+  it("P0.1：同进程下一回合不被上一回合迟到的沉默超时误杀", async () => {
+    // 200ms 给 m2 足够窗口；m1 result 后等 100ms 越过「若只比 gen、旧 timer 回调已入队」的窗口
+    const d = makeDriver({ turnTimeoutMs: 200 });
+    const p1 = d.send("m1");
+    const p2 = d.send("m2");
+    await flush(20);
+    emitLine(lastProc(), { type: "result" }); // m1 完结，同进程立刻写 m2 并重新武装 timer
+    await expect(p1).resolves.toBeUndefined();
+    await flush(5);
+    expect(procs).toHaveLength(1);
+    expect(lastProc().stdin.write).toHaveBeenCalledTimes(2);
+
+    await flush(100);
+    expect(lastProc().kill).not.toHaveBeenCalled();
     emitLine(lastProc(), { type: "result" });
     await expect(p2).resolves.toBeUndefined();
     d.stop();

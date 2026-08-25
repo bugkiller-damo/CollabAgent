@@ -28,10 +28,13 @@ export interface PersistentClaudeOpts {
    */
   onStreamEvent?: (ev: any) => void;
   /**
-   * 进程退出回调（含 turn timeout 主动 kill）。headless 路径的回合边界靠
+   * 当前进程退出回调（崩溃 / OOM / 外部 kill）。headless 路径的回合边界靠
    * result 事件，但进程死了就不会有 result——上层靠这个回调把状态机从
-   // working 解封（2026-08-18 真机：turn timeout 杀进程后状态永久卡 working，
-   // STUCK 警告刷屏、画面冻结）。
+   * working 解封（2026-08-18 真机：进程死后状态永久卡 working，STUCK 警告刷屏）。
+   *
+   * 仅当前进程退出时触发。沉默超时路径自己 settle 回合（dispatch catch 解封
+   * 状态机），不走本回调；被替换的旧进程迟到 exit 也不得调用——否则会把新
+   * 回合的状态机/进度条一并拆掉（P0.1）。
    */
   onExit?: () => void;
 }
@@ -42,10 +45,19 @@ interface QueuedTurn {
   text: string;
   resolve: () => void;
   reject: (err: Error) => void;
+  /** 回合进入 in-flight 时绑定的进程代次；排队中为 undefined。 */
+  gen?: number;
+  /** 防止 timeout / error / exit / result 多路径重复 settle。 */
+  settled?: boolean;
 }
 
 export class PersistentClaude {
   private proc: ChildProcess | null = null;
+  /**
+   * 当前进程代次。每次 spawn 递增；exit/error/stdout 闭包捕获自己的 gen，
+   * 与 this.procGen 不一致即视为已被替换的旧进程（P0.1 kill→exit 竞态）。
+   */
+  private procGen = 0;
   private busy = false;
   private starting = false;
   // 回合级交付（2026-08-18 真机修正）：send() 返回的 Promise 挂在回合上——
@@ -56,9 +68,25 @@ export class PersistentClaude {
   private activeTurn: QueuedTurn | null = null;
   private buf = "";
   private turnTimer: ReturnType<typeof setTimeout> | null = null;
+  private startupTimer: ReturnType<typeof setTimeout> | null = null;
   alive = false;
 
   constructor(private opts: PersistentClaudeOpts) {}
+
+  private tag(): string {
+    return `[Persistent${this.opts.label ? " " + this.opts.label : ""}]`;
+  }
+
+  private isCurrent(proc: ChildProcess, gen: number): boolean {
+    return this.proc === proc && this.procGen === gen;
+  }
+
+  private settleTurn(turn: QueuedTurn | null | undefined, action: "resolve" | "reject", err?: Error): void {
+    if (!turn || turn.settled) return;
+    turn.settled = true;
+    if (action === "resolve") turn.resolve();
+    else turn.reject(err ?? new Error("persistent turn failed"));
+  }
 
   private spawnProc(): boolean {
     const cmd = findClaudeCmd();
@@ -75,6 +103,8 @@ export class PersistentClaude {
       args.push("--append-system-prompt-file", this.opts.systemPromptFile);
     }
     const fullCmd = [q(cmd), ...args.map(q)].join(" ");
+    this.procGen += 1;
+    const gen = this.procGen;
     try {
       this.proc = spawn(fullCmd, {
         cwd: this.opts.cwd,
@@ -85,46 +115,81 @@ export class PersistentClaude {
         env: applyAgentEnv(this.opts.env, `Persistent${this.opts.label ? " " + this.opts.label : ""}`),
       });
     } catch (err: any) {
-      console.error(`[Persistent${this.opts.label ? " " + this.opts.label : ""}] spawn error:`, err?.message);
+      console.error(`${this.tag()} spawn error:`, err?.message);
       this.proc = null;
       return false;
     }
+    const proc = this.proc;
     this.alive = true;
-    this.proc.stdout?.on("data", (d) => this.onStdout(d.toString()));
-    this.proc.stderr?.on("data", (d) => {
+    // 所有监听都闭包捕获本次 spawn 的 proc/gen：事件可能在 cleanup/kill 之后
+    // 才从事件队列弹出（removeAllListeners 拦不住已入队的 emit）。
+    proc.stdout?.on("data", (d) => {
+      if (!this.isCurrent(proc, gen)) return;
+      this.onStdout(d.toString());
+    });
+    proc.stderr?.on("data", (d) => {
+      if (!this.isCurrent(proc, gen)) return;
       const t = d.toString().trim();
-      if (t) console.error(`[Persistent${this.opts.label ? " " + this.opts.label : ""}] stderr: ${t.slice(0, 160)}`);
+      if (t) console.error(`${this.tag()} stderr: ${t.slice(0, 160)}`);
     });
-    this.proc.on("exit", (code) => {
-      // busy=true 时退出 = 回合中途死亡（turn timeout kill / 崩溃 / OOM），
-      // reject 活跃回合的 Promise——A1 派发队列据此退避重试（换 fresh 会话
-      // 重投这条消息），不再静默吞消息。
-      const wasBusy = this.busy;
-      console.log(
-        `[Persistent${this.opts.label ? " " + this.opts.label : ""}] exited code=${code}${wasBusy ? " (mid-turn, turn rejected for retry)" : ""}`,
-      );
-      const turn = this.activeTurn;
-      this.activeTurn = null;
-      this.cleanup();
-      turn?.reject(new Error(`persistent process exited mid-turn (code=${code})`));
-      try {
-        this.opts.onExit?.();
-      } catch {
-        /* 回调失败不阻断退出处理 */
-      }
-      // 队列里还有消息则继续排空（会触发重新 spawn）
-      this.pump();
-    });
-    this.proc.on("error", (err) => {
-      console.error(`[Persistent${this.opts.label ? " " + this.opts.label : ""}] proc error:`, err.message);
-      // error 后通常紧跟 exit（由 exit 统一 reject）；防御「只 error 不 exit」
-      // 导致回合 Promise 永久挂起
-      const turn = this.activeTurn;
-      this.activeTurn = null;
-      turn?.reject(err);
-      this.cleanup();
-    });
+    proc.on("exit", (code) => this.handleProcExit(proc, gen, code));
+    proc.on("error", (err) => this.handleProcError(proc, gen, err));
     return true;
+  }
+
+  /**
+   * P0.1：旧进程迟到的 exit 只结算绑定到该代次的回合，不得：
+   * - reject 新进程上的 activeTurn
+   * - cleanup 掉新进程
+   * - 对仍在跑的新回合触发 onExit（会把状态机打回 idle、拆掉进度条）
+   * - pump 打断新回合
+   */
+  private handleProcExit(proc: ChildProcess, gen: number, code: number | null): void {
+    const turnForGen = this.activeTurn?.gen === gen ? this.activeTurn : null;
+    if (!this.isCurrent(proc, gen)) {
+      if (turnForGen) {
+        this.activeTurn = null;
+        this.settleTurn(turnForGen, "reject", new Error(`persistent process exited mid-turn (code=${code})`));
+      }
+      return;
+    }
+    const wasBusy = this.busy;
+    console.log(`${this.tag()} exited code=${code}${wasBusy ? " (mid-turn, turn rejected for retry)" : ""}`);
+    this.activeTurn = null;
+    this.cleanup();
+    if (wasBusy || turnForGen) {
+      this.settleTurn(turnForGen, "reject", new Error(`persistent process exited mid-turn (code=${code})`));
+    }
+    try {
+      this.opts.onExit?.();
+    } catch {
+      /* 回调失败不阻断退出处理 */
+    }
+    this.pump();
+  }
+
+  private handleProcError(proc: ChildProcess, gen: number, err: Error): void {
+    if (!this.isCurrent(proc, gen)) {
+      const turnForGen = this.activeTurn?.gen === gen ? this.activeTurn : null;
+      if (turnForGen) {
+        this.activeTurn = null;
+        this.settleTurn(turnForGen, "reject", err);
+      }
+      return;
+    }
+    console.error(`${this.tag()} proc error:`, err.message);
+    // 防御「只 error 不 exit」导致回合 Promise 永久挂起。先 cleanup 让随后
+    // 的 exit 走 stale 分支，因此本路径必须自己 onExit + pump。
+    const turn = this.activeTurn?.gen === gen ? this.activeTurn : null;
+    this.activeTurn = null;
+    this.settleTurn(turn, "reject", err);
+    this.cleanup();
+    try {
+      this.opts.onExit?.();
+    } catch {
+      /* 回调失败不阻断错误处理 */
+    }
+    this.pump();
   }
 
   private cleanup() {
@@ -132,10 +197,15 @@ export class PersistentClaude {
       clearTimeout(this.turnTimer);
       this.turnTimer = null;
     }
+    if (this.startupTimer) {
+      clearTimeout(this.startupTimer);
+      this.startupTimer = null;
+    }
     this.proc = null;
     this.alive = false;
     this.busy = false;
     this.starting = false;
+    this.buf = "";
   }
 
   // 入队一条用户消息（串行执行）。返回回合级 Promise：
@@ -153,13 +223,15 @@ export class PersistentClaude {
     if (next === undefined) return;
     if (!this.proc || !this.alive) {
       if (!this.spawnProc()) {
-        console.error(`[Persistent${this.opts.label ? " " + this.opts.label : ""}] cannot spawn, rejecting turn`);
-        next.reject(new Error("cannot spawn persistent claude process"));
+        console.error(`${this.tag()} cannot spawn, rejecting turn`);
+        this.settleTurn(next, "reject", new Error("cannot spawn persistent claude process"));
         return;
       }
       this.starting = true;
       this.queue.unshift(next); // 放回队列，启动就绪后重试
-      setTimeout(() => {
+      if (this.startupTimer) clearTimeout(this.startupTimer);
+      this.startupTimer = setTimeout(() => {
+        this.startupTimer = null;
         this.starting = false;
         this.pump();
       }, this.opts.startupDelayMs ?? 1000);
@@ -167,11 +239,12 @@ export class PersistentClaude {
     }
     const stdin = this.proc?.stdin;
     if (!stdin) {
-      console.error(`[Persistent${this.opts.label ? " " + this.opts.label : ""}] no stdin`);
-      next.reject(new Error("persistent process has no stdin"));
+      console.error(`${this.tag()} no stdin`);
+      this.settleTurn(next, "reject", new Error("persistent process has no stdin"));
       return;
     }
     this.busy = true;
+    next.gen = this.procGen;
     this.activeTurn = next;
     const payload = JSON.stringify({ type: "user", message: { role: "user", content: next.text } }) + "\n";
     stdin.write(payload);
@@ -188,6 +261,11 @@ export class PersistentClaude {
    *   tool_result / result），沉默 N 秒 ≈ 工具调用挂死，是强卡死信号。
    * 已知边界：单个超大 thinking block 若超过阈值无输出会被误杀——真遇到了
    * 调大 SLOCK_PERSISTENT_TURN_MS，不要改回绝对时长。
+   *
+   * P0.1：超时只负责 settle 当前回合 + cleanup + kill。后续 pump 可以立刻换
+   * 新进程；旧进程迟到的 exit/error/stdout 凭 gen 校验全部忽略。
+   * 不在这里调 onExit——send() reject 后由 dispatch catch 解封状态机；若此时
+   * 已有新回合 in-flight，onExit 会误伤它。
    */
   private armTurnTimer(): void {
     if (this.turnTimer) {
@@ -196,16 +274,24 @@ export class PersistentClaude {
     }
     const envTimeout = Number(process.env.SLOCK_PERSISTENT_TURN_MS);
     const timeout = this.opts.turnTimeoutMs ?? (Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout : 300000);
+    const turn = this.activeTurn;
+    const gen = this.procGen;
     this.turnTimer = setTimeout(() => {
-      console.warn(
-        `[Persistent${this.opts.label ? " " + this.opts.label : ""}] no stream events for ${timeout / 1000}s mid-turn, killing process`,
-      );
+      // 过期回调可能在 clearTimeout 之前已入队；必须仍是「同一回合 + 同一进程代次」。
+      // 只比 gen 不够：同进程上下一回合也会绑同一个 gen。
+      if (this.procGen !== gen || this.activeTurn !== turn) return;
+      console.warn(`${this.tag()} no stream events for ${timeout / 1000}s mid-turn, killing process`);
+      const proc = this.proc;
+      this.activeTurn = null;
+      this.settleTurn(turn, "reject", new Error("persistent process exited mid-turn (silence-timeout)"));
+      // 先 cleanup（this.proc=null）再 kill：同步/同 tick 的 exit 走 stale 分支，
+      // 不会 onExit / 不会误伤随后 pump 出来的新回合。
+      this.cleanup();
       try {
-        this.proc?.kill();
+        proc?.kill();
       } catch {
         /* ignore */
       }
-      this.cleanup();
       this.pump();
     }, timeout);
   }
@@ -215,7 +301,7 @@ export class PersistentClaude {
     // 防无换行异常输出无限增长，最多保留尾部 1MB
     const MAX_BUF = 1024 * 1024;
     if (this.buf.length > MAX_BUF) {
-      console.warn(`[Persistent${this.opts.label ? " " + this.opts.label : ""}] stdout buffer >1MB, truncating`);
+      console.warn(`${this.tag()} stdout buffer >1MB, truncating`);
       this.buf = this.buf.slice(-MAX_BUF);
     }
     let idx: number;
@@ -243,7 +329,7 @@ export class PersistentClaude {
           const turn = this.activeTurn;
           this.activeTurn = null;
           this.busy = false;
-          turn?.resolve();
+          this.settleTurn(turn, "resolve");
           this.pump();
         }
       } catch {
@@ -253,17 +339,17 @@ export class PersistentClaude {
   }
 
   stop(): void {
+    const proc = this.proc;
+    const err = new Error("persistent session stopped");
+    this.settleTurn(this.activeTurn, "reject", err);
+    this.activeTurn = null;
+    for (const t of this.queue) this.settleTurn(t, "reject", err);
+    this.queue = [];
+    this.cleanup();
     try {
-      this.proc?.kill();
+      proc?.kill();
     } catch {
       /* ignore */
     }
-    // 显式停止：活跃回合 + 排队消息全部 reject（调用方拿到明确的失败，不挂起）
-    const err = new Error("persistent session stopped");
-    this.activeTurn?.reject(err);
-    this.activeTurn = null;
-    for (const t of this.queue) t.reject(err);
-    this.cleanup();
-    this.queue = [];
   }
 }

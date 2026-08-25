@@ -91,6 +91,8 @@ interface AgentQueueState {
   retryTimer: ReturnType<typeof setTimeout> | null;
   /** content → 最近一次入队/投递成功时间戳（dedup 窗口判定用） */
   recentContents: Map<string, number>;
+  /** P0.3：clear/dispose 递增；in-flight 失败后若 epoch 变了则不再重试 */
+  epoch: number;
 }
 
 export const createAgentDispatchQueue = (opts: DispatchQueueOptions): AgentDispatchQueue => {
@@ -120,7 +122,7 @@ export const createAgentDispatchQueue = (opts: DispatchQueueOptions): AgentDispa
   const stateOf = (agentName: string): AgentQueueState => {
     let s = states.get(agentName);
     if (!s) {
-      s = { pending: [], draining: false, retryTimer: null, recentContents: new Map() };
+      s = { pending: [], draining: false, retryTimer: null, recentContents: new Map(), epoch: 0 };
       states.set(agentName, s);
     }
     return s;
@@ -155,6 +157,7 @@ export const createAgentDispatchQueue = (opts: DispatchQueueOptions): AgentDispa
     if (s.draining || s.retryTimer) return;
     if (s.pending.length === 0) return;
     s.draining = true;
+    const epoch = s.epoch;
 
     // 忙碌合并：一次取走全部 pending 作为一批投递。合并的语义由投递执行器
     // 决定（拼接内容），队列只保证「这批要么一起成功、要么一起按 attempts 计费」。
@@ -182,6 +185,18 @@ export const createAgentDispatchQueue = (opts: DispatchQueueOptions): AgentDispa
       })
       .catch((err) => {
         settled = true;
+        // P0.3：stop/unregister/dispose 之后不再把 in-flight 失败批次塞回 pending
+        if (s.epoch !== epoch) {
+          for (const item of batch) settleDone(item);
+          return;
+        }
+        if (opts.isDeliverable && !opts.isDeliverable(agentName)) {
+          for (const item of batch) {
+            settleDone(item);
+            safe(() => opts.onDeadLetter?.(agentName, item, err));
+          }
+          return;
+        }
         const retryable: DispatchQueueItem[] = [];
         for (const item of batch) {
           item.attempts += 1;
@@ -279,6 +294,7 @@ export const createAgentDispatchQueue = (opts: DispatchQueueOptions): AgentDispa
     clear(agentName) {
       const s = states.get(agentName);
       if (!s) return 0;
+      s.epoch += 1;
       const n = s.pending.length;
       for (const item of s.pending) settleDone(item); // 丢弃也算完结，await 方不挂住
       s.pending.length = 0;
@@ -291,6 +307,7 @@ export const createAgentDispatchQueue = (opts: DispatchQueueOptions): AgentDispa
 
     dispose() {
       for (const s of states.values()) {
+        s.epoch += 1;
         if (s.retryTimer) clearTimeout(s.retryTimer);
         s.retryTimer = null;
         for (const item of s.pending) settleDone(item);

@@ -11,7 +11,9 @@
 
 ## ★ 当前焦点
 
-> **Step 7 · T4 观察帧产品化（D4 并入）** — 未开工。Step 4–6 已落地于 `ae29832`。
+> **评估报告 P0.4 · 收紧 env 白名单默认** — 下一焦点。
+> P0.1–P0.3 已落地并提交（见文末完成记录）。
+> 注意：与本文件「方案 P0.1 = PTY 冻结」（Step 3，已完成）不是同一件事。
 
 ---
 
@@ -80,6 +82,10 @@ Step 6 的**设计文档**可在 Step 5 开发期间并行写。
 > **新**进程的 activeTurn（kill→exit 通常毫秒内到达，窗口极小）。修复方向：exit
 > handler 校验被拒回合与进程的绑定关系（如记录 turn.proc 再 reject）。Step 3 删除
 > PTY 后此路径是唯一进程管理路径，建议 Step 6 前顺手修掉。
+>
+> **✅ 2026-08-24 已修**（评估报告 P0.1）：`procGen` + turn.gen 绑定；超时立即
+> settle 当前回合，迟到 exit/stdout/error 忽略；`onExit` 仅当前进程真实退出触发。
+> 回归用例见 `test/persistent-claude.test.ts`。
 
 ---
 
@@ -212,8 +218,17 @@ daemon prompt 含三选一与沉默协议。L3 手动 E2E 待上线走剧本。
 
 ## Step 7 · T4 观察帧产品化（D4 并入）☐
 
-- [ ] T4 立项时把 D4 纳入 scope：tool_call/result 事件节流聚合成频道内一条
-      原地更新的进度消息（「正在执行：运行测试…」→ 完成时替换为结果摘要）
+设计：`docs/2026-08-21/02-t4-observation-product-design.md`。用户确认：面板+频道进度都做；结束消/改写；默认开；频道顶栏状态条。
+
+- [x] T7.0 设计文档 + 共享聚合（`packages/shared/src/progress.ts`：工具中文化 / 节流文案 / `⏳ ` 前缀）
+- [x] T7.1 D4 daemon：`agent-progress.ts` 回合级节流器；`handleStreamEvent` 喂帧；分诊/巡检不写频道；`SLOCK_CHANNEL_PROGRESS=0` 关
+- [x] T7.2 server：`PUT/DELETE /internal/agent/:id/messages/:messageId`（不写 edits/审计）；硬删无回复的进度条
+- [x] T7.3 结束：hadSend → DELETE；reply-guard 有正文 → PUT 改写（不再另 POST）；进程退出 abort
+- [x] T7.4 T4 web：AgentObsStream 中文活动卡 + headline；ChannelView/DmView/ThreadView 顶栏 `AgentProgressBar`；`agent:progress` WS；进度删除不留「已删除」
+- [x] T7.5 D1 过滤 `⏳ ` 进度消息；daemon vitest 覆盖聚合/节流/过滤
+
+**验收**：非技术用户不打开终端也能从顶栏/频道进度条读懂「正在读文件 / 跑测试」；回合结束后频道不留 ⏳ 垃圾（已发则删、代发则改写成答案）。typecheck + daemon vitest 绿。
+**开关**：默认开；`SLOCK_CHANNEL_PROGRESS=0` 关频道进度（顶栏仍在）。
 
 ---
 
@@ -238,3 +253,6 @@ daemon prompt 含三选一与沉默协议。L3 手动 E2E 待上线走剧本。
 | Step 4 | 2026-08-20 | `ae29832` | D3 成本记账：`agent-cost-tracker.ts` 独立 JSON 按 (agent, channel, UTC day) 累计；`SLOCK_COST_BUDGET_USD` 入队前熔断 + `postAsAgent` 频道可见；`slock cost show`；typecheck + 177 测试全绿 |
 | Step 5 | 2026-08-21 | `ae29832` | T8 经理分诊：013 开关列；`triageAgents` 第四唤醒源；分诊 prompt + reply-guard 豁免；PATCH owner/admin + 经理校验；设置面板开关；L1 14 例；不做 badge/L4 |
 | Step 6 | 2026-08-21 | `ae29832` | D1 线程追问 Context Builder（截断注入）+ D2 prompt 隔离与 thread-session JSON；history/MCP `threadId`；`recordContext`；不做进程池 |
+| 评估 P0.1 | 2026-08-24 | （待提交） | PersistentClaude kill→exit 竞态：`procGen` 绑定回合；超时立即 settle；迟到 exit/stdout 忽略；dispatch catch 补 `idleReclaimer.touch`；12 例全绿 |
+| 评估 P0.2 | 2026-08-24 | （待提交） | headless idleReclaimer：`reclaimIdleAgent` 停 PersistentClaude 并踢 `persistentSessions`；working/starting 返回 false 保留跟踪；headless 入 working / starting 时 untrack |
+| 评估 P0.3 | 2026-08-25 | （待提交） | 统一 stop 状态机：`haltAgent` 先 bump 代次再切 idle（stopAgent）/stopped（unregister、stopAll）；清 startupTimer + 队列 epoch；dispatch 跨 await 对照代次不复活；`test/agent-runtime-stop.test.ts` |
