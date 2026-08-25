@@ -5,15 +5,13 @@ import { WebSocket } from "ws";
 import { createJsonCostTracker, defaultCostStorePath } from "./agent-cost-tracker.js";
 import { createJsonRunStore, defaultStorePath } from "./agent-run-store.js";
 import { createAgentRuntime, type IAgentRuntime } from "./agent-runtime.js";
-import { pickLocalTriageAgent } from "./agent-runtime-dispatch.js";
 import { createJsonThreadSessionStore, defaultThreadSessionStorePath } from "./agent-thread-sessions.js";
 import { createAgentTokenRegistry } from "./agent-tokens.js";
-import { listWorkspaceFiles, readWorkspaceFile } from "./agent-workspace.js";
 import { probeClaude } from "./drivers/probe.js";
+import { dispatchDaemonMessage, type HandlerContext } from "./handlers/index.js";
 import { createLiveRunRegistry } from "./live-run-registry.js";
 import { buildReadyPayload } from "./ready-payload.js";
 import { setupSlockWrapper } from "./setup-slock-wrapper.js";
-import { readTerminalLogTail } from "./terminal-log.js";
 import type { DaemonConfig } from "./types/index.js";
 
 export class DaemonCore {
@@ -376,312 +374,18 @@ export class DaemonCore {
   }
 
   private async handleMessage(msgWire: WsToDaemonMessage): Promise<void> {
-    // 接收体保留防御性解析：线协议有松散变体（thread_id 蛇形、msg.message||msg
-    // 双路径、agent:start 三种变体），规范类型约束在发送侧生效（sendWs）。
-    const msg = msgWire as Record<string, unknown>;
-    const type = msg.type as string | undefined;
-    switch (type) {
-      case "agent:start": {
-        const agent = msg.agent as Record<string, unknown> | undefined;
-        const config = (msg.config as Record<string, unknown> | undefined) || {};
-        const agentId = (agent?.id as string) || (msg.agentId as string) || "";
-        const agentName = (agent?.name as string) || (config.name as string) || "";
-        const displayName = (agent?.displayName as string) || (config.displayName as string) || agentName;
-        const description = (agent?.description as string) || (config.description as string) || "";
-        // runtime_profile.model（Web 端可选 sonnet/opus/haiku）——注册时带上，spawn 拼 --model。
-        // 三种推送变体：创建时 model 在 agent.model；编辑（PATCH）时在 config.model；
-        // 部分路径在 config.runtime_profile.model。三个位置都兜底。
-        const rp = (config.runtime_profile ?? agent?.runtime_profile) as { model?: string } | undefined;
-        const model = (agent?.model as string) || (config.model as string) || rp?.model || undefined;
-        if (!agentName) {
-          console.log("[Daemon] agent:start without name, ignored");
-          break;
-        }
-        this.runtime.registerAgent(agentId, agentName, { displayName, description, model });
-        break;
-      }
-      case "agent:deliver": {
-        const m = (msg.message || msg) as Record<string, unknown>;
-        const content = m.content as string;
-        if (!content || typeof content !== "string") break;
-        if (content.startsWith("🤖 ")) break;
+    await dispatchDaemonMessage(this.handlerCtx(), msgWire);
+  }
 
-        // 经理/worker 任务派发通知（agents-dispatch.ts 插入的消息）：sender_type
-        // 本来就是 'agent'，会被下面的防自环判断挡掉——用一个显式的 forceDeliverTo
-        // 字段（携带目标 agent 的 handle）绕开那个判断，直接路由过去。没有这个
-        // 字段的普通 agent 消息仍然照旧被挡，不会打开新的自环口子。
-        const forceTarget = m.forceDeliverTo as string | undefined;
-        if (forceTarget) {
-          if (this.runtime.hasAgent(forceTarget)) {
-            const rawChannel = (m.channelId as string) || "general";
-            const channelName = rawChannel.replace(/^#/, "").split(":")[0];
-            const threadId = (m.threadId as string) || (m.thread_id as string) || "";
-            const replyTarget = threadId ? `#${channelName}:${threadId.slice(0, 8)}` : `#${channelName}`;
-            const senderName = (m.senderName as string) || (m.senderId as string) || "unknown";
-            console.log(`[Daemon] Dispatch message for @${forceTarget} in ${replyTarget}: ${content.slice(0, 50)}`);
-            try {
-              await this.runtime.runAgent(
-                forceTarget,
-                channelName,
-                replyTarget,
-                senderName,
-                content,
-                threadId || undefined,
-                typeof m.id === "string" ? m.id : undefined,
-              );
-            } catch (err: any) {
-              console.error("[Daemon] Dispatch routing failed:", err?.message);
-            }
-          }
-          break;
-        }
-
-        if (m.senderType === "agent") break;
-
-        if (m.dm) {
-          const recipients = (m.dmAgentRecipients as string[]) || [];
-          const senderHandle = (m.senderHandle as string) || (m.senderName as string) || "unknown";
-          const replyTarget = `dm:@${senderHandle}`;
-          for (const name of recipients) {
-            if (!this.runtime.hasAgent(name)) continue;
-            console.log(`[Daemon] DM -> @${name} (reply ${replyTarget})`);
-            try {
-              await this.runtime.runAgentDm(name, replyTarget, senderHandle, content);
-            } catch (err: any) {
-              console.error("[Daemon] DM dispatch failed:", err?.message);
-            }
-          }
-          break;
-        }
-
-        // server 下发的「有权回应的 agent」列表（messages.ts /send 按频道权限预过滤）：
-        // 有字段（含空数组）→ 只 spawn 列表内 agent，私有频道非成员 agent 不会起 PTY，
-        // 避免「起了进程、思考半天、回复被 403」的资源浪费；无字段（旧 server）退回本地文本解析。
-        const deliverList = m.mentionAgents as string[] | undefined;
-        const target = Array.isArray(deliverList)
-          ? deliverList.find((n) => this.runtime.hasAgent(n))
-          : this.runtime.findMentionedAgent(content || "");
-        const rawChannel = (m.channelId as string) || "general";
-        const channelName = rawChannel.replace(/^#/, "").split(":")[0];
-        const threadId = (m.threadId as string) || (m.thread_id as string) || "";
-        const replyTarget = threadId ? `#${channelName}:${threadId.slice(0, 8)}` : `#${channelName}`;
-        const senderName = (m.senderName as string) || (m.senderId as string) || "unknown";
-
-        if (target) {
-          console.log(`[Daemon] Message from @${senderName} in ${replyTarget}: ${content?.slice(0, 50)}`);
-          if (m.senderId === this.agentId || !content || typeof content !== "string") break;
-          if (content.startsWith("🤖 ")) break;
-          try {
-            console.log(`[Daemon] Routing to agent @${target} -> ${replyTarget}`);
-            await this.runtime.runAgent(
-              target,
-              channelName,
-              replyTarget,
-              senderName,
-              content,
-              threadId || undefined,
-              typeof m.id === "string" ? m.id : undefined,
-            );
-          } catch (err: any) {
-            console.error("[Daemon] Failed:", err.message);
-          }
-          break;
-        }
-
-        // T8：mention 未命中后的第四唤醒源——server 单选的分诊经理。
-        // 位于 senderType==='agent' / DM / 🤖 拦截之后，agent 消息天然不触发。
-        const triageTarget = pickLocalTriageAgent(m.triageAgents, (n) => this.runtime.hasAgent(n));
-        if (triageTarget) {
-          console.log(`[Daemon] Triage for @${triageTarget} in ${replyTarget}: ${content.slice(0, 50)}`);
-          try {
-            await this.runtime.runAgentTriage(
-              triageTarget,
-              channelName,
-              replyTarget,
-              senderName,
-              content,
-              threadId || undefined,
-              typeof m.id === "string" ? m.id : undefined,
-            );
-          } catch (err: any) {
-            console.error("[Daemon] Triage routing failed:", err?.message);
-          }
-        }
-        break;
-      }
-      case "agent:stop": {
-        const stoppedId = msg.agentId as string;
-        const stoppedName = this.runtime.resolveAgentName(stoppedId);
-        if (stoppedName) this.runtime.unregisterAgent(stoppedName);
-        break;
-      }
-      case "agent:duty": {
-        const duty = msg.duty as string;
-        const dutyName = (msg.name as string) || this.runtime.resolveAgentName(msg.agentId as string) || "";
-        if (!dutyName) {
-          console.log("[Daemon] agent:duty without name, ignored");
-          break;
-        }
-        if (duty === "off") {
-          console.log(`[Daemon] @${dutyName} off duty — unregister`);
-          this.runtime.unregisterAgent(dutyName);
-        } else {
-          const dutyId = (msg.agentId as string) || this.runtime.resolveAgentId(dutyName) || "";
-          const info = this.runtime.getAgentInfo(dutyName) || {};
-          console.log(`[Daemon] @${dutyName} on duty — register (lazy)`);
-          this.runtime.registerAgent(dutyId, dutyName, info);
-        }
-        break;
-      }
-      case "reminder.fire": {
-        const remAgentId = msg.agentId as string;
-        const reminder = (msg.reminder as any) || {};
-        // 注册表以 name 为键,入信只有 agentId(UUID)——先反查注册名
-        // （此前直接用 UUID 查 hasAgent 必 false,agent 提醒静默丢弃,2026-08-19 E2E 实锤）
-        const remName = this.runtime.resolveAgentName(remAgentId);
-        if (!remName) {
-          console.log("[Daemon] reminder.fire for unknown agent", remAgentId);
-          break;
-        }
-        console.log(`[Daemon] reminder fired for @${remName}: ${reminder.title} (${reminder.kind || "reminder"})`);
-        await this.runtime.runAgentReminder(remName, reminder);
-        break;
-      }
-      case "terminal:watch": {
-        // 浏览器观众上线：开始按 400ms 节拍推这个 agent 的终端帧（G3）。
-        // 帧内容直接取终端模拟器渲染好的当前屏（screenText），无变化不推。
-        // B1：headless（persistent）路径没有 PTY 屏——用观察帧 replay buffer 渲染
-        // 的 transcript 作为 screen 推同一条 terminal:frame 通道，web 侧零改动。
-        const agentName = msg.agentName as string;
-        if (!agentName || this.terminalWatchers.has(agentName)) break;
-        // B1 web 结构化视图：观看期间把观察帧原样推给浏览器（事件流面板消费），
-        // 先补 replay buffer 作历史。PTY 路径无观察帧（bus 为空），订阅零开销；
-        // 引用计数纪律与 terminal:frame 一致（无人观看不传输）。
-        {
-          const obsBus = this.runtime.__getObservationBus();
-          const replay = obsBus.replay(agentName);
-          if (replay.length > 0) {
-            this.sendWs({ type: "terminal:obs-history", agentName, frames: replay });
-          }
-          const unsub = obsBus.subscribe(agentName, (f) => {
-            this.sendWs({ type: "terminal:obs-frame", agentName, frame: f });
-          });
-          this.terminalObsUnsubs.set(agentName, unsub);
-        }
-        // 先补发一段历史：运行中的 run 发 scrollback（观众能看到打开终端前
-        // 发生的事）；没有运行中的 run 则发观察帧 transcript（headless）或
-        // 落盘日志的尾部（agent 已被回收也能回看）。
-        {
-          const runId = this.runtime.__getRunId(agentName);
-          const run = runId ? this.runtime.__getAgentManager().getRun(runId) : undefined;
-          const obsTranscript = this.runtime.__getObservationBus().transcript(agentName, 60_000);
-          const historyText = run?.historyText || obsTranscript || readTerminalLogTail(agentName, 60_000);
-          if (historyText.trim()) {
-            this.sendWs({ type: "terminal:history", agentName, text: historyText });
-          }
-        }
-        const tick = () => {
-          const runId = this.runtime.__getRunId(agentName);
-          const manager = this.runtime.__getAgentManager();
-          const run = runId ? manager.getRun(runId) : undefined;
-          const state = this.runtime.getAgentState(agentName) ?? "unknown";
-          // headless：有观察帧内容就不算 offline（没有 PTY run 但 agent 活着）
-          const obsScreen = run ? "" : this.runtime.__getObservationBus().transcript(agentName, 60_000);
-          const status = run ? state : obsScreen ? state : "offline";
-          const screen = run?.screenText ?? obsScreen;
-          const key = status + "|" + screen;
-          if (this.terminalLastFrame.get(agentName) === key) return;
-          this.terminalLastFrame.set(agentName, key);
-          this.sendWs({
-            type: "terminal:frame",
-            agentName,
-            screen,
-            status,
-            time: new Date().toISOString(),
-          });
-        };
-        tick(); // 立即推一帧，观众打开就能看到当前屏
-        this.terminalWatchers.set(agentName, setInterval(tick, 400));
-        console.log(`[Daemon] Terminal watch started for @${agentName}`);
-        break;
-      }
-      case "terminal:history": {
-        // 观众主动请求历史日志（面板「日志」页）：读落盘日志尾部回传
-        const agentName = msg.agentName as string;
-        if (!agentName) break;
-        const text = readTerminalLogTail(agentName);
-        this.sendWs({ type: "terminal:history", agentName, text });
-        break;
-      }
-      case "terminal:unwatch": {
-        const agentName = msg.agentName as string;
-        const timer = this.terminalWatchers.get(agentName);
-        if (timer) clearInterval(timer);
-        this.terminalWatchers.delete(agentName);
-        this.terminalLastFrame.delete(agentName);
-        // B1：观察帧订阅一并退订（引用计数归零，停止传输）
-        this.terminalObsUnsubs.get(agentName)?.();
-        this.terminalObsUnsubs.delete(agentName);
-        break;
-      }
-      case "terminal:resize": {
-        // 面板尺寸协商（真改比例）：浏览器按面板宽度算出期望 cols/rows 发过来，
-        // 这里实时 resize 正在运行的 PTY（Claude Code 收 SIGWINCH 重排画面），
-        // 并记住偏好尺寸供下次 spawn 直接用。
-        const agentName = msg.agentName as string;
-        const cols = Math.min(400, Math.max(20, Math.round(Number(msg.cols) || 0)));
-        const rows = Math.min(100, Math.max(5, Math.round(Number(msg.rows) || 0)));
-        if (!agentName || !cols || !rows) break;
-        this.runtime.setPreferredTermSize(agentName, { cols, rows });
-        const runId = this.runtime.__getRunId(agentName);
-        if (runId) {
-          this.runtime.__getAgentManager().resizeRun(runId, cols, rows);
-        }
-        break;
-      }
-      case "workspace:read": {
-        const requestId = String(msg.requestId || "");
-        const agentName = String(msg.agentName || "");
-        const rel = typeof msg.path === "string" && msg.path ? msg.path : "";
-        if (!requestId || !agentName) break;
-        if (rel) {
-          const r = readWorkspaceFile(agentName, rel);
-          if (r.ok) {
-            this.sendWs({
-              type: "workspace:result",
-              requestId,
-              agentName,
-              exists: true,
-              path: r.path,
-              content: r.content,
-              bytes: r.bytes,
-            });
-          } else {
-            this.sendWs({
-              type: "workspace:result",
-              requestId,
-              agentName,
-              exists: false,
-              path: rel,
-              error: r.error,
-            });
-          }
-        } else {
-          const listing = listWorkspaceFiles(agentName);
-          this.sendWs({
-            type: "workspace:result",
-            requestId,
-            agentName,
-            exists: listing.exists,
-            files: listing.files,
-          });
-        }
-        break;
-      }
-      case "ping":
-        this.sendWs({ type: "pong" });
-        break;
-    }
+  private handlerCtx(): HandlerContext {
+    return {
+      runtime: this.runtime,
+      sendWs: (ev) => this.sendWs(ev),
+      agentId: this.agentId,
+      terminalWatchers: this.terminalWatchers,
+      terminalLastFrame: this.terminalLastFrame,
+      terminalObsUnsubs: this.terminalObsUnsubs,
+    };
   }
 
   async stop(): Promise<void> {
@@ -693,6 +397,8 @@ export class DaemonCore {
     for (const timer of this.terminalWatchers.values()) clearInterval(timer);
     this.terminalWatchers.clear();
     this.terminalLastFrame.clear();
+    for (const unsub of this.terminalObsUnsubs.values()) unsub();
+    this.terminalObsUnsubs.clear();
     // 优雅停止也写「计划内重启」标记：用户主动停掉 daemon 后下次启动，
     // 同样不该把停掉的 agent 当崩溃恢复自动拉起。
     try {

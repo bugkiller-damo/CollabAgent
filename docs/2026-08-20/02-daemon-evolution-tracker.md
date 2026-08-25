@@ -11,9 +11,9 @@
 
 ## ★ 当前焦点
 
-> **评估报告 P0.8 · 为核心编排器（runtime/dispatch/daemon-core）补单元测试** — 下一焦点。
-> P0.1–P0.7 已落地（见文末完成记录）。
-> 注意：与本文件「方案 P0.1 = PTY 冻结」（Step 3，已完成）不是同一件事。
+> **评估报告 P1.9 巨型函数/模块拆分已落地**（2026-08-25）。
+> 下一焦点：评估报告 P1.10 统一配置层 `src/config.ts`。
+> 注意：「评估报告 P0.x」与本文件「方案 P0.1 = PTY 冻结」（Step 3，已完成）不是同一件事。
 
 ---
 
@@ -260,3 +260,5 @@ daemon prompt 含三选一与沉默协议。L3 手动 E2E 待上线走剧本。
 | 评估 P0.5 | 2026-08-25 | （待提交） | `total_cost_usd` 确认为会话累计：`createSessionCostDelta` 按 agent 记差值再落库；`duration_ms`/`num_turns` 仍按回合原值；stop/reclaim `forget` 基线 |
 | 评估 P0.6 | 2026-08-25 | （待提交） | 成本门覆盖已入队/重试：队列新增 `deliveryGate`（drain 出队前重估，熔断批次丢弃完结不重试）+ `onDeliveryBlocked`；`doDispatch` 入口兜底门（覆盖旧链路径与竞态窗口）；熔断通知收口 `notifyCircuitBreak` 三处共用；队列测试 +3 |
 | 评估 P0.7 | 2026-08-25 | （待提交） | headless 与 PTY 解耦：`agent-manager-lazy.ts` 懒加载（首次 spawn 才动态 import node-pty；同步方法加载前安全 no-op；空 bus 兜底 `getOutputBus`）；`writeMcpConfig` 迁出冻结文件到 `agent-mcp-config.ts`，`agent-runtime-spawn.ts` 纯化全冻结；`test/agent-manager-lazy.test.ts` +6 |
+| 评估 P0.8 | 2026-08-25 | （待提交） | 核心编排器补单测：`agent-runtime-dispatch.test.ts`（23：doDispatch 链路/P0.5 差值/三道成本门/死信/合并去重/reply guard/runAgent 路由）、`agent-runtime.test.ts`（10：注册表/mention/loadExistingAgents）、`daemon-core.test.ts`（24：handleMessage 全 case）；全量 33 文件 309 用例通过 |
+| 评估 P1.9 | 2026-08-25 | （待提交） | 拆分巨型函数/模块：`createDispatch` 抽出 pty/headless/stream（949→603 行工厂 + 3 子文件）；`handleMessage` → `handlers/*`（daemon-core 712→417）；`cli.ts` 按域拆到 `cli/*.ts`（1075→50 行入口）；typecheck + 33 文件 309 用例全绿 |

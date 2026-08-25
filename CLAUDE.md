@@ -44,8 +44,8 @@ AI agents, and routes messages between them.
 
 | 分组 | 文件 |
 |------|------|
-| 入口 | `index.ts` / `cli.ts` / `daemon-core.ts`（WS 客户端 + 消息分发） |
-| 运行时编排 | `agent-runtime.ts`（核心）+ `agent-runtime-dispatch/-spawn/-exit/-state/-credentials/-turn-tracker/-terms-dialog.ts` |
+| 入口 | `index.ts` / `cli.ts`（薄入口）+ `cli/*.ts`（按域） / `daemon-core.ts`（WS + auth）+ `handlers/*`（消息路由） |
+| 运行时编排 | `agent-runtime.ts`（核心）+ `agent-runtime-dispatch.ts`（工厂）+ `agent-runtime-dispatch-{pty,headless,stream}.ts` + `-spawn/-exit/-state/-credentials/-turn-tracker/-terms-dialog.ts` |
 | 驱动 | `drivers/persistent-claude.ts`（默认）/ `claude-print.ts`（one-shot）/ `drivers/probe.ts` |
 | 队列与生命周期 | `agent-dispatch-queue.ts` / `live-run-registry.ts` / `agent-run-store.ts` / `agent-cost-tracker.ts`（D3） / `agent-context-builder.ts`（D1） / `agent-thread-sessions.ts`（D2） / `agent-progress.ts`（D4 进度条） / `idle-reclaimer.ts` / `supervisor.ts` |
 | 安全 | `agent-tokens.ts` / `agent-token-file.ts` / `agent-env-whitelist.ts` / `command-presets.ts` / `command-resolver.ts` / `auth.ts` |
@@ -68,7 +68,7 @@ import（headless 全程不加载 node-pty）；`agent-runtime-spawn.ts` 已纯�
 
 ```
 npx tsc --noEmit -p packages/daemon/tsconfig.json
-pnpm vitest run          # packages/daemon 测试（test/ 24 文件）
+pnpm vitest run          # packages/daemon 测试（test/ 33 文件）
 ```
 
 ## 历史档案（已完结，勿再按此工作）
