@@ -11,8 +11,8 @@
 
 ## ★ 当前焦点
 
-> **评估报告 P0.7 · headless 默认路径与 PTY 解耦** — 下一焦点。
-> P0.1–P0.6 已落地（见文末完成记录）。
+> **评估报告 P0.8 · 为核心编排器（runtime/dispatch/daemon-core）补单元测试** — 下一焦点。
+> P0.1–P0.7 已落地（见文末完成记录）。
 > 注意：与本文件「方案 P0.1 = PTY 冻结」（Step 3，已完成）不是同一件事。
 
 ---
@@ -259,3 +259,4 @@ daemon prompt 含三选一与沉默协议。L3 手动 E2E 待上线走剧本。
 | 评估 P0.4 | 2026-08-25 | `c3715bc` | env 白名单默认翻正：`resolveAgentEnvMode` 默认 `whitelist`；`SLOCK_ENV_INHERIT=1` 排障回退（仍剥 token）；`SLOCK_ENV_WHITELIST=1` 兼容 no-op；warn-only 路径删除 |
 | 评估 P0.5 | 2026-08-25 | （待提交） | `total_cost_usd` 确认为会话累计：`createSessionCostDelta` 按 agent 记差值再落库；`duration_ms`/`num_turns` 仍按回合原值；stop/reclaim `forget` 基线 |
 | 评估 P0.6 | 2026-08-25 | （待提交） | 成本门覆盖已入队/重试：队列新增 `deliveryGate`（drain 出队前重估，熔断批次丢弃完结不重试）+ `onDeliveryBlocked`；`doDispatch` 入口兜底门（覆盖旧链路径与竞态窗口）；熔断通知收口 `notifyCircuitBreak` 三处共用；队列测试 +3 |
+| 评估 P0.7 | 2026-08-25 | （待提交） | headless 与 PTY 解耦：`agent-manager-lazy.ts` 懒加载（首次 spawn 才动态 import node-pty；同步方法加载前安全 no-op；空 bus 兜底 `getOutputBus`）；`writeMcpConfig` 迁出冻结文件到 `agent-mcp-config.ts`，`agent-runtime-spawn.ts` 纯化全冻结；`test/agent-manager-lazy.test.ts` +6 |

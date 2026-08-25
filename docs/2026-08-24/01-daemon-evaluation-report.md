@@ -26,7 +26,7 @@
 
 1. **产品化能力已追上需求**：D3 成本记账、D1 上下文构建、D2 thread-session、T4/D4 观察帧进度、T8 经理分诊均已落地，单测覆盖扎实，对核心派发链路侵入较小。
 2. **核心运行时尚未达到生产级鲁棒**：`PersistentClaude` 的 kill→exit 竞态、`idleReclaimer` 对 headless 失效、`stopAgent` 不驱动状态机，是三个可能在线上报错/漏回收/状态漂移的 P0 缺陷。
-3. **架构上的“headless 默认”声明与实现不符**：启动时仍无条件实例化 PTY 管理器、加载 node-pty 原生模块，冻结代码仍处在热路径。
+3. **~~架构上的“headless 默认”声明与实现不符~~ ✅ 2026-08-25 已修（P0.7）**：~~启动时仍无条件实例化 PTY 管理器、加载 node-pty 原生模块，冻结代码仍处在热路径。~~ 现 PTY manager 懒加载（首次 spawn 才动态 import），headless 全程不加载 node-pty。
 4. **安全模型有框架但默认未收紧**：~~env 白名单默认 `warn` 模式导致 secrets 直接流入子进程~~ **✅ 2026-08-25 已修**（P0.4）；`agent-tokens.ts` 本地注册表与真实 server 吊销路径脱节。
 5. **测试覆盖呈现“旁路厚、核心薄”**：队列、状态机、观察帧、成本、Context Builder 均有高覆盖测试，但 `agent-runtime.ts`、`agent-runtime-dispatch.ts`、`daemon-core.ts`、`cli.ts` 等最大文件零单测。
 
@@ -40,7 +40,7 @@
 | P0.4 | 收紧 env 白名单为默认开启 | `agent-env-whitelist.ts` | 阻止 daemon secrets 流入 agent 子进程 | ✅ 2026-08-25：默认 `whitelist`；`SLOCK_ENV_INHERIT=1` 排障回退；`SLOCK_ENV_WHITELIST=1` 兼容 no-op |
 | P0.5 | 验证 `total_cost_usd` 是会话累计还是单回合成本 | `agent-cost-tracker.ts` | 确保成本数据与预算熔断可信 | ✅ 2026-08-25：会话累计；`createSessionCostDelta` 差值落库；stop/reclaim forget 基线 |
 | P0.6 | 在队列 `drain` 与 `doDispatch` 执行前补成本门 | `agent-runtime-dispatch.ts` / `agent-dispatch-queue.ts` | 让熔断真正止血，而非只拦截新入队 | ✅ 2026-08-25：队列 `deliveryGate`（drain 前重估，熔断批次丢弃不重试）+ `doDispatch` 入口兜底门；`notifyCircuitBreak` 三处共用 |
-| P0.7 | 让 headless 默认路径真正与 PTY 解耦 | `agent-runtime.ts` / `agent-runtime-spawn.ts` / `daemon-core.ts` | 减少原生依赖、内存占用与冻结代码热路径污染 |
+| P0.7 | 让 headless 默认路径真正与 PTY 解耦 | `agent-runtime.ts` / `agent-runtime-spawn.ts` / `daemon-core.ts` | 减少原生依赖、内存占用与冻结代码热路径污染 | ✅ 2026-08-25：`agent-manager-lazy.ts` 懒加载 node-pty（首次 spawn 才动态 import）；`writeMcpConfig` 迁出到非冻结 `agent-mcp-config.ts`，spawn 文件纯化全冻结 |
 | P0.8 | 为核心编排器（runtime / dispatch / daemon-core）补单元测试 | `test/` | 把最大回归风险纳入自动化守护 |
 
 ---
@@ -59,7 +59,7 @@
 
 | 严重度 | 文件:行号 | 问题 | 后果 |
 |---|---|---|---|
-| 高 | `agent-runtime.ts:210` | `const agentManager = agentManagerOverride ?? createAgentManager();` 即使 headless 默认也**无条件实例化 PTY 管理器** | 每次启动加载 node-pty 原生依赖并分配 PTY 内存；node-pty 初始化失败会连带影响 headless 启动 |
+| 高 | `agent-runtime.ts:210` | ~~`const agentManager = agentManagerOverride ?? createAgentManager();` 即使 headless 默认也**无条件实例化 PTY 管理器**~~ **✅ 2026-08-25 已修**（P0.7）：`createLazyAgentManager()` 懒加载，首次 `startAgent` 才动态 import agent-manager.js（node-pty）；headless 全程 no-op | 每次启动加载 node-pty 原生依赖并分配 PTY 内存；node-pty 初始化失败会连带影响 headless 启动 |
 | 高 | 多处 | 环境变量读取极度分散，约 15+ 文件直接访问 `process.env.SLOCK_*` | 缺少默认值、类型、校验与文档的集中来源；新增配置容易遗漏、命名不一致 |
 | 中高 | `daemon-core.ts:379-686` | `handleMessage` 是超大 switch，同时处理 agent 注册/注销/值班、消息派发、reminder、终端 watch/resize/history、workspace 读取、ping/pong | 入口层变成业务编排层，单测困难，任何新消息类型都会继续膨胀该文件 |
 | 中 | `cli.ts:1-1075` | 所有子命令（auth/channel/message/task/dispatch/reminder/patrol/profile/cost/session/agent duty）堆在一个 1075 行文件 | 低内聚、协作冲突概率高、命令域无显式边界 |
@@ -69,7 +69,7 @@
 
 #### 改进建议
 
-- **P0**：将 `createAgentManager()` 改为懒加载/注入，默认 headless 下使用 no-op `IAgentManager`；把 `writeMcpConfig` 从冻结的 `agent-runtime-spawn.ts` 迁出到独立非冻结文件。
+- **P0**：~~将 `createAgentManager()` 改为懒加载/注入，默认 headless 下使用 no-op `IAgentManager`；把 `writeMcpConfig` 从冻结的 `agent-runtime-spawn.ts` 迁出到独立非冻结文件。~~ **✅ 2026-08-25 已修**（P0.7）。
 - **P0**：建立统一配置层 `src/config.ts`，一次性读取并校验所有 `SLOCK_*` 环境变量，提供类型化配置对象与默认值。
 - **P1**：拆分 `daemon-core.ts` 的消息路由为 `handlers/*` 模块；`DaemonCore` 只负责 WebSocket 连接、auth 失败处理、消息分发到 handler。
 - **P1**：按域拆分 `cli.ts` 为 `cli/auth.ts`、`cli/channel.ts`、`cli/cost.ts` 等；`cli.ts` 仅负责 `Command` 注册与入口解析。
@@ -264,7 +264,7 @@
 | kill→exit 竞态误伤新回合 | 运行时 | 已确认 | 回合超时 kill 且队列有后续消息 | 合法消息被反复重试甚至死信 |
 | 成本数据重复计费 | 产品化 | ✅ 2026-08-25 已修（P0.5） | 取决于 Claude Code `total_cost_usd` 语义 | 预算严重虚高或虚低 |
 | 核心编排器无单测 | 代码质量 | 已确认 | 任何对 runtime/dispatch/daemon-core 的修改 | 回归只能靠集成测试和人工发现 |
-| PTY 原生依赖污染 headless | 架构 | 已确认 | 默认启动 | 启动失败风险、内存开销、维护冻结代码 |
+| PTY 原生依赖污染 headless | 架构 | ✅ 2026-08-25 已修（P0.7） | 默认启动 | 启动失败风险、内存开销、维护冻结代码 |
 | stop 后状态漂移 | 运行时 | ✅ 2026-08-25 已修（P0.3） | 调用 stopAgent/stopAll | 状态面板与实际不一致，STUCK 误报 |
 
 ---
@@ -279,7 +279,7 @@
 4. **~~收紧 env 白名单默认~~** —— ✅ 2026-08-25：默认 `whitelist`；`SLOCK_ENV_INHERIT=1` 排障回退。
 5. **~~验证 `total_cost_usd` 语义~~** —— ✅ 2026-08-25：会话累计；差值落库；stop/reclaim 清基线。
 6. **~~让成本门覆盖已入队/重试任务~~** —— ✅ 2026-08-25：队列 `deliveryGate` drain 前重估 + `doDispatch` 入口门；熔断批次丢弃完结不重试。
-7. **headless 路径与 PTY 解耦** —— 懒加载/注入 `IAgentManager`；把 `writeMcpConfig` 迁出冻结文件。
+7. **~~headless 路径与 PTY 解耦~~** —— ✅ 2026-08-25：`agent-manager-lazy.ts` 懒加载；`writeMcpConfig` 迁出到 `agent-mcp-config.ts`。
 8. **为核心编排器补单元测试** —— 优先覆盖 `runAgent`、`doDispatch`、成本熔断、reply guard、WS 路由。
 
 ### P1 · 近期（建议 2-4 周内完成）

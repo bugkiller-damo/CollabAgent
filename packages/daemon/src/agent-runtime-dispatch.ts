@@ -7,13 +7,13 @@ import {
   type ICostTracker,
 } from "./agent-cost-tracker.js";
 import { createAgentDispatchQueue } from "./agent-dispatch-queue.js";
+import { writeMcpConfig } from "./agent-mcp-config.js";
 import { createSeqAllocator, type ObservationBus, streamEventToFrames } from "./agent-observation.js";
 import { channelProgressEnabled, createProgressTurn, type ProgressTurn } from "./agent-progress.js";
 import type { AgentRuntimeOptions } from "./agent-runtime.js";
 import type { ICredentialsClient } from "./agent-runtime-credentials.js";
 import type { IExitChain } from "./agent-runtime-exit.js";
 import type { SpawnPtyForAgent } from "./agent-runtime-spawn.js";
-import { writeMcpConfig } from "./agent-runtime-spawn.js";
 import type { IAgentStateMachine } from "./agent-runtime-state.js";
 import type { ITurnTracker } from "./agent-runtime-turn-tracker.js";
 import { createWorkspaceDir, fetchDispatchContext, writeSystemPromptFile } from "./agent-startup.js";

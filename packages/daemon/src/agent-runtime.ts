@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { ICostTracker } from "./agent-cost-tracker.js";
-import { createAgentManager } from "./agent-manager.js";
+import { createLazyAgentManager } from "./agent-manager-lazy.js";
 import { createObservationBus, type ObservationBus } from "./agent-observation.js";
 import { createCredentialsClient } from "./agent-runtime-credentials.js";
 import { createDispatch, type ReminderFirePayload } from "./agent-runtime-dispatch.js";
@@ -199,7 +199,7 @@ export const createAgentRuntime = (
   liveRunRegistry: ILiveRunRegistry,
   runStore?: IAgentRunStore,
   /** 仅供测试注入假的 IAgentManager（见 test/fakes/fake-agent-manager.ts）；
-   *  生产环境不传，默认走真实的 node-pty 实现。 */
+   *  生产环境不传，走懒加载的真实 node-pty 实现（首次 PTY spawn 才加载）。 */
   agentManagerOverride?: IAgentManager,
 ): IAgentRuntime => {
   // ---- 注册表 ----
@@ -209,7 +209,10 @@ export const createAgentRuntime = (
   const agentInfo = new Map<string, { displayName?: string; description?: string; model?: string }>();
 
   // ---- PTY 模式基础设施 ----
-  const agentManager: IAgentManager = agentManagerOverride ?? createAgentManager();
+  // P0.7：懒加载——headless 默认路径不再静态引入 agent-manager.js（其顶层
+  // import node-pty 原生模块）。真实 manager 推迟到第一次 PTY spawn 才加载；
+  // headless 全程拿到的是 no-op 包装（无 run 可调，同步方法安全空转）。
+  const agentManager: IAgentManager = agentManagerOverride ?? createLazyAgentManager();
   // agentName -> runId 缓存（常驻 PTY）
   const runIdByAgent = new Map<string, string>();
   // agentName -> 首选终端尺寸（面板协商；下次 spawn 应用）

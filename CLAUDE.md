@@ -54,8 +54,10 @@ AI agents, and routes messages between them.
 | 会话 | `agent-sessions.ts`（sessionId 捕获/恢复）/ `agent-dir-name.ts` |
 | 其他 | `client.ts` / `proxy.ts` / `exit-coordinator.ts` / `exit-handler.ts` / `output.ts` / `types/index.ts` |
 
-\* `terminal-log.ts` 为共享文件（headless 的 `terminal:history` 也用它读落盘日志），不在冻结范围；
-`agent-runtime-spawn.ts` 同理仅 `createSpawnPtyForAgent`/`buildPtyEnv` 冻结，`writeMcpConfig` 正常维护。
+\* `terminal-log.ts` 为共享文件（headless 的 `terminal:history` 也用它读落盘日志），不在冻结范围。
+P0.7（2026-08-25）解耦：`agent-manager-lazy.ts` 把真实 PTY manager 推迟到首次 spawn 才动态
+import（headless 全程不加载 node-pty）；`agent-runtime-spawn.ts` 已纯化为全冻结（`writeMcpConfig`
+迁出到非冻结的 `agent-mcp-config.ts`，headless/PTY 共用）。
 
 ## 当前执行跟踪
 
