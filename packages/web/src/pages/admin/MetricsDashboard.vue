@@ -315,7 +315,7 @@ onUnmounted(() => {
     <div>
       <h3 class="text-gray-500 text-xs font-semibold uppercase mb-2">已连接 Daemon</h3>
       <div v-if="m.daemons.length === 0" class="bg-gray-50 dark:bg-gray-800 rounded-xl p-6 text-center text-gray-400 text-sm border border-dashed border-gray-200 dark:border-gray-700">
-        暂无 daemon 连接。在「接入 Agent」页按引导启动本机 daemon。
+        暂无 daemon 连接。在「计算机」页按引导启动本机连接器。
       </div>
       <div v-else class="grid grid-cols-1 md:grid-cols-2 gap-3">
         <div v-for="(d, i) in m.daemons" :key="d.hostname + i" class="bg-gray-50 dark:bg-gray-800 rounded-xl p-4 border border-gray-100 dark:border-gray-700/50 flex items-center gap-3">

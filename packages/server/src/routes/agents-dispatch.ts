@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { getAgent, isChannelManager, requireOwnAgent } from "../lib/agent-helpers.js";
 import { resolveChannel } from "../lib/channel.js";
 import { resolvePeer } from "../lib/dm.js";
+import { recordTaskEvent } from "../lib/task-events.js";
 import { broadcast } from "../ws/handler.js";
 
 const STATUSES = ["open", "reported", "cancelled"];
@@ -79,6 +80,11 @@ export async function agentDispatchRoutes(app: FastifyInstance) {
     if (member.rows.length === 0)
       return reply.status(400).send({ error: "worker agent is not a member of this channel" });
 
+    const workerDuty = await app.pg.query<{ duty: string }>("SELECT duty FROM agents WHERE id = $1", [peer.id]);
+    if (workerDuty.rows[0]?.duty === "off") {
+      return reply.status(409).send({ error: "worker is off duty" });
+    }
+
     const manager = await getAgent(app, agentId);
     const dispatch = (
       await app.pg.query<{
@@ -108,15 +114,27 @@ export async function agentDispatchRoutes(app: FastifyInstance) {
 
     // P1 同步：dispatch 通知消息同时成为看板卡片（in_progress + assignee=worker），
     // 原子取号防并发重号；台账记 task_message_id 供 report/cancel 联动
-    await app.pg.query(
+    const cardUpd = await app.pg.query<{ task_number: number }>(
       `UPDATE messages
          SET task_number = (SELECT COALESCE(MAX(task_number), 0) + 1 FROM messages
                             WHERE channel_id = $2 AND task_number IS NOT NULL),
              task_status = 'in_progress', task_assignee = $3, updated_at = now()
-       WHERE id = $1`,
+       WHERE id = $1
+       RETURNING task_number`,
       [msgId, ch.id, peer.id],
     );
     await app.pg.query("UPDATE dispatches SET task_message_id = $1 WHERE id = $2", [msgId, dispatch.id]);
+    if (cardUpd.rows[0]) {
+      await recordTaskEvent(app, {
+        messageId: msgId,
+        channelId: ch.id,
+        taskNumber: cardUpd.rows[0].task_number,
+        actorId: agentId,
+        action: "created",
+        toStatus: "in_progress",
+        detail: `dispatch ${dispatch.id}`,
+      });
+    }
 
     return { dispatch };
   });
@@ -167,9 +185,25 @@ export async function agentDispatchRoutes(app: FastifyInstance) {
       );
       // P1 同步：回报 → 看板卡片转 in_review（等经理审查）
       if (dispatch.task_message_id) {
-        await app.pg.query("UPDATE messages SET task_status = 'in_review', updated_at = now() WHERE id = $1", [
-          dispatch.task_message_id,
-        ]);
+        const cardUpd = await app.pg.query<{ task_number: number; old_status: string | null }>(
+          `UPDATE messages m SET task_status = 'in_review', updated_at = now()
+             FROM (SELECT task_status AS old_status FROM messages WHERE id = $1) old
+           WHERE m.id = $1
+           RETURNING m.task_number, old.old_status`,
+          [dispatch.task_message_id],
+        );
+        if (cardUpd.rows[0]) {
+          await recordTaskEvent(app, {
+            messageId: dispatch.task_message_id,
+            channelId: dispatch.channel_id,
+            taskNumber: cardUpd.rows[0].task_number,
+            actorId: agentId,
+            action: "status_changed",
+            fromStatus: cardUpd.rows[0].old_status,
+            toStatus: "in_review",
+            detail: `dispatch ${dispatchId} reported`,
+          });
+        }
       }
 
       const worker = await getAgent(app, agentId);
@@ -219,9 +253,25 @@ export async function agentDispatchRoutes(app: FastifyInstance) {
       ]);
       // P1 同步：撤回 → 看板卡片关闭
       if (dispatch.task_message_id) {
-        await app.pg.query("UPDATE messages SET task_status = 'closed', updated_at = now() WHERE id = $1", [
-          dispatch.task_message_id,
-        ]);
+        const cardUpd = await app.pg.query<{ task_number: number; old_status: string | null }>(
+          `UPDATE messages m SET task_status = 'closed', updated_at = now()
+             FROM (SELECT task_status AS old_status FROM messages WHERE id = $1) old
+           WHERE m.id = $1
+           RETURNING m.task_number, old.old_status`,
+          [dispatch.task_message_id],
+        );
+        if (cardUpd.rows[0]) {
+          await recordTaskEvent(app, {
+            messageId: dispatch.task_message_id,
+            channelId: dispatch.channel_id,
+            taskNumber: cardUpd.rows[0].task_number,
+            actorId: agentId,
+            action: "status_changed",
+            fromStatus: cardUpd.rows[0].old_status,
+            toStatus: "closed",
+            detail: `dispatch ${dispatchId} cancelled`,
+          });
+        }
       }
 
       const manager = await getAgent(app, agentId);

@@ -69,10 +69,14 @@ export function writeSystemPromptFile(
   return file;
 }
 
+/** daemon cwd 下该 agent 的工作区根目录（与 spawn cwd 一致） */
+export function agentWorkspacePath(agentName: string): string {
+  return join(process.cwd(), ".slock", "workspaces", safeAgentDirName(agentName));
+}
+
 /** 创建 agent 工作区目录，不存在时种入 MEMORY.md 模板 */
 export function createWorkspaceDir(agentName: string, info: { displayName?: string; description?: string }): string {
-  const safe = safeAgentDirName(agentName);
-  const dir = join(process.cwd(), ".slock", "workspaces", safe);
+  const dir = agentWorkspacePath(agentName);
   mkdirSync(dir, { recursive: true });
   const memFile = join(dir, "MEMORY.md");
   if (!existsSync(memFile)) {
@@ -84,7 +88,9 @@ export function createWorkspaceDir(agentName: string, info: { displayName?: stri
     if (legacyDir !== dir && existsSync(legacyMem)) {
       try {
         copyFileSync(legacyMem, memFile);
-        console.log(`[Runtime] Migrated MEMORY.md from legacy workspace ${legacyAgentDirName(agentName)} -> ${safe}`);
+        console.log(
+          `[Runtime] Migrated MEMORY.md from legacy workspace ${legacyAgentDirName(agentName)} -> ${safeAgentDirName(agentName)}`,
+        );
       } catch {
         /* 迁移失败退回种模板，不阻塞启动 */
       }

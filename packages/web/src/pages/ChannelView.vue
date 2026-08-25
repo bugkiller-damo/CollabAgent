@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import type { Message } from "@collabagent/shared";
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { apiClient, apiGet } from "../api";
+import AgentProgressBar from "../components/agent/AgentProgressBar.vue";
 import ChannelMembersPanel from "../components/channel/ChannelMembersPanel.vue";
 import ChannelSettingsModal from "../components/channel/ChannelSettingsModal.vue";
 import MessageComposer, { type ComposerAttachment } from "../components/chat/MessageComposer.vue";
@@ -57,6 +58,7 @@ const dragOver = ref(false);
 const containerRef = ref<HTMLDivElement | null>(null);
 const fetchedRef = ref<string | null>(null);
 const highlightLoadedRef = ref(false);
+const stickToBottom = ref(true);
 
 const isPrivate = computed(() => {
   const c = currentChannel.value;
@@ -74,10 +76,17 @@ watch(
     if (name && fetchedRef.value !== name) {
       fetchedRef.value = name;
       channelStore.setActiveChannel(name);
-      // pending 队列在 store 按 target 持久，切频道不再清空（修静默丢 queued）
       attachments.value = [];
       messageStore.fetchHistory("#" + name).catch(() => {});
     }
+  },
+  { immediate: true },
+);
+
+watch(
+  () => currentChannel.value?.id,
+  (id) => {
+    if (id) void channelStore.fetchMembers(id);
   },
   { immediate: true },
 );
@@ -103,24 +112,40 @@ watch([highlightMsgId, messages, target], () => {
     .catch(() => {});
 });
 
-// ---- Effect 3：非虚拟列表新消息到达且接近底部时自动滚动到底（React useEffect([messages])）----
+function pinToBottom() {
+  const el = containerRef.value;
+  if (el) el.scrollTop = el.scrollHeight;
+}
+
+function onListScroll() {
+  const el = containerRef.value;
+  if (!el) return;
+  stickToBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+}
+
+watch(channelName, () => {
+  stickToBottom.value = true;
+});
+
+// 进频道 / 历史到达 / 新消息：钉在底部（用户上翻后不抢滚动）
 watch(
-  messages,
+  [messages, pending],
   () => {
-    const el = containerRef.value;
-    if (el) {
-      const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
-      if (isNearBottom) el.scrollTop = el.scrollHeight;
-    }
+    if (!stickToBottom.value) return;
+    nextTick(() => {
+      pinToBottom();
+      requestAnimationFrame(pinToBottom);
+    });
   },
   { flush: "post" },
 );
 
 function scrollToBottom() {
-  setTimeout(() => {
-    const el = containerRef.value;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, 50);
+  stickToBottom.value = true;
+  nextTick(() => {
+    pinToBottom();
+    requestAnimationFrame(pinToBottom);
+  });
 }
 
 // ---- 发送 / 离线队列 / 重试（队列逻辑已迁入 messageStore，本页只接线）----
@@ -206,13 +231,30 @@ function onDropFiles(e: DragEvent) {
 }
 
 // ---- 顶部操作按钮 ----
+const channelAgentNames = computed(() => {
+  const id = currentChannel.value?.id;
+  const members = id ? channelStore.membersByChannelId[id] : undefined;
+  return new Set((members ?? []).filter((m) => m.member_type === "agent").map((m) => m.handle));
+});
+
 function openAgentTerminal() {
-  // 优先看正在工作的 agent；否则沿用上次选择；再否则列表第一个
-  const agents = agentStore.agents;
-  const working = Object.values(agents).find((a) => a.status === "working" || (a.status as string) === "thinking");
-  const fallback = uiStore.terminalAgent || Object.keys(agents)[0];
-  uiStore.openTerminal(working?.name || fallback || "agent");
+  const names = channelAgentNames.value;
+  const live = Object.values(agentStore.agents);
+  const inChannel = names.size > 0 ? live.filter((a) => names.has(a.name)) : live;
+  const working = inChannel.find((a) => a.status === "working" || (a.status as string) === "thinking");
+  const fallback =
+    (uiStore.terminalAgent && names.has(uiStore.terminalAgent) ? uiStore.terminalAgent : undefined) ||
+    inChannel[0]?.name ||
+    [...names][0];
+  if (fallback) uiStore.openTerminal(fallback);
 }
+
+watch(
+  () => uiStore.profileTarget,
+  (t) => {
+    if (t) showMembers.value = false;
+  },
+);
 
 function closeMembers() {
   showMembers.value = false;
@@ -310,6 +352,8 @@ function goGeneral() {
         </div>
       </PageHeader>
 
+      <AgentProgressBar :channel-name="channelName || ''" />
+
       <div v-if="isEmpty" class="min-h-0 flex-1 overflow-y-auto p-4">
         <MessageSkeleton v-if="loading" />
         <EmptyState v-else icon="💬" title="还没有消息" description="发送第一条消息，开启这个频道的对话吧" />
@@ -322,7 +366,7 @@ function goGeneral() {
         @retry="retrySend"
         @discard="discardPending"
       />
-      <div v-else ref="containerRef" class="min-h-0 flex-1 space-y-1 overflow-y-auto p-4">
+      <div v-else ref="containerRef" class="min-h-0 flex-1 space-y-1 overflow-y-auto p-4" @scroll.passive="onListScroll">
         <MessageRow
           v-for="(msg, idx) in messages"
           :key="msg.id"

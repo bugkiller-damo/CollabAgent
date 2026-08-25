@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from "vue";
 import { RouterLink } from "vue-router";
 import { apiGet } from "../api";
 import { usePolling } from "../composables";
+import { claudeInstalled, type RuntimeProbe } from "../stores/computerStore";
 
 const DISMISS_KEY = "onboarding_dismissed";
 
@@ -13,20 +14,21 @@ interface Step {
   cta: string;
 }
 
-// 首登轻量引导：检测真实状态（daemon 是否连上、是否有 Agent），给出下一步清单。
-// 全部完成或用户手动关闭后不再出现（localStorage 记忆）。
 const dismissed = ref(localStorage.getItem(DISMISS_KEY) === "1");
 const daemonOn = ref<boolean | null>(null);
+const claudeOn = ref<boolean | null>(null);
 const hasAgent = ref<boolean | null>(null);
 
 function load() {
   if (dismissed.value) return;
-  apiGet<{ connected: boolean }>("/api/daemon/status")
+  apiGet<{ connected: boolean; runtimes?: RuntimeProbe[] }>("/api/daemon/status")
     .then((d) => {
       daemonOn.value = !!d.connected;
+      claudeOn.value = !!d.connected && claudeInstalled(d.runtimes || []);
     })
     .catch(() => {
       daemonOn.value = false;
+      claudeOn.value = false;
     });
   apiGet<{ agents: any[] }>("/api/agents")
     .then((d) => {
@@ -43,15 +45,19 @@ onMounted(() => {
 usePolling(load, 8000);
 
 const steps = computed<Step[]>(() => [
-  { label: "连接本机 Claude", done: !!daemonOn.value, to: "/connect", cta: "去连接" },
-  { label: "创建第一个 Agent", done: !!hasAgent.value, to: "/connect", cta: "去创建" },
+  {
+    label: "连接我的计算机",
+    done: !!daemonOn.value && !!claudeOn.value,
+    to: "/computers",
+    cta: daemonOn.value && !claudeOn.value ? "去安装 Claude" : "去连接",
+  },
+  { label: "创建第一个 Agent", done: !!hasAgent.value, to: "/computers", cta: "去创建" },
   { label: "邀请同事加入（可选）", done: false, to: "/admin/members", cta: "去邀请" },
 ]);
 
-// 前两个必做步骤都完成则自动隐藏
 const show = computed(() => {
   if (dismissed.value) return false;
-  if (daemonOn.value === null || hasAgent.value === null) return false;
+  if (daemonOn.value === null || hasAgent.value === null || claudeOn.value === null) return false;
   return !(steps.value[0].done && steps.value[1].done);
 });
 
@@ -78,6 +84,9 @@ function dismiss() {
         <span :class="s.done ? 'text-gray-400 line-through' : 'text-gray-700 dark:text-gray-200'">{{ s.label }}</span>
       </li>
     </ul>
+    <p v-if="daemonOn && !claudeOn" class="mt-2 text-xs text-amber-600 dark:text-amber-400">
+      计算机已连上，但还没装 Claude Code。
+    </p>
     <RouterLink
       :to="next.to"
       class="mt-3 block text-center bg-blue-600 text-white text-sm py-2 rounded hover:bg-blue-500"

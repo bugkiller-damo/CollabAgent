@@ -1,5 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import type { RuntimeProbe } from "@collabagent/shared";
+import { RUNTIME_CATALOG_IDS, WIRED_RUNTIME_IDS } from "@collabagent/shared";
 
 export function resolveCommandOnPath(command: string): string | null {
   const appData = process.env.APPDATA || "C:/Users/" + (process.env.USERNAME || "Default") + "/AppData/Roaming";
@@ -31,8 +33,8 @@ export function resolveCommandOnPath(command: string): string | null {
   return null;
 }
 
-export function probeClaude(): { available: boolean; version?: string } {
-  const cmd = resolveCommandOnPath("claude");
+export function probeBinary(command: string): { available: boolean; version?: string } {
+  const cmd = resolveCommandOnPath(command);
   if (!cmd) return { available: false };
   try {
     // Windows 的 .cmd/.bat 包装器无法用 execFileSync 直接 spawn（Node 18+ 抛 EINVAL），
@@ -45,4 +47,20 @@ export function probeClaude(): { available: boolean; version?: string } {
   } catch {
     return { available: false };
   }
+}
+
+export function probeClaude(): { available: boolean; version?: string } {
+  return probeBinary("claude");
+}
+
+const WIRED = new Set<string>(WIRED_RUNTIME_IDS);
+
+/** 四格能力地图：未装也列出；已装未接线标 installed_unsupported */
+export function probeRuntimes(): RuntimeProbe[] {
+  return RUNTIME_CATALOG_IDS.map((id) => {
+    const { available, version } = probeBinary(id);
+    if (!available) return { id, status: "not_installed" as const };
+    if (!WIRED.has(id)) return { id, status: "installed_unsupported" as const, version };
+    return { id, status: "installed" as const, version };
+  });
 }

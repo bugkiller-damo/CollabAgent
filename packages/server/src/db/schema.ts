@@ -62,6 +62,7 @@ export const agents = pgTable(
     avatarUrl: text("avatar_url"),
     runtimeProfile: jsonb("runtime_profile"),
     status: varchar("status", { length: 20 }).default("active").notNull(),
+    duty: varchar("duty", { length: 8 }).default("on").notNull(),
     capabilities: jsonb("capabilities"),
     lastSeenSeq: bigint("last_seen_seq", { mode: "number" }),
     createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -200,6 +201,27 @@ export const machineTokens = pgTable("machine_tokens", {
   scope: jsonb("scope").default({}).notNull(),
   expiresAt: timestamp("expires_at"),
   revokedAt: timestamp("revoked_at"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+// ---- computers（P0：与 user 1:1，连接键仍是 userId）----
+export const computers = pgTable("computers", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  userId: uuid("user_id")
+    .references(() => users.id)
+    .notNull()
+    .unique(),
+  serverId: uuid("server_id")
+    .references(() => servers.id)
+    .notNull(),
+  name: text("name").notNull(),
+  description: text("description").default("").notNull(),
+  hostname: text("hostname"),
+  os: text("os"),
+  arch: text("arch"),
+  daemonVersion: text("daemon_version"),
+  runtimes: jsonb("runtimes").default([]).notNull(),
+  lastReadyAt: timestamp("last_ready_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 

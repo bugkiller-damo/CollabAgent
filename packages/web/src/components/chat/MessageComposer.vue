@@ -18,6 +18,7 @@ export interface ComposerAttachment {
 import { computed, ref, watch } from "vue";
 import { uploadAttachment } from "../../api";
 import { useMentionSuggest, type MentionScope } from "../../composables";
+import { useUiStore } from "../../stores";
 import MentionPopup from "./MentionPopup.vue";
 import IconButton from "../ui/IconButton.vue";
 
@@ -51,6 +52,31 @@ const attachmentsList = computed<ComposerAttachment[]>(() =>
 
 const { filtered, selectedIdx, visible, handleInput, handleKeyDown: mentionKD, insertMention: rawInsert } =
   useMentionSuggest(textareaRef, () => props.mentionScope);
+
+const uiStore = useUiStore();
+
+watch(
+  () => uiStore.pendingMention,
+  (h) => {
+    if (!h) return;
+    uiStore.consumeMention();
+    const token = "@" + h + " ";
+    const el = textareaRef.value;
+    if (el) {
+      const start = el.selectionStart ?? el.value.length;
+      const end = el.selectionEnd ?? el.value.length;
+      const next = el.value.slice(0, start) + token + el.value.slice(end);
+      const nativeSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+      nativeSetter?.call(el, next);
+      const pos = start + token.length;
+      el.setSelectionRange(pos, pos);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.focus();
+    } else {
+      draft.value = (draft.value ? draft.value.replace(/\s*$/, " ") : "") + token;
+    }
+  },
+);
 
 const insertMention = (handle: string) => {
   // rawInsert 内部已同步 DOM value 并派发 input 事件（受控 textarea 由此同步 draft）；
@@ -244,6 +270,7 @@ const onDrop = (e: DragEvent) => {
             ? 'bg-blue-600 text-white hover:bg-blue-500'
             : 'cursor-not-allowed bg-gray-200 text-gray-400 dark:bg-gray-700 dark:text-gray-500'
         "
+        @click="doSend"
       >
         <svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
           <path

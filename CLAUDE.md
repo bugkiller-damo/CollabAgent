@@ -33,6 +33,9 @@ AI agents, and routes messages between them.
 - **Context Builder（D1，2026-08-21 Step 6）**：线程追问入队前拉该线程历史并截断注入；
   顶层 @ / DM / 巡检不注入。D2 本批仅 prompt 隔离 + `daemon-thread-sessions.json`
   （不拆 (agent, thread) 进程池）。
+- **观察帧产品化（T4/D4，2026-08-21 Step 7）**：stream-json 帧聚合成人类可读进度；
+  频道内一条 ⏳ 消息节流原地更新（结束删/改写）；顶栏 `agent:progress`；
+  `SLOCK_CHANNEL_PROGRESS=0` 关频道进度。
 - **Agent 回话通道**：`mcp/slock-mcp-server.ts`（agent 经 MCP 工具调 server API 发消息/
   派单/读历史），`mcp-bundle.ts` 随运行时注入。
 
@@ -43,7 +46,7 @@ AI agents, and routes messages between them.
 | 入口 | `index.ts` / `cli.ts` / `daemon-core.ts`（WS 客户端 + 消息分发） |
 | 运行时编排 | `agent-runtime.ts`（核心）+ `agent-runtime-dispatch/-spawn/-exit/-state/-credentials/-turn-tracker/-terms-dialog.ts` |
 | 驱动 | `drivers/persistent-claude.ts`（默认）/ `claude-print.ts`（one-shot）/ `drivers/probe.ts` |
-| 队列与生命周期 | `agent-dispatch-queue.ts` / `live-run-registry.ts` / `agent-run-store.ts` / `agent-cost-tracker.ts`（D3 成本记账） / `agent-context-builder.ts`（D1） / `agent-thread-sessions.ts`（D2 映射） / `idle-reclaimer.ts` / `supervisor.ts` |
+| 队列与生命周期 | `agent-dispatch-queue.ts` / `live-run-registry.ts` / `agent-run-store.ts` / `agent-cost-tracker.ts`（D3） / `agent-context-builder.ts`（D1） / `agent-thread-sessions.ts`（D2） / `agent-progress.ts`（D4 进度条） / `idle-reclaimer.ts` / `supervisor.ts` |
 | 安全 | `agent-tokens.ts` / `agent-token-file.ts` / `agent-env-whitelist.ts` / `command-presets.ts` / `command-resolver.ts` / `auth.ts` |
 | 启动与提示 | `agent-startup.ts` / `system-prompt.ts` / `setup-slock-wrapper.ts` / `restart-summary.ts` |
 | PTY 兜底（❄️冻结保留） | `agent-manager.ts` / `agent-manager-support.ts` / `post-start-input-writer.ts` / `pty-output-bus.ts` / `terminal-state.ts` / `terminal-log.ts`* |
@@ -62,7 +65,7 @@ AI agents, and routes messages between them.
 
 ```
 npx tsc --noEmit -p packages/daemon/tsconfig.json
-pnpm vitest run          # packages/daemon 测试（test/ 23 文件）
+pnpm vitest run          # packages/daemon 测试（test/ 24 文件）
 ```
 
 ## 历史档案（已完结，勿再按此工作）
@@ -79,7 +82,14 @@ pnpm vitest run          # packages/daemon 测试（test/ 23 文件）
 
 | 文档 | 用途 |
 |------|------|
+| `docs/2026-08-23/01-member-profile-design.md` | 成员档案（Human/Agent 一等公民；P0 已落地） |
+| `docs/2026-08-23/02-computer-onboarding-design.md.md` | Computer 一等公民（P0 已落地：一人一机 /computers） |
+| `docs/2026-08-23/04-admin-agent-ia-split.md` | Admin Agent IA 拆分（Step A/B 已落地：创建在计算机，配置/巡检/删除在档案） |
+| `docs/2026-08-23/05-agent-duty-design.md` | Agent 值班（duty on/off；意愿与进程分层；审查中） |
+| `docs/2026-08-22/01-web-two-column-sidebar-design.md` | Web 侧栏两列化（rail + 可折叠 pane；图标进独立主区页） |
+| `docs/2026-08-22/02-raft-ui-visual-alignment.md` | ~~Raft 视觉对齐~~ **已废弃**（不仿 Raft UI） |
 | `docs/2026-08-21/01-d1-d2-context-session-design.md` | Step 6 D1/D2 设计（prompt 隔离，线程追问） |
+| `docs/2026-08-21/02-t4-observation-product-design.md` | Step 7 T4/D4 观察帧产品化 |
 | `docs/2026-08-20/01-daemon-evolution-plan.md` | daemon 演进方案（还债+扩建） |
 | `docs/2026-08-20/02-daemon-evolution-tracker.md` | **执行跟踪（以此为准）** |
 | `docs/2026-08-19/01-buzz-borrowing-todo.md` | 产品能力 backlog（T1~T8 + L1~L5） |

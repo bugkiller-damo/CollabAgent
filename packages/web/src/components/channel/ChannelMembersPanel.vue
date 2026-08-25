@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import { apiClient, apiGet } from "../../api";
-import { useAuthStore } from "../../stores";
+import { useAuthStore, useChannelStore, useUiStore } from "../../stores";
 import { toast } from "../../stores/toastStore";
 
 interface Member {
@@ -21,6 +21,8 @@ const props = defineProps<{
 }>();
 
 const authStore = useAuthStore();
+const channelStore = useChannelStore();
+const uiStore = useUiStore();
 const currentUserId = computed(() => authStore.user?.id);
 
 const members = ref<Member[]>([]);
@@ -34,6 +36,10 @@ function load() {
   apiGet<{ members: Member[] }>(`/api/channels/${props.channelId}/members`)
     .then((d) => {
       members.value = d.members || [];
+      channelStore.membersByChannelId = {
+        ...channelStore.membersByChannelId,
+        [props.channelId]: members.value,
+      };
       loading.value = false;
     })
     .catch(() => {
@@ -105,6 +111,11 @@ const agents = computed(() => members.value.filter((m) => m.member_type === "age
 function onInviteKeydown(e: KeyboardEvent) {
   if (e.key === "Enter") handleInvite();
 }
+
+function openProfile(m: Member) {
+  uiStore.openProfile({ handle: m.handle, channelId: props.channelId });
+  props.onClose();
+}
 </script>
 
 <template>
@@ -144,14 +155,22 @@ function onInviteKeydown(e: KeyboardEvent) {
           :key="m.member_id + m.member_type"
           class="group flex items-center gap-2 px-2 py-1.5 rounded hover:bg-gray-100 dark:hover:bg-gray-700"
         >
-          <div :class="'w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-bold shrink-0 ' + (m.member_type === 'agent' ? 'bg-purple-600' : 'bg-gray-500')">
-            {{ (m.display_name || m.handle || "?")[0]?.toUpperCase() }}
-          </div>
-          <div class="flex-1 min-w-0">
-            <div class="text-gray-800 dark:text-gray-200 text-sm truncate">
-              {{ m.display_name || m.handle }}<span v-if="m.member_id === currentUserId" class="text-gray-400"> （你）</span>
+          <div
+            class="flex min-w-0 flex-1 cursor-pointer items-center gap-2"
+            role="button"
+            tabindex="0"
+            @click="openProfile(m)"
+            @keydown.enter="openProfile(m)"
+          >
+            <div :class="'w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-bold shrink-0 ' + (m.member_type === 'agent' ? 'bg-purple-600' : 'bg-gray-500')">
+              {{ (m.display_name || m.handle || "?")[0]?.toUpperCase() }}
             </div>
-            <div class="text-gray-400 text-xs truncate">@{{ m.handle }}</div>
+            <div class="flex-1 min-w-0">
+              <div class="text-gray-800 dark:text-gray-200 text-sm truncate">
+                {{ m.display_name || m.handle }}<span v-if="m.member_id === currentUserId" class="text-gray-400"> （你）</span>
+              </div>
+              <div class="text-gray-400 text-xs truncate">@{{ m.handle }}</div>
+            </div>
           </div>
           <select
             v-if="m.member_type === 'human' && m.role !== 'owner'"
@@ -199,14 +218,22 @@ function onInviteKeydown(e: KeyboardEvent) {
           :key="m.member_id + m.member_type"
           class="group flex items-center gap-2 px-2 py-1.5 rounded hover:bg-gray-100 dark:hover:bg-gray-700"
         >
-          <div :class="'w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-bold shrink-0 ' + (m.member_type === 'agent' ? 'bg-purple-600' : 'bg-gray-500')">
-            {{ (m.display_name || m.handle || "?")[0]?.toUpperCase() }}
-          </div>
-          <div class="flex-1 min-w-0">
-            <div class="text-gray-800 dark:text-gray-200 text-sm truncate">
-              {{ m.display_name || m.handle }}<span v-if="m.member_id === currentUserId" class="text-gray-400"> （你）</span>
+          <div
+            class="flex min-w-0 flex-1 cursor-pointer items-center gap-2"
+            role="button"
+            tabindex="0"
+            @click="openProfile(m)"
+            @keydown.enter="openProfile(m)"
+          >
+            <div :class="'w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-bold shrink-0 ' + (m.member_type === 'agent' ? 'bg-purple-600' : 'bg-gray-500')">
+              {{ (m.display_name || m.handle || "?")[0]?.toUpperCase() }}
             </div>
-            <div class="text-gray-400 text-xs truncate">@{{ m.handle }}</div>
+            <div class="flex-1 min-w-0">
+              <div class="text-gray-800 dark:text-gray-200 text-sm truncate">
+                {{ m.display_name || m.handle }}<span v-if="m.member_id === currentUserId" class="text-gray-400"> （你）</span>
+              </div>
+              <div class="text-gray-400 text-xs truncate">@{{ m.handle }}</div>
+            </div>
           </div>
           <select
             v-if="m.member_type === 'human' && m.role !== 'owner'"

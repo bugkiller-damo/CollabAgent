@@ -42,6 +42,27 @@ export function dispatchWsEvent(msg: WsServerEvent): void {
     const f = msg as any;
     if (f.agentName && Array.isArray(f.frames)) terminalStore.setObsHistory(f.agentName, f.frames);
   }
+  if (type === "terminal:history") {
+    const f = msg as any;
+    if (f.agentName && typeof f.text === "string") terminalStore.setHistory(f.agentName, f.text);
+  }
+  if (type === "agent:progress") {
+    const p = msg as any;
+    if (p.phase === "end") agentStore.clearProgress(p.channelName || "", p.agentName);
+    else if (p.agentName && p.channelName) agentStore.setProgress(p.channelName, p.agentName, p.headline || "思考");
+  }
+  if (type === "agent:presence") {
+    const p = msg as any;
+    if (p.agentName) {
+      agentStore.applyPresence({
+        agentName: p.agentName,
+        agentId: p.agentId,
+        duty: p.duty === "off" ? "off" : "on",
+        computerOnline: !!p.computerOnline,
+        presence: p.presence,
+      });
+    }
+  }
   if (type === "agent:status" || type === "agent:activity") {
     const a = msg as unknown as AgentStatusEvent;
     // daemon 上报带 agentName（G7 last_pty_line）；旧消息只有 agentId，兜底
@@ -63,7 +84,12 @@ export function dispatchWsEvent(msg: WsServerEvent): void {
     messageStore.applyMessageUpdate(m.id, m.content, m.editedAt);
   }
   if (type === "message:delete" && (msg as any).message) {
-    messageStore.applyMessageDelete((msg as any).message.id);
+    const id = (msg as any).message.id as string;
+    // D4 进度条硬删：从列表拿掉，不留「已删除」占位
+    const wasProgress = Object.values(messageStore.messagesByTarget).some((list) =>
+      (list as any[]).some((m) => m.id === id && String(m.content ?? "").startsWith("⏳")),
+    );
+    messageStore.applyMessageDelete(id, { remove: wasProgress });
   }
   if (type === "agent:deliver" && (msg as any).message) {
     const m = (msg as any).message as any;
@@ -79,6 +105,7 @@ export function dispatchWsEvent(msg: WsServerEvent): void {
       channelId: targetKey,
       senderId: m.senderId,
       senderName: m.senderName || "unknown",
+      senderHandle: m.senderHandle,
       senderType: m.senderType || "human",
       content: m.content,
       time: m.time || new Date().toISOString(),
@@ -93,6 +120,7 @@ export function dispatchWsEvent(msg: WsServerEvent): void {
         channelId: threadKey,
         senderId: m.senderId,
         senderName: m.senderName || "unknown",
+        senderHandle: m.senderHandle,
         senderType: m.senderType || "human",
         content: m.content,
         time: m.time || new Date().toISOString(),

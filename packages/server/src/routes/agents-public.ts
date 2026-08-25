@@ -1,7 +1,10 @@
+import { parseAgentDuty, WIRED_RUNTIME_IDS } from "@collabagent/shared";
 import type { FastifyInstance } from "fastify";
 import { sql } from "../db/connection.js";
+import { computerOnlineFor, decorateAgentPresence, setAgentDuty } from "../lib/agent-duty.js";
+import { requireOwnAgent } from "../lib/agent-helpers.js";
 import { getOrCreatePersonalOrg, getUserOrgIds } from "../lib/orgs.js";
-import { daemonClients, sendToDaemon } from "../ws/handler.js";
+import { daemonMeta, requestDaemonWorkspace, sendToDaemon } from "../ws/handler.js";
 
 /**
  * runtime_profile 可能是正确的 jsonb 对象，也可能是历史遗留的「双重编码字符串」，统一解析。
@@ -30,7 +33,9 @@ export async function agentPublicRoutes(app: FastifyInstance) {
     let filter = "";
     if (mine === "1" || mine === "true") {
       params.push(String(req.user.sub));
-      filter = " AND user_id::text = $" + params.length;
+      // 必须带表别名：LEFT JOIN computers 后裸写 user_id 会歧义（a/c 两表都有），
+      // 曾导致 mine=1 500、daemon 静默注册 0 个 agent（2026-08-24 实锤）。
+      filter = " AND a.user_id::text = $" + params.length;
     }
     const agents = await app.pg.query<{
       id: string;
@@ -40,28 +45,63 @@ export async function agentPublicRoutes(app: FastifyInstance) {
       description: string;
       avatar_url: string;
       status: string;
+      duty: string;
       runtime_profile: unknown;
       server_id: string;
       created_at: string;
+      computer_id: string | null;
+      computer_name: string | null;
+      computer_hostname: string | null;
     }>(
-      "SELECT id, user_id, name, display_name, description, avatar_url, status, runtime_profile, server_id, created_at FROM agents WHERE server_id::text = ANY($1)" +
-        filter +
-        " ORDER BY created_at DESC",
+      `SELECT a.id, a.user_id, a.name, a.display_name, a.description, a.avatar_url, a.status, a.duty,
+              a.runtime_profile, a.server_id, a.created_at,
+              c.id AS computer_id, c.name AS computer_name, c.hostname AS computer_hostname
+         FROM agents a
+         LEFT JOIN computers c ON c.user_id = a.user_id
+        WHERE a.server_id::text = ANY($1)${filter}
+        ORDER BY a.created_at DESC`,
       params,
     );
     return {
       agents: agents.rows.map((a) => {
         const rp = parseRuntimeProfile(a.runtime_profile);
+        const decorated = decorateAgentPresence(a);
         return {
           ...a,
+          ...decorated,
           runtime_profile: rp,
           runtime: rp.runtime || "claude",
           model: rp.model || "sonnet",
-          isOnline: daemonClients.has(String(a.user_id)),
+          computer: a.computer_id
+            ? {
+                id: String(a.computer_id),
+                name: a.computer_name || a.computer_hostname || "计算机",
+                hostname: a.computer_hostname,
+                online: computerOnlineFor(String(a.user_id)),
+              }
+            : null,
         };
       }),
     };
   });
+
+  // POST /agents/:agentId/duty — owner 切换值班意愿
+  app.post(
+    "/agents/:agentId/duty",
+    { preHandler: [app.authenticate, requireOwnAgent] },
+    async (req: any, reply: any) => {
+      const { agentId } = req.params as { agentId: string };
+      const raw = (req.body || {}).duty;
+      if (raw !== "on" && raw !== "off") return reply.status(400).send({ error: "duty must be on or off" });
+      try {
+        const result = await setAgentDuty(app.pg, { agentId, duty: raw, actorId: String(req.user.sub) });
+        return result;
+      } catch (err: any) {
+        const status = err.statusCode && err.statusCode >= 400 ? err.statusCode : 500;
+        return reply.status(status).send({ error: err.message || "duty update failed" });
+      }
+    },
+  );
 
   // POST /agents — 创建
   app.post("/agents", { preHandler: [app.authenticate] }, async (req: any, reply: any) => {
@@ -76,6 +116,21 @@ export async function agentPublicRoutes(app: FastifyInstance) {
       orgId = String(serverId);
     } else {
       orgId = await getOrCreatePersonalOrg(app, req.user.sub, req.user.handle);
+    }
+
+    const runtimeId = String(runtime || "claude");
+    if (!(WIRED_RUNTIME_IDS as readonly string[]).includes(runtimeId)) {
+      return reply.status(400).send({ error: "runtime not wired", runtime: runtimeId });
+    }
+    const meta = daemonMeta.get(String(req.user.sub));
+    if (meta) {
+      const probe = meta.runtimes.find((r) => r.id === runtimeId);
+      if (probe && probe.status !== "installed") {
+        return reply.status(400).send({
+          error: probe.status === "not_installed" ? "runtime not installed" : "runtime not wired",
+          runtime: runtimeId,
+        });
+      }
     }
 
     const result = await app.pg.query<{
@@ -95,7 +150,7 @@ export async function agentPublicRoutes(app: FastifyInstance) {
         displayName || name,
         description || "",
         avatarUrl || null,
-        sql.json({ runtime: runtime || "claude", model: model || "sonnet" }),
+        sql.json({ runtime: runtimeId, model: model || "sonnet" }),
       ],
     );
     const agent = result.rows[0] as any;
@@ -109,7 +164,7 @@ export async function agentPublicRoutes(app: FastifyInstance) {
         id: agent.id,
         name: agent.name,
         displayName: agent.display_name,
-        runtime: runtime || "claude",
+        runtime: runtimeId,
         model: model || "sonnet",
       },
       config: { runtime_profile: agent.runtime_profile },
@@ -132,6 +187,8 @@ export async function agentPublicRoutes(app: FastifyInstance) {
     const myOrgs = await getUserOrgIds(app, req.user.sub);
     if (!myOrgs.includes(String(existing.rows[0].server_id)))
       return reply.status(403).send({ error: "not a member of that org" });
+    const existingDuty = await app.pg.query<{ duty: string }>("SELECT duty FROM agents WHERE id = $1", [agentId]);
+    const wasOff = parseAgentDuty(existingDuty.rows[0]?.duty) === "off";
     const { name, displayName, description, avatarUrl, runtime, model } = req.body || {};
     const sets: string[] = [];
     const params: any[] = [];
@@ -163,18 +220,21 @@ export async function agentPublicRoutes(app: FastifyInstance) {
 
     const agent = r.rows[0] as any;
     const rp = parseRuntimeProfile(agent.runtime_profile);
-    sendToDaemon(String(agent.user_id), {
-      type: "agent:start",
-      agentId: agent.id,
-      config: {
-        name: agent.name,
-        displayName: agent.display_name,
-        description: agent.description,
-        runtime: rp.runtime,
-        model: rp.model,
-      },
-    });
-    return { agent: { ...agent, runtime_profile: rp, runtime: rp.runtime, model: rp.model } };
+    // 停班中禁止 agent:start，否则会把人重新注册进 daemon
+    if (!wasOff && parseAgentDuty(agent.duty) !== "off") {
+      sendToDaemon(String(agent.user_id), {
+        type: "agent:start",
+        agentId: agent.id,
+        config: {
+          name: agent.name,
+          displayName: agent.display_name,
+          description: agent.description,
+          runtime: rp.runtime,
+          model: rp.model,
+        },
+      });
+    }
+    return { agent: { ...decorateAgentPresence(agent), runtime_profile: rp, runtime: rp.runtime, model: rp.model } };
   });
 
   // DELETE /agents/:agentId — 删除（连带频道成员关系；保留历史消息）
@@ -194,4 +254,41 @@ export async function agentPublicRoutes(app: FastifyInstance) {
     sendToDaemon(String(exists.rows[0].user_id), { type: "agent:stop", agentId });
     return { ok: true };
   });
+
+  // GET /agents/:agentId/workspace?path=MEMORY.md — owner 读本机工作区（daemon 白名单）
+  app.get(
+    "/agents/:agentId/workspace",
+    { preHandler: [app.authenticate, requireOwnAgent] },
+    async (req: any, reply: any) => {
+      const { agentId } = req.params as { agentId: string };
+      const path = typeof req.query?.path === "string" ? req.query.path : undefined;
+      const agent = await app.pg.query<{ name: string; user_id: string }>(
+        "SELECT name, user_id FROM agents WHERE id = $1",
+        [agentId],
+      );
+      if (agent.rows.length === 0) return reply.status(404).send({ error: "agent not found" });
+      const row = agent.rows[0]!;
+      if (!daemonMeta.get(String(row.user_id))) {
+        return reply.status(503).send({ error: "computer offline", exists: false, files: [] });
+      }
+      const result = await requestDaemonWorkspace(String(row.user_id), row.name, path);
+      if (!result) return reply.status(504).send({ error: "workspace timeout", exists: false, files: [] });
+      if (result.error && result.error !== "not found") {
+        const status = result.error === "path not allowed" ? 400 : result.error === "file too large" ? 413 : 404;
+        return reply.status(status).send({
+          error: result.error,
+          exists: result.exists,
+          files: result.files || [],
+          path: result.path,
+        });
+      }
+      return {
+        exists: result.exists,
+        files: result.files || [],
+        path: result.path,
+        content: result.content,
+        bytes: result.bytes,
+      };
+    },
+  );
 }

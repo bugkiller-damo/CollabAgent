@@ -97,6 +97,63 @@ export async function agentMessageRoutes(app: FastifyInstance) {
     };
   });
 
+  /**
+   * T4/D4：agent 原地更新自己的消息（进度条节流改写 / 代发改写）。
+   * 高频路径：不写 message_edits、不进审计链（人类编辑仍走 /api/messages PUT）。
+   */
+  app.put("/:agentId/messages/:messageId", { preHandler: [app.authenticate, requireOwnAgent] }, async (req, reply) => {
+    const { agentId, messageId } = req.params as Record<string, string>;
+    const { content } = req.body as { content?: string };
+    if (typeof content !== "string") return reply.status(400).send({ error: "content required" });
+    const m = await app.pg.query<{ sender_id: string; sender_type: string; channel_id: string }>(
+      "SELECT sender_id, sender_type, channel_id FROM messages WHERE id = $1",
+      [messageId],
+    );
+    if (m.rows.length === 0) return reply.status(404).send({ error: "message not found" });
+    if (String(m.rows[0].sender_id) !== String(agentId) || m.rows[0].sender_type !== "agent") {
+      return reply.status(403).send({ error: "can only edit your own agent messages" });
+    }
+    const updated = await app.pg.query<{ id: string; content: string; editedAt: string }>(
+      'UPDATE messages SET content = $1, edited_at = now() WHERE id = $2 RETURNING id, content, edited_at as "editedAt"',
+      [content, messageId],
+    );
+    const r = updated.rows[0];
+    broadcast(String(m.rows[0].channel_id), {
+      type: "message:update",
+      message: { id: messageId, content, editedAt: r.editedAt },
+    });
+    return { message: r };
+  });
+
+  /**
+   * T4/D4：agent 删除自己的进度消息。有线程回复则软删（与人类删除一致），否则硬删以免历史残留。
+   */
+  app.delete(
+    "/:agentId/messages/:messageId",
+    { preHandler: [app.authenticate, requireOwnAgent] },
+    async (req, reply) => {
+      const { agentId, messageId } = req.params as Record<string, string>;
+      const m = await app.pg.query<{ sender_id: string; sender_type: string; channel_id: string }>(
+        "SELECT sender_id, sender_type, channel_id FROM messages WHERE id = $1",
+        [messageId],
+      );
+      if (m.rows.length === 0) return reply.status(404).send({ error: "message not found" });
+      if (String(m.rows[0].sender_id) !== String(agentId) || m.rows[0].sender_type !== "agent") {
+        return reply.status(403).send({ error: "can only delete your own agent messages" });
+      }
+      const kids = await app.pg.query("SELECT 1 FROM messages WHERE thread_id = $1 LIMIT 1", [messageId]);
+      if (kids.rows.length > 0) {
+        await app.pg.query("UPDATE messages SET content = '' WHERE id = $1", [messageId]);
+      } else {
+        await app.pg.query("DELETE FROM message_reactions WHERE message_id = $1", [messageId]);
+        await app.pg.query("DELETE FROM message_attachments WHERE message_id = $1", [messageId]);
+        await app.pg.query("DELETE FROM messages WHERE id = $1", [messageId]);
+      }
+      broadcast(String(m.rows[0].channel_id), { type: "message:delete", message: { id: messageId } });
+      return { ok: true };
+    },
+  );
+
   app.get("/:agentId/receive", { preHandler: [app.authenticate, requireOwnAgent] }, async (req, reply) => {
     const agentId = (req.params as Record<string, string>).agentId;
     const agent = await getAgent(app, agentId);

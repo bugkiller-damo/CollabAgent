@@ -6,6 +6,7 @@ interface MentionCandidate {
   displayName: string;
   type: "user" | "agent";
   id: string;
+  duty?: "on" | "off";
 }
 
 /** 提及候选的作用域：私有/DM 频道只列出已加入的成员（与服务端唤醒规则一致），
@@ -58,6 +59,7 @@ export function useMentionSuggest(
             displayName: m.display_name || m.handle,
             type: m.member_type === "agent" ? "agent" : "user",
             id: m.member_id,
+            duty: m.duty,
           });
         }
       } catch {}
@@ -68,7 +70,13 @@ export function useMentionSuggest(
     try {
       const agentData = await apiGet<{ agents: any[] }>("/api/agents");
       for (const a of agentData.agents || []) {
-        list.push({ handle: a.name, displayName: a.display_name, type: "agent", id: a.id });
+        list.push({
+          handle: a.name,
+          displayName: a.display_name,
+          type: "agent",
+          id: a.id,
+          duty: a.duty,
+        });
       }
     } catch {}
     // Fetch server info (has humans) —— 需带鉴权

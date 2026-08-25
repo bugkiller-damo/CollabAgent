@@ -1,4 +1,5 @@
 import type {
+  RuntimeProbe,
   WsChannelBroadcast,
   WsFromBrowserMessage,
   WsFromDaemonMessage,
@@ -10,6 +11,7 @@ import type { WebSocket } from "ws";
 import { appendEvent } from "../lib/audit.js";
 import { config } from "../lib/config.js";
 import type { PubSub } from "../lib/pubsub.js";
+import { normalizeRuntimes } from "../lib/runtime-probe.js";
 
 // 必须与 fastify-jwt 注册时的默认一致，否则浏览器 token 验不过 → 都变 "anon"
 const JWT_SECRET = config.JWT_SECRET;
@@ -23,8 +25,10 @@ export interface DaemonMeta {
   userId: string;
   hostname: string;
   daemonVersion: string;
-  runtimes: string[];
+  runtimes: RuntimeProbe[];
   connectedAt: number;
+  os?: string;
+  arch?: string;
 }
 export const daemonMeta = new Map<string, DaemonMeta>();
 
@@ -192,13 +196,26 @@ function registerConnection(connection: WebSocket, userId: string, isDaemon: boo
         const msg = JSON.parse(raw.toString()) as WsFromDaemonMessage;
         switch (msg.type) {
           case "ready": {
-            console.log(`[WS] Daemon ready: runtimes=${msg.runtimes}`);
+            const runtimes = normalizeRuntimes(msg.runtimes);
+            console.log(`[WS] Daemon ready: runtimes=${runtimes.map((r) => r.id).join(",")}`);
             const meta = daemonMeta.get(userId);
             if (meta) {
               if (msg.hostname) meta.hostname = String(msg.hostname);
               if (msg.daemonVersion) meta.daemonVersion = String(msg.daemonVersion);
-              if (Array.isArray(msg.runtimes)) meta.runtimes = msg.runtimes.map(String);
+              meta.runtimes = runtimes;
+              if (typeof msg.os === "string") meta.os = msg.os;
+              if (typeof msg.arch === "string") meta.arch = msg.arch;
             }
+            persistComputerReady(userId, {
+              hostname: msg.hostname,
+              os: typeof msg.os === "string" ? msg.os : undefined,
+              arch: typeof msg.arch === "string" ? msg.arch : undefined,
+              daemonVersion: msg.daemonVersion,
+              runtimes,
+            });
+            void import("../lib/agent-duty.js").then(({ broadcastOwnerPresence }) =>
+              broadcastOwnerPresence(wsPg, userId),
+            );
             break;
           }
           case "agent:status":
@@ -215,6 +232,10 @@ function registerConnection(connection: WebSocket, userId: string, isDaemon: boo
             console.warn(
               `[WS] delivery dead-letter: agent=${msg.agentName} channel=${msg.channelName} err=${msg.error}`,
             );
+            sendToUser(userId, msg);
+            break;
+          case "agent:progress":
+            // T4：频道顶栏「正在做什么」——只转给该用户浏览器（与 agent:status 同通道）
             sendToUser(userId, msg);
             break;
           case "agent:tool-call": {
@@ -271,6 +292,9 @@ function registerConnection(connection: WebSocket, userId: string, isDaemon: boo
             sendToUser(userId, msg);
             break;
           }
+          case "workspace:result":
+            resolveWorkspaceResult(msg);
+            break;
           case "pong":
             break;
         }
@@ -283,6 +307,7 @@ function registerConnection(connection: WebSocket, userId: string, isDaemon: boo
       daemonClients.delete(userId);
       daemonMeta.delete(userId);
       console.log(`[WS] Daemon disconnected: user=${userId}`);
+      void import("../lib/agent-duty.js").then(({ broadcastOwnerPresence }) => broadcastOwnerPresence(wsPg, userId));
     });
 
     attachHeartbeat(connection);
@@ -337,6 +362,68 @@ export function setWsPg(pg: typeof wsPg) {
   wsPg = pg;
 }
 
+/** 首次 ready：没有 computers 行就按 hostname 插一条；已有则刷新探测字段 */
+function persistComputerReady(
+  userId: string,
+  probe: { hostname?: string; os?: string; arch?: string; daemonVersion?: string; runtimes?: RuntimeProbe[] },
+): void {
+  if (!wsPg) return;
+  const hostname = probe.hostname ? String(probe.hostname) : null;
+  const os = probe.os ? String(probe.os) : null;
+  const arch = probe.arch ? String(probe.arch) : null;
+  const daemonVersion = probe.daemonVersion ? String(probe.daemonVersion) : null;
+  const name = (hostname && hostname !== "unknown" ? hostname : "我的计算机").slice(0, 80);
+  void (async () => {
+    try {
+      const existing = await wsPg!.query<{ id: string }>("SELECT id FROM computers WHERE user_id::text = $1", [userId]);
+      if (existing.rows.length > 0) {
+        await wsPg!.query(
+          `UPDATE computers SET
+             hostname = COALESCE($2, hostname),
+             os = COALESCE($3, os),
+             arch = COALESCE($4, arch),
+             daemon_version = COALESCE($5, daemon_version),
+             runtimes = $6::jsonb,
+             last_ready_at = now()
+           WHERE user_id::text = $1`,
+          [userId, hostname, os, arch, daemonVersion, JSON.stringify(probe.runtimes ?? [])],
+        );
+        return;
+      }
+      const orgs = await wsPg!.query<{ server_id: string }>(
+        "SELECT server_id FROM server_members WHERE user_id::text = $1 LIMIT 1",
+        [userId],
+      );
+      let serverId = orgs.rows[0]?.server_id;
+      if (!serverId) {
+        const created = await wsPg!.query<{ id: string }>(
+          "INSERT INTO servers (name, created_by, owner_id, personal) VALUES ($1, $2, $3, true) RETURNING id",
+          ["我的私有空间", userId, userId],
+        );
+        serverId = created.rows[0]!.id;
+        await wsPg!.query(
+          "INSERT INTO server_members (server_id, user_id, role) VALUES ($1, $2, 'owner') ON CONFLICT DO NOTHING",
+          [serverId, userId],
+        );
+      }
+      await wsPg!.query(
+        `INSERT INTO computers (user_id, server_id, name, description, hostname, os, arch, daemon_version, runtimes, last_ready_at)
+         VALUES ($1, $2, $3, '', $4, $5, $6, $7, $8::jsonb, now())
+         ON CONFLICT (user_id) DO UPDATE SET
+           hostname = COALESCE(EXCLUDED.hostname, computers.hostname),
+           os = COALESCE(EXCLUDED.os, computers.os),
+           arch = COALESCE(EXCLUDED.arch, computers.arch),
+           daemon_version = COALESCE(EXCLUDED.daemon_version, computers.daemon_version),
+           runtimes = EXCLUDED.runtimes,
+           last_ready_at = now()`,
+        [userId, serverId, name, hostname, os, arch, daemonVersion, JSON.stringify(probe.runtimes ?? [])],
+      );
+    } catch (err) {
+      console.warn("[WS] persist computer ready failed:", (err as Error)?.message ?? err);
+    }
+  })();
+}
+
 /**
  * 按频道定向广播：
  * - 公开频道：投递给所有浏览器连接 + 所有 daemon。
@@ -371,6 +458,42 @@ export async function broadcast(channelId: string, event: WsChannelBroadcast) {
 /** Send a message to a specific daemon */
 export function sendToDaemon(userId: string, event: WsToDaemonMessage) {
   publish({ kind: "daemon", userId, event });
+}
+
+type WorkspaceResult = Extract<WsFromDaemonMessage, { type: "workspace:result" }>;
+const workspaceWaiters = new Map<string, (msg: WorkspaceResult) => void>();
+
+function resolveWorkspaceResult(msg: WsFromDaemonMessage): void {
+  if (msg.type !== "workspace:result") return;
+  const waiter = workspaceWaiters.get(msg.requestId);
+  if (!waiter) return;
+  workspaceWaiters.delete(msg.requestId);
+  waiter(msg);
+}
+
+/** 向本机 daemon 要工作区文件；daemon 离线或超时返回 null */
+export function requestDaemonWorkspace(
+  userId: string,
+  agentName: string,
+  path?: string,
+  timeoutMs = 4000,
+): Promise<WorkspaceResult | null> {
+  if (!daemonClients.has(userId)) return Promise.resolve(null);
+  const requestId = `ws-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      workspaceWaiters.delete(requestId);
+      resolve(null);
+    }, timeoutMs);
+    workspaceWaiters.set(requestId, (msg) => {
+      clearTimeout(timer);
+      resolve(msg);
+    });
+    sendToDaemon(
+      userId,
+      path ? { type: "workspace:read", requestId, agentName, path } : { type: "workspace:read", requestId, agentName },
+    );
+  });
 }
 
 /** Broadcast to all connected daemons */

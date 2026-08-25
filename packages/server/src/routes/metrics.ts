@@ -18,7 +18,9 @@ export async function metricsRoutes(app: FastifyInstance) {
       daemons: Array.from(daemonMeta.values()).map((d) => ({
         hostname: d.hostname,
         daemonVersion: d.daemonVersion,
-        runtimes: d.runtimes,
+        os: d.os,
+        arch: d.arch,
+        runtimes: d.runtimes.map((r) => (r.status === "installed" ? r.id : `${r.id}:${r.status}`)),
         connectedAt: d.connectedAt,
       })),
     });

@@ -2,6 +2,7 @@
 import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { apiClient } from "../api";
+import AgentProgressBar from "../components/agent/AgentProgressBar.vue";
 import MarkdownContent from "../components/chat/MarkdownContent.vue";
 import MessageComposer from "../components/chat/MessageComposer.vue";
 import EmptyState from "../components/EmptyState.vue";
@@ -9,13 +10,15 @@ import PageHeader from "../components/layout/PageHeader.vue";
 import Avatar from "../components/ui/Avatar.vue";
 import type { MentionScope } from "../composables";
 import { formatTime } from "../lib/formatTime";
-import { useChannelStore, useMessageStore } from "../stores";
+import { useChannelStore, useMessageStore, useUiStore } from "../stores";
 
 interface ThreadMsg {
   id: string;
   channel_id: string;
   sender_id: string;
   senderName: string;
+  senderHandle?: string;
+  senderType?: string;
   content: string;
   seq: number;
   time: string;
@@ -25,6 +28,7 @@ const route = useRoute();
 const router = useRouter();
 const messageStore = useMessageStore();
 const channelStore = useChannelStore();
+const uiStore = useUiStore();
 
 const channelName = computed(() => route.params.channelName as string);
 const threadId = computed(() => route.params.threadId as string);
@@ -87,6 +91,7 @@ watch(liveReplies, (live) => {
       channel_id: m.channelId,
       sender_id: m.senderId,
       senderName: m.senderName,
+      senderHandle: m.senderHandle,
       content: m.content,
       seq: m.seq,
       time: m.time,
@@ -117,6 +122,11 @@ const mentionScope = computed<MentionScope>(() => ({
 function localeString(iso: string): string {
   return new Date(iso).toLocaleString();
 }
+
+function openSender(msg: { senderHandle?: string }) {
+  const h = String(msg.senderHandle || "").replace(/^@/, "");
+  if (h) uiStore.openProfile({ handle: h, channelId: currentChannel.value?.id });
+}
 </script>
 
 <template>
@@ -143,16 +153,20 @@ function localeString(iso: string): string {
       :breadcrumb="[{ label: `#${channelName}`, to: `/channels/${channelName}` }, { label: '线程' }]"
     />
 
+    <AgentProgressBar :channel-name="channelName" />
+
     <div class="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
       <div
         v-if="parent"
         class="rounded-lg border border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-800"
       >
         <div class="mb-2 flex items-center gap-2">
-          <Avatar :name="parent.senderName || parent.sender_id" size="md" />
-          <span class="text-sm font-semibold text-gray-900 dark:text-white">
-            {{ parent.senderName || parent.sender_id }}
-          </span>
+          <button type="button" class="flex items-center gap-2" :disabled="!parent.senderHandle" @click="openSender(parent)">
+            <Avatar :name="parent.senderName || parent.sender_id" size="md" />
+            <span class="text-sm font-semibold text-gray-900 hover:underline dark:text-white">
+              {{ parent.senderName || parent.sender_id }}
+            </span>
+          </button>
           <span class="text-xs text-gray-500 dark:text-gray-400" :title="localeString(parent.time)">
             {{ formatTime(parent.time) }}
           </span>
@@ -171,12 +185,19 @@ function localeString(iso: string): string {
         :key="msg.id"
         class="group flex gap-3 rounded p-2 hover:bg-gray-100 dark:hover:bg-gray-800/50"
       >
-        <Avatar :name="msg.senderName || msg.sender_id" size="md" />
+        <button type="button" class="shrink-0" :disabled="!msg.senderHandle" @click="openSender(msg)">
+          <Avatar :name="msg.senderName || msg.sender_id" size="md" />
+        </button>
         <div class="min-w-0">
           <div class="flex items-baseline gap-2">
-            <span class="text-sm font-semibold text-gray-900 dark:text-white">
+            <button
+              type="button"
+              class="text-sm font-semibold text-gray-900 hover:underline disabled:no-underline dark:text-white"
+              :disabled="!msg.senderHandle"
+              @click="openSender(msg)"
+            >
               {{ msg.senderName || msg.sender_id }}
-            </span>
+            </button>
             <span class="text-xs text-gray-500 dark:text-gray-400" :title="localeString(msg.time)">
               {{ formatTime(msg.time) }}
             </span>

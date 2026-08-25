@@ -13,7 +13,7 @@ import { createAgentStdinDispatcher } from "./agent-stdin-dispatcher.js";
 import { resolveCommand } from "./command-resolver.js";
 import type { PersistentClaude } from "./drivers/persistent-claude.js";
 import { resolveCommandOnPath } from "./drivers/probe.js";
-import { createIdleReclaimer } from "./idle-reclaimer.js";
+import { createIdleReclaimer, reclaimIdleAgent } from "./idle-reclaimer.js";
 import { createPostStartInputWriter, type PostStartInputWriter } from "./post-start-input-writer.js";
 import type {
   AgentStatus,
@@ -127,6 +127,10 @@ export interface AgentRuntimeOptions {
   onCircuitBreak?: (agentName: string, channel: string, content: string) => void;
   /** D2：threadId → sessionId（独立 JSON；测试可不传） */
   threadSessions?: import("./agent-thread-sessions.js").IThreadSessionStore;
+  /** D4：按 agent 绑定进度条发/改/删（测试可不传 = 不写频道进度） */
+  createProgressPoster?: (agentName: string) => import("./agent-progress.js").ProgressPoster;
+  /** T4：顶栏「正在做什么」（不落库） */
+  onProgress?: (agentName: string, channelName: string, headline: string, phase: "start" | "update" | "end") => void;
 }
 
 export interface IAgentRuntime {
@@ -169,7 +173,9 @@ export interface IAgentRuntime {
   listAgentNames(): string[];
 
   // 生命周期
+  /** 停进程/清队列，状态 → idle（保留注册，下次消息可冷启动） */
   stopAgent(agentName: string): void;
+  /** daemon 关闭：全部 agent → stopped，dispose 派发队列 */
   stopAll(): void;
   /** 记录该 agent 的首选终端尺寸（面板尺寸协商用）——下次 spawn 直接按此尺寸启动 */
   setPreferredTermSize(agentName: string, size: { cols: number; rows: number }): void;
@@ -257,6 +263,12 @@ export const createAgentRuntime = (
   );
 
   const { transitionState, clearStartupTimer } = stateMachine;
+  // P0.3：每次显式停进程递增。doDispatch 跨 await 后对照，避免 mint/spawn
+  // 完成后把已停 agent 再推进 working。
+  const stopGeneration = new Map<string, number>();
+  const bumpStopGeneration = (name: string): void => {
+    stopGeneration.set(name, (stopGeneration.get(name) ?? 0) + 1);
+  };
 
   // ---- 空闲回收（对应 ADR-005："工作中的 agent 队列空 + 无活动 -> 优雅关闭"）----
   // touch() 在每次回合结束（working -> idle）时调用；untrack() 在开始新一轮 working 或
@@ -267,12 +279,38 @@ export const createAgentRuntime = (
   // 回收，下条消息又付一次全量冷启动）。默认放宽到 1800s，可用 SLOCK_IDLE_RECLAIM_MS 调整。
   const idleReclaimer = createIdleReclaimer({
     timeoutMs: Number(process.env.SLOCK_IDLE_RECLAIM_MS) || 1_800_000,
-    onReclaim: (name) => {
-      const runId = runIdByAgent.get(name);
-      if (runId) agentManager.stopRun(runId); // 真正的清理交给下面的退出清理链回调
-    },
+    onReclaim: (name) =>
+      // P0.2：headless 不写 runIdByAgent，只把 PersistentClaude 放在
+      // persistentSessions。原先只 stopRun(PTY)，空闲超时后 claude 子进程永不回收。
+      // 返回 false（仍 working/starting）时 reclaimer 保留跟踪，下次扫描再试。
+      reclaimIdleAgent({
+        name,
+        runIdByAgent,
+        agentManager,
+        persistentSessions,
+        stateMachine,
+      }),
   });
   idleReclaimer.start();
+
+  /** 停掉该 agent 的进程/会话/订阅（不改状态机）。 */
+  const tearDownAgentProcess = (name: string): void => {
+    const runId = runIdByAgent.get(name);
+    if (runId) {
+      agentManager.stopRun(runId);
+      const unsub = unsubByRunId.get(runId);
+      if (unsub) {
+        unsub();
+        unsubByRunId.delete(runId);
+      }
+      runIdByAgent.delete(name);
+    }
+    persistentSessions.get(name)?.stop();
+    persistentSessions.delete(name);
+    idleReclaimer.untrack(name);
+    turnTracker.decPending(name);
+    turnTracker.clearBusyObserved(name);
+  };
 
   // ---- 退出清理链（见 agent-runtime-exit.ts）----
   const exitChain = createExitChain({
@@ -422,35 +460,58 @@ export const createAgentRuntime = (
   });
 
   // ---- 消息分发核心（见 agent-runtime-dispatch.ts）----
-  const { dispatchToAgent, runAgent, runAgentDm, runAgentReminder, runAgentTriage } = createDispatch({
-    options,
-    stateMachine,
-    turnTracker,
-    exitChain,
-    idleReclaimer,
-    credentialsClient,
-    postStartWriter,
-    spawnPtyForAgent,
-    usePty,
-    resolveAgentId,
-    agentInfo,
-    runIdByAgent,
-    persistentSessions,
-    agentSessions,
-    dispatchPromises,
-    onDeliveryQueued: options.onDeliveryQueued,
-    onDeliveryDeadLetter: options.onDeliveryDeadLetter,
-    observationBus,
-    onToolCall: options.onToolCall,
-    onReplyMissing: options.onReplyMissing,
-    costTracker: options.costTracker,
-    onCircuitBreak: options.onCircuitBreak,
-    threadSessions: options.threadSessions,
-  });
+  const { dispatchToAgent, runAgent, runAgentDm, runAgentReminder, runAgentTriage, clearAgentQueue, disposeQueue } =
+    createDispatch({
+      options,
+      stateMachine,
+      turnTracker,
+      exitChain,
+      idleReclaimer,
+      credentialsClient,
+      postStartWriter,
+      spawnPtyForAgent,
+      usePty,
+      resolveAgentId,
+      agentInfo,
+      runIdByAgent,
+      persistentSessions,
+      agentSessions,
+      dispatchPromises,
+      onDeliveryQueued: options.onDeliveryQueued,
+      onDeliveryDeadLetter: options.onDeliveryDeadLetter,
+      observationBus,
+      onToolCall: options.onToolCall,
+      onReplyMissing: options.onReplyMissing,
+      costTracker: options.costTracker,
+      onCircuitBreak: options.onCircuitBreak,
+      threadSessions: options.threadSessions,
+      createProgressPoster: options.createProgressPoster,
+      onProgress: options.onProgress,
+      getStopGeneration: (name) => stopGeneration.get(name) ?? 0,
+      abortAgentProcess: (name) => tearDownAgentProcess(name),
+    });
+
+  /**
+   * P0.3：统一 stop 路径。先 bump 代次 + 切状态（挡住 in-flight 复活），
+   * 再清队列与进程。stopAgent 保留注册（→ idle，下次消息可冷启动）；
+   * unregister / stopAll 切 stopped（isDeliverable 挡新入队）。
+   */
+  const haltAgent = (name: string, to: "idle" | "stopped"): void => {
+    bumpStopGeneration(name);
+    clearStartupTimer(name);
+    const current = stateMachine.getState(name);
+    if (to === "stopped") {
+      transitionState(name, "stopped"); // uninit → stopped 合法；同态 no-op
+    } else if (current && current !== "stopped") {
+      transitionState(name, "idle");
+    }
+    clearAgentQueue(name);
+    tearDownAgentProcess(name);
+  };
 
   // ---- 公开接口 ----
 
-  return {
+  const runtimeApi: IAgentRuntime = {
     dispatchToAgent,
     runAgent,
     runAgentDm,
@@ -473,20 +534,11 @@ export const createAgentRuntime = (
         description: info.description ?? prev?.description,
         model: info.model ?? prev?.model,
       });
-      // 清理旧 PTY / 旧 session
-      const oldRunId = runIdByAgent.get(name);
-      if (oldRunId) {
-        agentManager.stopRun(oldRunId);
-        const unsub = unsubByRunId.get(oldRunId);
-        if (unsub) {
-          unsub();
-          unsubByRunId.delete(oldRunId);
-        }
-        runIdByAgent.delete(name);
-      }
-      persistentSessions.get(name)?.stop();
-      persistentSessions.delete(name);
-      idleReclaimer.untrack(name);
+      // 重注册视为一次显式停：bump 代次挡住 in-flight spawn 复活旧进程，
+      // 再清队列/进程，最后落到 idle（agent:start / 值班开）。
+      bumpStopGeneration(name);
+      clearAgentQueue(name);
+      tearDownAgentProcess(name);
       transitionState(name, "idle");
     },
 
@@ -495,21 +547,7 @@ export const createAgentRuntime = (
       agentDrivers.delete(name);
       agentInfo.delete(name);
       agentSessions.delete(name);
-      const runId = runIdByAgent.get(name);
-      if (runId) {
-        agentManager.stopRun(runId);
-        const unsub = unsubByRunId.get(runId);
-        if (unsub) {
-          unsub();
-          unsubByRunId.delete(runId);
-        }
-        runIdByAgent.delete(name);
-      }
-      persistentSessions.get(name)?.stop();
-      persistentSessions.delete(name);
-      clearStartupTimer(name);
-      idleReclaimer.untrack(name);
-      transitionState(name, "stopped");
+      haltAgent(name, "stopped");
     },
 
     async loadExistingAgents(): Promise<void> {
@@ -520,15 +558,29 @@ export const createAgentRuntime = (
         const res = await fetch(options.serverUrl + "/api/agents?mine=1", {
           headers: { Authorization: `Bearer ${options.apiKey}` },
         });
+        // 非 2xx 必须显式失败：此前 500 时 data.agents 为 undefined，会静默注册 0 个
+        // agent，之后所有 @mention 都被 hasAgent() 挡掉且无任何日志（2026-08-24 实锤）。
+        if (!res.ok) throw new Error(`HTTP ${res.status} from /api/agents?mine=1`);
         const data = (await res.json()) as any;
+        if (!Array.isArray(data?.agents)) throw new Error("unexpected /api/agents response shape");
+        const onDutyNames = new Set<string>();
         for (const agent of data.agents || []) {
           const name = agent.name as string;
+          if (!name) continue;
+          if (agent.duty === "off") continue;
+          onDutyNames.add(name);
           if (agent.id) agentNameToId.set(name, agent.id as string);
           agentInfo.set(name, { displayName: agent.display_name, description: agent.description, model: agent.model });
           if (!agentDrivers.has(name)) {
             console.log("[Daemon] Registered (lazy): @" + name + " -> " + (agent.id || "?").slice(0, 8));
             agentDrivers.set(name, true);
             transitionState(name, "idle");
+          }
+        }
+        for (const name of [...agentDrivers.keys()]) {
+          if (!onDutyNames.has(name)) {
+            console.log("[Daemon] Dropping off-duty / missing agent @" + name);
+            runtimeApi.unregisterAgent(name);
           }
         }
       } catch (err: any) {
@@ -546,29 +598,19 @@ export const createAgentRuntime = (
     },
 
     stopAgent(agentName: string): void {
-      const runId = runIdByAgent.get(agentName);
-      if (runId) {
-        agentManager.stopRun(runId);
-        const unsub = unsubByRunId.get(runId);
-        if (unsub) {
-          unsub();
-          unsubByRunId.delete(runId);
-        }
-        runIdByAgent.delete(agentName);
-      }
-      persistentSessions.get(agentName)?.stop();
-      persistentSessions.delete(agentName);
-      idleReclaimer.untrack(agentName);
+      haltAgent(agentName, "idle");
     },
 
     stopAll(): void {
       idleReclaimer.stop();
-      for (const unsub of unsubByRunId.values()) unsub();
-      unsubByRunId.clear();
-      for (const runId of runIdByAgent.values()) agentManager.stopRun(runId);
-      runIdByAgent.clear();
-      for (const s of persistentSessions.values()) s.stop();
-      persistentSessions.clear();
+      const names = new Set<string>([
+        ...agentDrivers.keys(),
+        ...stateMachine.listKnown(),
+        ...runIdByAgent.keys(),
+        ...persistentSessions.keys(),
+      ]);
+      for (const name of names) haltAgent(name, "stopped");
+      disposeQueue();
     },
 
     getAgentInfo(name: string) {
@@ -601,4 +643,5 @@ export const createAgentRuntime = (
       return observationBus;
     },
   };
+  return runtimeApi;
 };

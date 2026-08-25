@@ -143,6 +143,30 @@ describe("agent-dispatch-queue", () => {
     q.dispose();
   });
 
+  it("clear 后 in-flight 失败不再重试（P0.3 epoch）", async () => {
+    let reject!: (err: Error) => void;
+    const deliver = vi.fn().mockImplementationOnce(() => new Promise<void>((_, rej) => (reject = rej)));
+    const onRetry = vi.fn();
+    const onDeadLetter = vi.fn();
+    const q = createAgentDispatchQueue({
+      deliver,
+      onRetry,
+      onDeadLetter,
+      baseDelayMs: 5,
+      maxDelayMs: 10,
+      maxRetries: 3,
+    });
+    q.enqueue(makeItem());
+    await flush(5);
+    expect(q.clear("alice")).toBe(0); // in-flight 已 splice 出 pending
+    reject(new Error("stopped"));
+    await flush(50);
+    expect(deliver).toHaveBeenCalledTimes(1);
+    expect(onRetry).not.toHaveBeenCalled();
+    expect(onDeadLetter).not.toHaveBeenCalled();
+    q.dispose();
+  });
+
   it("一批中部分死信：attempts 独立计费", async () => {
     // m1 第一次投递失败后重试时，m2 入队被合并进同一批；
     // 批再失败时 m1 attempts=2 死信，m2 attempts=1 继续重试

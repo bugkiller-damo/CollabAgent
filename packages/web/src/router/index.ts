@@ -39,7 +39,12 @@ const router = createRouter({
             { path: "dm/:peerName/:threadId", component: () => import("../pages/ThreadView.vue") },
             { path: "tasks", component: () => import("../pages/TaskBoard.vue") },
             { path: "tasks/:channelName", component: () => import("../pages/TaskBoard.vue") },
-            { path: "connect", component: () => import("../pages/ConnectWizard.vue") },
+            { path: "activity", component: () => import("../pages/ActivityView.vue") },
+            { path: "people", component: () => import("../pages/PeopleView.vue") },
+            { path: "search", component: () => import("../pages/SearchView.vue") },
+            { path: "computers", component: () => import("../pages/ComputerView.vue") },
+            { path: "computers/:id", component: () => import("../pages/ComputerView.vue") },
+            { path: "connect", redirect: "/computers" },
 
             // 设置（嵌套：SettingsLayout + 子页面）
             {
@@ -58,7 +63,16 @@ const router = createRouter({
               path: "admin",
               component: () => import("../pages/admin/AdminPanel.vue"),
               children: [
-                { path: "agents", component: () => import("../pages/admin/AgentManagement.vue") },
+                {
+                  path: "agents",
+                  redirect: (to) => {
+                    const agent = to.query.agent;
+                    if (typeof agent === "string" && agent) {
+                      return { path: "/people", query: { member: agent } };
+                    }
+                    return "/computers";
+                  },
+                },
                 { path: "channels", component: () => import("../pages/admin/ChannelManagement.vue") },
                 { path: "members", component: () => import("../pages/admin/WorkspaceMembers.vue") },
                 { path: "metrics", component: () => import("../pages/admin/MetricsDashboard.vue") },

@@ -1,7 +1,9 @@
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { useAgentStore } from "../stores/agentStore";
 import { useChannelStore } from "../stores/channelStore";
 import { useMessageStore } from "../stores/messageStore";
+import { useTerminalStore } from "../stores/terminalStore";
 import { dispatchWsEvent } from "./wsDispatch";
 
 // O16：事件路由单测——store 只消费事件。重点回归 O15 胶水：
@@ -108,5 +110,73 @@ describe("wsDispatch", () => {
 
     dispatchWsEvent({ type: "message:delete", message: { id: "m-9" } } as any);
     expect((messageStore.messagesByTarget["#general"][0] as any).deleted).toBe(true);
+  });
+
+  it("terminal:history / obs-frame 写入 terminalStore", () => {
+    const terminalStore = useTerminalStore();
+    dispatchWsEvent({
+      type: "terminal:history",
+      agentName: "alice",
+      text: "log-tail",
+    } as any);
+    expect(terminalStore.histories.alice).toBe("log-tail");
+
+    dispatchWsEvent({
+      type: "terminal:obs-frame",
+      agentName: "alice",
+      frame: { agentName: "alice", seq: 1, timestamp: 1, kind: "text", turnId: null, payload: { text: "hi" } },
+    } as any);
+    expect(terminalStore.obsFrames.alice).toHaveLength(1);
+    expect(terminalStore.obsFrames.alice[0].payload.text).toBe("hi");
+  });
+
+  it("agent:progress 写入频道顶栏状态", () => {
+    const agentStore = useAgentStore();
+    dispatchWsEvent({
+      type: "agent:progress",
+      agentName: "alice",
+      channelName: "general",
+      headline: "读文件 login.ts",
+      phase: "update",
+    } as any);
+    expect(agentStore.progressByChannel.general.headline).toContain("读文件");
+    dispatchWsEvent({
+      type: "agent:progress",
+      agentName: "alice",
+      channelName: "general",
+      headline: "",
+      phase: "end",
+    } as any);
+    expect(agentStore.progressByChannel.general).toBeUndefined();
+  });
+
+  it("agent:presence 写入 duty / presence", () => {
+    const agentStore = useAgentStore();
+    dispatchWsEvent({
+      type: "agent:presence",
+      agentId: "id-1",
+      agentName: "coder",
+      duty: "off",
+      computerOnline: true,
+      presence: "off_duty",
+    } as any);
+    expect(agentStore.agents.coder.duty).toBe("off");
+    expect(agentStore.agents.coder.presence).toBe("off_duty");
+  });
+
+  it("message:delete 进度条从列表移除", () => {
+    const messageStore = useMessageStore();
+    messageStore.receiveMessage({
+      id: "m-p",
+      seq: 2,
+      channelId: "#general",
+      senderId: "a",
+      senderName: "alice",
+      senderType: "agent",
+      content: "⏳ 正在读文件…",
+      time: "t",
+    } as any);
+    dispatchWsEvent({ type: "message:delete", message: { id: "m-p" } } as any);
+    expect(messageStore.messagesByTarget["#general"].find((m: any) => m.id === "m-p")).toBeUndefined();
   });
 });

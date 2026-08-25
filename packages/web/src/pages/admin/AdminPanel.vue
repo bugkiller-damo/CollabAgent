@@ -4,15 +4,8 @@ import { RouterLink, RouterView, useRoute } from "vue-router";
 import PageHeader from "../../components/layout/PageHeader.vue";
 import NavItem from "../../components/ui/NavItem.vue";
 
-// React 版 tabs 数组 + 4 个 SVG 图标（每个图标均为单一 <path>，此处只保留 d 值，
-// 由模板统一渲染为同一 <svg>，与 React 版标记完全一致）
+// 工作区级 Tab（频道 / 成员 / 指标）。Agent CRUD 已迁到 /computers 与成员档案。
 const tabs = [
-  {
-    to: "/admin/agents",
-    label: "Agent 管理",
-    desc: "注册、配置、监控 AI Agent",
-    d: "M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09Z",
-  },
   {
     to: "/admin/channels",
     label: "频道管理",

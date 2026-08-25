@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
-import { getAgent, requireOwnAgent } from "../lib/agent-helpers.js";
-import { daemonClients, sendToDaemon } from "../ws/handler.js";
+import { decorateAgentPresence } from "../lib/agent-duty.js";
+import { requireOwnAgent } from "../lib/agent-helpers.js";
+import { sendToDaemon } from "../ws/handler.js";
 import { agentMessageRoutes } from "./agents-messages.js";
 import { agentReminderRoutes } from "./agents-reminders.js";
 import { agentTaskRoutes } from "./agents-tasks.js";
@@ -16,12 +17,13 @@ export async function agentRoutes(app: FastifyInstance) {
       description: string;
       avatar_url: string;
       status: string;
+      duty: string;
       runtime_profile: unknown;
       created_at: string;
     }>(
-      "SELECT id, user_id, name, display_name, description, avatar_url, status, runtime_profile, created_at FROM agents ORDER BY created_at DESC",
+      "SELECT id, user_id, name, display_name, description, avatar_url, status, duty, runtime_profile, created_at FROM agents ORDER BY created_at DESC",
     );
-    return { agents: result.rows.map((a) => ({ ...a, isOnline: daemonClients.has(String(a.user_id)) })) };
+    return { agents: result.rows.map((a) => decorateAgentPresence(a)) };
   });
 
   // List agents in a channel（需登录）
@@ -35,13 +37,14 @@ export async function agentRoutes(app: FastifyInstance) {
       description: string;
       avatar_url: string;
       status: string;
+      duty: string;
       runtime_profile: unknown;
       role: string;
     }>(
-      "SELECT a.id, a.user_id, a.name, a.display_name, a.description, a.avatar_url, a.status, a.runtime_profile, cm.role FROM agents a JOIN channel_members cm ON cm.member_id = a.id AND cm.member_type = 'agent' WHERE cm.channel_id = $1",
+      "SELECT a.id, a.user_id, a.name, a.display_name, a.description, a.avatar_url, a.status, a.duty, a.runtime_profile, cm.role FROM agents a JOIN channel_members cm ON cm.member_id = a.id AND cm.member_type = 'agent' WHERE cm.channel_id = $1",
       [channelId],
     );
-    return { agents: result.rows.map((a) => ({ ...a, isOnline: daemonClients.has(String(a.user_id)) })) };
+    return { agents: result.rows.map((a) => decorateAgentPresence(a)) };
   });
 
   // Create agent

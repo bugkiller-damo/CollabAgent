@@ -136,5 +136,35 @@ describe("agent-runtime-state", () => {
       vi.advanceTimersByTime(200);
       expect(cb).toHaveBeenCalledTimes(1); // 无人清理，照常触发
     });
+
+    it("同态迁移清掉 startupTimer（P0.3：idle→idle 不留下 starting 超时）", () => {
+      sm.transitionState("a", "idle");
+      const cb = vi.fn();
+      sm.setStartupTimer("a", setTimeout(cb, 100));
+      sm.transitionState("a", "idle");
+      vi.advanceTimersByTime(200);
+      expect(cb).not.toHaveBeenCalled();
+    });
+
+    it("合法迁移先 clearTimeout 再换对象（P0.3：starting→stopped 不让超时回调复活 idle）", () => {
+      sm.transitionState("a", "idle");
+      sm.transitionState("a", "starting");
+      const cb = vi.fn(() => sm.transitionState("a", "idle"));
+      sm.setStartupTimer("a", setTimeout(cb, 100));
+      sm.transitionState("a", "stopped");
+      vi.advanceTimersByTime(200);
+      expect(cb).not.toHaveBeenCalled();
+      expect(sm.getState("a")).toBe("stopped");
+    });
+  });
+
+  describe("listKnown", () => {
+    it("返回已落账的全部 agent 名", () => {
+      expect(sm.listKnown()).toEqual([]);
+      sm.transitionState("a", "idle");
+      sm.transitionState("b", "idle");
+      sm.transitionState("b", "stopped");
+      expect(sm.listKnown().sort()).toEqual(["a", "b"]);
+    });
   });
 });

@@ -5,6 +5,8 @@
  * 失败不阻断唤醒。SLOCK_CONTEXT_BUILDER=0 关闭。不召 LLM 摘要。
  */
 
+import { isProgressContent } from "@collabagent/shared";
+
 export interface HistoryMessage {
   id?: string;
   seq?: number | string;
@@ -76,6 +78,7 @@ export const packThreadContext = (
   const filtered = messages.filter((m) => {
     const content = String(m.content ?? "").trim();
     if (!content) return false;
+    if (isProgressContent(content)) return false;
     if (triggerId && m.id && String(m.id) === triggerId) return false;
     if (!triggerId && triggerContent && content === triggerContent) return false;
     return true;

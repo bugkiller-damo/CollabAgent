@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { apiGet, apiPost } from "../api";
 import PageHeader from "../components/layout/PageHeader.vue";
+import TaskDetailModal from "../components/task/TaskDetailModal.vue";
 import Button from "../components/ui/Button.vue";
 import Input from "../components/ui/Input.vue";
 import { useChannelStore } from "../stores";
@@ -16,6 +17,9 @@ interface Task {
   task_assignee: string | null;
   assignee_handle: string | null;
   creator_name: string;
+  sender_id: string;
+  sender_type: string;
+  created_at: string;
 }
 
 const COLUMNS: { status: string; label: string; tint: string }[] = [
@@ -24,6 +28,16 @@ const COLUMNS: { status: string; label: string; tint: string }[] = [
   { status: "in_review", label: "审查中", tint: "border-t-amber-500" },
   { status: "done", label: "已完成", tint: "border-t-green-500" },
 ];
+
+const STATUS_META: Record<string, { label: string; badge: string }> = {
+  todo: { label: "待办", badge: "bg-gray-200 text-gray-700 dark:bg-gray-600 dark:text-gray-200" },
+  in_progress: { label: "进行中", badge: "bg-blue-100 text-blue-700 dark:bg-blue-900/60 dark:text-blue-300" },
+  in_review: { label: "审查中", badge: "bg-amber-100 text-amber-700 dark:bg-amber-900/60 dark:text-amber-300" },
+  done: { label: "已完成", badge: "bg-green-100 text-green-700 dark:bg-green-900/60 dark:text-green-300" },
+  closed: { label: "已关闭", badge: "bg-gray-300 text-gray-600 dark:bg-gray-700 dark:text-gray-400" },
+};
+
+const VIEW_MODE_KEY = "slock-task-view";
 
 const route = useRoute();
 const router = useRouter();
@@ -42,6 +56,44 @@ const loading = ref(false);
 const newTitle = ref("");
 const dragNum = ref<number | null>(null);
 const dragOverCol = ref<string | null>(null);
+
+// 创建者 / 负责人筛选（空串 = 全部；负责人筛选用 "none" 表示未分配）
+const creatorFilter = ref("");
+const assigneeFilter = ref("");
+
+// 看板 / 列表视图切换（持久化到 localStorage）
+const viewMode = ref<"board" | "list">("board");
+
+// 任务详情抽屉
+const selectedTask = ref<Task | null>(null);
+
+const creatorOptions = computed(() => {
+  const map = new Map<string, string>();
+  for (const t of tasks.value) {
+    if (t.sender_id && !map.has(t.sender_id)) map.set(t.sender_id, t.creator_name || "User");
+  }
+  return [...map.entries()].map(([id, name]) => ({ id, name }));
+});
+
+const assigneeOptions = computed(() => {
+  const map = new Map<string, string>();
+  for (const t of tasks.value) {
+    if (t.task_assignee && t.assignee_handle && !map.has(t.task_assignee)) map.set(t.task_assignee, t.assignee_handle);
+  }
+  return [...map.entries()].map(([id, name]) => ({ id, name }));
+});
+
+const filteredTasks = computed(() =>
+  tasks.value.filter((t) => {
+    if (creatorFilter.value && t.sender_id !== creatorFilter.value) return false;
+    if (assigneeFilter.value === "none") {
+      if (t.task_assignee) return false;
+    } else if (assigneeFilter.value && t.task_assignee !== assigneeFilter.value) {
+      return false;
+    }
+    return true;
+  }),
+);
 
 // 对齐 React useEffect：channelName || activeChannelName || channels[0]?.name 择优选择当前频道
 watch(
@@ -70,6 +122,16 @@ function load() {
 
 // 对齐 React useEffect(() => { load(); }, [load])
 watch(channel, () => load(), { immediate: true });
+
+onMounted(() => {
+  const v = localStorage.getItem(VIEW_MODE_KEY);
+  if (v === "list" || v === "board") viewMode.value = v;
+});
+
+function setViewMode(v: "board" | "list") {
+  viewMode.value = v;
+  localStorage.setItem(VIEW_MODE_KEY, v);
+}
 
 async function createTask() {
   const t = newTitle.value.trim();
@@ -121,7 +183,24 @@ function onChannelSelect(e: Event) {
 }
 
 function colTasks(status: string) {
-  return tasks.value.filter((t) => t.task_status === status);
+  return filteredTasks.value.filter((t) => t.task_status === status);
+}
+
+function openTask(t: Task) {
+  selectedTask.value = t;
+}
+
+function statusLabel(s: string): string {
+  return STATUS_META[s]?.label || s;
+}
+
+function statusBadge(s: string): string {
+  return STATUS_META[s]?.badge || STATUS_META.todo!.badge;
+}
+
+function fmtTime(t: string): string {
+  const d = new Date(t);
+  return Number.isNaN(d.getTime()) ? t : d.toLocaleDateString();
 }
 </script>
 
@@ -133,12 +212,54 @@ function colTasks(status: string) {
       :breadcrumb="channel ? [{ label: '#' + channel, to: '/channels/' + channel }, { label: '任务看板' }] : undefined"
     >
       <div class="flex flex-wrap items-center gap-2">
+        <!-- 视图切换 -->
+        <div class="flex overflow-hidden rounded-md border border-gray-300 dark:border-gray-600">
+          <button
+            type="button"
+            :class="[
+              'px-2.5 py-1.5 text-xs',
+              viewMode === 'board'
+                ? 'bg-blue-600 text-white'
+                : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600',
+            ]"
+            @click="setViewMode('board')"
+          >
+            看板
+          </button>
+          <button
+            type="button"
+            :class="[
+              'px-2.5 py-1.5 text-xs',
+              viewMode === 'list'
+                ? 'bg-blue-600 text-white'
+                : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600',
+            ]"
+            @click="setViewMode('list')"
+          >
+            列表
+          </button>
+        </div>
         <select
           :value="channel"
           @change="onChannelSelect"
           class="rounded-md border border-gray-300 bg-gray-100 px-2 py-1.5 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
         >
           <option v-for="c in channels" :key="c.id" :value="c.name">#{{ c.name }}</option>
+        </select>
+        <select
+          v-model="creatorFilter"
+          class="max-w-36 rounded-md border border-gray-300 bg-gray-100 px-2 py-1.5 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+        >
+          <option value="">创建者：全部</option>
+          <option v-for="o in creatorOptions" :key="o.id" :value="o.id">{{ o.name }}</option>
+        </select>
+        <select
+          v-model="assigneeFilter"
+          class="max-w-36 rounded-md border border-gray-300 bg-gray-100 px-2 py-1.5 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+        >
+          <option value="">负责人：全部</option>
+          <option value="none">未分配</option>
+          <option v-for="o in assigneeOptions" :key="o.id" :value="o.id">@{{ o.name }}</option>
         </select>
         <Input
           :value="newTitle"
@@ -151,7 +272,11 @@ function colTasks(status: string) {
       </div>
     </PageHeader>
 
-    <div class="grid flex-1 grid-cols-1 content-start gap-4 overflow-y-auto p-4 sm:grid-cols-2 xl:grid-cols-4">
+    <!-- 看板视图 -->
+    <div
+      v-if="viewMode === 'board'"
+      class="grid flex-1 grid-cols-1 content-start gap-4 overflow-y-auto p-4 sm:grid-cols-2 xl:grid-cols-4"
+    >
       <div
         v-for="col in COLUMNS"
         :key="col.status"
@@ -175,17 +300,19 @@ function colTasks(status: string) {
             draggable="true"
             @dragstart="dragNum = t.task_number"
             @dragend="dragNum = null; dragOverCol = null"
-            class="cursor-grab rounded border border-gray-200 bg-white p-2.5 shadow-sm active:cursor-grabbing dark:border-gray-600 dark:bg-gray-700"
+            @click="openTask(t)"
+            class="cursor-grab rounded border border-gray-200 bg-white p-2.5 shadow-sm active:cursor-grabbing hover:border-blue-300 dark:border-gray-600 dark:bg-gray-700 dark:hover:border-blue-500"
           >
             <div class="flex items-start gap-2">
               <span class="shrink-0 text-xs text-gray-400">#{{ t.task_number }}</span>
-              <p class="flex-1 text-sm text-gray-800 dark:text-gray-200">{{ t.content }}</p>
+              <p class="line-clamp-3 flex-1 break-words text-sm text-gray-800 dark:text-gray-200">{{ t.content }}</p>
             </div>
             <div class="mt-2 flex items-center justify-between">
               <span v-if="t.assignee_handle" class="text-[11px] text-blue-600 dark:text-blue-400">@{{ t.assignee_handle }}</span>
-              <button v-else @click="claim(t.task_number)" class="text-[11px] text-gray-500 hover:text-blue-500">认领</button>
+              <button v-else @click.stop="claim(t.task_number)" class="text-[11px] text-gray-500 hover:text-blue-500">认领</button>
               <select
                 :value="t.task_status"
+                @click.stop
                 @change="moveTo(t.task_number, ($event.target as HTMLSelectElement).value)"
                 class="rounded border border-gray-200 bg-transparent px-1 text-[11px] text-gray-500 dark:border-gray-600 dark:text-gray-400"
               >
@@ -200,5 +327,49 @@ function colTasks(status: string) {
         </div>
       </div>
     </div>
+
+    <!-- 列表视图 -->
+    <div v-else class="flex-1 overflow-y-auto p-4">
+      <div class="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700">
+        <div
+          class="grid grid-cols-[3.5rem_minmax(0,1fr)_5rem_7rem_7rem_6rem] items-center gap-2 border-b border-gray-200 bg-gray-50 px-3 py-2 text-xs font-semibold text-gray-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400"
+        >
+          <span>#</span>
+          <span>标题</span>
+          <span>状态</span>
+          <span>负责人</span>
+          <span>创建人</span>
+          <span>创建时间</span>
+        </div>
+        <div
+          v-for="t in filteredTasks"
+          :key="t.id"
+          @click="openTask(t)"
+          class="grid cursor-pointer grid-cols-[3.5rem_minmax(0,1fr)_5rem_7rem_7rem_6rem] items-center gap-2 border-b border-gray-100 px-3 py-2 text-xs last:border-b-0 hover:bg-gray-50 dark:border-gray-700/60 dark:hover:bg-gray-800"
+        >
+          <span class="text-gray-400">#{{ t.task_number }}</span>
+          <span class="truncate text-sm text-gray-800 dark:text-gray-200" :title="t.content">{{ t.content }}</span>
+          <span>
+            <span :class="['inline-block rounded-full px-2 py-0.5 text-[11px] font-medium', statusBadge(t.task_status)]">
+              {{ statusLabel(t.task_status) }}
+            </span>
+          </span>
+          <span v-if="t.assignee_handle" class="truncate text-blue-600 dark:text-blue-400">@{{ t.assignee_handle }}</span>
+          <span v-else class="text-gray-400">未分配</span>
+          <span class="truncate text-gray-600 dark:text-gray-400">{{ t.creator_name }}</span>
+          <span class="text-gray-400">{{ fmtTime(t.created_at) }}</span>
+        </div>
+        <p v-if="!loading && filteredTasks.length === 0" class="py-8 text-center text-xs text-gray-400">暂无任务</p>
+      </div>
+    </div>
+
+    <!-- 任务详情弹窗 -->
+    <TaskDetailModal
+      v-if="selectedTask"
+      :task="selectedTask"
+      :channel="channel"
+      @close="selectedTask = null"
+      @changed="load()"
+    />
   </div>
 </template>

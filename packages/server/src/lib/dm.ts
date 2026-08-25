@@ -138,7 +138,8 @@ export async function dmOtherMembers(
        FROM channel_members cm
        LEFT JOIN users u ON cm.member_type = 'human' AND cm.member_id = u.id
        LEFT JOIN agents a ON cm.member_type = 'agent' AND cm.member_id = a.id
-      WHERE cm.channel_id = $1 AND cm.member_id::text <> $2`,
+      WHERE cm.channel_id = $1 AND cm.member_id::text <> $2
+        AND (cm.member_type <> 'agent' OR a.duty = 'on')`,
     [channelId, String(senderId)],
   );
   const agents: Party[] = [];
