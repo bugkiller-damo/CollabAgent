@@ -31,7 +31,14 @@ interface PatrolEvent {
   created_at: string;
 }
 
-const props = defineProps<{ agent: { id: string; name: string } }>();
+const props = withDefaults(
+  defineProps<{
+    agent: { id: string; name: string };
+    /** 档案内嵌时隐藏「关闭」（无外层面板要收起） */
+    embedded?: boolean;
+  }>(),
+  { embedded: false },
+);
 const emit = defineEmits<{ close: [] }>();
 
 const jobs = ref<PatrolJob[]>([]);
@@ -130,10 +137,10 @@ function eventLabel(e: PatrolEvent): { text: string; cls: string } {
 <template>
   <Card padding="md" class="space-y-4">
     <div class="flex items-center justify-between">
-      <h3 class="font-semibold text-gray-900 dark:text-white">定时巡检 — @{{ agent.name }}</h3>
+      <h3 class="font-semibold text-gray-900 dark:text-white">{{ embedded ? "定时巡检" : `定时巡检 — @${agent.name}` }}</h3>
       <div class="flex gap-2">
         <Button size="sm" @click="showCreate = !showCreate">{{ showCreate ? "收起" : "+ 新建巡检" }}</Button>
-        <Button variant="ghost" size="sm" @click="emit('close')">关闭</Button>
+        <Button v-if="!embedded" variant="ghost" size="sm" @click="emit('close')">关闭</Button>
       </div>
     </div>
 

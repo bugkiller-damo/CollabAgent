@@ -3,6 +3,8 @@
 // 基于 Slock 数据模型逆向分析
 // ============================================================
 
+import type { AgentDuty, AgentPresence } from "./presence.js";
+
 // ---- 基础类型 ----
 
 export type UUID = string;
@@ -28,6 +30,8 @@ export interface Message {
   channelId: UUID;
   senderId: UUID;
   senderName: string;
+  /** users.handle / agents.name；点开档案用。历史消息可能缺省 */
+  senderHandle?: string;
   senderType: MessageType;
   content: string; // Markdown
   time: ISO8601;
@@ -87,6 +91,63 @@ export interface ChannelMember {
   joinedAt: ISO8601;
 }
 
+// ---- 成员档案（GET /api/people/:handle）----
+
+export interface PersonChannelContext {
+  id: string;
+  role: string | null;
+  isManager: boolean;
+  joinedAt: string | null;
+}
+
+export interface PersonChannelMembership {
+  id: string;
+  name: string;
+  role: string | null;
+  isManager?: boolean;
+  /** public / private / dm；旧数据可能缺省 */
+  type?: "public" | "private" | "dm";
+  description?: string | null;
+  /** DM 对端 handle，用于跳转 /dm/:handle */
+  peerHandle?: string | null;
+}
+
+export interface PersonComputerRef {
+  id: string;
+  name: string;
+  online: boolean;
+}
+
+export interface PersonStats {
+  messages: number;
+  tasksOpen: number;
+  tasksDone: number;
+  costUsd?: number | null;
+}
+
+export interface PersonProfile {
+  type: MemberType;
+  id: string;
+  handle: string;
+  displayName: string | null;
+  description: string | null;
+  avatarUrl: string | null;
+  createdAt: string;
+  lastMessageAt?: string | null;
+  runtime?: string;
+  model?: string;
+  /** @deprecated 用 presence；值为值班且办公室开门 */
+  isOnline?: boolean;
+  duty?: AgentDuty;
+  presence?: AgentPresence;
+  ownedByMe?: boolean;
+  computer?: PersonComputerRef | null;
+  channel?: PersonChannelContext | null;
+  channels: PersonChannelMembership[];
+  channelsHasMore?: boolean;
+  channelsCapped?: boolean;
+}
+
 // ---- 用户 ----
 
 export interface User {
@@ -111,6 +172,8 @@ export interface Agent {
   description?: string;
   avatarUrl?: string;
   status: AgentStatus;
+  duty?: AgentDuty;
+  presence?: AgentPresence;
   runtime: string; // "claude" | "codex" | "kimi" | ...
   model: string;
   capabilities: string[]; // ["send", "read", "tasks", ...]
@@ -356,18 +419,44 @@ export type WsToDaemonMessage =
   | { type: "connected"; serverTime: ISO8601 }
   | { type: "agent:start"; agentId?: UUID; agent?: WsAgentStartAgent; config?: WsAgentStartConfig }
   | { type: "agent:stop"; agentId: UUID }
+  | { type: "agent:duty"; agentId: UUID; name: string; duty: AgentDuty }
   | { type: "agent:deliver"; seq?: number; message: WsDeliverMessage }
   | { type: "reminder.fire"; agentId: UUID; reminder: WsReminderFire }
   | { type: "terminal:watch"; agentName: string }
   | { type: "terminal:unwatch"; agentName: string }
   | { type: "terminal:history"; agentName: string }
   | { type: "terminal:resize"; agentName: string; cols?: number; rows?: number }
+  | { type: "workspace:read"; requestId: string; agentName: string; path?: string }
   | { type: "ping" };
 
 // ---------- daemon → server ----------
 
+/** Computer 能力地图：已装 / 未装 / 已装但平台未接线（P0 spawn 仅 claude） */
+export type RuntimeProbeStatus = "installed" | "not_installed" | "installed_unsupported";
+
+export interface RuntimeProbe {
+  id: string;
+  status: RuntimeProbeStatus;
+  version?: string;
+}
+
+export const RUNTIME_CATALOG_IDS = ["claude", "codex", "gemini", "opencode"] as const;
+export type RuntimeCatalogId = (typeof RUNTIME_CATALOG_IDS)[number];
+
+/** P0 已接线、创建 picker 可收的 runtime */
+export const WIRED_RUNTIME_IDS = ["claude"] as const;
+
 export type WsFromDaemonMessage =
-  | { type: "ready"; capabilities: string[]; runtimes: string[]; hostname: string; daemonVersion: string }
+  | {
+      type: "ready";
+      capabilities: string[];
+      /** 新 daemon 发 RuntimeProbe[]；旧 daemon / 测试仍可能发 string[]，server 会归一化 */
+      runtimes: RuntimeProbe[] | string[];
+      hostname: string;
+      daemonVersion: string;
+      os?: string;
+      arch?: string;
+    }
   | { type: "agent:status"; agentId: string; agentName: string; status: string; detail: string }
   | { type: "agent:delivery-queued"; agentName: string; channelName: string }
   | { type: "agent:delivery-dead-letter"; agentName: string; channelName: string; error: string }
@@ -385,6 +474,24 @@ export type WsFromDaemonMessage =
   | { type: "terminal:obs-frame"; agentName: string; frame: ObservationFrame }
   | { type: "terminal:obs-history"; agentName: string; frames: ObservationFrame[] }
   | { type: "terminal:history"; agentName: string; text: string }
+  | {
+      type: "agent:progress";
+      agentName: string;
+      channelName: string;
+      headline: string;
+      phase: "start" | "update" | "end";
+    }
+  | {
+      type: "workspace:result";
+      requestId: string;
+      agentName: string;
+      exists: boolean;
+      files?: { path: string; bytes: number; mtime: string }[];
+      path?: string;
+      content?: string;
+      bytes?: number;
+      error?: string;
+    }
   | { type: "pong" };
 
 // ---------- server → browser ----------
@@ -397,12 +504,38 @@ export type WsToBrowserMessage =
   | { type: "notification.new"; notification: WsNotification }
   // ---- 以下为 daemon 上报、server 中继 ----
   | { type: "agent:status"; agentId: string; agentName: string; status: string; detail: string }
+  | {
+      type: "agent:presence";
+      agentId: UUID;
+      agentName: string;
+      duty: AgentDuty;
+      computerOnline: boolean;
+      presence: AgentPresence;
+    }
   | { type: "agent:delivery-queued"; agentName: string; channelName: string }
   | { type: "agent:delivery-dead-letter"; agentName: string; channelName: string; error: string }
   | { type: "terminal:history"; agentName: string; text: string }
   | { type: "terminal:obs-history"; agentName: string; frames: ObservationFrame[] }
   | { type: "terminal:frame"; agentName: string; screen: string; status: string; time: ISO8601 }
-  | { type: "terminal:obs-frame"; agentName: string; frame: ObservationFrame };
+  | { type: "terminal:obs-frame"; agentName: string; frame: ObservationFrame }
+  | {
+      type: "agent:progress";
+      agentName: string;
+      channelName: string;
+      headline: string;
+      phase: "start" | "update" | "end";
+    }
+  | {
+      type: "workspace:result";
+      requestId: string;
+      agentName: string;
+      exists: boolean;
+      files?: { path: string; bytes: number; mtime: string }[];
+      path?: string;
+      content?: string;
+      bytes?: number;
+      error?: string;
+    };
 
 // ---------- browser → server ----------
 
@@ -412,6 +545,21 @@ export type WsFromBrowserMessage =
   | { type: "terminal:history"; agentName: string }
   | { type: "terminal:resize"; agentName: string; cols?: number; rows?: number }
   | { type: "pong" };
+
+export interface AgentWorkspaceFile {
+  path: string;
+  bytes: number;
+  mtime: string;
+}
+
+export interface AgentWorkspaceSnapshot {
+  exists: boolean;
+  files: AgentWorkspaceFile[];
+  path?: string;
+  content?: string;
+  bytes?: number;
+  error?: string;
+}
 
 /** broadcast(channelId, …) 允许的频道广播事件子集（server 路由组包发频道成员） */
 export type WsChannelBroadcast = Extract<
@@ -429,6 +577,30 @@ export type WsClientMessage = WsFromBrowserMessage;
 export type WsServerMessageType = WsServerMessage["type"];
 /** @deprecated 用 WsFromBrowserMessage["type"] */
 export type WsClientMessageType = WsClientMessage["type"];
+
+export {
+  type AgentDuty,
+  type AgentPresence,
+  type AgentRuntimeHint,
+  agentListFields,
+  composePresence,
+  PRESENCE_LABEL,
+  parseAgentDuty,
+  presenceIsOnline,
+} from "./presence.js";
+export {
+  channelProgressEnabled,
+  DEFAULT_PROGRESS_THROTTLE_MS,
+  formatProgressMessage,
+  isProgressContent,
+  labelTool,
+  PROGRESS_PREFIX,
+  type ProgressFrame,
+  type ProgressSnapshot,
+  type ProgressToolItem,
+  readProgressThrottleMs,
+  summarizeProgress,
+} from "./progress.js";
 
 // ---- API 响应 ----
 

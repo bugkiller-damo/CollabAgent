@@ -3,6 +3,7 @@ import { defineStore } from "pinia";
 import { ref } from "vue";
 import { apiClient, apiGet, apiPost } from "../api";
 import type { PendingItem } from "../components/chat/types";
+import { toast } from "./toastStore";
 
 const CACHE_PREFIX = "msgs_";
 const CACHE_LIMIT = 50;
@@ -270,12 +271,16 @@ export const useMessageStore = defineStore("messages", () => {
         if (!next) return;
         setPendingStatus(target, next.tempId, "sending");
         try {
-          await apiPost("/api/messages/send", {
+          const sent = await apiPost<{ skippedMentions?: { handle: string; reason: string }[] }>("/api/messages/send", {
             target,
             content: next.content,
             attachmentIds: next.attachmentIds,
             clientNonce: next.nonce, // 幂等键：同 nonce 重发由服务端去重
           });
+          if (sent?.skippedMentions?.length) {
+            const names = sent.skippedMentions.map((s) => `@${s.handle}`).join("、");
+            toast.info(`${names} 已停班，消息已发出但不会唤醒`);
+          }
           removePending(target, next.tempId);
         } catch {
           setPendingStatus(target, next.tempId, "failed");
@@ -369,12 +374,16 @@ export const useMessageStore = defineStore("messages", () => {
     applyMessageDelete(messageId);
   }
 
-  function applyMessageDelete(messageId: string): void {
+  function applyMessageDelete(messageId: string, opts?: { remove?: boolean }): void {
     const next: Record<string, Message[]> = {};
     for (const k in messagesByTarget.value) {
-      next[k] = messagesByTarget.value[k].map((m: any) =>
-        m.id === messageId ? { ...m, content: "", deleted: true } : m,
-      );
+      if (opts?.remove) {
+        next[k] = messagesByTarget.value[k].filter((m: any) => m.id !== messageId);
+      } else {
+        next[k] = messagesByTarget.value[k].map((m: any) =>
+          m.id === messageId ? { ...m, content: "", deleted: true } : m,
+        );
+      }
     }
     messagesByTarget.value = next;
   }

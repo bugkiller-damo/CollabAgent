@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { type AgentPresence, composePresence, PRESENCE_LABEL } from "@collabagent/shared";
+import { computed, onMounted, ref, watch } from "vue";
+import { useRoute } from "vue-router";
 import { apiGet } from "../../api";
-import { useAgentStore, useUiStore } from "../../stores";
+import { useAgentStore, useChannelStore, useUiStore } from "../../stores";
 import Avatar from "../ui/Avatar.vue";
 
 interface Agent {
@@ -9,27 +11,25 @@ interface Agent {
   name: string;
   display_name: string;
   isOnline: boolean;
+  duty?: "on" | "off";
+  presence?: AgentPresence;
   avatar_url?: string;
 }
 
-const LIVE_STATUS_LABEL: Record<string, { text: string; cls: string }> = {
-  working: { text: "工作中", cls: "text-blue-500" },
-  starting: { text: "启动中", cls: "text-amber-500" },
-  idle: { text: "空闲", cls: "text-green-500" },
-  offline: { text: "离线", cls: "text-gray-400" },
-  stopped: { text: "已停止", cls: "text-gray-400" },
-};
+const LIVE_STATUS_LABEL = PRESENCE_LABEL;
 
+const route = useRoute();
 const uiStore = useUiStore();
 const agentStore = useAgentStore();
+const channelStore = useChannelStore();
 
-const agents = ref<Agent[]>([]);
+const allAgents = ref<Agent[]>([]);
 const loaded = ref(false);
 
 onMounted(() => {
   apiGet<{ agents: Agent[] }>("/api/agents")
     .then((d) => {
-      agents.value = (d.agents || []).slice(0, 5);
+      allAgents.value = d.agents || [];
       loaded.value = true;
     })
     .catch(() => {
@@ -37,13 +37,46 @@ onMounted(() => {
     });
 });
 
+const currentChannel = computed(() => channelStore.channels.find((c) => c.name === channelStore.activeChannelName));
+
+watch(
+  () => currentChannel.value?.id,
+  (id) => {
+    if (id) void channelStore.fetchMembers(id);
+  },
+  { immediate: true },
+);
+
+const dmPeer = computed(() => {
+  if (!route.path.startsWith("/dm/")) return "";
+  try {
+    return decodeURIComponent(route.path.split("/")[2] || "");
+  } catch {
+    return route.path.split("/")[2] || "";
+  }
+});
+
+const agents = computed(() => {
+  const ch = currentChannel.value;
+  if (ch?.id) {
+    const members = channelStore.membersByChannelId[ch.id];
+    if (members) {
+      const names = new Set(members.filter((m) => m.member_type === "agent").map((m) => m.handle));
+      return allAgents.value.filter((a) => names.has(a.name));
+    }
+    return [];
+  }
+  if (dmPeer.value) return allAgents.value.filter((a) => a.name === dmPeer.value);
+  return [];
+});
+
 const liveAgents = computed(() => agentStore.agents);
 const terminalAgent = computed(() => uiStore.terminalAgent);
 
-function statusFor(a: Agent): { text: string; cls: string } {
+function statusFor(a: Agent): { text: string; cls: string; dot: string } {
   const live = liveAgents.value[a.name];
-  const statusKey = live?.status && live.status !== "online" ? live.status : a.isOnline ? "idle" : "offline";
-  return LIVE_STATUS_LABEL[statusKey] || LIVE_STATUS_LABEL.offline;
+  const presence = live?.presence || a.presence || composePresence(a.duty ?? "on", !!a.isOnline, live?.status);
+  return LIVE_STATUS_LABEL[presence] || LIVE_STATUS_LABEL.computer_offline;
 }
 
 function openTerminal(name: string) {
@@ -57,37 +90,37 @@ function openTerminal(name: string) {
       Agent 状态
     </div>
     <div v-if="agents.length === 0" class="px-2 py-1.5 text-xs text-gray-400 dark:text-gray-500">
-      暂无 Agent，去「接入 Agent」创建一个
+      {{ currentChannel || dmPeer ? "本频道还没有 Agent 成员" : "打开一个频道查看 Agent" }}
     </div>
     <template v-else>
       <button
-      v-for="a in agents"
-      :key="a.id"
-      :title="'观察终端'"
-      :class="[
-        'flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-sm transition-colors',
-        terminalAgent === a.name
-          ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'
-          : 'hover:bg-gray-200 dark:hover:bg-gray-700',
-      ]"
-      @click="openTerminal(a.name)"
-    >
-      <div :class="['h-2 w-2 shrink-0 rounded-full', a.isOnline ? 'bg-green-500' : 'bg-gray-500']" />
-      <Avatar :name="a.display_name || a.name" :src="a.avatar_url" size="sm" />
-      <div class="min-w-0 flex-1">
-        <div class="flex items-center gap-1">
-          <span class="truncate text-gray-600 dark:text-gray-300">@{{ a.name }}</span>
-          <span :class="['ml-auto shrink-0 text-[10px]', statusFor(a).cls]">{{ statusFor(a).text }}</span>
+        v-for="a in agents"
+        :key="a.id"
+        :title="'观察终端'"
+        :class="[
+          'flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-sm transition-colors',
+          terminalAgent === a.name
+            ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'
+            : 'hover:bg-gray-200 dark:hover:bg-gray-700',
+        ]"
+        @click="openTerminal(a.name)"
+      >
+        <div :class="['h-2 w-2 shrink-0 rounded-full', statusFor(a).dot]" />
+        <Avatar :name="a.display_name || a.name" :src="a.avatar_url" size="sm" />
+        <div class="min-w-0 flex-1">
+          <div class="flex items-center gap-1">
+            <span class="truncate text-gray-600 dark:text-gray-300">@{{ a.name }}</span>
+            <span :class="['ml-auto shrink-0 text-[10px]', statusFor(a).cls]">{{ statusFor(a).text }}</span>
+          </div>
+          <p
+            v-if="liveAgents[a.name]?.detail"
+            class="truncate text-[10px] text-gray-400 dark:text-gray-500"
+            :title="liveAgents[a.name].detail"
+          >
+            {{ liveAgents[a.name].detail }}
+          </p>
         </div>
-        <p
-          v-if="liveAgents[a.name]?.detail"
-          class="truncate text-[10px] text-gray-400 dark:text-gray-500"
-          :title="liveAgents[a.name].detail"
-        >
-          {{ liveAgents[a.name].detail }}
-        </p>
-      </div>
-    </button>
+      </button>
     </template>
   </div>
 </template>

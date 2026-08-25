@@ -202,3 +202,112 @@ describe("tasks: dispatch 派发同步看板（P1）", () => {
     expect(closed.task_status).toBe("closed");
   });
 });
+
+describe("tasks: 操作历史 + 批注（detail/comments）", () => {
+  it("创建→认领→改状态后 GET /detail 返回完整事件流；列表含 sender_id/sender_type", async () => {
+    const a = await registerUser();
+    const chName = uniqHandle();
+    await api("/api/channels", { method: "POST", cookie: a.cookie, body: { name: chName, description: "" } });
+
+    const mk = await api("/api/tasks", {
+      method: "POST",
+      cookie: a.cookie,
+      body: { channel: "#" + chName, tasks: [{ title: "带历史的任务" }] },
+    });
+    expect(mk.status).toBe(200);
+    const num = mk.data.tasks[0].task_number;
+
+    // 列表响应带 sender_id / sender_type（创建者筛选的数据源）
+    const list = await api(`/api/tasks?channel=${encodeURIComponent("#" + chName)}`, { cookie: a.cookie });
+    const row = list.data.tasks.find((t: any) => t.task_number === num);
+    expect(row.sender_id).toBeTruthy();
+    expect(row.sender_type).toBe("human");
+    const messageId = row.id;
+
+    await api("/api/tasks/claim", {
+      method: "POST",
+      cookie: a.cookie,
+      body: { channel: "#" + chName, task_numbers: [num] },
+    });
+    await api("/api/tasks/update-status", {
+      method: "POST",
+      cookie: a.cookie,
+      body: { channel: "#" + chName, number: num, status: "in_review" },
+    });
+
+    const detail = await api(`/api/tasks/detail?message_id=${messageId}`, { cookie: a.cookie });
+    expect(detail.status).toBe(200);
+    expect(detail.data.task.task_number).toBe(num);
+    expect(detail.data.task.creator_name).toBeTruthy();
+    const actions = detail.data.events.map((e: any) => e.action);
+    expect(actions).toEqual(["created", "claimed", "status_changed"]);
+    const sc = detail.data.events.find((e: any) => e.action === "status_changed");
+    expect(sc.from_status).toBe("in_progress");
+    expect(sc.to_status).toBe("in_review");
+    for (const e of detail.data.events) expect(e.actor_name).toBeTruthy();
+  });
+
+  it("批注：写两条按序返回，空内容 400，超长 400", async () => {
+    const a = await registerUser();
+    const chName = uniqHandle();
+    await api("/api/channels", { method: "POST", cookie: a.cookie, body: { name: chName, description: "" } });
+    const mk = await api("/api/tasks", {
+      method: "POST",
+      cookie: a.cookie,
+      body: { channel: "#" + chName, tasks: [{ title: "批注目标" }] },
+    });
+    expect(mk.status).toBe(200);
+    const list = await api(`/api/tasks?channel=${encodeURIComponent("#" + chName)}`, { cookie: a.cookie });
+    const messageId = list.data.tasks[0].id;
+
+    const c1 = await api("/api/tasks/comments", {
+      method: "POST",
+      cookie: a.cookie,
+      body: { message_id: messageId, content: "第一条批注" },
+    });
+    expect(c1.status).toBe(200);
+    expect(c1.data.comment.author_name).toBeTruthy();
+    await api("/api/tasks/comments", {
+      method: "POST",
+      cookie: a.cookie,
+      body: { message_id: messageId, content: "第二条批注" },
+    });
+
+    const detail = await api(`/api/tasks/detail?message_id=${messageId}`, { cookie: a.cookie });
+    expect(detail.data.comments.map((c: any) => c.content)).toEqual(["第一条批注", "第二条批注"]);
+
+    const empty = await api("/api/tasks/comments", {
+      method: "POST",
+      cookie: a.cookie,
+      body: { message_id: messageId, content: "   " },
+    });
+    expect(empty.status).toBe(400);
+    const tooLong = await api("/api/tasks/comments", {
+      method: "POST",
+      cookie: a.cookie,
+      body: { message_id: messageId, content: "x".repeat(2001) },
+    });
+    expect(tooLong.status).toBe(400);
+  });
+
+  it("非任务消息调 /detail 与 /comments 均 404", async () => {
+    const a = await registerUser();
+    const chName = uniqHandle();
+    await api("/api/channels", { method: "POST", cookie: a.cookie, body: { name: chName, description: "" } });
+    const send = await api("/api/messages/send", {
+      method: "POST",
+      cookie: a.cookie,
+      body: { target: "#" + chName, content: "普通消息不是任务" },
+    });
+    expect(send.status).toBe(200);
+    const messageId = send.data.messageId;
+    const d = await api(`/api/tasks/detail?message_id=${messageId}`, { cookie: a.cookie });
+    expect(d.status).toBe(404);
+    const c = await api("/api/tasks/comments", {
+      method: "POST",
+      cookie: a.cookie,
+      body: { message_id: messageId, content: "hi" },
+    });
+    expect(c.status).toBe(404);
+  });
+});

@@ -79,6 +79,7 @@ export function startReminderScheduler(app: FastifyInstance, intervalMs = 20000)
                   last_fired_at, consecutive_silent, max_consecutive_silent
              FROM reminders
             WHERE status = 'scheduled' AND fire_at <= now() AND NOT paused
+              AND EXISTS (SELECT 1 FROM agents a WHERE a.id = reminders.owner_id AND a.duty = 'on')
             ORDER BY fire_at ASC
             LIMIT 20
             FOR UPDATE SKIP LOCKED`,

@@ -1,25 +1,33 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
-import { RouterLink, useRoute } from "vue-router";
+import { computed, onMounted, onUnmounted, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
+import { LG_QUERY, useMediaQuery } from "../../composables";
 import { dispatchWsEvent } from "../../lib/wsDispatch";
-import { initWsManager, teardownWsManager } from "../../lib/wsManager";
-import { useAuthStore, useChannelStore, useMessageStore, useUiStore } from "../../stores";
+import { initWsManager, teardownWsManager, wsSend } from "../../lib/wsManager";
+import {
+  type SidebarPane,
+  useChannelStore,
+  useComputerStore,
+  useMessageStore,
+  useNotificationStore,
+  useUiStore,
+} from "../../stores";
 import AgentTerminalPanel from "../agent/AgentTerminalPanel.vue";
 import ErrorBoundary from "../ErrorBoundary.vue";
-import NotificationBell from "../notifications/NotificationBell.vue";
 import OnboardingChecklist from "../OnboardingChecklist.vue";
+import MemberProfileDrawer from "../people/MemberProfileDrawer.vue";
 import ToastContainer from "../Toast.vue";
 import IconButton from "../ui/IconButton.vue";
 import MobileTabBar from "./MobileTabBar.vue";
 import Sidebar from "./Sidebar.vue";
 
 const route = useRoute();
-const authStore = useAuthStore();
+const router = useRouter();
 const messageStore = useMessageStore();
 const channelStore = useChannelStore();
+const notificationStore = useNotificationStore();
 const uiStore = useUiStore();
-
-const sidebarOpen = ref(false);
+const computerStore = useComputerStore();
 
 function decode(s: string | undefined): string {
   try {
@@ -48,8 +56,10 @@ function useRouteTitle(pathname: string): { title: string; subtitle: string } {
     if (ch) return { title: "任务看板", subtitle: `#${decode(ch)}` };
     return { title: "任务看板", subtitle: "" };
   }
-  if (pathname === "/connect") return { title: "接入 Agent", subtitle: "" };
-  if (pathname.startsWith("/admin/agents")) return { title: "Agent 管理", subtitle: "管理后台" };
+  if (pathname === "/activity") return { title: "动态", subtitle: "" };
+  if (pathname === "/people") return { title: "成员", subtitle: "" };
+  if (pathname === "/search") return { title: "搜索", subtitle: "" };
+  if (pathname.startsWith("/computers")) return { title: "计算机", subtitle: "" };
   if (pathname.startsWith("/admin/channels")) return { title: "频道管理", subtitle: "管理后台" };
   if (pathname.startsWith("/admin/members")) return { title: "成员管理", subtitle: "管理后台" };
   if (pathname.startsWith("/admin/metrics")) return { title: "运行指标", subtitle: "管理后台" };
@@ -63,9 +73,10 @@ function useRouteTitle(pathname: string): { title: string; subtitle: string } {
 }
 
 const routeTitle = computed(() => useRouteTitle(route.path));
+const isDesktop = useMediaQuery(LG_QUERY);
+/** `/people` 桌面用右栏详情，不再叠全局抽屉；移动仍用全屏 sheet */
+const showProfileDrawer = computed(() => !!uiStore.profileTarget && !(route.path === "/people" && isDesktop.value));
 
-// 顶部标题栏的私有频道标识：从频道列表里查当前频道类型
-// （server 返回的字段名是 type，shared 类型里叫 visibility，两个都兼容）
 const isPrivateChannel = computed(
   () =>
     route.path.startsWith("/channels/") &&
@@ -74,22 +85,64 @@ const isPrivateChannel = computed(
     ),
 );
 
+function paneForPath(pathname: string): SidebarPane | null {
+  if (pathname.startsWith("/channels/") || pathname.startsWith("/dm/")) return "chat";
+  if (pathname.startsWith("/tasks")) return "tasks";
+  if (pathname === "/activity") return "activity";
+  if (pathname === "/search") return "search";
+  if (pathname === "/people" || pathname.startsWith("/admin/members")) {
+    return "people";
+  }
+  if (pathname.startsWith("/computers")) return "computers";
+  return null;
+}
+
+watch(
+  () => route.path,
+  (path, prev) => {
+    const pane = paneForPath(path);
+    if (pane) uiStore.setSidebarPane(pane);
+    // /people 桌面档案写在 profileTarget 里，离页后仍会叠全局抽屉，需清掉
+    if (prev?.startsWith("/people") && !path.startsWith("/people")) {
+      uiStore.closeProfile();
+    }
+  },
+  { immediate: true },
+);
+
 function goOnline() {
   uiStore.setOnline(true);
 }
 function goOffline() {
   uiStore.setOnline(false);
 }
+
+function onKeydown(e: KeyboardEvent) {
+  const mod = e.metaKey || e.ctrlKey;
+  if (mod && e.key.toLowerCase() === "k") {
+    e.preventDefault();
+    uiStore.setSidebarPane("search");
+    uiStore.closeMobileDrawer();
+    void router.push("/search");
+    return;
+  }
+  if (mod && e.key.toLowerCase() === "b") {
+    e.preventDefault();
+    uiStore.toggleSidebar();
+  }
+}
+
 onMounted(() => {
   window.addEventListener("online", goOnline);
   window.addEventListener("offline", goOffline);
+  window.addEventListener("keydown", onKeydown);
 });
 onUnmounted(() => {
   window.removeEventListener("online", goOnline);
   window.removeEventListener("offline", goOffline);
+  window.removeEventListener("keydown", onKeydown);
 });
 
-// 暗色同步到 <html>（React 版用 useEffect([theme])，这里用 watch immediate）
 watch(
   () => uiStore.theme,
   (theme) => {
@@ -101,46 +154,53 @@ watch(
   { immediate: true },
 );
 
-// 初始拉取频道列表
 onMounted(() => {
-  const load = async () => {
-    try {
-      await channelStore.fetchChannels();
-    } catch {}
-  };
-  load();
+  void channelStore.fetchChannels();
+  void notificationStore.loadFromApi();
+  void computerStore.refresh();
 });
 
-// ---- WS 装配（O16 收敛）：生命周期归 lib/wsManager，事件路由归 lib/wsDispatch，
-// 本组件只做组装。断线重连 → 增量补拉 + 离线队列补发（O15）。
+// 必须 start：init 只创建句柄，不建连。漏调时聊天/观察全靠刷新 REST 才能看见。
 const wsManager = initWsManager({
   url: window.location.origin.replace(/^http/, "ws") + "/ws/chat",
   onEvent: dispatchWsEvent,
   onStatus: (status, attempt) => uiStore.setWsStatus(status, attempt),
   onConnect: (isReconnect) => {
-    // 断线重连 → 按 lastSeenSeq 增量补拉断线窗口（失败静默，不阻断连接）
     if (isReconnect) void messageStore.backfillAll();
-    // 每次连接都补发离线队列：上会话恢复出的 queued 需要在首连时立即补发
     void messageStore.flushAllPending();
+    // 面板若已开：首连竞态或重连后重订 watch（断线期间 unwatch 已清）
+    const watching = uiStore.terminalAgent;
+    if (watching) {
+      wsSend({ type: "terminal:watch", agentName: watching });
+      wsSend({ type: "terminal:history", agentName: watching });
+    }
   },
 });
-
 onMounted(() => wsManager.start());
 onUnmounted(() => teardownWsManager());
+
+watch([() => uiStore.terminalAgent, () => channelStore.activeChannelName], ([name, chName]) => {
+  if (!name || !chName) return;
+  const ch = channelStore.channels.find((c) => c.name === chName);
+  const members = ch?.id ? channelStore.membersByChannelId[ch.id] : undefined;
+  if (!members) return;
+  const ok = members.some((m) => m.member_type === "agent" && m.handle === name);
+  if (!ok) uiStore.openTerminal(null);
+});
 </script>
 
 <template>
   <div class="flex h-screen overflow-hidden bg-gray-50 dark:bg-gray-900">
     <div
-      v-if="sidebarOpen"
+      v-if="uiStore.mobileDrawerOpen"
       class="fixed inset-0 z-30 bg-black/40 lg:hidden"
-      @click="sidebarOpen = false"
+      @click="uiStore.closeMobileDrawer()"
     />
 
     <div
       :class="[
-        'fixed lg:static inset-y-0 left-0 z-40 w-60 transform transition-transform duration-200 ease-in-out',
-        sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0',
+        'fixed lg:static inset-y-0 left-0 z-40 flex transform transition-transform duration-200 ease-in-out',
+        uiStore.mobileDrawerOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0',
       ]"
     >
       <Sidebar />
@@ -148,7 +208,7 @@ onUnmounted(() => teardownWsManager());
 
     <main class="flex min-w-0 flex-1 flex-col pb-16 lg:pb-0">
       <header class="flex h-12 items-center gap-3 border-b border-gray-200 bg-white px-4 dark:border-gray-700 dark:bg-gray-800">
-        <IconButton label="打开菜单" tooltip="菜单" class="lg:hidden" @click="sidebarOpen = true">
+        <IconButton label="打开菜单" tooltip="菜单" class="lg:hidden" @click="uiStore.openMobileDrawer()">
           <svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
           </svg>
@@ -168,33 +228,18 @@ onUnmounted(() => teardownWsManager());
           <svg
             v-if="isPrivateChannel"
             class="h-3.5 w-3.5 text-amber-500"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            viewBox="0 0 24 24"
+            fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"
             aria-label="私有频道"
           >
             <title>私有频道</title>
             <path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 1 0-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 0 0 2.25-2.25v-6.75a2.25 2.25 0 0 0-2.25-2.25H6.75a2.25 2.25 0 0 0-2.25 2.25v6.75a2.25 2.25 0 0 0 2.25 2.25Z" />
           </svg>
         </div>
-
-        <div class="flex items-center gap-2">
-          <!-- SearchBar 尚未迁移（chat/ 目录后续批次），此处暂缺 -->
-          <NotificationBell />
-          <RouterLink to="/settings/profile" class="hidden sm:block">
-            <div class="flex h-8 w-8 items-center justify-center rounded-full bg-gray-200 text-xs font-semibold text-gray-700 dark:bg-gray-700 dark:text-gray-200">
-              {{ authStore.user?.handle?.[0]?.toUpperCase() || "?" }}
-            </div>
-          </RouterLink>
-        </div>
       </header>
 
       <div v-if="!uiStore.online" class="bg-amber-500 px-4 py-1.5 text-center text-sm text-white">
         ⚠️ 你当前处于离线状态，新消息可能无法收发
       </div>
-
-      <!-- AgentThinkingBanner 尚未迁移（依赖 agent/ThinkingIndicator），此处暂缺 -->
 
       <ErrorBoundary>
         <div class="animate-fade-in flex min-h-0 flex-1 flex-col">
@@ -203,7 +248,8 @@ onUnmounted(() => teardownWsManager());
       </ErrorBoundary>
     </main>
 
-    <!-- 终端观察面板（G3）：uiStore.terminalAgent 非空即开（ChannelView 观察终端按钮等触发） -->
+    <MemberProfileDrawer v-if="showProfileDrawer" />
+
     <AgentTerminalPanel
       v-if="uiStore.terminalAgent"
       :agent-name="uiStore.terminalAgent"

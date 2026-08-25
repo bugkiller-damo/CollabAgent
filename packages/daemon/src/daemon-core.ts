@@ -8,8 +8,10 @@ import { createAgentRuntime, type IAgentRuntime } from "./agent-runtime.js";
 import { pickLocalTriageAgent } from "./agent-runtime-dispatch.js";
 import { createJsonThreadSessionStore, defaultThreadSessionStorePath } from "./agent-thread-sessions.js";
 import { createAgentTokenRegistry } from "./agent-tokens.js";
+import { listWorkspaceFiles, readWorkspaceFile } from "./agent-workspace.js";
 import { probeClaude } from "./drivers/probe.js";
 import { createLiveRunRegistry } from "./live-run-registry.js";
+import { buildReadyPayload } from "./ready-payload.js";
 import { setupSlockWrapper } from "./setup-slock-wrapper.js";
 import { readTerminalLogTail } from "./terminal-log.js";
 import type { DaemonConfig } from "./types/index.js";
@@ -99,14 +101,22 @@ export class DaemonCore {
             time: new Date().toISOString(),
           });
         },
-        // 回复守卫代发 / D3 成本熔断：daemon 以 agent 身份 POST 到频道
-        // （mint scoped token → POST send）。零额外 LLM 回合。
+        // 回复守卫代发 / D3 成本熔断 / D4 进度：daemon 以 machine token 调
+        // /internal/agent/:id/send（不 mint scoped token，避免覆盖 MCP 凭证）。
         onReplyMissing: (agentName, channel, content) => {
-          this.postAsAgent(agentName, channel, content, "reply-guard");
+          void this.postAsAgent(agentName, channel, content, "reply-guard");
         },
         onCircuitBreak: (agentName, channel, content) => {
-          this.postAsAgent(agentName, channel, content, "cost-circuit");
+          void this.postAsAgent(agentName, channel, content, "cost-circuit");
         },
+        onProgress: (agentName, channelName, headline, phase) => {
+          this.sendWs({ type: "agent:progress", agentName, channelName, headline, phase });
+        },
+        createProgressPoster: (agentName) => ({
+          post: (channel, content, threadId) => this.postAsAgent(agentName, channel, content, "progress", threadId),
+          edit: (messageId, content) => this.editAsAgent(agentName, messageId, content, "progress"),
+          remove: (messageId) => this.deleteAsAgent(agentName, messageId, "progress"),
+        }),
         costTracker,
         threadSessions,
       },
@@ -117,34 +127,69 @@ export class DaemonCore {
   }
 
   /**
-   * 以 agent 身份往频道发一条消息（mint scoped token → POST /send）。
-   * 回复守卫代发与 D3 成本熔断共用：都不走 LLM 回合。
+   * 以 agent 身份往频道发/改/删消息。用账号级 machine token（this.apiKey），
+   * 不 mint scoped token——回合中 mint 会覆盖 MCP 子进程正在用的凭证。
+   * requireOwnAgent 认 machine token（user.sub === agent.user_id）。
    */
-  private postAsAgent(agentName: string, channel: string, content: string, reason: string): void {
-    void (async () => {
-      try {
-        const agentId = this.runtime.resolveAgentId(agentName);
-        if (!agentId) {
-          console.warn(`[Daemon] ${reason}: no agentId for @${agentName}, cannot post`);
-          return;
-        }
-        const mint = await fetch(`${this.serverUrl}/internal/agent/${agentId}/credentials`, {
-          method: "POST",
-          headers: { Authorization: `Bearer ${this.apiKey}` },
-        });
-        if (!mint.ok) throw new Error(`mint credential ${mint.status}`);
-        const { token } = (await mint.json()) as { token: string };
-        const res = await fetch(`${this.serverUrl}/internal/agent/${agentId}/send`, {
-          method: "POST",
-          headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
-          body: JSON.stringify({ target: channel, content }),
-        });
-        if (!res.ok) throw new Error(`send ${res.status} ${await res.text().catch(() => "")}`);
-        console.log(`[Daemon] ${reason} posted for @${agentName} -> ${channel} (${content.length} chars)`);
-      } catch (err: any) {
-        console.error(`[Daemon] ${reason} post failed for @${agentName}:`, err?.message ?? err);
+  private async postAsAgent(
+    agentName: string,
+    channel: string,
+    content: string,
+    reason: string,
+    threadId?: string,
+  ): Promise<string | undefined> {
+    try {
+      const agentId = this.runtime.resolveAgentId(agentName);
+      if (!agentId) {
+        console.warn(`[Daemon] ${reason}: no agentId for @${agentName}`);
+        return undefined;
       }
-    })();
+      const res = await fetch(`${this.serverUrl}/internal/agent/${agentId}/send`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${this.apiKey}`, "content-type": "application/json" },
+        body: JSON.stringify({ target: channel, content, ...(threadId ? { threadId } : {}) }),
+      });
+      if (!res.ok) throw new Error(`send ${res.status} ${await res.text().catch(() => "")}`);
+      const body = (await res.json().catch(() => ({}))) as { messageId?: string };
+      console.log(`[Daemon] ${reason} posted for @${agentName} -> ${channel} (${content.length} chars)`);
+      return body.messageId;
+    } catch (err: any) {
+      console.error(`[Daemon] ${reason} post failed for @${agentName}:`, err?.message ?? err);
+      return undefined;
+    }
+  }
+
+  private async editAsAgent(agentName: string, messageId: string, content: string, reason: string): Promise<boolean> {
+    try {
+      const agentId = this.runtime.resolveAgentId(agentName);
+      if (!agentId) return false;
+      const res = await fetch(`${this.serverUrl}/internal/agent/${agentId}/messages/${messageId}`, {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${this.apiKey}`, "content-type": "application/json" },
+        body: JSON.stringify({ content }),
+      });
+      if (!res.ok) throw new Error(`edit ${res.status} ${await res.text().catch(() => "")}`);
+      return true;
+    } catch (err: any) {
+      console.error(`[Daemon] ${reason} edit failed for @${agentName}:`, err?.message ?? err);
+      return false;
+    }
+  }
+
+  private async deleteAsAgent(agentName: string, messageId: string, reason: string): Promise<boolean> {
+    try {
+      const agentId = this.runtime.resolveAgentId(agentName);
+      if (!agentId) return false;
+      const res = await fetch(`${this.serverUrl}/internal/agent/${agentId}/messages/${messageId}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${this.apiKey}` },
+      });
+      if (!res.ok) throw new Error(`delete ${res.status} ${await res.text().catch(() => "")}`);
+      return true;
+    } catch (err: any) {
+      console.error(`[Daemon] ${reason} delete failed for @${agentName}:`, err?.message ?? err);
+      return false;
+    }
   }
 
   async start(): Promise<void> {
@@ -175,8 +220,8 @@ export class DaemonCore {
         const runId = this.runtime.__getRunId(name);
         const run = runId ? manager.getRun(runId) : undefined;
         const state = this.runtime.getAgentState(name) ?? "unknown";
-        const status = run ? state : "offline";
-        // 最后一行非空终端输出（last_pty_line）
+        const status = run || (state !== "stopped" && state !== "uninit" && state !== "unknown") ? state : "offline";
+        // 最后一行非空终端输出（last_pty_line）；headless 用观察帧摘要
         let lastLine = "";
         if (run?.screenText) {
           const lines = run.screenText.split("\n");
@@ -186,6 +231,12 @@ export class DaemonCore {
               lastLine = t.slice(0, 80);
               break;
             }
+          }
+        } else {
+          const t = this.runtime.__getObservationBus().transcript(name, 400).trim();
+          if (t) {
+            const lines = t.split("\n");
+            lastLine = (lines[lines.length - 1] ?? "").slice(0, 80);
           }
         }
         const key = status + "|" + lastLine;
@@ -280,13 +331,7 @@ export class DaemonCore {
     this.ws.on("open", () => {
       console.log("[Daemon] Connected to server");
       this.reconnectDelay = 1000;
-      this.sendWs({
-        type: "ready",
-        capabilities: ["send", "read"],
-        runtimes: ["daemon-cli"],
-        hostname: process.env.COMPUTERNAME || "unknown",
-        daemonVersion: "0.1.0",
-      });
+      this.sendWs(buildReadyPayload());
     });
     this.ws.on("message", (data) => {
       try {
@@ -466,10 +511,25 @@ export class DaemonCore {
       }
       case "agent:stop": {
         const stoppedId = msg.agentId as string;
-        // 按 id 找到对应名字，通过运行时注销
-        for (const name of this.runtime.mentionedAgentNames("@" + stoppedId)) {
-          // 粗略匹配：stoppedId 可能是 agent name 或 UUID
-          this.runtime.unregisterAgent(name);
+        const stoppedName = this.runtime.resolveAgentName(stoppedId);
+        if (stoppedName) this.runtime.unregisterAgent(stoppedName);
+        break;
+      }
+      case "agent:duty": {
+        const duty = msg.duty as string;
+        const dutyName = (msg.name as string) || this.runtime.resolveAgentName(msg.agentId as string) || "";
+        if (!dutyName) {
+          console.log("[Daemon] agent:duty without name, ignored");
+          break;
+        }
+        if (duty === "off") {
+          console.log(`[Daemon] @${dutyName} off duty — unregister`);
+          this.runtime.unregisterAgent(dutyName);
+        } else {
+          const dutyId = (msg.agentId as string) || this.runtime.resolveAgentId(dutyName) || "";
+          const info = this.runtime.getAgentInfo(dutyName) || {};
+          console.log(`[Daemon] @${dutyName} on duty — register (lazy)`);
+          this.runtime.registerAgent(dutyId, dutyName, info);
         }
         break;
       }
@@ -576,6 +636,45 @@ export class DaemonCore {
         const runId = this.runtime.__getRunId(agentName);
         if (runId) {
           this.runtime.__getAgentManager().resizeRun(runId, cols, rows);
+        }
+        break;
+      }
+      case "workspace:read": {
+        const requestId = String(msg.requestId || "");
+        const agentName = String(msg.agentName || "");
+        const rel = typeof msg.path === "string" && msg.path ? msg.path : "";
+        if (!requestId || !agentName) break;
+        if (rel) {
+          const r = readWorkspaceFile(agentName, rel);
+          if (r.ok) {
+            this.sendWs({
+              type: "workspace:result",
+              requestId,
+              agentName,
+              exists: true,
+              path: r.path,
+              content: r.content,
+              bytes: r.bytes,
+            });
+          } else {
+            this.sendWs({
+              type: "workspace:result",
+              requestId,
+              agentName,
+              exists: false,
+              path: rel,
+              error: r.error,
+            });
+          }
+        } else {
+          const listing = listWorkspaceFiles(agentName);
+          this.sendWs({
+            type: "workspace:result",
+            requestId,
+            agentName,
+            exists: listing.exists,
+            files: listing.files,
+          });
         }
         break;
       }

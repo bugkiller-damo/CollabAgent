@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import { apiClient, apiGet, apiPost } from "../../api";
+import OrgMembersPanel from "../../components/admin/OrgMembersPanel.vue";
 import PageHeader from "../../components/layout/PageHeader.vue";
 import Avatar from "../../components/ui/Avatar.vue";
 import Button from "../../components/ui/Button.vue";
@@ -146,6 +147,8 @@ function selectOrg(e: Event) {
 <template>
   <div class="mx-auto w-full max-w-7xl space-y-6 p-4 sm:p-6">
     <PageHeader title="成员管理" back-to="/admin" :breadcrumb="[{ label: '管理后台', to: '/admin' }, { label: '成员管理' }]" />
+
+    <OrgMembersPanel />
 
     <div class="flex items-center justify-end">
       <select

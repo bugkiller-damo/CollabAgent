@@ -4,12 +4,35 @@ import { ref } from "vue";
 import { apiGet, apiPatch, apiPost } from "../api";
 import { toast } from "./toastStore";
 
+export interface ChannelMember {
+  member_id: string;
+  member_type: "human" | "agent";
+  role?: string;
+  is_manager?: boolean;
+  handle: string;
+  display_name?: string;
+}
+
 export const useChannelStore = defineStore("channels", () => {
   const channels = ref<Channel[]>([]);
   const serverId = ref<string | null>(null);
   const joinedChannels = ref<Set<string>>(new Set());
   const activeChannelName = ref<string | null>(null);
   const unreadCounts = ref<Record<string, number>>({});
+  /** 当前频道的成员（观察面板/侧栏只展示已加入的 agent） */
+  const membersByChannelId = ref<Record<string, ChannelMember[]>>({});
+
+  async function fetchMembers(channelId: string): Promise<ChannelMember[]> {
+    if (!channelId) return [];
+    try {
+      const data = await apiGet<{ members: ChannelMember[] }>(`/api/channels/${channelId}/members`);
+      const members = data.members || [];
+      membersByChannelId.value = { ...membersByChannelId.value, [channelId]: members };
+      return members;
+    } catch {
+      return membersByChannelId.value[channelId] ?? [];
+    }
+  }
 
   async function fetchChannels(): Promise<void> {
     try {
@@ -88,5 +111,7 @@ export const useChannelStore = defineStore("channels", () => {
     setActiveChannel,
     incrementUnread,
     clearUnread,
+    membersByChannelId,
+    fetchMembers,
   };
 });

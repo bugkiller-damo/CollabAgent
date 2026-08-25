@@ -31,11 +31,13 @@ import { attachmentRoutes } from "./routes/attachments.js";
 import { auditRoutes } from "./routes/audit.js";
 import { authRoutes } from "./routes/auth.js";
 import { channelRoutes } from "./routes/channels.js";
+import { computerRoutes } from "./routes/computers.js";
 import { integrationRoutes } from "./routes/integrations.js";
 import { messageRoutes } from "./routes/messages.js";
 import { metricsRoutes } from "./routes/metrics.js";
 import { notificationRoutes } from "./routes/notifications.js";
 import { orgRoutes } from "./routes/orgs.js";
+import { peopleRoutes } from "./routes/people.js";
 import { previewRoutes } from "./routes/preview.js";
 import { profileRoutes } from "./routes/profile.js";
 import { reminderRoutes } from "./routes/reminders.js";
@@ -234,6 +236,8 @@ await server.register(messageRoutes, { prefix: "/api/messages" });
 await server.register(taskRoutes, { prefix: "/api/tasks" });
 await server.register(reminderRoutes, { prefix: "/api/reminders" });
 await server.register(profileRoutes, { prefix: "/api/profile" });
+await server.register(peopleRoutes, { prefix: "/api/people" });
+await server.register(computerRoutes, { prefix: "/api/computers" });
 await server.register(attachmentRoutes, { prefix: "/api/attachments" });
 await server.register(auditRoutes, { prefix: "/api" });
 await server.register(previewRoutes, { prefix: "/api/preview" });
@@ -267,10 +271,12 @@ server.get("/api/health", async () => {
   return { status: dbOk ? "ok" : "degraded", db: dbOk, time: new Date().toISOString() };
 });
 
-// 当前用户的 daemon 是否已连上（接入向导第 1 步轮询用）
+// 当前用户的 daemon / 计算机状态（接入页轮询 + 兼容旧 { connected }）
 server.get("/api/daemon/status", { preHandler: [server.authenticate] }, async (req: any) => {
-  const { daemonClients } = await import("./ws/handler.js");
-  return { connected: daemonClients.has(String(req.user.sub)) };
+  const { computerStatusPayload, loadComputerRow } = await import("./routes/computers.js");
+  const userId = String(req.user.sub);
+  const row = await loadComputerRow(server, userId);
+  return computerStatusPayload(server, userId, row);
 });
 
 // Public user list (for @mention autocomplete) — 需登录，避免未认证枚举全站用户

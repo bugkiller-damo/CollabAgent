@@ -4,6 +4,7 @@ interface MentionCandidate {
   displayName: string;
   type: "user" | "agent";
   id?: string;
+  duty?: "on" | "off";
 }
 
 defineProps<{
@@ -41,7 +42,7 @@ const emit = defineEmits<{
         {{ item.displayName }}
       </span>
       <span class="ml-auto text-[10px] opacity-50 shrink-0">
-        {{ item.type === "agent" ? "Agent" : "" }}
+        {{ item.duty === "off" ? "停班" : item.type === "agent" ? "Agent" : "" }}
       </span>
     </button>
   </div>

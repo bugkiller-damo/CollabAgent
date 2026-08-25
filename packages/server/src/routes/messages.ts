@@ -70,7 +70,7 @@ export async function messageRoutes(app: FastifyInstance) {
     }
     const lim = Number(limit) || 50;
     const result = await app.pg.query(
-      'SELECT m.id, m.channel_id, m.server_id, m.sender_id as "senderId", m.sender_type as "senderType", COALESCE(u.display_name, u.handle, ag.display_name, ag.name, \'User\') as "senderName", m.content, m.seq, m.thread_id, m.task_number, m.task_status, m.task_assignee, m.created_at as "time", m.edited_at as "editedAt", (SELECT COUNT(*) FROM messages WHERE thread_id = m.id)::int as "replyCount", ' +
+      'SELECT m.id, m.channel_id, m.server_id, m.sender_id as "senderId", m.sender_type as "senderType", COALESCE(u.display_name, u.handle, ag.display_name, ag.name, \'User\') as "senderName", COALESCE(u.handle, ag.name) as "senderHandle", m.content, m.seq, m.thread_id, m.task_number, m.task_status, m.task_assignee, m.created_at as "time", m.edited_at as "editedAt", (SELECT COUNT(*) FROM messages WHERE thread_id = m.id)::int as "replyCount", ' +
         reactionsJson() +
         ", " +
         attachmentsJson() +
@@ -87,7 +87,7 @@ export async function messageRoutes(app: FastifyInstance) {
     const { messageId } = req.params as Record<string, string>;
     const tenant = await resolveTenant(app, req);
     const parent = await app.pg.query(
-      'SELECT m.id, m.channel_id, m.content, m.sender_id as "senderId", COALESCE(u.display_name, u.handle, \'User\') as "senderName", m.created_at as "time" FROM messages m LEFT JOIN users u ON m.sender_id = u.id WHERE m.id = $1',
+      'SELECT m.id, m.channel_id, m.content, m.sender_id as "senderId", m.sender_type as "senderType", COALESCE(u.display_name, u.handle, ag.display_name, ag.name, \'User\') as "senderName", COALESCE(u.handle, ag.name) as "senderHandle", m.created_at as "time" FROM messages m LEFT JOIN users u ON m.sender_id = u.id LEFT JOIN agents ag ON m.sender_id = ag.id WHERE m.id = $1',
       [messageId],
     );
     if (parent.rows.length === 0) return reply.status(404).send({ error: "message not found" });
@@ -95,7 +95,7 @@ export async function messageRoutes(app: FastifyInstance) {
       return reply.status(403).send({ error: "no access to this channel" });
     }
     const replies = await app.pg.query(
-      'SELECT m.id, m.channel_id, m.sender_id as "senderId", COALESCE(u.display_name, u.handle, \'User\') as "senderName", m.content, m.seq, m.created_at as "time" FROM messages m LEFT JOIN users u ON m.sender_id = u.id WHERE m.thread_id = $1 ORDER BY m.seq ASC',
+      'SELECT m.id, m.channel_id, m.sender_id as "senderId", m.sender_type as "senderType", COALESCE(u.display_name, u.handle, ag.display_name, ag.name, \'User\') as "senderName", COALESCE(u.handle, ag.name) as "senderHandle", m.content, m.seq, m.created_at as "time" FROM messages m LEFT JOIN users u ON m.sender_id = u.id LEFT JOIN agents ag ON m.sender_id = ag.id WHERE m.thread_id = $1 ORDER BY m.seq ASC',
       [messageId],
     );
     return { parent: parent.rows[0], replies: replies.rows };
@@ -212,7 +212,7 @@ export async function messageRoutes(app: FastifyInstance) {
         if (channelType === "public") {
           // 候选集：频道所在 server 的 agent + 发送者自己名下的 agent（与 /invite 回退一致）
           const candidates = await tx.query<{ name: string }>(
-            "SELECT name FROM agents WHERE server_id = $1 OR user_id = $2",
+            "SELECT name FROM agents WHERE duty = 'on' AND (server_id = $1 OR user_id = $2)",
             [resolvedServerId, userId],
           );
           const mentionedNames = candidates.rows.map((r) => r.name).filter((n) => n && contentMentions(content, n));
@@ -221,7 +221,7 @@ export async function messageRoutes(app: FastifyInstance) {
             await tx.query(
               `INSERT INTO channel_members (channel_id, member_id, member_type, role)
                SELECT $1, a.id, 'agent', 'member' FROM agents a
-               WHERE a.name = ANY($2) AND (a.server_id = $3 OR a.user_id = $4)
+               WHERE a.duty = 'on' AND a.name = ANY($2) AND (a.server_id = $3 OR a.user_id = $4)
                ON CONFLICT DO NOTHING`,
               [resolvedChannelId, mentionedNames, resolvedServerId, userId],
             );
@@ -234,7 +234,8 @@ export async function messageRoutes(app: FastifyInstance) {
           // 不在列表里的 agent daemon 不会 spawn —— 避免起了 PTY 回复时再被 403 的资源浪费。
           const members = await tx.query<{ name: string }>(
             `SELECT a.name FROM agents a
-             JOIN channel_members cm ON cm.member_id = a.id AND cm.member_type = 'agent' AND cm.channel_id = $1`,
+             JOIN channel_members cm ON cm.member_id = a.id AND cm.member_type = 'agent' AND cm.channel_id = $1
+             WHERE a.duty = 'on'`,
             [resolvedChannelId],
           );
           mentionAgents = members.rows.map((r) => r.name).filter((n) => n && contentMentions(content, n));
@@ -307,7 +308,7 @@ export async function messageRoutes(app: FastifyInstance) {
         if (ch.rows[0]?.manager_triage_enabled) {
           const mgr = await app.pg.query<{ name: string }>(
             `SELECT a.name FROM channel_members cm JOIN agents a ON a.id = cm.member_id
-              WHERE cm.channel_id = $1 AND cm.member_type = 'agent' AND cm.is_manager = true
+              WHERE cm.channel_id = $1 AND cm.member_type = 'agent' AND cm.is_manager = true AND a.duty = 'on'
               ORDER BY cm.joined_at ASC LIMIT 1`,
             [resolvedChannelId],
           );
@@ -357,14 +358,27 @@ export async function messageRoutes(app: FastifyInstance) {
     });
     inc("messagesSent");
     if (dm) inc("dmSent");
+    let skippedMentions: { handle: string; reason: "off_duty" }[] | undefined;
+    if (!dm && content && content.includes("@")) {
+      try {
+        const off = await app.pg.query<{ name: string }>(
+          "SELECT name FROM agents WHERE duty = 'off' AND (server_id = $1 OR user_id = $2)",
+          [resolvedServerId, userId],
+        );
+        const skipped = off.rows.map((r) => r.name).filter((n) => n && contentMentions(content, n));
+        if (skipped.length) skippedMentions = skipped.map((handle) => ({ handle, reason: "off_duty" as const }));
+      } catch {
+        /* 提示失败不影响发送 */
+      }
+    }
     return {
       state: "sent",
       messageId: msg.id,
       messageSeq: msg.seq,
       attachments,
       channelId: dm ? "dm:" + resolvedChannelId : undefined,
-      // O15：有传 clientNonce 才回显（无 nonce 的请求行为完全不变，向后兼容）
       ...(hasNonce ? { clientNonce } : {}),
+      ...(skippedMentions?.length ? { skippedMentions } : {}),
     };
   });
 
@@ -391,7 +405,7 @@ export async function messageRoutes(app: FastifyInstance) {
       return reply.status(403).send({ error: "no access to this channel" });
     }
     let query =
-      'SELECT m.id, m.channel_id, m.server_id, m.sender_id as "senderId", m.sender_type as "senderType", COALESCE(u.display_name, u.handle, ag.display_name, ag.name, \'User\') as "senderName", m.content, m.seq, m.thread_id, m.task_number, m.task_status, m.task_assignee, m.created_at as "time", m.edited_at as "editedAt", (SELECT COUNT(*) FROM messages WHERE thread_id = m.id)::int as "replyCount", ' +
+      'SELECT m.id, m.channel_id, m.server_id, m.sender_id as "senderId", m.sender_type as "senderType", COALESCE(u.display_name, u.handle, ag.display_name, ag.name, \'User\') as "senderName", COALESCE(u.handle, ag.name) as "senderHandle", m.content, m.seq, m.thread_id, m.task_number, m.task_status, m.task_assignee, m.created_at as "time", m.edited_at as "editedAt", (SELECT COUNT(*) FROM messages WHERE thread_id = m.id)::int as "replyCount", ' +
       reactionsJson() +
       ", " +
       attachmentsJson() +

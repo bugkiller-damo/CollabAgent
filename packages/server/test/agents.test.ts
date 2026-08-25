@@ -108,4 +108,31 @@ describe("agent/profile/org: 综合集成测试", () => {
   it("GET /internal/agent/ — 内部 agent 列表", async () => {
     expect((await api("/internal/agent/", { cookie: ck })).status).toBe(200);
   });
+
+  it("POST /api/agents/:id/duty — owner 可停班/值班", async () => {
+    const name = "duty_" + Date.now().toString(36);
+    const created = await api("/api/agents", {
+      method: "POST",
+      cookie: ck,
+      csrf: cs,
+      body: { name, displayName: "Duty" },
+    });
+    expect(created.status).toBe(200);
+    const id = created.data.agent.id as string;
+    const off = await api(`/api/agents/${id}/duty`, { method: "POST", cookie: ck, csrf: cs, body: { duty: "off" } });
+    expect(off.status).toBe(200);
+    expect(off.data.duty).toBe("off");
+    expect(off.data.presence).toBe("off_duty");
+    expect(off.data.isOnline).toBe(false);
+    const listed = await api("/api/agents", { cookie: ck });
+    const row = (listed.data.agents as any[]).find((a) => a.id === id);
+    expect(row.duty).toBe("off");
+    expect(row.presence).toBe("off_duty");
+    const on = await api(`/api/agents/${id}/duty`, { method: "POST", cookie: ck, csrf: cs, body: { duty: "on" } });
+    expect(on.status).toBe(200);
+    expect(on.data.duty).toBe("on");
+    expect(["idle", "computer_offline"]).toContain(on.data.presence);
+    const bad = await api(`/api/agents/${id}/duty`, { method: "POST", cookie: ck, csrf: cs, body: { duty: "maybe" } });
+    expect(bad.status).toBe(400);
+  });
 });

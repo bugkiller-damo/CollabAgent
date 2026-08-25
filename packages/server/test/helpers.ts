@@ -114,6 +114,7 @@ export async function cleanupTestData(): Promise<void> {
   await sql`DELETE FROM message_reactions WHERE user_id::text = ANY(${uids})`;
   await sql`DELETE FROM channel_members WHERE member_id::text = ANY(${uids})`;
   await sql`DELETE FROM reminders WHERE owner_id::text = ANY(${uids})`;
+  await sql`DELETE FROM computers WHERE user_id::text = ANY(${uids})`;
   await sql`DELETE FROM machine_tokens WHERE user_id::text = ANY(${uids})`;
   await sql`DELETE FROM user_sessions WHERE user_id::text = ANY(${uids})`;
   await sql`DELETE FROM agent_credentials WHERE agent_id IN (SELECT id FROM agents WHERE user_id::text = ANY(${uids}))`;

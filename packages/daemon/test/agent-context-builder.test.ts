@@ -63,6 +63,15 @@ describe("packThreadContext", () => {
     expect(packThreadContext([{ id: "x", seq: 1, senderName: "a", content: "   " }])).toBeNull();
   });
 
+  it("drops in-channel ⏳ progress messages", () => {
+    const packed = packThreadContext(
+      [msg("1", 1, "alice", "⏳ 正在读文件 a.ts…"), msg("2", 2, "bob", "please continue")],
+      { maxMessages: 40, maxChars: 8000 },
+    );
+    expect(packed!.block).not.toContain("正在读文件");
+    expect(packed!.block).toContain("please continue");
+  });
+
   it("dedupes trigger by content when id is missing", () => {
     const packed = packThreadContext([msg("1", 1, "a", "hello"), msg("2", 2, "b", "followup")], {
       triggerContent: "followup",

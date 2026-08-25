@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS agents (
     avatar_url TEXT,
     runtime_profile JSONB DEFAULT '{}'::jsonb,
     status VARCHAR(20) NOT NULL DEFAULT 'active',
+    duty VARCHAR(8) NOT NULL DEFAULT 'on',
     capabilities JSONB DEFAULT '[]'::jsonb,
     last_seen_seq BIGINT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -73,7 +74,9 @@ ALTER TABLE agents ADD COLUMN IF NOT EXISTS runtime_profile JSONB DEFAULT '{}'::
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS capabilities JSONB DEFAULT '[]'::jsonb;
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS last_seen_seq BIGINT;
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS avatar_url TEXT;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS duty VARCHAR(8) NOT NULL DEFAULT 'on';
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_server_name ON agents (server_id, lower(name));
+CREATE INDEX IF NOT EXISTS idx_agents_duty ON agents (user_id, duty);
 
 -- ---- channels ----
 CREATE TABLE IF NOT EXISTS channels (
@@ -270,3 +273,56 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_user_sessions_refresh ON user_sessions (re
 -- ---- ÂîØ‰∏ÄÁ¥¢ÂºïÔºàlower Â§ßÂ∞èÂÜôÊó†ÂÖ≥Ôºâ----
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_handle_lower ON users (lower(handle));
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users (lower(email)) WHERE email IS NOT NULL;
+
+-- ---- computersÔºà‰∏Ä‰∫∫‰∏ÄÊú∫ÔºõÂàóÁî® ALTER Ë°•ÈΩêÔºåÂÖºÂÆπÊóßÂ£≥Ë°®Ôºâ----
+CREATE TABLE IF NOT EXISTS computers (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL UNIQUE REFERENCES users(id),
+    server_id UUID NOT NULL REFERENCES servers(id),
+    name TEXT NOT NULL DEFAULT 'ÊàëÁöÑËÆ°ÁÆóÊú∫',
+    description TEXT NOT NULL DEFAULT '',
+    hostname TEXT,
+    os TEXT,
+    arch TEXT,
+    daemon_version TEXT,
+    runtimes JSONB NOT NULL DEFAULT '[]'::jsonb,
+    last_ready_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE computers ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT 'ÊàëÁöÑËÆ°ÁÆóÊú∫';
+ALTER TABLE computers ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT '';
+ALTER TABLE computers ADD COLUMN IF NOT EXISTS hostname TEXT;
+ALTER TABLE computers ADD COLUMN IF NOT EXISTS os TEXT;
+ALTER TABLE computers ADD COLUMN IF NOT EXISTS arch TEXT;
+ALTER TABLE computers ADD COLUMN IF NOT EXISTS daemon_version TEXT;
+ALTER TABLE computers ADD COLUMN IF NOT EXISTS runtimes JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE computers ADD COLUMN IF NOT EXISTS last_ready_at TIMESTAMPTZ;
+ALTER TABLE computers ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now();
+CREATE INDEX IF NOT EXISTS idx_computers_server ON computers (server_id);
+
+-- ---- task_events£®»ŒŒÒ≤Ÿ◊˜¿˙ ∑£ªmessage_id πÿ¡™ messages »ŒŒÒ––£©----
+CREATE TABLE IF NOT EXISTS task_events (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    message_id UUID NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    channel_id UUID NOT NULL,
+    task_number INTEGER NOT NULL,
+    actor_id UUID,
+    actor_name VARCHAR(120),
+    action VARCHAR(24) NOT NULL CHECK (action IN ('created','claimed','unclaimed','status_changed')),
+    from_status VARCHAR(20),
+    to_status VARCHAR(20),
+    detail TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_task_events_message ON task_events (message_id, created_at);
+
+-- ---- task_comments£®»ŒŒÒ≈˙◊¢£©----
+CREATE TABLE IF NOT EXISTS task_comments (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    message_id UUID NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    author_id UUID NOT NULL,
+    author_name VARCHAR(120),
+    content TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_task_comments_message ON task_comments (message_id, created_at);

@@ -1,9 +1,10 @@
 <script setup lang="ts">
+import { isProgressContent } from "@collabagent/shared";
 import { computed, nextTick, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { apiClient } from "../../api";
 import { formatTime } from "../../lib/formatTime";
-import { useAuthStore, useMessageStore } from "../../stores";
+import { useAuthStore, useChannelStore, useMessageStore, useUiStore } from "../../stores";
 import { toast } from "../../stores/toastStore";
 import ConfirmDialog from "../ConfirmDialog.vue";
 import AttachmentView from "./AttachmentView.vue";
@@ -40,6 +41,8 @@ const props = defineProps<{
 const router = useRouter();
 const authStore = useAuthStore();
 const messageStore = useMessageStore();
+const uiStore = useUiStore();
+const channelStore = useChannelStore();
 
 const editing = ref(false);
 const editText = ref(props.msg.content || "");
@@ -66,6 +69,7 @@ const dispatchKind = computed(() =>
         ? "撤回"
         : null,
 );
+const isProgress = computed(() => isProgressContent(props.msg.content));
 
 // 紧凑模式：与上一条为同一发送者，且时间差在 5 分钟内
 const timeDiffMin = computed(() => {
@@ -180,6 +184,18 @@ watch(editing, (val) => {
 function goToThread() {
   router.push(`/channels/${props.channelName}/${props.msg.id}`);
 }
+
+function senderHandle(): string {
+  return String(props.msg.senderHandle || "").replace(/^@/, "");
+}
+
+function openSenderProfile() {
+  const h = senderHandle();
+  if (!h) return;
+  const chName = (props.channelName || "").replace(/^#/, "");
+  const ch = chName ? channelStore.channels.find((c) => c.name === chName) : undefined;
+  uiStore.openProfile({ handle: h, channelId: ch?.id });
+}
 </script>
 
 <template>
@@ -190,21 +206,31 @@ function goToThread() {
       dispatchKind
         ? 'border-l-2 border-amber-400 dark:border-amber-600 bg-amber-50/40 dark:bg-amber-900/10'
         : '',
+      isProgress ? 'border-l-2 border-sky-400 dark:border-sky-700 bg-sky-50/50 dark:bg-sky-950/20' : '',
     ]"
   >
     <div v-if="compact" class="w-8 shrink-0" />
-    <div
+    <button
       v-else
-      class="w-8 h-8 rounded bg-gray-600 shrink-0 flex items-center justify-center text-xs text-white"
+      type="button"
+      class="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-gray-600 text-xs text-white hover:opacity-80"
+      :disabled="!senderHandle()"
+      :title="senderHandle() ? '查看档案' : undefined"
+      @click="openSenderProfile"
     >
       {{ (msg.senderName || "?")[0] }}
-    </div>
+    </button>
 
     <div class="min-w-0 flex-1">
       <div v-if="!compact" class="flex items-baseline gap-2">
-        <span class="font-semibold text-gray-900 dark:text-white text-sm">
+        <button
+          type="button"
+          :disabled="!senderHandle()"
+          class="text-sm font-semibold text-gray-900 hover:underline disabled:cursor-default disabled:no-underline dark:text-white"
+          @click="openSenderProfile"
+        >
           {{ msg.senderName || msg.senderId || "Unknown" }}
-        </span>
+        </button>
         <span class="text-gray-500 text-xs" :title="new Date(msg.time || msg.createdAt).toLocaleString()">
           {{ formatTime(msg.time || msg.createdAt) }}
         </span>
@@ -260,7 +286,7 @@ function goToThread() {
           </button>
         </div>
 
-        <div class="flex flex-wrap items-center gap-1 mt-1 relative">
+        <div class="mt-1 flex flex-wrap items-center gap-1">
           <button
             @click="goToThread"
             class="text-gray-500 hover:text-blue-400 text-xs px-1.5 py-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
@@ -310,24 +336,28 @@ function goToThread() {
           </template>
 
           <template v-if="!deleted">
-            <button
-              @click="emojiPickerOpen = !emojiPickerOpen"
-              class="text-gray-500 hover:text-yellow-400 text-xs px-1.5 py-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity"
-            >
-              😀
-            </button>
-            <div
-              v-if="emojiPickerOpen"
-              class="absolute right-0 top-6 z-10 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg p-1 flex gap-0.5 animate-scale-in origin-top-right"
-            >
+            <div class="relative">
               <button
-                v-for="e in EMOJI_CHOICES"
-                :key="e"
-                @click="handleReactionClick(e); emojiPickerOpen = false"
-                class="text-lg w-7 h-7 rounded hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                type="button"
+                class="rounded px-1.5 py-0.5 text-xs text-gray-500 opacity-100 transition-opacity hover:bg-gray-200 hover:text-yellow-400 lg:opacity-0 lg:group-hover:opacity-100 dark:hover:bg-gray-700"
+                @click="emojiPickerOpen = !emojiPickerOpen"
               >
-                {{ e }}
+                😀
               </button>
+              <div
+                v-if="emojiPickerOpen"
+                class="absolute left-0 top-full z-10 mt-1 flex origin-top-left animate-scale-in gap-0.5 rounded-lg border border-gray-200 bg-white p-1 shadow-lg dark:border-gray-700 dark:bg-gray-800"
+              >
+                <button
+                  v-for="e in EMOJI_CHOICES"
+                  :key="e"
+                  type="button"
+                  class="h-7 w-7 rounded text-lg hover:bg-gray-100 dark:hover:bg-gray-700"
+                  @click="handleReactionClick(e); emojiPickerOpen = false"
+                >
+                  {{ e }}
+                </button>
+              </div>
             </div>
           </template>
         </div>

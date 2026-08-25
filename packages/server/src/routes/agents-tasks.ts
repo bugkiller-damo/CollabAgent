@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { agentCanAccessChannel, requireOwnAgent, resolveChannelByName } from "../lib/agent-helpers.js";
+import { recordTaskEvent } from "../lib/task-events.js";
 
 const STATUSES = ["todo", "in_progress", "in_review", "done", "closed"];
 
@@ -64,8 +65,8 @@ export async function agentTaskRoutes(app: FastifyInstance) {
     const results: any[] = [];
     for (const num of nums) {
       const m = (
-        await app.pg.query<{ task_status: string | null; task_assignee: string | null }>(
-          "SELECT task_status, task_assignee FROM messages WHERE channel_id = $1 AND task_number = $2",
+        await app.pg.query<{ id: string; task_status: string | null; task_assignee: string | null }>(
+          "SELECT id, task_status, task_assignee FROM messages WHERE channel_id = $1 AND task_number = $2",
           [ch.id, num],
         )
       ).rows[0];
@@ -85,6 +86,15 @@ export async function agentTaskRoutes(app: FastifyInstance) {
         "UPDATE messages SET task_status = 'in_progress', task_assignee = $1, updated_at = now() WHERE channel_id = $2 AND task_number = $3",
         [agentId, ch.id, num],
       );
+      await recordTaskEvent(app, {
+        messageId: m.id,
+        channelId: ch.id,
+        taskNumber: num,
+        actorId: agentId,
+        action: "claimed",
+        fromStatus: m.task_status,
+        toStatus: "in_progress",
+      });
       results.push({ number: num, status: "claimed" });
     }
     return { results };
@@ -97,10 +107,25 @@ export async function agentTaskRoutes(app: FastifyInstance) {
     const ch = await resolveChannelByName(app, channel);
     if (!ch) return reply.status(404).send({ error: "channel not found" });
     if (!(await agentCanAccessChannel(app, ch.id, agentId))) return reply.status(403).send({ error: "no access" });
+    const before = await app.pg.query<{ id: string; task_status: string | null }>(
+      "SELECT id, task_status FROM messages WHERE channel_id = $1 AND task_number = $2 AND task_number IS NOT NULL",
+      [ch.id, task_number],
+    );
     await app.pg.query(
       "UPDATE messages SET task_assignee = NULL, task_status = 'todo', updated_at = now() WHERE channel_id = $1 AND task_number = $2",
       [ch.id, task_number],
     );
+    if (before.rows[0]) {
+      await recordTaskEvent(app, {
+        messageId: before.rows[0].id,
+        channelId: ch.id,
+        taskNumber: task_number!,
+        actorId: agentId,
+        action: "unclaimed",
+        fromStatus: before.rows[0].task_status,
+        toStatus: "todo",
+      });
+    }
     return { ok: true };
   });
 
@@ -112,10 +137,25 @@ export async function agentTaskRoutes(app: FastifyInstance) {
     const ch = await resolveChannelByName(app, channel);
     if (!ch) return reply.status(404).send({ error: "channel not found" });
     if (!(await agentCanAccessChannel(app, ch.id, agentId))) return reply.status(403).send({ error: "no access" });
-    const r = await app.pg.query(
+    const before = await app.pg.query<{ id: string; task_status: string | null }>(
+      "SELECT id, task_status FROM messages WHERE channel_id = $1 AND task_number = $2 AND task_number IS NOT NULL",
+      [ch.id, number],
+    );
+    const r = await app.pg.query<{ id: string; task_number: number; task_status: string }>(
       "UPDATE messages SET task_status = $1, updated_at = now() WHERE channel_id = $2 AND task_number = $3 RETURNING id, task_number, task_status",
       [status, ch.id, number],
     );
+    if (r.rows[0] && before.rows[0] && before.rows[0].task_status !== status) {
+      await recordTaskEvent(app, {
+        messageId: r.rows[0].id,
+        channelId: ch.id,
+        taskNumber: number!,
+        actorId: agentId,
+        action: "status_changed",
+        fromStatus: before.rows[0].task_status,
+        toStatus: status,
+      });
+    }
     return { ok: true, task: r.rows[0] };
   });
 }

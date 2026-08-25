@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import type { Message } from "@collabagent/shared";
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { apiClient, apiGet } from "../api";
+import AgentProgressBar from "../components/agent/AgentProgressBar.vue";
 import MessageComposer, { type ComposerAttachment } from "../components/chat/MessageComposer.vue";
 import MessageRow from "../components/chat/MessageRow.vue";
 import PendingRow from "../components/chat/PendingRow.vue";
@@ -31,6 +32,7 @@ const convKey = ref("");
 const error = ref("");
 const attachments = ref<ComposerAttachment[]>([]);
 const containerRef = ref<HTMLDivElement | null>(null);
+const stickToBottom = ref(true);
 
 // 对应 React 版 useMessageStore((s) => (convKey && s.messagesByTarget[convKey]) || EMPTY)
 const messages = computed<Message[]>(() => {
@@ -54,6 +56,7 @@ watch(
     if (!name) return;
     error.value = "";
     convKey.value = "";
+    stickToBottom.value = true;
     apiGet<{ channelId: string; dmKey: string; peer: Peer }>("/api/channels/resolve", { target: "dm:@" + name })
       .then((d) => {
         peer.value = d.peer;
@@ -67,24 +70,35 @@ watch(
   { immediate: true },
 );
 
-// React 版 useEffect([messages])：新消息到达时，若接近底部则自动滚到底。
-// flush: "post" 保证在 v-for 渲染出新消息（scrollHeight 更新）之后再读尺寸。
+function pinToBottom() {
+  const el = containerRef.value;
+  if (el) el.scrollTop = el.scrollHeight;
+}
+
+function onListScroll() {
+  const el = containerRef.value;
+  if (!el) return;
+  stickToBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+}
+
 watch(
-  messages,
+  [messages, pending],
   () => {
-    const el = containerRef.value;
-    if (!el) return;
-    const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
-    if (isNearBottom) el.scrollTop = el.scrollHeight;
+    if (!stickToBottom.value) return;
+    nextTick(() => {
+      pinToBottom();
+      requestAnimationFrame(pinToBottom);
+    });
   },
   { flush: "post" },
 );
 
 function scrollToBottom() {
-  setTimeout(() => {
-    const el = containerRef.value;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, 50);
+  stickToBottom.value = true;
+  nextTick(() => {
+    pinToBottom();
+    requestAnimationFrame(pinToBottom);
+  });
 }
 
 async function handleSend(content: string, attachmentIds: string[]) {
@@ -142,7 +156,9 @@ function setAttachments(next: ComposerAttachment[]) {
   <div class="flex min-h-0 flex-1 flex-col">
     <PageHeader :title="title" :subtitle="subtitle">
       <template #leading>
-        <Avatar :name="title" size="md" />
+        <button type="button" class="flex items-center" @click="uiStore.openProfile({ handle: peer?.handle || peerName })">
+          <Avatar :name="title" size="md" />
+        </button>
       </template>
       <span
         v-if="isAgent"
@@ -151,6 +167,8 @@ function setAttachments(next: ComposerAttachment[]) {
         Agent
       </span>
     </PageHeader>
+
+    <AgentProgressBar :channel-name="'dm:@' + (peer?.handle || peerName)" :agent-name="isAgent ? peer?.handle || peerName : undefined" />
 
     <div v-if="error" class="flex flex-1 items-center justify-center p-4">
       <EmptyState icon="⚠️" title="无法打开私信" :description="error" />
@@ -166,7 +184,7 @@ function setAttachments(next: ComposerAttachment[]) {
       />
     </div>
 
-    <div v-else ref="containerRef" class="min-h-0 flex-1 space-y-1 overflow-y-auto p-4">
+    <div v-else ref="containerRef" class="min-h-0 flex-1 space-y-1 overflow-y-auto p-4" @scroll.passive="onListScroll">
       <MessageRow
         v-for="(m, idx) in messages"
         :key="m.id"

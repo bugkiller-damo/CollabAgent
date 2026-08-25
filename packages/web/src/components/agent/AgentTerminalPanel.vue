@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { storeToRefs } from "pinia";
+import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { apiGet } from "../../api";
 import { wsSend } from "../../lib/wsManager";
+import { useChannelStore } from "../../stores";
 import { useTerminalStore } from "../../stores/terminalStore";
 import AgentObsStream from "./AgentObsStream.vue";
 
@@ -31,13 +33,25 @@ const MIN_FS = 10;
 const MAX_FS = 20;
 
 const terminalStore = useTerminalStore();
-const frame = computed(() => terminalStore.frames[props.agentName]);
-const history = computed(() => terminalStore.histories[props.agentName]);
+const { frames, histories, obsFrames } = storeToRefs(terminalStore);
+const frame = computed(() => frames.value[props.agentName]);
+const history = computed(() => histories.value[props.agentName]);
 // B1 结构化观察帧（headless 事件流）：有帧时面板提供「事件流」tab
-const obsList = computed(() => terminalStore.obsFrames[props.agentName] ?? []);
+const obsList = computed(() => obsFrames.value[props.agentName] ?? []);
+const obsTailSeq = computed(() => obsList.value[obsList.value.length - 1]?.seq ?? 0);
 
 const tab = ref<"live" | "log" | "events">("live");
-const agents = ref<AgentOption[]>([]);
+const channelStore = useChannelStore();
+const allAgents = ref<AgentOption[]>([]);
+const agents = computed<AgentOption[]>(() => {
+  const ch = channelStore.channels.find((c) => c.name === channelStore.activeChannelName);
+  const members = ch?.id ? channelStore.membersByChannelId[ch.id] : undefined;
+  if (members) {
+    const names = new Set(members.filter((m) => m.member_type === "agent").map((m) => m.handle));
+    return allAgents.value.filter((a) => names.has(a.name));
+  }
+  return [];
+});
 const livePreRef = ref<HTMLPreElement | null>(null);
 const logPreRef = ref<HTMLPreElement | null>(null);
 const eventsRef = ref<HTMLDivElement | null>(null);
@@ -123,18 +137,20 @@ onMounted(() => {
 onMounted(() => {
   apiGet<{ agents: AgentOption[] }>("/api/agents")
     .then((d) => {
-      agents.value = d.agents || [];
+      allAgents.value = d.agents || [];
     })
     .catch(() => {});
 });
 
-// 新帧/新日志到达时滚到底部
+// 新帧/新日志到达时滚到底部。必须 post+nextTick：默认 pre flush 会在 DOM
+// 插入新卡片之前读旧 scrollHeight，第一轮内容还能落在视口里，第二轮追问
+// 就堆在折叠下方——关掉重开走 obs-history 整包替换才看得见。
 function scrollToBottom() {
   const el = tab.value === "live" ? livePreRef.value : tab.value === "events" ? eventsRef.value : logPreRef.value;
   if (el) el.scrollTop = el.scrollHeight;
 }
-watch([() => frame.value?.screen, history, () => obsList.value.length, tab], scrollToBottom);
-onMounted(scrollToBottom);
+watch([() => frame.value?.screen, history, obsTailSeq, tab], () => nextTick(scrollToBottom), { flush: "post" });
+onMounted(() => nextTick(scrollToBottom));
 
 const includesCurrent = computed(() => agents.value.some((a) => a.name === props.agentName));
 const status = computed(() => frame.value?.status || "offline");
