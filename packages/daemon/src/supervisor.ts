@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 // Daemon 监督进程：文件变更自动重启（dev watch）+ 崩溃自动重启（带退避）+ 干净关闭。
 // 用法与 daemon 相同，参数透传：
-//   pnpm --filter daemon dev -- --server-url http://localhost:3001 --api-key sk_machine_xxx
+//   pnpm --filter daemon dev -- --server-url http://localhost:3001 --api-key sk_machine_<token>
 // 直接跑单次（不监督）用 `dev:once`。
 import { type ChildProcess, spawn } from "node:child_process";
-import { mkdirSync, watch, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { mkdirSync, readdirSync, statSync, watch, writeFileSync } from "node:fs";
+import { dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const srcDir = dirname(fileURLToPath(import.meta.url));
@@ -23,6 +23,41 @@ let expectRestart = false; // true 表示是我们主动重启（watch/手动）
 let restartTimes: number[] = []; // 崩溃时间窗，用于退避
 let restartTimer: ReturnType<typeof setTimeout> | null = null;
 let watchDebounce: ReturnType<typeof setTimeout> | null = null;
+const mtimes = new Map<string, number>(); // 文件 mtime 基线，过滤 fs.watch 误报
+
+/** 递归记录 src 下所有 .ts 文件的 mtime，作为“是否真被修改”的判断基线 */
+function recordMtimes(dir: string): void {
+  try {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const fullPath = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === ".slock" || entry.name === "node_modules") continue;
+        recordMtimes(fullPath);
+        continue;
+      }
+      if (!entry.isFile() || extname(fullPath) !== ".ts") continue;
+      try {
+        mtimes.set(fullPath, statSync(fullPath).mtimeMs);
+      } catch {
+        /* ignore unreadable */
+      }
+    }
+  } catch {
+    /* best-effort */
+  }
+}
+
+/** 文件 mtime 是否真的变了；没记录过的按新文件处理 */
+function mtimeChanged(fullPath: string): boolean {
+  try {
+    const mtime = statSync(fullPath).mtimeMs;
+    const previous = mtimes.get(fullPath);
+    mtimes.set(fullPath, mtime);
+    return previous !== mtime;
+  } catch {
+    return true; // 读不到就放行，交给重启后处理
+  }
+}
 
 /**
  * 整树杀 daemon 子进程。Windows 上 child 是 shell:true 包出来的 cmd 包装层，
@@ -89,13 +124,15 @@ function restartForChange(file: string): void {
   } else startChild();
 }
 
-// 文件监听（dev）：src 下的 .ts 变更触发重启；忽略生成物
+// 文件监听（dev）：src 下的 .ts 变更触发重启；忽略生成物与 mtime 未变的误报
 try {
   watch(srcDir, { recursive: true }, (_evt, file) => {
     if (!file) return;
     const f = String(file);
     if (!f.endsWith(".ts")) return;
     if (f.includes(".slock") || f.includes("node_modules")) return;
+    const fullPath = join(srcDir, f);
+    if (!mtimeChanged(fullPath)) return;
     if (watchDebounce) clearTimeout(watchDebounce);
     watchDebounce = setTimeout(() => restartForChange(f), 300);
   });
@@ -103,6 +140,10 @@ try {
 } catch (err: any) {
   console.warn("[Supervisor] file watch unavailable:", err?.message);
 }
+
+// 建立 mtime 基线：必须在 watch 启动后、startChild 前完成，
+// 这样 daemon 启动过程中的误报（如 Windows 文件索引）就能被过滤掉。
+recordMtimes(srcDir);
 
 function shutdown(): void {
   if (shuttingDown) return;
