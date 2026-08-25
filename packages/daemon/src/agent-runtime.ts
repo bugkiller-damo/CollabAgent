@@ -270,6 +270,10 @@ export const createAgentRuntime = (
     stopGeneration.set(name, (stopGeneration.get(name) ?? 0) + 1);
   };
 
+  // P0.5：createDispatch 返回 forgetSessionCost 前，idleReclaimer / tearDown
+  // 已闭包引用它——先占位，createDispatch 之后覆写。
+  let forgetSessionCost = (_name: string): void => {};
+
   // ---- 空闲回收（对应 ADR-005："工作中的 agent 队列空 + 无活动 -> 优雅关闭"）----
   // touch() 在每次回合结束（working -> idle）时调用；untrack() 在开始新一轮 working 或
   // 显式停止时调用，避免正在处理消息的 agent 被计入空闲时间。
@@ -289,6 +293,7 @@ export const createAgentRuntime = (
         agentManager,
         persistentSessions,
         stateMachine,
+        onSessionEnded: (ended) => forgetSessionCost(ended),
       }),
   });
   idleReclaimer.start();
@@ -307,6 +312,7 @@ export const createAgentRuntime = (
     }
     persistentSessions.get(name)?.stop();
     persistentSessions.delete(name);
+    forgetSessionCost(name);
     idleReclaimer.untrack(name);
     turnTracker.decPending(name);
     turnTracker.clearBusyObserved(name);
@@ -460,36 +466,45 @@ export const createAgentRuntime = (
   });
 
   // ---- 消息分发核心（见 agent-runtime-dispatch.ts）----
-  const { dispatchToAgent, runAgent, runAgentDm, runAgentReminder, runAgentTriage, clearAgentQueue, disposeQueue } =
-    createDispatch({
-      options,
-      stateMachine,
-      turnTracker,
-      exitChain,
-      idleReclaimer,
-      credentialsClient,
-      postStartWriter,
-      spawnPtyForAgent,
-      usePty,
-      resolveAgentId,
-      agentInfo,
-      runIdByAgent,
-      persistentSessions,
-      agentSessions,
-      dispatchPromises,
-      onDeliveryQueued: options.onDeliveryQueued,
-      onDeliveryDeadLetter: options.onDeliveryDeadLetter,
-      observationBus,
-      onToolCall: options.onToolCall,
-      onReplyMissing: options.onReplyMissing,
-      costTracker: options.costTracker,
-      onCircuitBreak: options.onCircuitBreak,
-      threadSessions: options.threadSessions,
-      createProgressPoster: options.createProgressPoster,
-      onProgress: options.onProgress,
-      getStopGeneration: (name) => stopGeneration.get(name) ?? 0,
-      abortAgentProcess: (name) => tearDownAgentProcess(name),
-    });
+  const {
+    dispatchToAgent,
+    runAgent,
+    runAgentDm,
+    runAgentReminder,
+    runAgentTriage,
+    clearAgentQueue,
+    disposeQueue,
+    forgetSessionCost: forgetSessionCostFromDispatch,
+  } = createDispatch({
+    options,
+    stateMachine,
+    turnTracker,
+    exitChain,
+    idleReclaimer,
+    credentialsClient,
+    postStartWriter,
+    spawnPtyForAgent,
+    usePty,
+    resolveAgentId,
+    agentInfo,
+    runIdByAgent,
+    persistentSessions,
+    agentSessions,
+    dispatchPromises,
+    onDeliveryQueued: options.onDeliveryQueued,
+    onDeliveryDeadLetter: options.onDeliveryDeadLetter,
+    observationBus,
+    onToolCall: options.onToolCall,
+    onReplyMissing: options.onReplyMissing,
+    costTracker: options.costTracker,
+    onCircuitBreak: options.onCircuitBreak,
+    threadSessions: options.threadSessions,
+    createProgressPoster: options.createProgressPoster,
+    onProgress: options.onProgress,
+    getStopGeneration: (name) => stopGeneration.get(name) ?? 0,
+    abortAgentProcess: (name) => tearDownAgentProcess(name),
+  });
+  forgetSessionCost = forgetSessionCostFromDispatch;
 
   /**
    * P0.3：统一 stop 路径。先 bump 代次 + 切状态（挡住 in-flight 复活），

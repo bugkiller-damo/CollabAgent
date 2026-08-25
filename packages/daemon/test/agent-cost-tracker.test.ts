@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   buildCircuitBreakMessage,
   createJsonCostTracker,
+  createSessionCostDelta,
   evaluateCostGate,
   extractResultMetrics,
   type ICostTracker,
@@ -63,6 +64,46 @@ describe("agent-cost-tracker", () => {
     it("returns null for non-result events", () => {
       expect(extractResultMetrics({ type: "assistant" })).toBeNull();
       expect(extractResultMetrics(null)).toBeNull();
+    });
+  });
+
+  describe("createSessionCostDelta (P0.5)", () => {
+    it("首条 result 没有基线，差值等于本次累计", () => {
+      const d = createSessionCostDelta();
+      expect(d.next("alice", 0.01)).toBeCloseTo(0.01);
+      expect(d.peek("alice")).toBeCloseTo(0.01);
+    });
+
+    it("后续 result 只记增量，不把会话累计再加一遍", () => {
+      const d = createSessionCostDelta();
+      expect(d.next("alice", 0.01)).toBeCloseTo(0.01);
+      expect(d.next("alice", 0.03)).toBeCloseTo(0.02);
+      expect(d.next("alice", 0.03)).toBe(0);
+      expect(d.peek("alice")).toBeCloseTo(0.03);
+    });
+
+    it("按 agent 隔离；null 不更新基线", () => {
+      const d = createSessionCostDelta();
+      expect(d.next("alice", 0.1)).toBeCloseTo(0.1);
+      expect(d.next("bob", 0.4)).toBeCloseTo(0.4);
+      expect(d.next("alice", null)).toBeNull();
+      expect(d.next("alice", 0.15)).toBeCloseTo(0.05);
+      expect(d.peek("alice")).toBeCloseTo(0.15);
+    });
+
+    it("累计回退（新进程）按本次原值记账并重置基线", () => {
+      const d = createSessionCostDelta();
+      d.next("alice", 1.5);
+      expect(d.next("alice", 0.2)).toBeCloseTo(0.2);
+      expect(d.next("alice", 0.5)).toBeCloseTo(0.3);
+    });
+
+    it("forget 后下一条按首条处理", () => {
+      const d = createSessionCostDelta();
+      d.next("alice", 1.0);
+      d.forget("alice");
+      expect(d.peek("alice")).toBeUndefined();
+      expect(d.next("alice", 0.4)).toBeCloseTo(0.4);
     });
   });
 

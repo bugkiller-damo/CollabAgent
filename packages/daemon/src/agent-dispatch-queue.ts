@@ -44,11 +44,19 @@ export interface DispatchQueueOptions {
   dedupWindowMs?: number;
   /** 返回 false 时入队即死信（如 agent stopped / 无 agentId——重试无意义的永久失败） */
   isDeliverable?: (agentName: string) => boolean;
+  /**
+   * P0.6：投递前闸门（如成本熔断）。每次 drain 出队前重新评估——入队时放行、
+   * 排空时已熔断的积压/退避消息在此被拦下丢弃（不投递、不重试：熔断条件
+   * 短期内不会自愈，重试只会空转退避）。
+   */
+  deliveryGate?: (agentName: string) => { blocked: boolean; reason?: string };
   onQueued?: (agentName: string, item: DispatchQueueItem) => void;
   /** 一批 pending 被合并为一次投递时回调（items 即合并的那批） */
   onMerged?: (agentName: string, items: DispatchQueueItem[]) => void;
   onRetry?: (agentName: string, item: DispatchQueueItem, err: unknown, nextDelayMs: number) => void;
   onDeadLetter?: (agentName: string, item: DispatchQueueItem, err: unknown) => void;
+  /** P0.6：drain 时被 deliveryGate 拦下的批次（已 settle，不会再投递） */
+  onDeliveryBlocked?: (agentName: string, items: DispatchQueueItem[], reason: string) => void;
   onDelivered?: (agentName: string, items: DispatchQueueItem[]) => void;
   /** 测试注入时钟 */
   now?: () => number;
@@ -156,6 +164,20 @@ export const createAgentDispatchQueue = (opts: DispatchQueueOptions): AgentDispa
     const s = stateOf(agentName);
     if (s.draining || s.retryTimer) return;
     if (s.pending.length === 0) return;
+
+    // P0.6：投递前闸门（成本熔断）。入队时 gate 可能还没触发（预算在积压/
+    // 退避期间被耗尽），所以每次真正出队投递前重新评估；被拦的批次直接
+    // 丢弃完结——熔断当天不会自愈，重试只是空转退避。
+    const gate = opts.deliveryGate?.(agentName);
+    if (gate?.blocked) {
+      const reason = gate.reason ?? "delivery gate blocked";
+      const blocked = s.pending.splice(0, s.pending.length);
+      console.warn(`[DispatchQueue] @${agentName} ${blocked.length} queued message(s) blocked: ${reason}`);
+      for (const item of blocked) settleDone(item);
+      safe(() => opts.onDeliveryBlocked?.(agentName, blocked, reason));
+      return;
+    }
+
     s.draining = true;
     const epoch = s.epoch;
 

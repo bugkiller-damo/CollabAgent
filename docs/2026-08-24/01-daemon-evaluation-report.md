@@ -16,7 +16,7 @@
 |---|---|---|
 | 架构与模块组织 | 7.0 / 10 | 职责拆分清晰，但 headless 默认路径仍被 PTY 实现污染，配置读取极度分散，核心入口过于臃肿。 |
 | 运行时生命周期与状态机 | 6.0 / 10 | 回合级 Promise、派发串行化已落地，但存在可复现的 kill→exit 竞态、headless 空闲回收失效、stop 路径状态机不一致。 |
-| 派发队列与 T8 经理分诊 | 7.5 / 10 | A1 队列纪律与 T8 触发面完整，但成本门不拦截已入队积压、去重窗口在死信路径上有副作用。 |
+| 派发队列与 T8 经理分诊 | 7.5 / 10 | A1 队列纪律与 T8 触发面完整；~~成本门不拦截已入队积压~~ **✅ P0.6**；去重窗口在死信路径上有副作用。 |
 | 安全与权限模型 | 6.0 / 10 | scoped token、MCP 鉴权、白名单框架已落地；~~默认 env 白名单未生效~~ **✅ P0.4**；本地 token 注册表与真实吊销路径脱节。 |
 | 成本 / 上下文 / 进度产品化 | 7.0 / 10 | 功能完整且旁路接入，但 `total_cost_usd` 语义未验证、预算熔断有透支窗口、CLI 查询面较粗。 |
 | 测试覆盖与代码质量 | 6.5 / 10 | 核心旁路模块测试扎实，但编排核心（runtime/dispatch/daemon-core/cli）是真空，巨型函数与 `any`/`as` 较多。 |
@@ -38,8 +38,8 @@
 | P0.2 | 让 `idleReclaimer` 同时回收 headless 会话 | `agent-runtime.ts` | 避免 headless 子进程永久泄漏 | ✅ 2026-08-24：`reclaimIdleAgent` 停 PersistentClaude；working/starting 跳过；headless 入 working 时 untrack |
 | P0.3 | 统一 `stopAgent`/`stopAll` 状态机语义 | `agent-runtime.ts` | 消除“working 但无进程”的幽灵状态 | ✅ 2026-08-25：`haltAgent` 先 bump 代次再切 idle/stopped；清 startupTimer + 队列；in-flight 不复活 |
 | P0.4 | 收紧 env 白名单为默认开启 | `agent-env-whitelist.ts` | 阻止 daemon secrets 流入 agent 子进程 | ✅ 2026-08-25：默认 `whitelist`；`SLOCK_ENV_INHERIT=1` 排障回退；`SLOCK_ENV_WHITELIST=1` 兼容 no-op |
-| P0.5 | 验证 `total_cost_usd` 是会话累计还是单回合成本 | `agent-cost-tracker.ts` | 确保成本数据与预算熔断可信 |
-| P0.6 | 在队列 `drain` 与 `doDispatch` 执行前补成本门 | `agent-runtime-dispatch.ts` / `agent-dispatch-queue.ts` | 让熔断真正止血，而非只拦截新入队 |
+| P0.5 | 验证 `total_cost_usd` 是会话累计还是单回合成本 | `agent-cost-tracker.ts` | 确保成本数据与预算熔断可信 | ✅ 2026-08-25：会话累计；`createSessionCostDelta` 差值落库；stop/reclaim forget 基线 |
+| P0.6 | 在队列 `drain` 与 `doDispatch` 执行前补成本门 | `agent-runtime-dispatch.ts` / `agent-dispatch-queue.ts` | 让熔断真正止血，而非只拦截新入队 | ✅ 2026-08-25：队列 `deliveryGate`（drain 前重估，熔断批次丢弃不重试）+ `doDispatch` 入口兜底门；`notifyCircuitBreak` 三处共用 |
 | P0.7 | 让 headless 默认路径真正与 PTY 解耦 | `agent-runtime.ts` / `agent-runtime-spawn.ts` / `daemon-core.ts` | 减少原生依赖、内存占用与冻结代码热路径污染 |
 | P0.8 | 为核心编排器（runtime / dispatch / daemon-core）补单元测试 | `test/` | 把最大回归风险纳入自动化守护 |
 
@@ -127,7 +127,7 @@
 
 | 严重度 | 文件:行号 | 问题 | 后果 |
 |---|---|---|---|
-| 高 | `agent-runtime-dispatch.ts:677-690` / `agent-dispatch-queue.ts:641-648` | `evaluateCostGate` 只在**入队前**调用；一旦消息进入队列的 pending 或退避重试，就不再检查成本 | 预算耗尽后已入队/重试任务仍会执行，熔断不能即时止血 |
+| 高 | `agent-runtime-dispatch.ts:677-690` / `agent-dispatch-queue.ts:641-648` | ~~`evaluateCostGate` 只在**入队前**调用；一旦消息进入队列的 pending 或退避重试，就不再检查成本~~ **✅ 2026-08-25 已修**（P0.6）：队列 `deliveryGate` 在 drain 出队前重估；`doDispatch` 入口兜底；熔断批次丢弃完结不重试 | 预算耗尽后已入队/重试任务仍会执行，熔断不能即时止血 |
 | 中 | `agent-dispatch-queue.ts:244-246, 260` | 去重窗口 `recentContents` 在 dedup 通过后立即写入，即使该消息随后进入死信路径 | 用户在 15s 内重发完全相同内容的补救消息会被静默 dedup |
 | 中 | `agent-dispatch-queue.ts:201-206` | 合并批退避 `delay = backoff(Math.min(...retryable.attempts))` | 高 attempts item 被低 attempts item“搭车”早重试，退避强度被稀释 |
 | 中 | `agent-runtime-dispatch.ts:776` | `const inThread = Boolean(threadId) || replyTarget.includes(":");` | channel 名含 `:` 或调用方传错时会误判为线程内 |
@@ -138,7 +138,7 @@
 
 #### 改进建议
 
-- **P0**：在队列 `drain` 调用 `deliver` 前补一次成本门检查，或在 `doDispatch` 开头增加 `evaluateCostGate`。
+- **P0**：~~在队列 `drain` 调用 `deliver` 前补一次成本门检查，或在 `doDispatch` 开头增加 `evaluateCostGate`。~~ **✅ 2026-08-25 已修**（P0.6，两处都补了）。
 - **P1**：将 `recentContents` 写入时机推迟到「确认本消息会进入正常投递路径」之后，死信路径不写入。
 - **P1**：合并批退避改为按最大 attempts 计算，或分别计算后取最大者。
 - **P1**：`runAgent` 中 `inThread` 判断改为仅依赖 `threadId`。
@@ -198,8 +198,8 @@
 
 | 严重度 | 文件:行号 | 问题 | 后果 |
 |---|---|---|---|
-| 高 | `agent-cost-tracker.ts:96-99` / `:188` | 代码把每个 stream-json `result` 事件的 `total_cost_usd` 直接累加，未验证其是**单回合成本**还是**会话累计成本** | 若是累计成本，每来一条 result 都会把历史成本再算一次，预算严重虚高 |
-| 高 | `agent-runtime-dispatch.ts:677-690` / `:353-619` / `agent-dispatch-queue.ts:183-206` | `evaluateCostGate` 只在 `dispatchToAgent` 调用时执行一次；已入队 pending / 退避重试不再检查 | 触发熔断后 agent 仍可能把当日预算再花掉一部分，熔断消息与实际行为不一致 |
+| 高 | `agent-cost-tracker.ts` | ~~代码把每个 stream-json `result` 事件的 `total_cost_usd` 直接累加，未验证其是**单回合成本**还是**会话累计成本**~~ **✅ 2026-08-25 已修**（P0.5）：确认为会话累计；`createSessionCostDelta` 按 agent 记「本次 − 上次」再 `recordTurn`。`duration_ms`/`num_turns` 仍按回合原值累加 | 若是累计成本，每来一条 result 都会把历史成本再算一次，预算严重虚高 |
+| 高 | `agent-runtime-dispatch.ts:677-690` / `:353-619` / `agent-dispatch-queue.ts:183-206` | ~~`evaluateCostGate` 只在 `dispatchToAgent` 调用时执行一次；已入队 pending / 退避重试不再检查~~ **✅ 2026-08-25 已修**（P0.6）：drain 前 `deliveryGate` + `doDispatch` 入口门，旧链路径同样覆盖 | 触发熔断后 agent 仍可能把当日预算再花掉一部分，熔断消息与实际行为不一致 |
 | 中 | `claude-print.ts:78-96` / `agent-runtime-dispatch.ts:370-448` / `:265-277` | `recordTurn` 只在 `handleStreamEvent` 的 `result` 分支里调用，仅挂在 `PersistentClaude` | one-shot / PTY 路径没有成本记录，形成“花钱黑盒” |
 | 中 | `cli.ts:907-932` | `slock cost show` 只输出按 agent 聚合的最近 N 天总额 | 无法按频道、UTC 日、thread 查看，排查“哪个频道把预算烧光”困难 |
 | 中 | `agent-context-builder.ts:31-32` / `:64-104` | 默认 `maxMessages=40`、`maxChars=8000`，按 UTF-16 字符数截断 | 未针对不同模型 tokenizer 或上下文上限调整；中文/代码密集场景可能撑到模型上限 |
@@ -210,8 +210,8 @@
 
 #### 改进建议
 
-- **P0**：验证 `total_cost_usd` 语义。若是会话累计，改为「本次 - 上次」差值再累计。
-- **P0**：在 `doDispatch` 执行前和重试批次出队前再次检查预算。
+- **P0**：~~验证 `total_cost_usd` 语义。若是会话累计，改为「本次 - 上次」差值再累计。~~ **✅ 2026-08-25 已修**（P0.5）。
+- **P0**：~~在 `doDispatch` 执行前和重试批次出队前再次检查预算。~~ **✅ 2026-08-25 已修**（P0.6）。
 - **P1**：补齐 one-shot / PTY 路径的成本记录；扩展 `slock cost show` 查询维度（`--channel`、`--day`、`--thread`）。
 - **P1**：Context Builder 引入模型相关的 token 预算，至少按模型支持的最大上下文给安全上限。
 - **P2**：固定 `daemon-costs.json` / `daemon-thread-sessions.json` 默认路径到 workspace 根或 `SLOCK_WORKSPACE`；`result` 观察帧增加结构化成本字段；持久化 `circuitNotified` 状态。
@@ -259,10 +259,10 @@
 | 风险 | 涉及维度 | 当前状态 | 触发条件 | 业务影响 |
 |---|---|---|---|---|
 | headless 子进程泄漏 | 运行时、架构 | ✅ 2026-08-24 已修（P0.2） | 任何 headless agent 完成一轮对话后空闲 | 长期运行积累大量 `claude` 子进程，内存/句柄耗尽 |
-| 预算熔断后仍透支 | 派发队列、产品化 | 已确认 | 预算在队列积压或重试期间被耗尽 | 成本失控，熔断消息成虚假承诺 |
+| 预算熔断后仍透支 | 派发队列、产品化 | ✅ 2026-08-25 已修（P0.6） | 预算在队列积压或重试期间被耗尽 | 成本失控，熔断消息成虚假承诺 |
 | secrets 流入 agent | 安全 | ✅ 2026-08-25 已修（P0.4） | 默认启动，未设 `SLOCK_ENV_WHITELIST=1` | agent 可读取 daemon 的 API key、云凭证等 |
 | kill→exit 竞态误伤新回合 | 运行时 | 已确认 | 回合超时 kill 且队列有后续消息 | 合法消息被反复重试甚至死信 |
-| 成本数据重复计费 | 产品化 | 待验证 | 取决于 Claude Code `total_cost_usd` 语义 | 预算严重虚高或虚低 |
+| 成本数据重复计费 | 产品化 | ✅ 2026-08-25 已修（P0.5） | 取决于 Claude Code `total_cost_usd` 语义 | 预算严重虚高或虚低 |
 | 核心编排器无单测 | 代码质量 | 已确认 | 任何对 runtime/dispatch/daemon-core 的修改 | 回归只能靠集成测试和人工发现 |
 | PTY 原生依赖污染 headless | 架构 | 已确认 | 默认启动 | 启动失败风险、内存开销、维护冻结代码 |
 | stop 后状态漂移 | 运行时 | ✅ 2026-08-25 已修（P0.3） | 调用 stopAgent/stopAll | 状态面板与实际不一致，STUCK 误报 |
@@ -277,8 +277,8 @@
 2. **~~修复 headless 空闲回收失效~~** —— ✅ 2026-08-24：`reclaimIdleAgent` 同时回收 `persistentSessions`。
 3. **~~统一 stop 路径状态机语义~~** —— ✅ 2026-08-25：`haltAgent` 驱动 `transitionState`，清 `startupTimer`/`dispatchQueue`，in-flight 对照代次。
 4. **~~收紧 env 白名单默认~~** —— ✅ 2026-08-25：默认 `whitelist`；`SLOCK_ENV_INHERIT=1` 排障回退。
-5. **验证 `total_cost_usd` 语义** —— 真机对比连续两次 `result` 事件的差值；若是累计则改差值逻辑。
-6. **让成本门覆盖已入队/重试任务** —— 在 `doDispatch` 开头与队列 `drain` 出队前再次调用 `evaluateCostGate`。
+5. **~~验证 `total_cost_usd` 语义~~** —— ✅ 2026-08-25：会话累计；差值落库；stop/reclaim 清基线。
+6. **~~让成本门覆盖已入队/重试任务~~** —— ✅ 2026-08-25：队列 `deliveryGate` drain 前重估 + `doDispatch` 入口门；熔断批次丢弃完结不重试。
 7. **headless 路径与 PTY 解耦** —— 懒加载/注入 `IAgentManager`；把 `writeMcpConfig` 迁出冻结文件。
 8. **为核心编排器补单元测试** —— 优先覆盖 `runAgent`、`doDispatch`、成本熔断、reply guard、WS 路由。
 

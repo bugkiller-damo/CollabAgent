@@ -111,6 +111,7 @@ describe("reclaimIdleAgent (P0.2)", () => {
     const persistentSessions = new Map([["alice", session]]);
     const agentManager = { stopRun: vi.fn() };
     const stateMachine = { getState: vi.fn().mockReturnValue("idle"), transitionState: vi.fn() };
+    const onSessionEnded = vi.fn();
 
     reclaimIdleAgent({
       name: "alice",
@@ -118,18 +119,21 @@ describe("reclaimIdleAgent (P0.2)", () => {
       agentManager,
       persistentSessions,
       stateMachine,
+      onSessionEnded,
     });
 
     expect(stop).toHaveBeenCalledTimes(1);
     expect(persistentSessions.has("alice")).toBe(false);
     expect(agentManager.stopRun).not.toHaveBeenCalled();
     expect(stateMachine.transitionState).not.toHaveBeenCalled();
+    expect(onSessionEnded).toHaveBeenCalledWith("alice");
   });
 
   it("PTY：stopRun，不碰 headless map", () => {
     const persistentSessions = new Map<string, PersistentClaude>();
     const agentManager = { stopRun: vi.fn() };
     const stateMachine = { getState: vi.fn().mockReturnValue("idle"), transitionState: vi.fn() };
+    const onSessionEnded = vi.fn();
 
     reclaimIdleAgent({
       name: "alice",
@@ -137,10 +141,12 @@ describe("reclaimIdleAgent (P0.2)", () => {
       agentManager,
       persistentSessions,
       stateMachine,
+      onSessionEnded,
     });
 
     expect(agentManager.stopRun).toHaveBeenCalledWith("run-1");
     expect(persistentSessions.size).toBe(0);
+    expect(onSessionEnded).toHaveBeenCalledWith("alice");
   });
 
   it("working / starting 时跳过（返回 false），不杀进程", () => {
@@ -168,16 +174,19 @@ describe("reclaimIdleAgent (P0.2)", () => {
   it("无会话无 PTY 时是 no-op", () => {
     const agentManager = { stopRun: vi.fn() };
     const stateMachine = { getState: vi.fn().mockReturnValue("idle"), transitionState: vi.fn() };
+    const onSessionEnded = vi.fn();
     const result = reclaimIdleAgent({
       name: "alice",
       runIdByAgent: new Map(),
       agentManager,
       persistentSessions: new Map(),
       stateMachine,
+      onSessionEnded,
     });
     expect(result).toBeUndefined();
     expect(agentManager.stopRun).not.toHaveBeenCalled();
     expect(stateMachine.transitionState).not.toHaveBeenCalled();
+    expect(onSessionEnded).not.toHaveBeenCalled();
   });
 
   it("stopped 残留会话：杀进程但不改状态机", () => {

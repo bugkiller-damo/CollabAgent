@@ -96,8 +96,10 @@ export const reclaimIdleAgent = (opts: {
   agentManager: Pick<IAgentManager, "stopRun">;
   persistentSessions: Map<string, PersistentClaude>;
   stateMachine: Pick<IAgentStateMachine, "getState" | "transitionState">;
+  /** P0.5：常驻进程被回收后清会话累计基线 */
+  onSessionEnded?: (name: string) => void;
 }): boolean | void => {
-  const { name, runIdByAgent, agentManager, persistentSessions, stateMachine } = opts;
+  const { name, runIdByAgent, agentManager, persistentSessions, stateMachine, onSessionEnded } = opts;
   const status = stateMachine.getState(name);
   if (status === "working" || status === "starting") {
     console.log(`[IdleReclaimer] @${name} still ${status}, skip reclaim`);
@@ -111,15 +113,17 @@ export const reclaimIdleAgent = (opts: {
   }
 
   const session = persistentSessions.get(name);
-  if (!session) return;
-  session.stop();
-  persistentSessions.delete(name);
-  if (status && status !== "stopped" && status !== "idle") {
-    try {
-      stateMachine.transitionState(name, "idle");
-    } catch {
-      /* 无效迁移已在内部吞掉 */
+  if (session) {
+    session.stop();
+    persistentSessions.delete(name);
+    if (status && status !== "stopped" && status !== "idle") {
+      try {
+        stateMachine.transitionState(name, "idle");
+      } catch {
+        /* 无效迁移已在内部吞掉 */
+      }
     }
+    console.log(`[IdleReclaimer] @${name} headless session reclaimed`);
   }
-  console.log(`[IdleReclaimer] @${name} headless session reclaimed`);
+  if (session || runId) onSessionEnded?.(name);
 };
