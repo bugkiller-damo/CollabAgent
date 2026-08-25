@@ -6,7 +6,6 @@
  * 删除评估：headless 稳定运行满 6 周后（2026-09 底）按
  * docs/2026-08-20/02-daemon-evolution-tracker.md Step 3 原删除方案执行。
  */
-import { basename } from "node:path";
 import type { IAgentManager } from "./types/index.js";
 
 /**
@@ -62,10 +61,10 @@ const COMMANDS_WITH_BRACKETED_PASTE = new Set(["claude", "codex", "opencode"]);
  * （第 4 个 bug 的修复）从来没有真正被走过，一直在用"粘贴内容和回车合并成一次
  * 写入"的旧行为，只是靠运气大部分时候没炸。
  */
-export const commandBaseName = (command: string): string =>
-  basename(command)
-    .replace(/\.(exe|cmd|bat)$/i, "")
-    .toLowerCase();
+export const commandBaseName = (command: string): string => {
+  const base = command.replace(/\\/g, "/").split("/").pop() ?? "";
+  return base.replace(/\.(exe|cmd|bat)$/i, "").toLowerCase();
+};
 
 /**
  * 检测当前屏幕是否出现交互式提示符 `❯`/`›`。screenText 已经是终端模拟器
@@ -193,7 +192,7 @@ export const createPostStartInputWriter = (agentManager: IAgentManager, command:
         if (timedOut && !promptReady) {
           console.warn(
             `[PostStart] ${runId} prompt not ready after ${READY_TIMEOUT_MS}ms ` +
-              `(command=${basename(command)}, outputLen=${run.output.length}); ` +
+              `(command=${commandBaseName(command)}, outputLen=${run.output.length}); ` +
               `writing anyway. screen=...${run.screenText.replace(/\s+/g, " ").trim().slice(-300)}`,
           );
         }
