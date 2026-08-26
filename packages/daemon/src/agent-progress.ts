@@ -3,13 +3,8 @@
  * 纯函数在 @collabagent/shared；本文件是回合级节流器。
  */
 
-import {
-  channelProgressEnabled,
-  formatProgressMessage,
-  type ProgressFrame,
-  readProgressThrottleMs,
-  summarizeProgress,
-} from "@collabagent/shared";
+import { formatProgressMessage, type ProgressFrame, summarizeProgress } from "@collabagent/shared";
+import { loadDaemonEnv } from "./config.js";
 
 export {
   channelProgressEnabled,
@@ -48,8 +43,9 @@ export interface CreateProgressTurnOpts {
 }
 
 export const createProgressTurn = (opts: CreateProgressTurnOpts): ProgressTurn => {
-  const enabled = opts.enabled ?? channelProgressEnabled(process.env);
-  const throttleMs = opts.throttleMs ?? readProgressThrottleMs(process.env);
+  const envCfg = loadDaemonEnv();
+  const enabled = opts.enabled ?? envCfg.channelProgress;
+  const throttleMs = opts.throttleMs ?? envCfg.progressThrottleMs;
   const now = opts.now ?? Date.now;
   const frames: ProgressFrame[] = [];
   let messageId: string | undefined;

@@ -17,6 +17,7 @@ import type { ITurnTracker } from "./agent-runtime-turn-tracker.js";
 import { BUSY_MARKER_RE, PROMPT_RE } from "./agent-runtime-turn-tracker.js";
 import { captureSessionId } from "./agent-sessions.js";
 import { getClaudePermissionArgs, getCommandPreset, renderResumeArgs } from "./command-presets.js";
+import { loadDaemonEnv } from "./config.js";
 import type { IIdleReclaimer } from "./idle-reclaimer.js";
 import { bundleSlockMcpServer } from "./mcp-bundle.js";
 import type { PostStartInputWriter } from "./post-start-input-writer.js";
@@ -55,19 +56,13 @@ const getSpawnPermissionArgs = (): string[] => getClaudePermissionArgs();
  */
 // 每次调用时读一次（不在模块顶层冻成常量），这样测试可以在 beforeEach 里
 // 直接改 process.env 生效，不需要靠 vi.resetModules() 重新加载整个模块图。
-const isSessionResumeEnabled = (): boolean => process.env.SLOCK_SESSION_RESUME !== "0";
+const isSessionResumeEnabled = (): boolean => loadDaemonEnv().sessionResume;
 /** 判定"resume 失败"的宽限期：PTY 在这么短时间内退出，大概率是 --resume 本身炸了，不是正常工作后退出。
  *  可用 `SLOCK_RESUME_GRACE_MS` 覆盖（主要是测试用——真实环境不需要调）。 */
-const getResumeGraceWindowMs = (): number => {
-  const v = Number(process.env.SLOCK_RESUME_GRACE_MS);
-  return Number.isFinite(v) && v > 0 ? v : 3000;
-};
+const getResumeGraceWindowMs = (): number => loadDaemonEnv().resumeGraceMs;
 /** 捕获 sessionId 前的等待：给 Claude Code 时间在磁盘上把 session 文件落盘。
  *  可用 `SLOCK_SESSION_CAPTURE_DELAY_MS` 覆盖（主要是测试用）。 */
-const getSessionCaptureDelayMs = (): number => {
-  const v = Number(process.env.SLOCK_SESSION_CAPTURE_DELAY_MS);
-  return Number.isFinite(v) && v > 0 ? v : 5000;
-};
+const getSessionCaptureDelayMs = (): number => loadDaemonEnv().sessionCaptureDelayMs;
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -289,7 +284,7 @@ export const createSpawnPtyForAgent = (deps: SpawnPtyForAgentDeps): SpawnPtyForA
     // 做正则扫描——不需要偏移量记账，也不需要"最后一次出现的位置"这种历史比较，
     // 当前帧本身就是答案。
     const unsub = agentManager.getOutputBus().subscribe(snapshot.runId, (ev: PtyOutputEvent) => {
-      if (process.env.SLOCK_VERBOSE_PTY === "1") {
+      if (loadDaemonEnv().verbosePty) {
         process.stdout.write(ev.data);
       }
       lastOutputAtByAgent.set(agentName, Date.now());

@@ -7,6 +7,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { loadDaemonEnv } from "./config.js";
 
 /**
  * 写入项目级 `.mcp.json`（Claude Code 在 cwd 里自动发现的 MCP server 配置，
@@ -63,8 +64,8 @@ export const writeMcpConfig = (
   // 注意：settings.json 的 effort 键名未查到官方文档确认（2026-07-29 web 检索
   // 未证实）——Claude Code 对未知键静默忽略，写错无害；真机验证 /effort 指示
   // 没变的话说明键名不对，需要换控制通道（如 MAX_THINKING_TOKENS env）。
-  const effort = (process.env.SLOCK_AGENT_EFFORT || "medium").toLowerCase();
-  if (["low", "medium", "high"].includes(effort) && settings.effort === undefined) {
+  const effort = loadDaemonEnv().agentEffort;
+  if (settings.effort === undefined) {
     settings.effort = effort;
   }
   writeFileSync(settingsPath, JSON.stringify(settings, null, 2));

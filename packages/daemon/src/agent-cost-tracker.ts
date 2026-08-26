@@ -1,5 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { parseCostBudgetUsd } from "./config.js";
+
+export { parseCostBudgetUsd } from "./config.js";
 
 /**
  * D3 成本记账（Step 4）：按 (agent, channel, day) 累计 stream-json `result`
@@ -141,13 +144,6 @@ export const createSessionCostDelta = (): {
 
 export const utcDay = (ts: number = Date.now()): string => new Date(ts).toISOString().slice(0, 10);
 
-/** 未设置 / 非正数 → 不熔断（opt-in）。每次调用读 env，便于测试按用例改。 */
-export const parseCostBudgetUsd = (raw: string | undefined = process.env.SLOCK_COST_BUDGET_USD): number | null => {
-  if (raw == null || raw.trim() === "") return null;
-  const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? n : null;
-};
-
 export const shouldCircuitBreak = (spendUsd: number, budgetUsd: number | null): boolean =>
   budgetUsd != null && spendUsd >= budgetUsd;
 
@@ -165,7 +161,7 @@ export const evaluateCostGate = (
   agentName: string,
   at?: number,
 ): CostGateDecision => {
-  const budgetUsd = parseCostBudgetUsd();
+  const budgetUsd = parseCostBudgetUsd(); // 每次读 env（测试按用例改 SLOCK_COST_BUDGET_USD）
   const day = utcDay(at);
   const spendUsd = tracker?.spendToday(agentName, at) ?? 0;
   if (!shouldCircuitBreak(spendUsd, budgetUsd) || budgetUsd == null) {

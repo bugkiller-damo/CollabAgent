@@ -7,6 +7,7 @@ import { createJsonRunStore, defaultStorePath } from "./agent-run-store.js";
 import { createAgentRuntime, type IAgentRuntime } from "./agent-runtime.js";
 import { createJsonThreadSessionStore, defaultThreadSessionStorePath } from "./agent-thread-sessions.js";
 import { createAgentTokenRegistry } from "./agent-tokens.js";
+import { loadDaemonEnv } from "./config.js";
 import { probeClaude } from "./drivers/probe.js";
 import { dispatchDaemonMessage, type HandlerContext } from "./handlers/index.js";
 import { createLiveRunRegistry } from "./live-run-registry.js";
@@ -279,7 +280,7 @@ export class DaemonCore {
    * 通过 `SLOCK_VERBOSE_PTY=0` 可关闭本日志。
    */
   private wireAgentOutput(): void {
-    if (process.env.SLOCK_VERBOSE_PTY === "0") return;
+    if (!loadDaemonEnv().logPtyBus) return;
     const manager = this.runtime.__getAgentManager();
     const bus = manager.getOutputBus();
     console.log(`[Daemon] PTY output bus ready (type=${typeof bus.subscribe})`);

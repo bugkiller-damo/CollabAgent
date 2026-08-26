@@ -6,6 +6,7 @@
  */
 
 import { isProgressContent } from "@collabagent/shared";
+import { DAEMON_ENV_DEFAULTS, loadDaemonEnv, parsePositiveInt } from "./config.js";
 
 export interface HistoryMessage {
   id?: string;
@@ -28,21 +29,18 @@ export interface ContextBudget {
   maxChars: number;
 }
 
-export const DEFAULT_CONTEXT_MAX_MESSAGES = 40;
-export const DEFAULT_CONTEXT_MAX_CHARS = 8000;
+export const DEFAULT_CONTEXT_MAX_MESSAGES = DAEMON_ENV_DEFAULTS.contextMaxMessages;
+export const DEFAULT_CONTEXT_MAX_CHARS = DAEMON_ENV_DEFAULTS.contextMaxChars;
 
-export const parsePositiveInt = (raw: string | undefined, fallback: number): number => {
-  const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
-};
+export { parsePositiveInt };
 
 export const contextBuilderEnabled = (env: NodeJS.ProcessEnv = process.env): boolean =>
-  env.SLOCK_CONTEXT_BUILDER !== "0";
+  loadDaemonEnv(env).contextBuilder;
 
-export const readContextBudget = (env: NodeJS.ProcessEnv = process.env): ContextBudget => ({
-  maxMessages: parsePositiveInt(env.SLOCK_CONTEXT_MAX_MESSAGES, DEFAULT_CONTEXT_MAX_MESSAGES),
-  maxChars: parsePositiveInt(env.SLOCK_CONTEXT_MAX_CHARS, DEFAULT_CONTEXT_MAX_CHARS),
-});
+export const readContextBudget = (env: NodeJS.ProcessEnv = process.env): ContextBudget => {
+  const cfg = loadDaemonEnv(env);
+  return { maxMessages: cfg.contextMaxMessages, maxChars: cfg.contextMaxChars };
+};
 
 export const normalizeThreadId = (raw: unknown): string | undefined => {
   if (typeof raw !== "string") return undefined;

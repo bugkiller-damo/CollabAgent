@@ -7,6 +7,7 @@ import { createWorkspaceDir, writeSystemPromptFile } from "./agent-startup.js";
 import type { IThreadSessionStore } from "./agent-thread-sessions.js";
 import { writeAgentTokenFile } from "./agent-token-file.js";
 import { claudePrint } from "./claude-print.js";
+import { loadDaemonEnv } from "./config.js";
 import { PersistentClaude } from "./drivers/persistent-claude.js";
 import type { IIdleReclaimer } from "./idle-reclaimer.js";
 import { bundleSlockMcpServer } from "./mcp-bundle.js";
@@ -107,7 +108,7 @@ export const dispatchHeadlessTurn = async (opts: DispatchHeadlessTurnOpts): Prom
     }
     assertLive();
 
-    const usePersistent = process.env.SLOCK_ONESHOT_CLAUDE !== "1";
+    const usePersistent = !loadDaemonEnv().oneshotClaude;
     if (usePersistent) {
       let session = persistentSessions.get(agentName);
       if (!session) {

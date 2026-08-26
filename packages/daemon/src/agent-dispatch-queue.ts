@@ -15,6 +15,8 @@
  * 机制兜底（agent 上线后 bootstrap 会拉取），队列不做持久化，避免双写一致性坑。
  */
 
+import { loadDaemonEnv } from "./config.js";
+
 export interface DispatchQueueItem {
   id: string;
   agentName: string;
@@ -33,7 +35,7 @@ export type DispatchDeliverFn = (agentName: string, items: DispatchQueueItem[]) 
 
 export interface DispatchQueueOptions {
   deliver: DispatchDeliverFn;
-  /** in-flight 截止（默认 60s，SLOCK_DISPATCH_INFLIGHT_MS 覆盖）。超时按失败处理并重试。 */
+  /** in-flight 截止（默认 6min，SLOCK_DISPATCH_INFLIGHT_MS 覆盖）。超时按失败处理并重试。 */
   inflightMs?: number;
   /** 退避基数（默认 1000ms），封顶 maxDelayMs（默认 30000ms），±20% jitter */
   baseDelayMs?: number;
@@ -85,11 +87,6 @@ export interface AgentDispatchQueue {
   dispose(): void;
 }
 
-const readIntEnv = (name: string): number | undefined => {
-  const v = Number(process.env[name]);
-  return Number.isFinite(v) && v > 0 ? v : undefined;
-};
-
 let nextId = 1;
 
 interface AgentQueueState {
@@ -105,12 +102,14 @@ interface AgentQueueState {
 
 export const createAgentDispatchQueue = (opts: DispatchQueueOptions): AgentDispatchQueue => {
   const now = opts.now ?? (() => Date.now());
-  // env 在 create 时解析一次（与仓内其他模块「每次调用读 env」的惯例不同：
-  // 队列参数运行期变更没有场景，测试直接传 options 覆盖即可）
-  const inflightMs = opts.inflightMs ?? readIntEnv("SLOCK_DISPATCH_INFLIGHT_MS") ?? 60000;
+  // env 在 create 时解析一次（队列参数运行期变更没有场景；测试直接传 options 覆盖）。
+  // P1.10：默认走 config.ts。生产路径（createDispatch）也会显式传入 inflightMs /
+  // maxRetries，与 loadDaemonEnv 默认值一致。
+  const envCfg = loadDaemonEnv();
+  const inflightMs = opts.inflightMs ?? envCfg.dispatchInflightMs;
   const baseDelayMs = opts.baseDelayMs ?? 1000;
   const maxDelayMs = opts.maxDelayMs ?? 30000;
-  const maxRetries = opts.maxRetries ?? readIntEnv("SLOCK_DISPATCH_MAX_RETRIES") ?? 3;
+  const maxRetries = opts.maxRetries ?? envCfg.dispatchMaxRetries;
   const dedupWindowMs = opts.dedupWindowMs ?? 15000;
 
   const states = new Map<string, AgentQueueState>();

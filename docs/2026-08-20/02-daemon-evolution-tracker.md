@@ -11,8 +11,8 @@
 
 ## ★ 当前焦点
 
-> **评估报告 P1.9 巨型函数/模块拆分已落地**（2026-08-25）。
-> 下一焦点：评估报告 P1.10 统一配置层 `src/config.ts`。
+> **评估报告 P1.10 统一配置层已落地**（2026-08-25）。
+> 下一焦点：评估报告 P1.11 补齐 one-shot / PTY 路径成本记录 + 扩展 `slock cost show`。
 > 注意：「评估报告 P0.x」与本文件「方案 P0.1 = PTY 冻结」（Step 3，已完成）不是同一件事。
 
 ---
@@ -262,3 +262,4 @@ daemon prompt 含三选一与沉默协议。L3 手动 E2E 待上线走剧本。
 | 评估 P0.7 | 2026-08-25 | （待提交） | headless 与 PTY 解耦：`agent-manager-lazy.ts` 懒加载（首次 spawn 才动态 import node-pty；同步方法加载前安全 no-op；空 bus 兜底 `getOutputBus`）；`writeMcpConfig` 迁出冻结文件到 `agent-mcp-config.ts`，`agent-runtime-spawn.ts` 纯化全冻结；`test/agent-manager-lazy.test.ts` +6 |
 | 评估 P0.8 | 2026-08-25 | （待提交） | 核心编排器补单测：`agent-runtime-dispatch.test.ts`（23：doDispatch 链路/P0.5 差值/三道成本门/死信/合并去重/reply guard/runAgent 路由）、`agent-runtime.test.ts`（10：注册表/mention/loadExistingAgents）、`daemon-core.test.ts`（24：handleMessage 全 case）；全量 33 文件 309 用例通过 |
 | 评估 P1.9 | 2026-08-25 | （待提交） | 拆分巨型函数/模块：`createDispatch` 抽出 pty/headless/stream（949→603 行工厂 + 3 子文件）；`handleMessage` → `handlers/*`（daemon-core 712→417）；`cli.ts` 按域拆到 `cli/*.ts`（1075→50 行入口）；typecheck + 33 文件 309 用例全绿 |
+| 评估 P1.10 | 2026-08-25 | （待提交） | 统一配置层：`src/config.ts` `loadDaemonEnv()` 集中读取/校验全部 daemon 进程级 `SLOCK_*`；调用方不再直读；`test/config.test.ts` 11 例；typecheck + 34 文件 320 用例全绿 |

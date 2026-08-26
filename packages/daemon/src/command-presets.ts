@@ -1,3 +1,4 @@
+import { DEFAULT_AGENT_ALLOWED_TOOLS, loadDaemonEnv } from "./config.js";
 import type { CommandPreset } from "./types/index.js";
 
 /**
@@ -13,13 +14,13 @@ import type { CommandPreset } from "./types/index.js";
  * 每次 send_message 弹「Do you want to proceed?」无人应答，agent 答完发不出去；
  * enableAllProjectMcpServers 只免「信任此项目」启动确认，不免逐次工具权限）。
  * 运维可用 SLOCK_AGENT_ALLOWED_TOOLS 覆盖（逗号/空格分隔，claude CLI 两种都收）。
+ * 默认集合定义在 config.ts（P1.10），本文件 re-export 保持既有 import 路径。
  */
-export const DEFAULT_AGENT_ALLOWED_TOOLS = "Bash,Read,Write,Edit,MultiEdit,Glob,Grep,LS,TodoWrite,mcp__slock";
+export { DEFAULT_AGENT_ALLOWED_TOOLS };
 
 /** 每次调用读一次 env（测试可在 beforeEach 直接改 process.env 生效） */
 export function getClaudePermissionArgs(): string[] {
-  const tools = (process.env.SLOCK_AGENT_ALLOWED_TOOLS || DEFAULT_AGENT_ALLOWED_TOOLS).trim();
-  return [`--allowedTools=${tools}`];
+  return [`--allowedTools=${loadDaemonEnv().agentAllowedTools}`];
 }
 
 /**
