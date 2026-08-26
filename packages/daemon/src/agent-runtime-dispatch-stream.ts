@@ -203,11 +203,13 @@ export const createStreamTurnHandler = (opts: StreamTurnHandlerOpts): ((agentNam
       try {
         const metrics = extractResultMetrics(ev);
         if (metrics && costTracker) {
-          const channel = turnGuards.get(agentName)?.channel ?? "unknown";
+          const guard = turnGuards.get(agentName);
+          const channel = guard?.channel ?? "unknown";
           costTracker.recordTurn({
             agentName,
             agentId: resolveAgentId(agentName),
             channel,
+            threadId: guard?.threadId,
             costUsd: sessionCostDelta.next(agentName, metrics.costUsd),
             durationMs: metrics.durationMs,
             numTurns: metrics.numTurns,

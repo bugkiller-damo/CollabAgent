@@ -161,10 +161,22 @@ export const dispatchHeadlessTurn = async (opts: DispatchHeadlessTurnOpts): Prom
       if (!enterWorking(agentName, haltGen)) {
         throw new Error(`[Daemon] @${agentName} is stopped, cannot dispatch`);
       }
+      armTurnGuard({
+        agentName,
+        channelName,
+        userMsg,
+        threadId,
+        turnGuards,
+        progressTurns,
+        createProgressPoster: opts.createProgressPoster,
+        onProgress: opts.onProgress,
+      });
       const sid = threadId
         ? (threadSessions?.lookup(agentName, threadId)?.sessionId ?? agentSessions.get(agentName))
         : agentSessions.get(agentName);
-      const claude = await claudePrint(userMsg, sid, promptFile, env, workspace);
+      const claude = await claudePrint(userMsg, sid, promptFile, env, workspace, (ev) =>
+        handleStreamEvent(agentName, ev),
+      );
       if (claude.sessionId) {
         agentSessions.set(agentName, claude.sessionId);
         if (threadId) threadSessions?.remember(agentName, threadId, claude.sessionId);

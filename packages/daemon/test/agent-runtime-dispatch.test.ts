@@ -16,7 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  */
 
 // ---- vi.mock 的工厂被提升，假类必须经 vi.hoisted 暴露 ----
-const { FakePersistentClaude } = vi.hoisted(() => {
+const { FakePersistentClaude, claudePrintMock, claudePrintImpl } = vi.hoisted(() => {
   class FakePersistentClaude {
     static instances: FakePersistentClaude[] = [];
     static reset(): void {
@@ -43,10 +43,25 @@ const { FakePersistentClaude } = vi.hoisted(() => {
       this.stopped = true;
     }
   }
-  return { FakePersistentClaude };
+  const claudePrintImpl = async (...args: any[]) => {
+    const onStreamEvent = args[5];
+    if (typeof onStreamEvent === "function") {
+      onStreamEvent({
+        type: "result",
+        subtype: "success",
+        total_cost_usd: 0.07,
+        duration_ms: 11,
+        num_turns: 1,
+      });
+    }
+    return { reply: "ok", sessionId: "sess-1" };
+  };
+  const claudePrintMock = vi.fn(claudePrintImpl);
+  return { FakePersistentClaude, claudePrintMock, claudePrintImpl };
 });
 
 vi.mock("../src/drivers/persistent-claude.js", () => ({ PersistentClaude: FakePersistentClaude }));
+vi.mock("../src/claude-print.js", () => ({ claudePrint: claudePrintMock }));
 vi.mock("../src/mcp-bundle.js", () => ({ bundleSlockMcpServer: async () => null }));
 vi.mock("../src/agent-context-builder.js", () => ({
   buildThreadContextEnvelope: vi.fn(async () => null),
@@ -210,6 +225,8 @@ describe("agent-runtime-dispatch (headless)", () => {
     delete process.env.SLOCK_REPLY_GUARD;
     delete process.env.SLOCK_CHANNEL_PROGRESS;
     delete process.env.SLOCK_ONESHOT_CLAUDE;
+    claudePrintMock.mockReset();
+    claudePrintMock.mockImplementation(claudePrintImpl);
   });
 
   afterEach(() => {
@@ -220,6 +237,7 @@ describe("agent-runtime-dispatch (headless)", () => {
     delete process.env.SLOCK_DISPATCH_MAX_RETRIES;
     delete process.env.SLOCK_DISPATCH_QUEUE;
     delete process.env.SLOCK_REPLY_GUARD;
+    delete process.env.SLOCK_ONESHOT_CLAUDE;
     vi.restoreAllMocks();
   });
 
@@ -273,6 +291,24 @@ describe("agent-runtime-dispatch (headless)", () => {
       // 0.08 - 0.05：会话累计的差值，而非 0.08 全量再记一次
       expect(harness.tracker.recordTurn.mock.calls[1][0].costUsd).toBeCloseTo(0.03, 10);
       expect(harness.tracker.recordTurn.mock.calls[1][0]).toMatchObject({ durationMs: 20, numTurns: 2 });
+    });
+
+    it("result 事件把 turnGuard.threadId 一并落库（P1.11）", async () => {
+      process.env.SLOCK_REPLY_GUARD = "0";
+      harness = makeHarness();
+
+      await harness.dispatch.runAgent(AGENT, "general", "#general:t8", "bob", "追问", "t8");
+      const inst = FakePersistentClaude.instances[0]!;
+      inst.emit({ type: "result", subtype: "success", total_cost_usd: 0.04, duration_ms: 9, num_turns: 1 });
+      await flush();
+
+      expect(harness.tracker.recordTurn).toHaveBeenCalledTimes(1);
+      expect(harness.tracker.recordTurn.mock.calls[0][0]).toMatchObject({
+        agentName: AGENT,
+        channel: "general",
+        threadId: "t8",
+        costUsd: 0.04,
+      });
     });
 
     it("forgetSessionCost 清基线：新进程首条累计按原值记账（P0.5）", async () => {
@@ -362,6 +398,27 @@ describe("agent-runtime-dispatch (headless)", () => {
       await harness.dispatch.dispatchToAgent(AGENT, "general", "same-content");
       await flush();
       expect(inst.sent).toHaveLength(1);
+    });
+
+    it("one-shot 路径把 stream-json result 记入成本（P1.11）", async () => {
+      process.env.SLOCK_ONESHOT_CLAUDE = "1";
+      process.env.SLOCK_REPLY_GUARD = "0";
+      harness = makeHarness();
+
+      await harness.dispatch.dispatchToAgent(AGENT, "general", "oneshot-cost");
+      await flush();
+
+      expect(FakePersistentClaude.instances).toHaveLength(0);
+      expect(claudePrintMock).toHaveBeenCalled();
+      expect(typeof claudePrintMock.mock.calls[0][5]).toBe("function");
+      expect(harness.tracker.recordTurn).toHaveBeenCalledTimes(1);
+      expect(harness.tracker.recordTurn.mock.calls[0][0]).toMatchObject({
+        agentName: AGENT,
+        channel: "general",
+        costUsd: 0.07,
+        durationMs: 11,
+        numTurns: 1,
+      });
     });
   });
 
@@ -553,6 +610,7 @@ describe("agent-runtime-dispatch (headless)", () => {
         chars: 16,
         messages: 2,
         dropped: 1,
+        threadId: "thread-1",
       });
     });
 

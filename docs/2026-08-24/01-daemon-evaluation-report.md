@@ -200,10 +200,10 @@
 |---|---|---|---|
 | 高 | `agent-cost-tracker.ts` | ~~代码把每个 stream-json `result` 事件的 `total_cost_usd` 直接累加，未验证其是**单回合成本**还是**会话累计成本**~~ **✅ 2026-08-25 已修**（P0.5）：确认为会话累计；`createSessionCostDelta` 按 agent 记「本次 − 上次」再 `recordTurn`。`duration_ms`/`num_turns` 仍按回合原值累加 | 若是累计成本，每来一条 result 都会把历史成本再算一次，预算严重虚高 |
 | 高 | `agent-runtime-dispatch.ts:677-690` / `:353-619` / `agent-dispatch-queue.ts:183-206` | ~~`evaluateCostGate` 只在 `dispatchToAgent` 调用时执行一次；已入队 pending / 退避重试不再检查~~ **✅ 2026-08-25 已修**（P0.6）：drain 前 `deliveryGate` + `doDispatch` 入口门，旧链路径同样覆盖 | 触发熔断后 agent 仍可能把当日预算再花掉一部分，熔断消息与实际行为不一致 |
-| 中 | `claude-print.ts:78-96` / `agent-runtime-dispatch.ts:370-448` / `:265-277` | `recordTurn` 只在 `handleStreamEvent` 的 `result` 分支里调用，仅挂在 `PersistentClaude` | one-shot / PTY 路径没有成本记录，形成“花钱黑盒” |
-| 中 | `cli.ts:907-932` | `slock cost show` 只输出按 agent 聚合的最近 N 天总额 | 无法按频道、UTC 日、thread 查看，排查“哪个频道把预算烧光”困难 |
+| 中 | `claude-print.ts:78-96` / `agent-runtime-dispatch.ts:370-448` / `:265-277` | ~~`recordTurn` 只在 `handleStreamEvent` 的 `result` 分支里调用，仅挂在 `PersistentClaude`~~ **✅ 2026-08-26 已修**（P1.11）：one-shot 把 stream-json 事件喂进 `handleStreamEvent`；PTY 无 USD，`doDispatch` 成功后记 `costUsd=0` 回合 | one-shot / PTY 路径没有成本记录，形成“花钱黑盒” |
+| 中 | `cli.ts:907-932` | ~~`slock cost show` 只输出按 agent 聚合的最近 N 天总额~~ **✅ 2026-08-26 已修**（P1.11）：`--channel` / `--day` / `--thread` / `--group agent\|channel\|day` | 无法按频道、UTC 日、thread 查看，排查“哪个频道把预算烧光”困难 |
 | 中 | `agent-context-builder.ts:31-32` / `:64-104` | 默认 `maxMessages=40`、`maxChars=8000`，按 UTF-16 字符数截断 | 未针对不同模型 tokenizer 或上下文上限调整；中文/代码密集场景可能撑到模型上限 |
-| 中 | `agent-cost-tracker.ts:184` / `agent-context-builder.ts:129` | channel 一律做 `.split(":")[0]` 归一化，`#general:thread8` 与 `#general:thread9` 记到同一行 `general` | 丢失 thread 粒度，无法按 thread 做预算或分析 |
+| 中 | `agent-cost-tracker.ts:184` / `agent-context-builder.ts:129` | ~~channel 一律做 `.split(":")[0]` 归一化，`#general:thread8` 与 `#general:thread9` 记到同一行 `general`~~ **✅ 2026-08-26 部分修**（P1.11）：账本 `(agent, channel, day, threadId)` 分行；channel 仍归一化；预算门仍按 agent/日合计。Context Builder 注入仍按频道截断，不在本项 | 丢失 thread 粒度，无法按 thread 做预算或分析 |
 | 低 | `agent-runtime-dispatch.ts:196` / `:679-681` | `circuitNotified` 是内存 Set，daemon 重启后“今日已通知”状态丢失 | 频繁重启时频道会重复收到熔断提示 |
 | 低 | `agent-cost-tracker.ts:147` / `agent-thread-sessions.ts:29` | 成本/会话存储路径依赖 `process.cwd()` | 用户从不同目录启动 daemon 会看到不同的账本 |
 | 低 | `agent-observation.ts:99-113` | `costUsd/durationMs/numTurns` 被格式化成 `turn_end` 的 summary 字符串 | web 面板若想做成本/时长图表需要再解析文本 |
@@ -212,7 +212,7 @@
 
 - **P0**：~~验证 `total_cost_usd` 语义。若是会话累计，改为「本次 - 上次」差值再累计。~~ **✅ 2026-08-25 已修**（P0.5）。
 - **P0**：~~在 `doDispatch` 执行前和重试批次出队前再次检查预算。~~ **✅ 2026-08-25 已修**（P0.6）。
-- **P1**：补齐 one-shot / PTY 路径的成本记录；扩展 `slock cost show` 查询维度（`--channel`、`--day`、`--thread`）。
+- **P1**：~~补齐 one-shot / PTY 路径的成本记录；扩展 `slock cost show` 查询维度（`--channel`、`--day`、`--thread`）。~~ **✅ 2026-08-26 已修**（P1.11）。
 - **P1**：Context Builder 引入模型相关的 token 预算，至少按模型支持的最大上下文给安全上限。
 - **P2**：固定 `daemon-costs.json` / `daemon-thread-sessions.json` 默认路径到 workspace 根或 `SLOCK_WORKSPACE`；`result` 观察帧增加结构化成本字段；持久化 `circuitNotified` 状态。
 
@@ -286,7 +286,7 @@
 
 9. **~~拆分巨型函数/模块~~** —— ✅ 2026-08-25（P1.9）：`createDispatch` 抽出 pty/headless/stream；`handleMessage` → `handlers/*`；`cli.ts` → `cli/*.ts`。`createAgentRuntime` 仍偏大，不在本项。
 10. **~~统一配置层~~** —— ✅ 2026-08-25（P1.10）：`src/config.ts` `loadDaemonEnv()` 集中解析全部 daemon 进程级 `SLOCK_*`（默认值 + `Number.isFinite` 校验 + 类型化 `DaemonEnv`）；调用方改为 `loadDaemonEnv()`；`test/config.test.ts` 11 例；MCP 子进程注入键（`SLOCK_AGENT_ID`/`TOKEN`/`SERVER_URL`）不迁入。
-11. **补齐 one-shot / PTY 路径成本记录**，扩展 `slock cost show` 查询维度。
+11. **~~补齐 one-shot / PTY 路径成本记录~~** —— ✅ 2026-08-26（P1.11）：one-shot 复用 `handleStreamEvent`；PTY 记零美元回合（冻结文件不动）；`slock cost show --channel/--day/--thread/--group`；thread 分行兼容旧账本。
 12. **清理 `PersistentClaude` 事件监听器**，给 headless 会话创建加锁，失败时清理 stale session。
 13. **减少 `any`/`as` 使用**：对 stream-json 事件、WS 线协议建立 Zod schema 或保守联合类型。
 14. **统一错误模型**：引入标准化 `DispatchResult` 或 `Result<T, E>`，避免错误语义散落在 `console.warn` 和 `catch` 中。
@@ -296,7 +296,7 @@
 ### P2 · 中期（建议 1-2 个月内完成）
 
 17. **制定并执行 PTY 代码删除计划**（按 tracker 原定 2026-09 底评估）。
-18. **Context Builder 引入模型相关 token 预算**；按 thread 记录成本粒度。
+18. **Context Builder 引入模型相关 token 预算**。~~按 thread 记录成本粒度~~ ✅ P1.11 账本已按 threadId 分行；预算门仍按 agent/日。
 19. **状态机增加 `onTransition`/`onInvalidTransition` 钩子**；`supervisor.killTree` 等待进程退出确认。
 20. **固定 `daemon-costs.json` / `daemon-thread-sessions.json` 路径**到 workspace 根或 `SLOCK_WORKSPACE`。
 21. **引入结构化日志库**，审查敏感信息打印；CI 增加测试覆盖率报告与门槛。
@@ -317,6 +317,8 @@
 > **2026-08-25 P1.9**：巨型函数/模块拆分落地——`createDispatch` 抽出 `agent-runtime-dispatch-{pty,headless,stream}.ts`（工厂 949→603 行）；`handleMessage` 迁到 `handlers/*`（`daemon-core.ts` 712→417 行）；`cli.ts` 按 16 个域拆到 `cli/*.ts`（1075→50 行入口）。对外 API 不变；typecheck + 33 文件 309 用例全绿。下一焦点 P1.10 统一配置层。
 >
 > **2026-08-25 P1.10**：统一配置层落地——新建 `src/config.ts`（`loadDaemonEnv` / `DaemonEnv` / 解析器）；daemon 进程级 `SLOCK_*` 全部经此读取（非法数字回落默认，杜绝 `NaN` 静默关超时）；`command-presets` / `agent-cost-tracker` / `agent-context-builder` 默认值与解析器 re-export 保持既有 import；`test/config.test.ts` 11 例；typecheck + 34 文件 320 用例全绿。下一焦点 P1.11。
+>
+> **2026-08-26 P1.11**：one-shot / PTY 成本记录 + `slock cost show` 查询维度——one-shot `claudePrint` 把 stream-json 事件喂进既有 `handleStreamEvent`（含差值落库 / 回复守卫 / 观察帧）；PTY 无 USD，在非冻结的 `doDispatch` 成功后记 `costUsd=0` 回合；账本按 `(agent, channel, day, threadId)` 分行（旧行缺 threadId 视为空串）；CLI `--channel` / `--day` / `--thread` / `--group agent|channel|day`。typecheck + 35 文件 331 用例全绿。下一焦点 P1.12。
 
 ---
 
@@ -334,7 +336,7 @@
 | `command-presets.ts` | 是 | 高 | 白名单、resume 参数 |
 | `agent-observation.ts` | 是 | 高 | 帧解析、bus、replay、transcript |
 | `agent-progress.ts` | 是 | 高 | 节流、finish rewrite、关闭 |
-| `agent-cost-tracker.ts` | 是 | 高 | 聚合、budget、circuit-break |
+| `agent-cost-tracker.ts` | 是 | 高 | 聚合、budget、circuit-break；P1.11：thread 分行、spendByChannel/Day、CLI `--channel/--day/--thread/--group` |
 | `agent-context-builder.ts` | 是 | 高 | 打包、截断、隔离信封 |
 | `agent-thread-sessions.ts` | 是 | 中 | upsert/lookup/list |
 | `live-run-registry.ts` | 是 | 中 | CRUD + pending exit code |
@@ -352,14 +354,14 @@
 | `agent-workspace.test.ts` | 是 | 中 | 白名单、读/列文件 |
 | `ready-payload.test.ts` | 是 | 低 | 仅结构 |
 | `agent-runtime.ts` | 是 | 高 | P0.8：注册表/mention 解析/loadExistingAgents（duty 过滤、非 2xx 保留注册）；stop 语义见 P0.3 `agent-runtime-stop.test.ts` |
-| `agent-runtime-dispatch.ts` | 是 | 高 | P0.8：doDispatch 链路、P0.5 成本差值、三道成本门、死信/合并/去重、reply guard、runAgent 系列路由 |
+| `agent-runtime-dispatch.ts` | 是 | 高 | P0.8：doDispatch 链路、P0.5 成本差值、三道成本门、死信/合并/去重、reply guard、runAgent 系列路由；P1.11：one-shot 记成本 + PTY 零美元回合 |
 | `agent-runtime-spawn.ts` | **否** | **无** | PTY spawn 冻结代码 |
 | `daemon-core.ts` | 是 | 高 | P0.8：handleMessage 全 case；P1.9：路由已迁 `handlers/*`，测试仍调私有 `handleMessage` |
-| `cli.ts` / `cli/*` | **否** | **无** | P1.9 按域拆分；整个 CLI 仍无测 |
+| `cli.ts` / `cli/*` | 部分 | 低 | P1.9 按域拆分；P1.11 `buildCostShowResult` 有测，其余 CLI 仍无测 |
 | `client.ts` | **否** | **无** | API 客户端 |
 | `proxy.ts` | **否** | **无** | HTTP 代理 |
 | `auth.ts` | **否** | **无** | 仅 token-file 路径被间接覆盖 |
-| `claude-print.ts` | **否** | **无** | one-shot 路径 |
+| `claude-print.ts` | 间接 | 中 | P1.11：dispatch 单测 mock `claudePrint` 喂 result 事件；解析循环本身无独立测 |
 | `idle-reclaimer.ts` | 是 | 高 | P0.2：timeout/untrack/skip-if-working + headless session.stop |
 | `exit-coordinator.ts` / `exit-handler.ts` | **否** | **无** | 退出时序保护 |
 | `system-prompt.ts` / `agent-startup.ts` | **否** | **无** | 系统提示生成 |

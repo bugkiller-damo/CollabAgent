@@ -339,6 +339,18 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
         releaseToIdle,
         assertLive,
       });
+      // P1.11：PTY 没有 stream-json result，USD 记 0，只记回合次数，避免花钱黑盒。
+      try {
+        deps.costTracker?.recordTurn({
+          agentName,
+          agentId,
+          channel: channelName,
+          threadId,
+          costUsd: 0,
+        });
+      } catch (err: any) {
+        console.warn(`[Daemon] @${agentName} pty cost record failed:`, err?.message ?? err);
+      }
       return;
     }
 
@@ -508,6 +520,7 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
         chars: built.chars,
         messages: built.kept,
         dropped: built.dropped,
+        threadId,
       });
     } catch (err: any) {
       console.warn(`[Daemon] @${agentName} context cost record failed:`, err?.message ?? err);
