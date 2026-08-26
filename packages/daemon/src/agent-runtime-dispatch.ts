@@ -136,6 +136,11 @@ export interface DispatchDeps {
   runIdByAgent: Map<string, string>;
   /** 旧 PersistentClaude 路径（兜底）常驻会话 */
   persistentSessions: Map<string, PersistentClaude>;
+  /**
+   * P1.12：headless 会话创建单飞（可选；缺省由工厂自建）。
+   * 测试注入时可不传。
+   */
+  sessionCreates?: Map<string, Promise<PersistentClaude>>;
   /** claudePrint 一次性模式的 session 缓存 */
   agentSessions: Map<string, string>;
   /** 按 agentName 串行化 dispatch（门控投递队列的链尾） */
@@ -202,6 +207,7 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
     agentSessions,
     dispatchPromises,
   } = deps;
+  const sessionCreates = deps.sessionCreates ?? new Map<string, Promise<PersistentClaude>>();
   const { transitionState, clearStartupTimer } = stateMachine;
   // P0.5：result.total_cost_usd 是会话累计；按 agent 记上次值，落库只写差值。
   const sessionCostDelta = createSessionCostDelta();
@@ -367,7 +373,9 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
       mintAgentCredential,
       agentInfo,
       persistentSessions,
+      sessionCreates,
       agentSessions,
+      forgetSessionCost: (name) => sessionCostDelta.forget(name),
       threadSessions: deps.threadSessions,
       turnGuards,
       progressTurns,

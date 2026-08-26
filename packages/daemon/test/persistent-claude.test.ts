@@ -48,6 +48,14 @@ const emitLine = (proc: FakeProc, ev: unknown) => {
   proc.stdout.emit("data", `${JSON.stringify(ev)}\n`);
 };
 
+/** P1.12：cleanup 必须卸掉我们挂的 4 个监听，避免 kill/超时后闭包堆积。 */
+const expectDetached = (proc: FakeProc): void => {
+  expect(proc.listenerCount("exit")).toBe(0);
+  expect(proc.listenerCount("error")).toBe(0);
+  expect(proc.stdout.listenerCount("data")).toBe(0);
+  expect(proc.stderr.listenerCount("data")).toBe(0);
+};
+
 describe("PersistentClaude", () => {
   beforeEach(() => {
     vi.spyOn(console, "log").mockImplementation(() => {});
@@ -108,6 +116,7 @@ describe("PersistentClaude", () => {
     lastProc().emit("exit", 1);
     await expect(p1).rejects.toThrow(/mid-turn/);
     expect(onExit).toHaveBeenCalledTimes(1);
+    expectDetached(lastProc());
     d.stop();
   });
 
@@ -118,6 +127,7 @@ describe("PersistentClaude", () => {
     await flush(20); // m1 in-flight，80ms 沉默计时启动
     await flush(100); // 超时 → settle + kill，不再等 exit
     expect(lastProc().kill).toHaveBeenCalledTimes(1);
+    expectDetached(lastProc());
     await p1Rejected;
 
     // 后续消息应触发一次新 spawn（旧进程已死）
@@ -230,6 +240,25 @@ describe("PersistentClaude", () => {
     await expect(p1).rejects.toThrow(/stopped/);
     await expect(p2).rejects.toThrow(/stopped/);
     expect(lastProc().kill).toHaveBeenCalled();
+    expectDetached(lastProc());
+  });
+
+  it("P1.12：沉默超时 cleanup 卸掉旧进程监听；迟到 emit 不再进入 handler", async () => {
+    const onExit = vi.fn();
+    const d = makeDriver({ turnTimeoutMs: 80, onExit });
+    const p1 = d.send("m1");
+    const p1Rejected = expect(p1).rejects.toThrow(/mid-turn/);
+    await flush(20);
+    const oldProc = lastProc();
+    await flush(100);
+    await p1Rejected;
+    expectDetached(oldProc);
+
+    // 监听已卸：迟到 exit/stdout 连 handler 都进不去（P0.1 的 gen 守卫是第二道）
+    oldProc.emit("exit", 143);
+    emitLine(oldProc, { type: "result" });
+    expect(onExit).not.toHaveBeenCalled();
+    d.stop();
   });
 
   it("spawn 抛错：回合 reject「cannot spawn」", async () => {
