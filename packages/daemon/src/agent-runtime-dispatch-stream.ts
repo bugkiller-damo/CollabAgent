@@ -8,7 +8,9 @@ import { type createSeqAllocator, type ObservationBus, streamEventToFrames } fro
 import { createProgressTurn, type ProgressTurn } from "./agent-progress.js";
 import type { IAgentStateMachine } from "./agent-runtime-state.js";
 import type { IThreadSessionStore } from "./agent-thread-sessions.js";
+import type { ClaudeStreamEvent } from "./claude-stream.js";
 import { loadDaemonEnv } from "./config.js";
+import { errMessage } from "./errors.js";
 import type { IIdleReclaimer } from "./idle-reclaimer.js";
 
 /** 回复守卫追问前缀：isNudge 防止追问本身再触发追问 */
@@ -141,7 +143,9 @@ export const armTurnGuard = (opts: {
  * B1/C1：persistent 路径的 stream-json 事件处理——发布观察帧 + 工具审计 + 精确回合边界。
  * 含回复守卫判定（代发 / 追问一次）与 D3 成本差值落库。
  */
-export const createStreamTurnHandler = (opts: StreamTurnHandlerOpts): ((agentName: string, ev: any) => void) => {
+export const createStreamTurnHandler = (
+  opts: StreamTurnHandlerOpts,
+): ((agentName: string, ev: ClaudeStreamEvent) => void) => {
   const {
     observationBus,
     onToolCall,
@@ -160,7 +164,7 @@ export const createStreamTurnHandler = (opts: StreamTurnHandlerOpts): ((agentNam
   } = opts;
   const { transitionState } = stateMachine;
 
-  return (agentName: string, ev: any): void => {
+  return (agentName: string, ev: ClaudeStreamEvent): void => {
     const bus = observationBus;
     if (bus) {
       for (const frame of streamEventToFrames(agentName, ev, obsSeq)) {
@@ -199,7 +203,7 @@ export const createStreamTurnHandler = (opts: StreamTurnHandlerOpts): ((agentNam
     // D3 / P0.5：result.total_cost_usd 是会话累计，落库前换成相对上次的增量。
     // duration_ms / num_turns 是本回合值，原样累加。无 tracker 时跳过。
     // 必须在 turnGuards.delete 之前取 channel。
-    if (ev?.type === "result") {
+    if (ev.type === "result") {
       try {
         const metrics = extractResultMetrics(ev);
         if (metrics && costTracker) {
@@ -215,24 +219,24 @@ export const createStreamTurnHandler = (opts: StreamTurnHandlerOpts): ((agentNam
             numTurns: metrics.numTurns,
           });
         }
-      } catch (err: any) {
-        console.warn(`[Daemon] @${agentName} cost record failed:`, err?.message ?? err);
+      } catch (err) {
+        console.warn(`[Daemon] @${agentName} cost record failed:`, errMessage(err));
       }
     }
     // D2：system init 带 session_id 时记下本回合 thread 的亲和（无 thread 则跳过）。
-    if (ev?.type === "system" && typeof ev.session_id === "string" && ev.session_id) {
+    if (ev.type === "system" && typeof ev.session_id === "string" && ev.session_id) {
       const tid = turnGuards.get(agentName)?.threadId;
       if (tid) {
         try {
           threadSessions?.remember(agentName, tid, ev.session_id);
-        } catch (err: any) {
-          console.warn(`[Daemon] @${agentName} thread-session remember failed:`, err?.message ?? err);
+        } catch (err) {
+          console.warn(`[Daemon] @${agentName} thread-session remember failed:`, errMessage(err));
         }
       }
     }
     // stream-json 的 result 事件即精确回合边界（替代 PTY 路径的 ❯ 启发式）：
     // 回合结束立刻回 idle，终端面板的状态列/空闲回收都靠这个状态。
-    if (ev?.type === "result" && stateMachine.getState(agentName) === "working") {
+    if (ev.type === "result" && stateMachine.getState(agentName) === "working") {
       transitionState(agentName, "idle");
       idleReclaimer.touch(agentName);
       console.log(`[Daemon] @${agentName} round-end (stream-json result)`);

@@ -1,10 +1,10 @@
 # Slock Daemon 综合评估报告
 
 > 评估日期：2026-08-24（进展批注更新至 2026-08-26）  
-> 评估范围：评估时 `packages/daemon/src/` 50 源文件、27 测试文件；2026-08-26 现状 85 源文件（含 `cli/*`、`handlers/*` 拆分产物）、36 测试文件  
+> 评估范围：评估时 `packages/daemon/src/` 50 源文件、27 测试文件；2026-08-26 现状 88 源文件（含 `cli/*`、`handlers/*` 拆分产物 + P1.13 `claude-stream`/`errors`/`handlers/inbound`）、37 测试文件  
 > 评估方法：6 名子 agent 并行按维度精读源码与测试，输出结构化结论后由主编综合去重、定级  
-> 当前基线（2026-08-26 复核）：`pnpm typecheck` 通过；`pnpm vitest run` 36 文件 / 342 用例全绿（约 39s）  
-> 版本上下文：headless 为默认驱动（2026-08-18 起），PTY 代码冻结保留（2026-08-20 Step 3），Step 4-7（D3/T8/D1/D2/D4）已落地；评估报告 P0.1–P0.8、P1.9–P1.12 已落地（P1.9–P1.11 已合入 main，`46642b7`）。
+> 当前基线（2026-08-26 复核）：`pnpm typecheck` 通过；`pnpm vitest run` 37 文件 / 350 用例全绿（约 40s）  
+> 版本上下文：headless 为默认驱动（2026-08-18 起），PTY 代码冻结保留（2026-08-20 Step 3），Step 4-7（D3/T8/D1/D2/D4）已落地；评估报告 P0.1–P0.8、P1.9–P1.13 已落地（P1.9–P1.11 已合入 main，`46642b7`）。
 
 ---
 
@@ -19,7 +19,7 @@
 | 派发队列与 T8 经理分诊 | 7.5 / 10 | A1 队列纪律与 T8 触发面完整；~~成本门不拦截已入队积压~~ **✅ P0.6**；去重窗口在死信路径上有副作用。 |
 | 安全与权限模型 | 6.0 / 10 | scoped token、MCP 鉴权、白名单框架已落地；~~默认 env 白名单未生效~~ **✅ P0.4**；本地 token 注册表与真实吊销路径脱节。 |
 | 成本 / 上下文 / 进度产品化 | 7.0 / 10 | 功能完整且旁路接入；~~`total_cost_usd` 语义未验证~~ **✅ P0.5**、~~预算熔断有透支窗口~~ **✅ P0.6**；~~CLI 查询面较粗~~ **✅ P1.11**（`--channel/--day/--thread/--group`）。 |
-| 测试覆盖与代码质量 | 6.5 / 10 | 核心旁路模块测试扎实；~~编排核心（runtime/dispatch/daemon-core）是真空~~ **✅ P0.8**；`cli.ts` 大部分仍无测（P1.11 起 cost show 有测），巨型函数与 `any`/`as` 较多。 |
+| 测试覆盖与代码质量 | 6.5 / 10 | 核心旁路模块测试扎实；~~编排核心（runtime/dispatch/daemon-core）是真空~~ **✅ P0.8**；~~stream-json / WS 线协议大量 `any`/`as`~~ **✅ P1.13**；`cli.ts` 大部分仍无测（P1.11 起 cost show 有测）。 |
 | **综合评分** | **6.7 / 10** | 基础设施与产品化能力已成型，核心运行时鲁棒性和架构解耦仍是最大短板。 |
 
 ### 1.2 关键结论
@@ -234,7 +234,7 @@
 | 高 | `agent-runtime-dispatch.ts` | ~~`createDispatch` 函数长达 840 行~~ **✅ 2026-08-25 已修**（P1.9）：抽出 `dispatch-pty` / `dispatch-headless` / `dispatch-stream`；工厂约 600 行（队列漏斗 + prompt 包装仍在） | 单函数职责过重；~~无单元测试~~ **✅ P0.8 已补** |
 | 高 | `agent-runtime.ts:194` | `createAgentRuntime` 函数 625 行，内含 `installStuckDetector` 等大型内联闭包 | 状态机/定时器/回收器/清理链全部挤在一个工厂函数，阅读困难；~~单测困难~~ **✅ P0.8 已补**（本项不在 P1.9 范围） |
 | 高 | `daemon-core.ts` | ~~`handleMessage` 巨型 switch~~ **✅ 2026-08-25 已修**（P1.9）：`handlers/*`；`handleMessage` 只转发 | WS 消息处理核心~~无单元测试~~ **✅ P0.8 已补** |
-| 中 | 多处 | 大量 `(err as any)?.message ?? err`、`ev: any`、`as Record<string, unknown>` | 错误信息提取不统一，stream-json 事件与 WS 线协议类型约束被绕过 |
+| 中 | 多处 | ~~大量 `(err as any)?.message ?? err`、`ev: any`、`as Record<string, unknown>`~~ **✅ 2026-08-26 部分修**（P1.13）：stream-json / WS 入站已收成联合 + 运行时归一化；热路径改 `errMessage`。文件 IO / 冻结 PTY 的 `catch (err: any)` 留给 P1.14 | 错误信息提取不统一，stream-json 事件与 WS 线协议类型约束被绕过 |
 | 中 | `agent-runtime.ts:459-519` | `registerAgent`/`unregisterAgent`/`stopAgent` 三处重复几乎相同的 `runIdByAgent` 清理逻辑 | 重复代码，变更时容易漏改 |
 | 中 | `agent-runtime-dispatch.ts` | ~~PTY 分支与 headless 分支在 `doDispatch` 内并列~~ **✅ 2026-08-25 已修**（P1.9）：分别迁到 `dispatch-pty.ts`（❄️冻结原文）与 `dispatch-headless.ts`；启动准备仍不共享（PTY 冻结，不抽公共函数） | 两条路径未抽取公共启动准备函数 |
 | 中 | `agent-runtime.ts:340-341` | `STUCK_WARN_MS` / `QUIESCE_MS` 等阈值通过 `Number(process.env...)` 解析，无 NaN 校验 | 非法 env 值会变为 `NaN`，导致比较永远为 false，静默关闭卡死检测 |
@@ -247,7 +247,7 @@
 
 - **P0**：~~为核心编排器补单元测试~~ **✅ 2026-08-25 已落地（P0.8）**：未拆分依赖注入，改用手工组装 DispatchDeps + mock 驱动模块的方式，针对 `runAgent`、`doDispatch`、成本熔断、reply guard、WS 路由写了 57 个独立测试。
 - **P0**：拆分巨型函数：`createDispatch` 拆为 `prepareHeadlessDispatch`、`preparePtyDispatch`、`handleReplyGuard`、`handleProgress` 等；`handleMessage` 的每个 case 拆为私有方法/独立 handler。
-- **P1**：统一错误模型；减少 `any`/`as` 使用，对 stream-json 事件、WS 线协议、`fetch` 响应建立 Zod 或保守类型校验 schema。
+- **P1**：~~减少 `any`/`as` 使用，对 stream-json 事件、WS 线协议建立 Zod 或保守联合类型。~~ **✅ 2026-08-26 已修**（P1.13）：保守联合 + `asClaudeStreamEvent` / `parseWsToDaemonMessage`（不引入 Zod，热路径静默忽略未知 type）。统一错误模型仍归 P1.14。
 - **P1**：提取重复启动准备逻辑；修复 `STUCK_WARN_MS` 解析缺陷（`Number.isFinite` 校验）。
 - **P1**：制定并执行冻结 PTY 代码删除计划（按 tracker 原定 2026-09 底评估）。
 - **P2**：集中配置常量；引入结构化日志库并审查敏感信息打印；CI 增加测试覆盖率报告。
@@ -271,7 +271,7 @@
 
 ## 4. 优先级路线图
 
-> **进度总览（2026-08-26 复核）**：P0 八项 ✅ 全部完成；P1 八项中 ✅ 完成 4 项（P1.9/P1.10/P1.11 已合入 main，P1.12 本批落地）、⬜ 待办 4 项（P1.13–P1.16）；P2 六项均未启动（18 的「按 thread 记录成本」子项已由 P1.11 覆盖）。下一焦点 **P1.13**。
+> **进度总览（2026-08-26 复核）**：P0 八项 ✅ 全部完成；P1 八项中 ✅ 完成 5 项（P1.9/P1.10/P1.11 已合入 main，P1.12/P1.13 本批落地）、⬜ 待办 3 项（P1.14–P1.16）；P2 六项均未启动（18 的「按 thread 记录成本」子项已由 P1.11 覆盖）。下一焦点 **P1.14**。
 
 ### P0 · 立即 —— ✅ 全部完成（2026-08-24 ~ 2026-08-25）
 
@@ -284,14 +284,14 @@
 7. **~~headless 路径与 PTY 解耦~~** —— ✅ 2026-08-25（P0.7）：`agent-manager-lazy.ts` 懒加载；`writeMcpConfig` 迁出到 `agent-mcp-config.ts`。
 8. **~~为核心编排器补单元测试~~** —— ✅ 2026-08-25（P0.8）：`agent-runtime-dispatch.test.ts`（23）+ `agent-runtime.test.ts`（10）+ `daemon-core.test.ts`（24），覆盖 `runAgent`、`doDispatch`、成本熔断、reply guard、WS 路由。
 
-### P1 · 近期 —— 进行中（9/10/11/12 已完成，13–16 待办）
+### P1 · 近期 —— 进行中（9/10/11/12/13 已完成，14–16 待办）
 
 9. **~~拆分巨型函数/模块~~** —— ✅ 2026-08-25（P1.9）：`createDispatch` 抽出 pty/headless/stream；`handleMessage` → `handlers/*`；`cli.ts` → `cli/*.ts`。`createAgentRuntime` 仍偏大，不在本项。
 10. **~~统一配置层~~** —— ✅ 2026-08-25（P1.10）：`src/config.ts` `loadDaemonEnv()` 集中解析全部 daemon 进程级 `SLOCK_*`（默认值 + `Number.isFinite` 校验 + 类型化 `DaemonEnv`）；调用方改为 `loadDaemonEnv()`；`test/config.test.ts` 11 例；MCP 子进程注入键（`SLOCK_AGENT_ID`/`TOKEN`/`SERVER_URL`）不迁入。
 11. **~~补齐 one-shot / PTY 路径成本记录~~** —— ✅ 2026-08-26（P1.11）：one-shot 复用 `handleStreamEvent`；PTY 记零美元回合（冻结文件不动）；`slock cost show --channel/--day/--thread/--group`；thread 分行兼容旧账本。已合入 main（`46642b7`）。
 12. **~~清理 `PersistentClaude` 事件监听器 + headless 会话创建加锁~~** —— ✅ 2026-08-26（P1.12）：`cleanup` 成对卸 `stdout/stderr/exit/error`；`ensurePersistentSession` 单飞；`send` reject / enterWorking 失败走 `dropStalePersistentSession`（身份校验 + 清成本基线）。`test/persistent-claude.test.ts` + `test/agent-runtime-dispatch-headless.test.ts`。
-13. ⬜ **（P1.13，下一焦点）减少 `any`/`as` 使用**：对 stream-json 事件、WS 线协议建立 Zod schema 或保守联合类型。
-14. ⬜ **（P1.14）统一错误模型**：引入标准化 `DispatchResult` 或 `Result<T, E>`，避免错误语义散落在 `console.warn` 和 `catch` 中。
+13. **~~减少 `any`/`as` 使用~~** —— ✅ 2026-08-26（P1.13）：`ClaudeStreamEvent` + `asClaudeStreamEvent` 收 stream-json；`parseWsToDaemonMessage` 归一化 `thread_id` / 摊平 deliver / agent:start 三变体；handlers 吃收窄联合；`errMessage` 顺手收口热路径。不引入 Zod（热路径静默忽略未知 type）。`test/p1-13-protocol.test.ts`。
+14. ⬜ **（P1.14，下一焦点）统一错误模型**：引入标准化 `DispatchResult` 或 `Result<T, E>`，避免错误语义散落在 `console.warn` 和 `catch` 中。
 15. ⬜ **（P1.15）对 observation/terminal-log/audit 流做 token 脱敏**，设置 `.slock` 目录 0700 权限。
 16. ⬜ **（P1.16）移除 `SLOCK_DISPATCH_QUEUE=0` 回退路径与 `dispatchPromises` Map**。
 
@@ -323,6 +323,8 @@
 > **2026-08-26 P1.11**：one-shot / PTY 成本记录 + `slock cost show` 查询维度——one-shot `claudePrint` 把 stream-json 事件喂进既有 `handleStreamEvent`（含差值落库 / 回复守卫 / 观察帧）；PTY 无 USD，在非冻结的 `doDispatch` 成功后记 `costUsd=0` 回合；账本按 `(agent, channel, day, threadId)` 分行（旧行缺 threadId 视为空串）；CLI `--channel` / `--day` / `--thread` / `--group agent|channel|day`。typecheck + 35 文件 332 用例全绿（2026-08-26 复核）。**已合入 main（`46642b7`，2026-08-26）**。下一焦点 P1.12（`PersistentClaude` 监听器清理 / headless 会话创建加锁）。
 >
 > **2026-08-26 P1.12**：`PersistentClaude.cleanup()` 成对卸 `stdout/stderr/exit/error`（`bound` 引用 + `detachProcListeners`；已入队 emit 仍靠 gen 守卫）；headless `ensurePersistentSession` per-agent 单飞，挡住 A1 in-flight 超时与仍在跑的 deliver 重叠双 spawn；`send` reject / `enterWorking` 失败走 `dropStalePersistentSession`（只踢本回合实例 + `forgetSessionCost`）。`test/agent-runtime-dispatch-headless.test.ts` 8 例 + persistent-claude / dispatch 回归。typecheck + 36 文件 342 用例全绿。下一焦点 P1.13。
+>
+> **2026-08-26 P1.13**：stream-json / WS 类型收紧——新建 `claude-stream.ts`（保守联合 + `asClaudeStreamEvent`，JSON.parse 边界收口，未知 type 返回 null 不抛）；`handlers/inbound.ts` `parseWsToDaemonMessage` 归一化 `thread_id` / `message||自身` / agent:start 三变体；handlers 改吃 `Extract<WsToDaemonMessage, {type}>`，不再 `as Record`/`as any`；`errMessage` 顺手收口热路径 catch。不引入 Zod（热路径静默忽略未知 type，与既有单测一致）。`test/p1-13-protocol.test.ts`。typecheck + 37 文件 350 用例全绿。下一焦点 P1.14。
 
 ---
 
@@ -338,7 +340,10 @@
 | `agent-token-file.ts` | 是 | 高 | 含 `auth.ts` 的 TOKEN_FILE 路径 |
 | `agent-env-whitelist.ts` | 是 | 高 | 白名单/warn/inherit 模式 |
 | `command-presets.ts` | 是 | 高 | 白名单、resume 参数 |
-| `agent-observation.ts` | 是 | 高 | 帧解析、bus、replay、transcript |
+| `agent-observation.ts` | 是 | 高 | 帧解析、bus、replay、transcript；P1.13：入参 `ClaudeStreamEvent` |
+| `claude-stream.ts` | 是 | 高 | P1.13：`asClaudeStreamEvent` 四 type / 未知→null |
+| `handlers/inbound.ts` | 是 | 高 | P1.13：`parseWsToDaemonMessage` 归一化 thread_id / 摊平 deliver / agent:start |
+| `errors.ts` | 是 | 高 | P1.13：`errMessage` |
 | `agent-progress.ts` | 是 | 高 | 节流、finish rewrite、关闭 |
 | `agent-cost-tracker.ts` | 是 | 高 | 聚合、budget、circuit-break；P1.11：thread 分行、spendByChannel/Day、CLI `--channel/--day/--thread/--group` |
 | `agent-context-builder.ts` | 是 | 高 | 打包、截断、隔离信封 |
@@ -361,7 +366,7 @@
 | `agent-runtime-dispatch.ts` | 是 | 高 | P0.8：doDispatch 链路、P0.5 成本差值、三道成本门、死信/合并/去重、reply guard、runAgent 系列路由；P1.11：one-shot 记成本 + PTY 零美元回合；P1.12：send 失败踢会话、下一条换新实例 |
 | `agent-runtime-dispatch-headless.ts` | 是 | 高 | P1.12：`ensurePersistentSession` 单飞 / create 失败可重试；`dropStalePersistentSession` 身份校验；mint 重叠只 new 一次；send reject 换新会话 |
 | `agent-runtime-spawn.ts` | **否** | **无** | PTY spawn 冻结代码 |
-| `daemon-core.ts` | 是 | 高 | P0.8：handleMessage 全 case；P1.9：路由已迁 `handlers/*`，测试仍调私有 `handleMessage` |
+| `daemon-core.ts` | 是 | 高 | P0.8：handleMessage 全 case；P1.9：路由已迁 `handlers/*`；P1.13：`parseWsToDaemonMessage` 入站，未知 type 静默丢 |
 | `cli.ts` / `cli/*` | 部分 | 低 | P1.9 按域拆分；P1.11 `buildCostShowResult` 有测，其余 CLI 仍无测 |
 | `client.ts` | **否** | **无** | API 客户端 |
 | `proxy.ts` | **否** | **无** | HTTP 代理 |

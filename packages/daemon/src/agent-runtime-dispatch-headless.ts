@@ -7,8 +7,10 @@ import { createWorkspaceDir, writeSystemPromptFile } from "./agent-startup.js";
 import type { IThreadSessionStore } from "./agent-thread-sessions.js";
 import { writeAgentTokenFile } from "./agent-token-file.js";
 import { claudePrint } from "./claude-print.js";
+import type { ClaudeStreamEvent } from "./claude-stream.js";
 import { loadDaemonEnv } from "./config.js";
 import { PersistentClaude } from "./drivers/persistent-claude.js";
+import { errMessage } from "./errors.js";
 import type { IIdleReclaimer } from "./idle-reclaimer.js";
 import { bundleSlockMcpServer } from "./mcp-bundle.js";
 
@@ -35,7 +37,7 @@ export interface DispatchHeadlessTurnOpts {
   threadSessions?: IThreadSessionStore;
   turnGuards: Map<string, TurnGuard>;
   progressTurns: Map<string, ProgressTurn>;
-  handleStreamEvent: (agentName: string, ev: any) => void;
+  handleStreamEvent: (agentName: string, ev: ClaudeStreamEvent) => void;
   createProgressPoster?: (agentName: string) => import("./agent-progress.js").ProgressPoster;
   onProgress?: (agentName: string, channelName: string, headline: string, phase: "start" | "update" | "end") => void;
   enterWorking: (agentName: string, expectedGen?: number) => boolean;
@@ -168,10 +170,8 @@ export const dispatchHeadlessTurn = async (opts: DispatchHeadlessTurnOpts): Prom
       if (mcpBundlePath) {
         writeMcpConfig(workspace, agentId, env.SLOCK_AGENT_TOKEN_FILE ?? "", env.SLOCK_SERVER_URL ?? "", mcpBundlePath);
       }
-    } catch (err: any) {
-      console.warn(
-        `[Daemon] @${agentName} MCP config setup failed (headless), CLI-only fallback: ${err?.message ?? err}`,
-      );
+    } catch (err) {
+      console.warn(`[Daemon] @${agentName} MCP config setup failed (headless), CLI-only fallback: ${errMessage(err)}`);
     }
     assertLive();
 
@@ -266,11 +266,11 @@ export const dispatchHeadlessTurn = async (opts: DispatchHeadlessTurnOpts): Prom
       // one-shot 不留常驻进程，无需 touch；显式 untrack 以免上一路径残留计时。
       idleReclaimer.untrack(agentName);
     }
-  } catch (err: any) {
+  } catch (err) {
     releaseToIdle(agentName);
     idleReclaimer.touch(agentName);
     abortTurnGuards(agentName, turnGuards, progressTurns, opts.onProgress);
-    console.error("[Daemon] dispatchToAgent failed:", err?.message);
+    console.error("[Daemon] dispatchToAgent failed:", errMessage(err));
     throw err;
   }
 };

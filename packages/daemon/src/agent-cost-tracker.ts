@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { parseCostBudgetUsd } from "./config.js";
+import { errMessage } from "./errors.js";
 
 export { parseCostBudgetUsd } from "./config.js";
 
@@ -132,7 +133,7 @@ const asFiniteNumber = (v: unknown): number | null => {
 
 /** stream-json `result` 事件上的累计值；非 result 返回 null。缺字段为 null 而非 0。 */
 export const extractResultMetrics = (
-  ev: any,
+  ev: { type?: string; total_cost_usd?: unknown; duration_ms?: unknown; num_turns?: unknown } | null | undefined,
 ): { costUsd: number | null; durationMs: number | null; numTurns: number | null } | null => {
   if (ev?.type !== "result") return null;
   return {
@@ -266,8 +267,8 @@ export const createJsonCostTracker = (filePath: string, opts?: { now?: () => num
     try {
       const raw = JSON.parse(readFileSync(filePath, "utf-8"));
       return { records: Array.isArray(raw.records) ? raw.records : [] };
-    } catch (err: any) {
-      console.warn(`[CostTracker] Failed to load ${filePath}: ${err?.message}, starting empty`);
+    } catch (err) {
+      console.warn(`[CostTracker] Failed to load ${filePath}: ${errMessage(err)}, starting empty`);
       return { records: [] };
     }
   };
@@ -278,8 +279,8 @@ export const createJsonCostTracker = (filePath: string, opts?: { now?: () => num
     try {
       writeFileSync(tmp, JSON.stringify(data, null, 2), "utf-8");
       renameSync(tmp, filePath);
-    } catch (err: any) {
-      console.error(`[CostTracker] Atomic write failed: ${err?.message}`);
+    } catch (err) {
+      console.error(`[CostTracker] Atomic write failed: ${errMessage(err)}`);
     }
   };
 

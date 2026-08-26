@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { applyAgentEnv } from "./agent-env-whitelist.js";
+import { asClaudeStreamEvent, type ClaudeStreamEvent, isPlainObject } from "./claude-stream.js";
 import { getClaudePermissionArgs } from "./command-presets.js";
 
 function findClaudeCmd(): string {
@@ -14,7 +15,7 @@ function findClaudeCmd(): string {
 }
 
 export interface ClaudePrintResult {
-  reply: string;
+  reply: string | null;
   sessionId?: string;
 }
 
@@ -29,7 +30,7 @@ export function claudePrint(
   systemPromptFile?: string,
   extraEnv?: Record<string, string>,
   cwd?: string,
-  onStreamEvent?: (ev: any) => void,
+  onStreamEvent?: (ev: ClaudeStreamEvent) => void,
 ): Promise<ClaudePrintResult> {
   return new Promise((resolve) => {
     const cmd = findClaudeCmd();
@@ -73,7 +74,7 @@ export function claudePrint(
     child.on("error", (err) => {
       clearTimeout(timer);
       console.error("[ClaudePrint] spawn error:", err.message);
-      resolve({ reply: null as any, sessionId: undefined });
+      resolve({ reply: null, sessionId: undefined });
     });
 
     child.on("close", () => {
@@ -84,22 +85,24 @@ export function claudePrint(
       for (const line of stdout.split("\n")) {
         if (!line.trim()) continue;
         try {
-          const ev = JSON.parse(line.trim());
+          const ev = asClaudeStreamEvent(JSON.parse(line.trim()));
+          if (!ev) continue;
           try {
             onStreamEvent?.(ev);
           } catch {
             /* callback 不阻断 print */
           }
-          if (ev.type === "system" && ev.session_id) newSid = ev.session_id as string;
-          if (ev.type === "result" && ev.result) reply = ev.result as string;
+          if (ev.type === "system" && ev.session_id) newSid = ev.session_id;
+          if (ev.type === "result" && typeof ev.result === "string") reply = ev.result;
           if (ev.type === "assistant") {
-            for (const b of ev.message?.content || []) {
-              if (b.type === "text" && b.text) reply += b.text;
+            const blocks = Array.isArray(ev.message?.content) ? ev.message.content : [];
+            for (const b of blocks) {
+              if (isPlainObject(b) && b.type === "text" && typeof b.text === "string") reply += b.text;
             }
           }
         } catch {}
       }
-      resolve({ reply: reply || (null as any), sessionId: newSid });
+      resolve({ reply: reply || null, sessionId: newSid });
     });
 
     // 通过 stdin 传入 prompt

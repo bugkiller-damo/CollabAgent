@@ -1,6 +1,8 @@
 import type { AgentContext } from "./auth.js";
 import { buildFetchDispatcher } from "./proxy.js";
 
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+
 export interface ApiResponse<T = unknown> {
   ok: boolean;
   status: number;
@@ -103,13 +105,14 @@ export class ApiClient {
       return { ok: true, status: res.status, data: parsed as T, error: null, errorCode: null };
     }
 
-    const body = parsed as Record<string, unknown>;
-    if (res.status === 403 && body?.requiredScope) {
+    const body = isRecord(parsed) ? parsed : {};
+    const requiredScope = body.requiredScope;
+    if (res.status === 403 && typeof requiredScope === "string" && requiredScope) {
       return {
         ok: false,
         status: 403,
         data: null,
-        error: `Permission denied. The human has revoked the \`${body.requiredScope}\` capability.`,
+        error: `Permission denied. The human has revoked the \`${requiredScope}\` capability.`,
         errorCode: "SCOPE_DENIED",
       };
     }
@@ -118,8 +121,8 @@ export class ApiClient {
       ok: false,
       status: res.status,
       data: null,
-      error: (body?.error as string) ?? `HTTP ${res.status}`,
-      errorCode: (body?.errorCode as string) ?? null,
+      error: typeof body.error === "string" ? body.error : `HTTP ${res.status}`,
+      errorCode: typeof body.errorCode === "string" ? body.errorCode : null,
     };
   }
 

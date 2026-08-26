@@ -20,6 +20,7 @@ import type { ITurnTracker } from "./agent-runtime-turn-tracker.js";
 import type { IThreadSessionStore } from "./agent-thread-sessions.js";
 import { loadDaemonEnv } from "./config.js";
 import type { PersistentClaude } from "./drivers/persistent-claude.js";
+import { errMessage } from "./errors.js";
 import type { IIdleReclaimer } from "./idle-reclaimer.js";
 import type { PostStartInputWriter } from "./post-start-input-writer.js";
 
@@ -354,8 +355,8 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
           threadId,
           costUsd: 0,
         });
-      } catch (err: any) {
-        console.warn(`[Daemon] @${agentName} pty cost record failed:`, err?.message ?? err);
+      } catch (err) {
+        console.warn(`[Daemon] @${agentName} pty cost record failed:`, errMessage(err));
       }
       return;
     }
@@ -433,7 +434,7 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
         onRetry: (agentName, item, err, nextDelayMs) => {
           console.warn(
             `[Daemon] @${agentName} dispatch attempt ${item.attempts} failed, retry in ${nextDelayMs}ms:`,
-            (err as any)?.message ?? err,
+            errMessage(err),
           );
         },
         onDeadLetter: (agentName, item, err) => {
@@ -530,8 +531,8 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
         dropped: built.dropped,
         threadId,
       });
-    } catch (err: any) {
-      console.warn(`[Daemon] @${agentName} context cost record failed:`, err?.message ?? err);
+    } catch (err) {
+      console.warn(`[Daemon] @${agentName} context cost record failed:`, errMessage(err));
     }
     console.log(
       `[Daemon] @${agentName} context packed thread ${threadId.slice(0, 8)} kept=${built.kept} dropped=${built.dropped} chars=${built.chars}`,

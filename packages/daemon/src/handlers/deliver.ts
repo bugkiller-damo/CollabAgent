@@ -1,31 +1,35 @@
+import type { WsToDaemonMessage } from "@collabagent/shared";
 import { pickLocalTriageAgent } from "../agent-runtime-dispatch.js";
+import { errMessage } from "../errors.js";
 import type { HandlerContext } from "./types.js";
 
-function parseDeliverChannel(m: Record<string, unknown>): {
+type DeliverMsg = Extract<WsToDaemonMessage, { type: "agent:deliver" }>;
+
+function parseDeliverChannel(m: DeliverMsg["message"]): {
   channelName: string;
   threadId: string;
   replyTarget: string;
   senderName: string;
 } {
-  const rawChannel = (m.channelId as string) || "general";
+  const rawChannel = m.channelId || "general";
   const channelName = rawChannel.replace(/^#/, "").split(":")[0];
-  const threadId = (m.threadId as string) || (m.thread_id as string) || "";
+  const threadId = m.threadId ?? "";
   const replyTarget = threadId ? `#${channelName}:${threadId.slice(0, 8)}` : `#${channelName}`;
-  const senderName = (m.senderName as string) || (m.senderId as string) || "unknown";
+  const senderName = m.senderName || m.senderId || "unknown";
   return { channelName, threadId, replyTarget, senderName };
 }
 
-export async function handleAgentDeliver(ctx: HandlerContext, msg: Record<string, unknown>): Promise<void> {
-  const m = (msg.message || msg) as Record<string, unknown>;
-  const content = m.content as string;
-  if (!content || typeof content !== "string") return;
+export async function handleAgentDeliver(ctx: HandlerContext, msg: DeliverMsg): Promise<void> {
+  const m = msg.message;
+  const content = m.content;
+  if (!content) return;
   if (content.startsWith("🤖 ")) return;
 
   // 经理/worker 任务派发通知（agents-dispatch.ts 插入的消息）：sender_type
   // 本来就是 'agent'，会被下面的防自环判断挡掉——用一个显式的 forceDeliverTo
   // 字段（携带目标 agent 的 handle）绕开那个判断，直接路由过去。没有这个
   // 字段的普通 agent 消息仍然照旧被挡，不会打开新的自环口子。
-  const forceTarget = m.forceDeliverTo as string | undefined;
+  const forceTarget = m.forceDeliverTo;
   if (forceTarget) {
     if (ctx.runtime.hasAgent(forceTarget)) {
       const { channelName, threadId, replyTarget, senderName } = parseDeliverChannel(m);
@@ -38,10 +42,10 @@ export async function handleAgentDeliver(ctx: HandlerContext, msg: Record<string
           senderName,
           content,
           threadId || undefined,
-          typeof m.id === "string" ? m.id : undefined,
+          m.id || undefined,
         );
-      } catch (err: any) {
-        console.error("[Daemon] Dispatch routing failed:", err?.message);
+      } catch (err) {
+        console.error("[Daemon] Dispatch routing failed:", errMessage(err));
       }
     }
     return;
@@ -50,16 +54,16 @@ export async function handleAgentDeliver(ctx: HandlerContext, msg: Record<string
   if (m.senderType === "agent") return;
 
   if (m.dm) {
-    const recipients = (m.dmAgentRecipients as string[]) || [];
-    const senderHandle = (m.senderHandle as string) || (m.senderName as string) || "unknown";
+    const recipients = m.dmAgentRecipients ?? [];
+    const senderHandle = m.senderHandle || m.senderName || "unknown";
     const replyTarget = `dm:@${senderHandle}`;
     for (const name of recipients) {
       if (!ctx.runtime.hasAgent(name)) continue;
       console.log(`[Daemon] DM -> @${name} (reply ${replyTarget})`);
       try {
         await ctx.runtime.runAgentDm(name, replyTarget, senderHandle, content);
-      } catch (err: any) {
-        console.error("[Daemon] DM dispatch failed:", err?.message);
+      } catch (err) {
+        console.error("[Daemon] DM dispatch failed:", errMessage(err));
       }
     }
     return;
@@ -68,16 +72,15 @@ export async function handleAgentDeliver(ctx: HandlerContext, msg: Record<string
   // server 下发的「有权回应的 agent」列表（messages.ts /send 按频道权限预过滤）：
   // 有字段（含空数组）→ 只 spawn 列表内 agent，私有频道非成员 agent 不会起 PTY，
   // 避免「起了进程、思考半天、回复被 403」的资源浪费；无字段（旧 server）退回本地文本解析。
-  const deliverList = m.mentionAgents as string[] | undefined;
+  const deliverList = m.mentionAgents;
   const target = Array.isArray(deliverList)
     ? deliverList.find((n) => ctx.runtime.hasAgent(n))
-    : ctx.runtime.findMentionedAgent(content || "");
+    : ctx.runtime.findMentionedAgent(content);
   const { channelName, threadId, replyTarget, senderName } = parseDeliverChannel(m);
 
   if (target) {
-    console.log(`[Daemon] Message from @${senderName} in ${replyTarget}: ${content?.slice(0, 50)}`);
-    if (m.senderId === ctx.agentId || !content || typeof content !== "string") return;
-    if (content.startsWith("🤖 ")) return;
+    console.log(`[Daemon] Message from @${senderName} in ${replyTarget}: ${content.slice(0, 50)}`);
+    if (m.senderId === ctx.agentId) return;
     try {
       console.log(`[Daemon] Routing to agent @${target} -> ${replyTarget}`);
       await ctx.runtime.runAgent(
@@ -87,10 +90,10 @@ export async function handleAgentDeliver(ctx: HandlerContext, msg: Record<string
         senderName,
         content,
         threadId || undefined,
-        typeof m.id === "string" ? m.id : undefined,
+        m.id || undefined,
       );
-    } catch (err: any) {
-      console.error("[Daemon] Failed:", err.message);
+    } catch (err) {
+      console.error("[Daemon] Failed:", errMessage(err));
     }
     return;
   }
@@ -108,10 +111,10 @@ export async function handleAgentDeliver(ctx: HandlerContext, msg: Record<string
         senderName,
         content,
         threadId || undefined,
-        typeof m.id === "string" ? m.id : undefined,
+        m.id || undefined,
       );
-    } catch (err: any) {
-      console.error("[Daemon] Triage routing failed:", err?.message);
+    } catch (err) {
+      console.error("[Daemon] Triage routing failed:", errMessage(err));
     }
   }
 }

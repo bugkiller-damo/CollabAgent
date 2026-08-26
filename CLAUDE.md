@@ -44,7 +44,8 @@ AI agents, and routes messages between them.
 
 | 分组 | 文件 |
 |------|------|
-| 入口 | `index.ts` / `cli.ts`（薄入口）+ `cli/*.ts`（按域） / `daemon-core.ts`（WS + auth）+ `handlers/*`（消息路由） / `config.ts`（P1.10：`SLOCK_*` 统一读取） |
+| 入口 | `index.ts` / `cli.ts`（薄入口）+ `cli/*.ts`（按域） / `daemon-core.ts`（WS + auth）+ `handlers/*`（消息路由，P1.13：`inbound.ts` 归一化） / `config.ts`（P1.10：`SLOCK_*` 统一读取） |
+| 协议类型 | `claude-stream.ts`（stream-json 联合） / `errors.ts`（`errMessage`） |
 | 运行时编排 | `agent-runtime.ts`（核心）+ `agent-runtime-dispatch.ts`（工厂）+ `agent-runtime-dispatch-{pty,headless,stream}.ts` + `-spawn/-exit/-state/-credentials/-turn-tracker/-terms-dialog.ts` |
 | 驱动 | `drivers/persistent-claude.ts`（默认）/ `claude-print.ts`（one-shot）/ `drivers/probe.ts` |
 | 队列与生命周期 | `agent-dispatch-queue.ts` / `live-run-registry.ts` / `agent-run-store.ts` / `agent-cost-tracker.ts`（D3） / `agent-context-builder.ts`（D1） / `agent-thread-sessions.ts`（D2） / `agent-progress.ts`（D4 进度条） / `idle-reclaimer.ts` / `supervisor.ts` |

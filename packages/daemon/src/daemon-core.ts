@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { WsFromDaemonMessage, WsToDaemonMessage } from "@collabagent/shared";
+import type { WsFromDaemonMessage } from "@collabagent/shared";
 import { WebSocket } from "ws";
 import { createJsonCostTracker, defaultCostStorePath } from "./agent-cost-tracker.js";
 import { createJsonRunStore, defaultStorePath } from "./agent-run-store.js";
@@ -9,7 +9,8 @@ import { createJsonThreadSessionStore, defaultThreadSessionStorePath } from "./a
 import { createAgentTokenRegistry } from "./agent-tokens.js";
 import { loadDaemonEnv } from "./config.js";
 import { probeClaude } from "./drivers/probe.js";
-import { dispatchDaemonMessage, type HandlerContext } from "./handlers/index.js";
+import { errMessage } from "./errors.js";
+import { dispatchDaemonMessage, type HandlerContext, parseWsToDaemonMessage } from "./handlers/index.js";
 import { createLiveRunRegistry } from "./live-run-registry.js";
 import { buildReadyPayload } from "./ready-payload.js";
 import { setupSlockWrapper } from "./setup-slock-wrapper.js";
@@ -81,7 +82,7 @@ export class DaemonCore {
             type: "agent:delivery-dead-letter",
             agentName,
             channelName,
-            error: String((err as any)?.message ?? err).slice(0, 300),
+            error: errMessage(err).slice(0, 300),
           });
         },
         // C1：agent 本地工具调用生命周期进审计流（仅 headless 路径有结构化事件源）。
@@ -152,8 +153,8 @@ export class DaemonCore {
       const body = (await res.json().catch(() => ({}))) as { messageId?: string };
       console.log(`[Daemon] ${reason} posted for @${agentName} -> ${channel} (${content.length} chars)`);
       return body.messageId;
-    } catch (err: any) {
-      console.error(`[Daemon] ${reason} post failed for @${agentName}:`, err?.message ?? err);
+    } catch (err) {
+      console.error(`[Daemon] ${reason} post failed for @${agentName}:`, errMessage(err));
       return undefined;
     }
   }
@@ -169,8 +170,8 @@ export class DaemonCore {
       });
       if (!res.ok) throw new Error(`edit ${res.status} ${await res.text().catch(() => "")}`);
       return true;
-    } catch (err: any) {
-      console.error(`[Daemon] ${reason} edit failed for @${agentName}:`, err?.message ?? err);
+    } catch (err) {
+      console.error(`[Daemon] ${reason} edit failed for @${agentName}:`, errMessage(err));
       return false;
     }
   }
@@ -185,8 +186,8 @@ export class DaemonCore {
       });
       if (!res.ok) throw new Error(`delete ${res.status} ${await res.text().catch(() => "")}`);
       return true;
-    } catch (err: any) {
-      console.error(`[Daemon] ${reason} delete failed for @${agentName}:`, err?.message ?? err);
+    } catch (err) {
+      console.error(`[Daemon] ${reason} delete failed for @${agentName}:`, errMessage(err));
       return false;
     }
   }
@@ -334,9 +335,10 @@ export class DaemonCore {
     });
     this.ws.on("message", (data) => {
       try {
-        this.handleMessage(JSON.parse(data.toString()));
-      } catch (err: any) {
-        console.error("[Daemon] WS message parse/handle error:", err?.message || String(err));
+        const parsed: unknown = JSON.parse(data.toString());
+        void this.handleMessage(parsed);
+      } catch (err) {
+        console.error("[Daemon] WS message parse/handle error:", errMessage(err));
       }
     });
     this.ws.on("close", (code, reason) => {
@@ -374,8 +376,10 @@ export class DaemonCore {
     }, this.reconnectDelay);
   }
 
-  private async handleMessage(msgWire: WsToDaemonMessage): Promise<void> {
-    await dispatchDaemonMessage(this.handlerCtx(), msgWire);
+  private async handleMessage(raw: unknown): Promise<void> {
+    const msg = parseWsToDaemonMessage(raw);
+    if (!msg) return;
+    await dispatchDaemonMessage(this.handlerCtx(), msg);
   }
 
   private handlerCtx(): HandlerContext {
