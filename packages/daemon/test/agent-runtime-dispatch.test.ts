@@ -21,6 +21,7 @@ const { FakePersistentClaude, claudePrintMock, claudePrintImpl } = vi.hoisted(()
     static instances: FakePersistentClaude[] = [];
     static reset(): void {
       FakePersistentClaude.instances = [];
+      FakePersistentClaude.defaultSendImpl = undefined;
     }
     opts: any;
     sent: string[] = [];
@@ -31,9 +32,11 @@ const { FakePersistentClaude, claudePrintMock, claudePrintImpl } = vi.hoisted(()
       this.opts = opts;
       FakePersistentClaude.instances.push(this);
     }
+    static defaultSendImpl?: (text: string, self: FakePersistentClaude) => Promise<void>;
     send(text: string): Promise<void> {
       this.sent.push(text);
-      return this.sendImpl ? this.sendImpl(text, this) : Promise.resolve();
+      const impl = this.sendImpl ?? FakePersistentClaude.defaultSendImpl;
+      return impl ? impl(text, this) : Promise.resolve();
     }
     /** 测试辅助：模拟一条 stream-json 事件到达 */
     emit(ev: any): void {
@@ -347,6 +350,32 @@ describe("agent-runtime-dispatch (headless)", () => {
       expect(channel).toBe("general");
       expect(String((err as Error)?.message ?? err)).toContain("process died mid-turn");
       expect(harness.stateMachine.getState(AGENT)).toBe("idle");
+      // P1.12：失败实例必须 stop 并从 map 摘掉，避免下一条 send 打到死会话
+      expect(inst.stopped).toBe(true);
+      expect(harness.deps.persistentSessions.has(AGENT)).toBe(false);
+    });
+
+    it("P1.12：send 首次即失败也踢会话；下一条换新实例", async () => {
+      process.env.SLOCK_DISPATCH_MAX_RETRIES = "1";
+      process.env.SLOCK_REPLY_GUARD = "0";
+      FakePersistentClaude.defaultSendImpl = async () => {
+        throw new Error("process died mid-turn");
+      };
+      harness = makeHarness();
+
+      await harness.dispatch.dispatchToAgent(AGENT, "general", "boom-first");
+      await flush(30);
+
+      expect(harness.onDeliveryDeadLetter).toHaveBeenCalledTimes(1);
+      expect(FakePersistentClaude.instances).toHaveLength(1);
+      expect(FakePersistentClaude.instances[0]!.stopped).toBe(true);
+      expect(harness.deps.persistentSessions.has(AGENT)).toBe(false);
+
+      FakePersistentClaude.defaultSendImpl = undefined;
+      await harness.dispatch.dispatchToAgent(AGENT, "general", "after-boom");
+      expect(FakePersistentClaude.instances).toHaveLength(2);
+      expect(harness.deps.persistentSessions.get(AGENT)).toBe(FakePersistentClaude.instances[1]);
+      expect(FakePersistentClaude.instances[1]!.sent[0]).toContain("after-boom");
     });
 
     it("无 agentId 的 agent 入队即死信，不 spawn", async () => {
