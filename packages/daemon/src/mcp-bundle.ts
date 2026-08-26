@@ -1,6 +1,6 @@
-import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { mkdirPrivateSync } from "./private-dir.js";
 
 /**
  * 打包 MCP server（见 src/mcp/slock-mcp-server.ts）到共享位置
@@ -26,7 +26,7 @@ export function bundleSlockMcpServer(): Promise<string | null> {
         const srcDir = dirname(fileURLToPath(import.meta.url));
         const entryPath = join(srcDir, "mcp", "slock-mcp-server.ts");
         const slockDir = join(process.cwd(), ".slock");
-        mkdirSync(slockDir, { recursive: true });
+        mkdirPrivateSync(slockDir);
         const bundlePath = join(slockDir, "slock-mcp-server.cjs");
 
         const esbuild = await import("esbuild");

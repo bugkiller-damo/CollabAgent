@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { WsFromDaemonMessage } from "@collabagent/shared";
 import { WebSocket } from "ws";
@@ -12,6 +12,7 @@ import { probeClaude } from "./drivers/probe.js";
 import { errMessage } from "./errors.js";
 import { dispatchDaemonMessage, type HandlerContext, parseWsToDaemonMessage } from "./handlers/index.js";
 import { createLiveRunRegistry } from "./live-run-registry.js";
+import { mkdirPrivateSync } from "./private-dir.js";
 import { buildReadyPayload } from "./ready-payload.js";
 import { setupSlockWrapper } from "./setup-slock-wrapper.js";
 import type { DaemonConfig } from "./types/index.js";
@@ -407,7 +408,7 @@ export class DaemonCore {
     // 优雅停止也写「计划内重启」标记：用户主动停掉 daemon 后下次启动，
     // 同样不该把停掉的 agent 当崩溃恢复自动拉起。
     try {
-      mkdirSync(join(process.cwd(), ".slock"), { recursive: true });
+      mkdirPrivateSync(join(process.cwd(), ".slock"));
       writeFileSync(join(process.cwd(), ".slock", "planned-restart"), String(Date.now()));
     } catch {
       /* best-effort */

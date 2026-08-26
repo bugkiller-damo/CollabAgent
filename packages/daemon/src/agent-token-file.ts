@@ -1,5 +1,6 @@
-import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { mkdirPrivateSync } from "./private-dir.js";
 
 /**
  * O11：agent scoped token 的落盘传递——替代「明文 token 进子进程 env / .mcp.json /
@@ -25,7 +26,8 @@ export function agentTokenFilePath(workspace: string): string {
 /** 写入 token 文件（0600），返回绝对路径。写失败应让本次 spawn 失败（fail-closed）。 */
 export function writeAgentTokenFile(workspace: string, token: string): string {
   const p = agentTokenFilePath(workspace);
-  mkdirSync(join(workspace, ".slock"), { recursive: true });
+  // P1.15：.slock 目录本体也收紧 0700（此前只收紧了 token 文件 0600）
+  mkdirPrivateSync(join(workspace, ".slock"));
   writeFileSync(p, token, { mode: 0o600 });
   // Windows 的 writeFileSync mode 只反映到只读位，补一次 chmod 对 POSIX 生效
   try {

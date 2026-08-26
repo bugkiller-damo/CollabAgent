@@ -36,6 +36,13 @@ describe("agent-token-file", () => {
     expect(statSync(p).mode & 0o777).toBe(0o600);
   });
 
+  it("POSIX 下 .slock 目录权限为 0700（P1.15；Windows 跳过）", () => {
+    if (process.platform === "win32") return;
+    const ws = mkWorkspace();
+    writeAgentTokenFile(ws, "sk_agent_test_dirmode");
+    expect(statSync(join(ws, ".slock")).mode & 0o777).toBe(0o700);
+  });
+
   it("重复写覆盖旧 token（同一路径不滞留旧值）", () => {
     const ws = mkWorkspace();
     const p = writeAgentTokenFile(ws, "sk_agent_old");

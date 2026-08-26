@@ -19,6 +19,7 @@
 import type { ObservationFrame } from "@collabagent/shared";
 import { type ClaudeStreamEvent, isPlainObject } from "./claude-stream.js";
 import { errMessage } from "./errors.js";
+import { redactDeep, redactSecrets } from "./redact.js";
 
 export type { ObservationFrame };
 
@@ -35,9 +36,12 @@ export interface ObservationBus {
   listenerCount(agentName: string): number;
 }
 
-/** 单帧 payload 文本截断（对齐 buzz-dev-mcp 的截断纪律：LLM/观众看摘要，完整内容在本地落盘） */
-const truncate = (s: string, max: number): string =>
-  s.length > max ? s.slice(0, max) + `…(+${s.length - max} chars)` : s;
+/** 单帧 payload 文本截断（对齐 buzz-dev-mcp 的截断纪律：LLM/观众看摘要，完整内容在本地落盘）。
+ *  P1.15：先脱敏再截断——截断可能把 token 切成不匹配模式的两半，半截 token 仍是泄露。 */
+const truncate = (s: string, max: number): string => {
+  const clean = redactSecrets(s);
+  return clean.length > max ? clean.slice(0, max) + `…(+${clean.length - max} chars)` : clean;
+};
 
 /**
  * claude stream-json 事件 → 观察帧。纯函数便于单测。
@@ -63,7 +67,9 @@ export const streamEventToFrames = (
   const frames: ObservationFrame[] = [];
   const base = { agentName, timestamp: Date.now() };
   const push = (kind: ObservationFrame["kind"], turnId: string | null, payload: ObservationFrame["payload"]): void => {
-    frames.push({ ...base, seq: allocSeq(), kind, turnId, payload });
+    // P1.15：payload 整体过一遍递归脱敏（覆盖 system/turn_end 等不走 truncate 的文本
+    // 与 tool_use 的结构化 toolInput）；文本字段在 truncate 里已脱敏，此处是兜底。
+    frames.push({ ...base, seq: allocSeq(), kind, turnId, payload: redactDeep(payload) });
   };
 
   switch (ev?.type) {

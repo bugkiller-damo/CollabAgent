@@ -85,6 +85,72 @@ describe("agent-observation", () => {
       expect(streamEventToFrames("alice", { type: "mystery" }, seq)).toEqual([]);
       expect(streamEventToFrames("alice", null, seq)).toEqual([]);
     });
+
+    // P1.15：agent 把自己的 scoped token echo 到输出时，观察帧（WS 围观/审计流）必须脱敏
+    describe("token 脱敏（P1.15）", () => {
+      const TOKEN = "sk_agent_abcd1234abcd1234abcd1234abcd1234";
+
+      it("text / thinking 帧文本脱敏", () => {
+        const frames = streamEventToFrames(
+          "alice",
+          {
+            type: "assistant",
+            message: {
+              id: "m",
+              content: [
+                { type: "text", text: `token: ${TOKEN}` },
+                { type: "thinking", thinking: `用 ${TOKEN} 调一下` },
+              ],
+            },
+          },
+          seq,
+        );
+        expect(frames).toHaveLength(2);
+        for (const f of frames) {
+          expect(f.payload.text).toContain("sk_agent_***");
+          expect(f.payload.text).not.toContain(TOKEN);
+        }
+      });
+
+      it("tool_use 的截断文本与结构化 toolInput 都脱敏", () => {
+        const frames = streamEventToFrames(
+          "alice",
+          {
+            type: "assistant",
+            message: {
+              id: "m",
+              content: [
+                {
+                  type: "tool_use",
+                  id: "tu-1",
+                  name: "Bash",
+                  input: { command: `TOKEN=${TOKEN} curl x`, nested: { auth: TOKEN } },
+                },
+              ],
+            },
+          },
+          seq,
+        );
+        const p = frames[0].payload;
+        expect(p.text).not.toContain(TOKEN);
+        expect(p.text).toContain("sk_agent_***");
+        expect(JSON.stringify(p.toolInput)).not.toContain(TOKEN);
+        expect(JSON.stringify(p.toolInput)).toContain("sk_agent_***");
+      });
+
+      it("tool_result 帧脱敏", () => {
+        const frames = streamEventToFrames(
+          "alice",
+          {
+            type: "user",
+            message: { content: [{ type: "tool_result", tool_use_id: "tu-1", content: `stdout: ${TOKEN}` }] },
+          },
+          seq,
+        );
+        expect(frames[0].payload.text).not.toContain(TOKEN);
+        expect(frames[0].payload.text).toContain("sk_agent_***");
+      });
+    });
   });
 
   describe("ObservationBus", () => {

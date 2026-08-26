@@ -1,6 +1,7 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { mkdirPrivateSync } from "./private-dir.js";
 
 /**
  * 生成 slock wrapper（slock.bat + CLI 预打包）。
@@ -13,7 +14,7 @@ import { fileURLToPath } from "node:url";
  */
 export async function setupSlockWrapper(agentId: string, serverUrl: string): Promise<string> {
   const slockDir = join(process.cwd(), ".slock");
-  mkdirSync(slockDir, { recursive: true });
+  mkdirPrivateSync(slockDir);
 
   // cli.ts 与本文件同目录（src/）；按源码位置解析，避免依赖 cwd
   const srcDir = dirname(fileURLToPath(import.meta.url));
