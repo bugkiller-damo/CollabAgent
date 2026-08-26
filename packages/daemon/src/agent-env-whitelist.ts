@@ -15,6 +15,8 @@
  * - SLOCK_ENV_WHITELIST=1：兼容别名，与默认同为 whitelist（A2 灰度期开关，现为 no-op）。
  */
 
+import { loadDaemonEnv } from "./config.js";
+
 /** Windows 上 spawn claude.cmd / node / git 能正常工作的最小键集。
  *  每条键的理由写在注释里；新增键前先确认工具确实需要它（可用 `diffAgentEnv` 对照）。 */
 const BASE_WHITELIST = new Set([
@@ -47,10 +49,7 @@ const PROXY_KEYS = ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "http
 export type AgentEnvMode = "whitelist" | "inherit";
 
 /** 每次调用时读 env（仓内惯例：测试在 beforeEach 里改 process.env 即可生效） */
-export const resolveAgentEnvMode = (): AgentEnvMode => {
-  if (process.env.SLOCK_ENV_INHERIT === "1") return "inherit";
-  return "whitelist";
-};
+export const resolveAgentEnvMode = (): AgentEnvMode => (loadDaemonEnv().envInherit ? "inherit" : "whitelist");
 
 /**
  * 构造白名单 env。Windows env 键大小写不敏感（Node 层已归一化，但防御性

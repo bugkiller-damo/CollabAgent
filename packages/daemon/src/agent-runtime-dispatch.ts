@@ -18,6 +18,7 @@ import type { SpawnPtyForAgent } from "./agent-runtime-spawn.js";
 import type { IAgentStateMachine } from "./agent-runtime-state.js";
 import type { ITurnTracker } from "./agent-runtime-turn-tracker.js";
 import type { IThreadSessionStore } from "./agent-thread-sessions.js";
+import { loadDaemonEnv } from "./config.js";
 import type { PersistentClaude } from "./drivers/persistent-claude.js";
 import type { IIdleReclaimer } from "./idle-reclaimer.js";
 import type { PostStartInputWriter } from "./post-start-input-writer.js";
@@ -379,14 +380,16 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
   // A1 派发队列（默认）：doDispatch 作为投递执行器，重试/死信/dedup/合并由
   // 队列负责。isDeliverable 把「agent stopped / 无 agentId」这类永久失败挡在
   // 入队时直接死信，不浪费重试。SLOCK_DISPATCH_QUEUE=0 回退旧门控链。
-  const useDispatchQueue = process.env.SLOCK_DISPATCH_QUEUE !== "0";
+  const envCfg = loadDaemonEnv();
+  const useDispatchQueue = envCfg.dispatchQueue;
   const dispatchQueue = useDispatchQueue
     ? createAgentDispatchQueue({
         // in-flight 截止放宽到 6 分钟：persistent 路径的 deliver 是回合级的
         // （2026-08-18 起 await 到 result 事件），正常回合轻松超过默认 60s。
         // 真正的看门狗是 PersistentClaude 的不活跃超时（300s 沉默必杀 → reject），
         // 这里的截止只是「deliver Promise 泄漏」的兜底，不参与卡死检测。
-        inflightMs: Number(process.env.SLOCK_DISPATCH_INFLIGHT_MS) || 360_000,
+        inflightMs: envCfg.dispatchInflightMs,
+        maxRetries: envCfg.dispatchMaxRetries,
         deliver: async (agentName, items) => {
           // 合并重提示：多条积压拼成一条复合 prompt，reminder tail 只追加一次
           const merged = items.map((i) => i.content).join("\n\n");

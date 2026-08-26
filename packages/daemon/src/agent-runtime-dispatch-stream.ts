@@ -5,9 +5,10 @@ import {
   type ICostTracker,
 } from "./agent-cost-tracker.js";
 import { type createSeqAllocator, type ObservationBus, streamEventToFrames } from "./agent-observation.js";
-import { channelProgressEnabled, createProgressTurn, type ProgressTurn } from "./agent-progress.js";
+import { createProgressTurn, type ProgressTurn } from "./agent-progress.js";
 import type { IAgentStateMachine } from "./agent-runtime-state.js";
 import type { IThreadSessionStore } from "./agent-thread-sessions.js";
+import { loadDaemonEnv } from "./config.js";
 import type { IIdleReclaimer } from "./idle-reclaimer.js";
 
 /** 回复守卫追问前缀：isNudge 防止追问本身再触发追问 */
@@ -100,7 +101,7 @@ export const armTurnGuard = (opts: {
     threadId,
     // 分诊/巡检不往频道写进度条（沉默是合法产出），仍推顶栏；
     // SLOCK_CHANNEL_PROGRESS=0 关频道进度（顶栏仍走 onHeadline）。
-    enabled: !isNudge && channelProgressEnabled(process.env),
+    enabled: !isNudge && loadDaemonEnv().channelProgress,
     poster: opts.createProgressPoster?.(agentName) ?? {
       async post() {
         return undefined;
@@ -257,7 +258,7 @@ export const createStreamTurnHandler = (opts: StreamTurnHandlerOpts): ((agentNam
             /* ignore */
           }
         }
-        if (guard && !guard.hadSend && !guard.isNudge && process.env.SLOCK_REPLY_GUARD !== "0") {
+        if (guard && !guard.hadSend && !guard.isNudge && loadDaemonEnv().replyGuard) {
           const answer = guard.lastText?.trim();
           if (answer && rewritten) {
             console.warn(

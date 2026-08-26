@@ -14,7 +14,7 @@
 
 | 维度 | 评分 | 简要评价 |
 |---|---|---|
-| 架构与模块组织 | 7.0 / 10 | 职责拆分清晰，但~~headless 默认路径仍被 PTY 实现污染~~ **✅ P0.7**，配置读取极度分散，核心入口过于臃肿。 |
+| 架构与模块组织 | 7.0 / 10 | 职责拆分清晰，但~~headless 默认路径仍被 PTY 实现污染~~ **✅ P0.7**，~~配置读取极度分散~~ **✅ P1.10**，~~核心入口过于臃肿~~ **✅ P1.9**。 |
 | 运行时生命周期与状态机 | 6.0 / 10 | 回合级 Promise、派发串行化已落地；~~kill→exit 竞态、headless 空闲回收失效、stop 路径状态机不一致~~ **✅ P0.1/P0.2/P0.3**。 |
 | 派发队列与 T8 经理分诊 | 7.5 / 10 | A1 队列纪律与 T8 触发面完整；~~成本门不拦截已入队积压~~ **✅ P0.6**；去重窗口在死信路径上有副作用。 |
 | 安全与权限模型 | 6.0 / 10 | scoped token、MCP 鉴权、白名单框架已落地；~~默认 env 白名单未生效~~ **✅ P0.4**；本地 token 注册表与真实吊销路径脱节。 |
@@ -60,7 +60,7 @@
 | 严重度 | 文件:行号 | 问题 | 后果 |
 |---|---|---|---|
 | 高 | `agent-runtime.ts:210` | ~~`const agentManager = agentManagerOverride ?? createAgentManager();` 即使 headless 默认也**无条件实例化 PTY 管理器**~~ **✅ 2026-08-25 已修**（P0.7）：`createLazyAgentManager()` 懒加载，首次 `startAgent` 才动态 import agent-manager.js（node-pty）；headless 全程 no-op | 每次启动加载 node-pty 原生依赖并分配 PTY 内存；node-pty 初始化失败会连带影响 headless 启动 |
-| 高 | 多处 | 环境变量读取极度分散，约 15+ 文件直接访问 `process.env.SLOCK_*` | 缺少默认值、类型、校验与文档的集中来源；新增配置容易遗漏、命名不一致 |
+| 高 | 多处 | ~~环境变量读取极度分散，约 15+ 文件直接访问 `process.env.SLOCK_*`~~ **✅ 2026-08-25 已修**（P1.10）：`src/config.ts` `loadDaemonEnv()` 集中读取/校验/默认值；调用方不再直读 `process.env.SLOCK_*`（MCP 子进程注入键除外） | 缺少默认值、类型、校验与文档的集中来源；新增配置容易遗漏、命名不一致 |
 | 中高 | `daemon-core.ts` | ~~`handleMessage` 是超大 switch~~ **✅ 2026-08-25 已修**（P1.9）：路由迁到 `handlers/*`；`DaemonCore` 只保留 WS/auth/`handleMessage` 转发 | 入口层变成业务编排层，单测困难，任何新消息类型都会继续膨胀该文件 |
 | 中 | `cli.ts` | ~~所有子命令堆在一个 1075 行文件~~ **✅ 2026-08-25 已修**（P1.9）：按域拆到 `cli/*.ts`；`cli.ts` 仅 Command 注册与 parse | 低内聚、协作冲突概率高、命令域无显式边界 |
 | 中 | `agent-runtime-dispatch.ts:633-730` | `SLOCK_DISPATCH_QUEUE=0` 时回退到旧的 `dispatchPromises` 链式缓冲，与新的 A1 队列并存 | 同一语义有两套错误处理/重试/死信/合并逻辑，旧路径缺乏退避和死信上报 |
@@ -70,7 +70,7 @@
 #### 改进建议
 
 - **P0**：~~将 `createAgentManager()` 改为懒加载/注入，默认 headless 下使用 no-op `IAgentManager`；把 `writeMcpConfig` 从冻结的 `agent-runtime-spawn.ts` 迁出到独立非冻结文件。~~ **✅ 2026-08-25 已修**（P0.7）。
-- **P0**：建立统一配置层 `src/config.ts`，一次性读取并校验所有 `SLOCK_*` 环境变量，提供类型化配置对象与默认值。
+- **P0**：~~建立统一配置层 `src/config.ts`，一次性读取并校验所有 `SLOCK_*` 环境变量，提供类型化配置对象与默认值。~~ **✅ 2026-08-25 已修**（P1.10）。
 - **P1**：~~拆分 `daemon-core.ts` 的消息路由为 `handlers/*` 模块~~ **✅ 2026-08-25 已修**（P1.9）：`handlers/{agent,deliver,reminder,terminal,workspace,ping}.ts`；`DaemonCore.handleMessage` 转发。
 - **P1**：~~按域拆分 `cli.ts`~~ **✅ 2026-08-25 已修**（P1.9）：`cli/{auth,channel,message,task,...}.ts`；`cli.ts` 仅 Command 注册与入口解析。
 - **P1**：删除 `SLOCK_DISPATCH_QUEUE=0` 回退路径与 `dispatchPromises` Map，只保留 A1 队列一条路。
@@ -285,7 +285,7 @@
 ### P1 · 近期（建议 2-4 周内完成）
 
 9. **~~拆分巨型函数/模块~~** —— ✅ 2026-08-25（P1.9）：`createDispatch` 抽出 pty/headless/stream；`handleMessage` → `handlers/*`；`cli.ts` → `cli/*.ts`。`createAgentRuntime` 仍偏大，不在本项。
-10. **统一配置层**：新建 `src/config.ts`，集中读取/校验/默认值所有 `SLOCK_*` 环境变量。
+10. **~~统一配置层~~** —— ✅ 2026-08-25（P1.10）：`src/config.ts` `loadDaemonEnv()` 集中解析全部 daemon 进程级 `SLOCK_*`（默认值 + `Number.isFinite` 校验 + 类型化 `DaemonEnv`）；调用方改为 `loadDaemonEnv()`；`test/config.test.ts` 11 例；MCP 子进程注入键（`SLOCK_AGENT_ID`/`TOKEN`/`SERVER_URL`）不迁入。
 11. **补齐 one-shot / PTY 路径成本记录**，扩展 `slock cost show` 查询维度。
 12. **清理 `PersistentClaude` 事件监听器**，给 headless 会话创建加锁，失败时清理 stale session。
 13. **减少 `any`/`as` 使用**：对 stream-json 事件、WS 线协议建立 Zod schema 或保守联合类型。
@@ -315,6 +315,8 @@
 > **2026-08-25 进展更新**：本报告 P0 列表（P0.1–P0.8）已全部落地。三个运行时缺陷（P0.1/P0.2/P0.3）、env 白名单收紧（P0.4）、成本语义与熔断（P0.5/P0.6）、headless/PTY 解耦（P0.7）、核心编排器单测（P0.8，57 用例）均已修复/补齐，全量 33 测试文件 309 用例全绿。结论中「核心运行时鲁棒性是最大短板」已不成立；剩余债务转入 P1（巨型函数拆分、配置集中化、类型收紧）与 P2。
 >
 > **2026-08-25 P1.9**：巨型函数/模块拆分落地——`createDispatch` 抽出 `agent-runtime-dispatch-{pty,headless,stream}.ts`（工厂 949→603 行）；`handleMessage` 迁到 `handlers/*`（`daemon-core.ts` 712→417 行）；`cli.ts` 按 16 个域拆到 `cli/*.ts`（1075→50 行入口）。对外 API 不变；typecheck + 33 文件 309 用例全绿。下一焦点 P1.10 统一配置层。
+>
+> **2026-08-25 P1.10**：统一配置层落地——新建 `src/config.ts`（`loadDaemonEnv` / `DaemonEnv` / 解析器）；daemon 进程级 `SLOCK_*` 全部经此读取（非法数字回落默认，杜绝 `NaN` 静默关超时）；`command-presets` / `agent-cost-tracker` / `agent-context-builder` 默认值与解析器 re-export 保持既有 import；`test/config.test.ts` 11 例；typecheck + 34 文件 320 用例全绿。下一焦点 P1.11。
 
 ---
 
@@ -322,6 +324,7 @@
 
 | 模块 | 是否有测试 | 覆盖度主观评估 | 备注 |
 |---|---|---|---|
+| `config.ts` | 是 | 高 | P1.10：默认值、opt-in/opt-out、非法数字回落、effort/tools、每次重读 |
 | `agent-dispatch-queue.ts` | 是 | 高 | 边界、重试、死信、dedup、合并、竞态 |
 | `agent-runtime-state.ts` | 是 | 高 | 合法/非法迁移、定时器 |
 | `agent-run-store.ts` | 是 | 高 | 多 agent、active 列表顺序 |

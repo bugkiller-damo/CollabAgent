@@ -11,6 +11,7 @@ import { createAgentStateMachine } from "./agent-runtime-state.js";
 import { BUSY_MARKER_RE, createTurnTracker, PROMPT_RE } from "./agent-runtime-turn-tracker.js";
 import { createAgentStdinDispatcher } from "./agent-stdin-dispatcher.js";
 import { resolveCommand } from "./command-resolver.js";
+import { loadDaemonEnv } from "./config.js";
 import type { PersistentClaude } from "./drivers/persistent-claude.js";
 import { resolveCommandOnPath } from "./drivers/probe.js";
 import { createIdleReclaimer, reclaimIdleAgent } from "./idle-reclaimer.js";
@@ -230,7 +231,9 @@ export const createAgentRuntime = (
   // 门控与切换依据见 docs/2026-08-18/03-slock-modification-plan.md §2.B2——
   // B1 观察帧 + A1 队列经七轮真机回归后执行本切换。
   // SLOCK_PERSISTENT_CLAUDE=1 是旧开关，效果与默认一致（保留兼容，不再读取）。
-  const usePty = process.env.SLOCK_USE_PTY === "1";
+  // P1.10：所有 SLOCK_* 经 config.ts；工厂创建时读一次（驱动模式是启动决策）。
+  const cfg = loadDaemonEnv();
+  const usePty = cfg.usePty;
   if (usePty) {
     // ❄️ LEGACY（2026-08-20 Step 3）：PTY 代码已冻结保留（headless 未过长期验证，
     // 留作回退），启用者必须明确知情。删除评估：2026-09 底，见 tracker Step 3。
@@ -285,7 +288,7 @@ export const createAgentRuntime = (
   // 上下文重建（读 MEMORY/查历史/查派发），是 token 消耗大头（2026-07-29 实测：317s 被
   // 回收，下条消息又付一次全量冷启动）。默认放宽到 1800s，可用 SLOCK_IDLE_RECLAIM_MS 调整。
   const idleReclaimer = createIdleReclaimer({
-    timeoutMs: Number(process.env.SLOCK_IDLE_RECLAIM_MS) || 1_800_000,
+    timeoutMs: cfg.idleReclaimMs,
     onReclaim: (name) =>
       // P0.2：headless 不写 runIdByAgent，只把 PersistentClaude 放在
       // persistentSessions。原先只 stopRun(PTY)，空闲超时后 claude 子进程永不回收。
@@ -380,8 +383,8 @@ export const createAgentRuntime = (
    *    false，round-end 按 busy→idle 不变量永不触发，STUCK 到被回收为止）。
    * 2) STUCK 警告：超过阈值还没回到 idle 就打印警告 + output 尾部/当前屏，便于排查。
    */
-  const STUCK_WARN_MS = Number(process.env.SLOCK_STUCK_WARN_MS) || 90_000;
-  const QUIESCE_MS = Number(process.env.SLOCK_QUIESCE_MS) || 20_000;
+  const STUCK_WARN_MS = cfg.stuckWarnMs;
+  const QUIESCE_MS = cfg.quiesceMs;
   let _stuckDetectorInstalled = false;
   const installStuckDetector = (): void => {
     if (_stuckDetectorInstalled) return;

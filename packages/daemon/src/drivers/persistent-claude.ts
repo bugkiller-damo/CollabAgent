@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { applyAgentEnv } from "../agent-env-whitelist.js";
 import { getClaudePermissionArgs } from "../command-presets.js";
+import { loadDaemonEnv } from "../config.js";
 
 // 复用 claude-print 的命令查找逻辑
 function findClaudeCmd(): string {
@@ -271,8 +272,7 @@ export class PersistentClaude {
       clearTimeout(this.turnTimer);
       this.turnTimer = null;
     }
-    const envTimeout = Number(process.env.SLOCK_PERSISTENT_TURN_MS);
-    const timeout = this.opts.turnTimeoutMs ?? (Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout : 300000);
+    const timeout = this.opts.turnTimeoutMs ?? loadDaemonEnv().persistentTurnMs;
     const turn = this.activeTurn;
     const gen = this.procGen;
     this.turnTimer = setTimeout(() => {
