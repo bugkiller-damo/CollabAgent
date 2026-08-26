@@ -1,6 +1,7 @@
-import { copyFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { legacyAgentDirName, safeAgentDirName } from "./agent-dir-name.js";
+import { mkdirPrivateSync } from "./private-dir.js";
 import { generateRelaySystemPrompt, generateSystemPrompt } from "./system-prompt.js";
 import type { AgentInfo } from "./types/index.js";
 
@@ -63,7 +64,7 @@ export function writeSystemPromptFile(
     ? generateSystemPrompt(identity, channelName, dispatchContext)
     : generateRelaySystemPrompt(identity, channelName);
   const dir = join(process.cwd(), ".slock");
-  mkdirSync(dir, { recursive: true });
+  mkdirPrivateSync(dir);
   const file = join(dir, `sysprompt-${safeAgentDirName(agentName)}.md`);
   writeFileSync(file, prompt, "utf-8");
   return file;
@@ -77,7 +78,7 @@ export function agentWorkspacePath(agentName: string): string {
 /** 创建 agent 工作区目录，不存在时种入 MEMORY.md 模板 */
 export function createWorkspaceDir(agentName: string, info: { displayName?: string; description?: string }): string {
   const dir = agentWorkspacePath(agentName);
-  mkdirSync(dir, { recursive: true });
+  mkdirPrivateSync(dir);
   const memFile = join(dir, "MEMORY.md");
   if (!existsSync(memFile)) {
     // 迁移旧命名方案的工作区：旧方案把非 ASCII 全替换成 "_"（等长中文名共用

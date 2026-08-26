@@ -4,9 +4,10 @@
 //   pnpm --filter daemon dev -- --server-url http://localhost:3001 --api-key sk_machine_<token>
 // 直接跑单次（不监督）用 `dev:once`。
 import { type ChildProcess, spawn } from "node:child_process";
-import { mkdirSync, readdirSync, statSync, watch, writeFileSync } from "node:fs";
+import { readdirSync, statSync, watch, writeFileSync } from "node:fs";
 import { dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { mkdirPrivateSync } from "./private-dir.js";
 
 const srcDir = dirname(fileURLToPath(import.meta.url));
 const entry = join(srcDir, "index.ts");
@@ -115,7 +116,7 @@ function restartForChange(file: string): void {
     expectRestart = true;
     // 写「计划内重启」标记：daemon 下次启动看到它就不跑 autostart
     try {
-      mkdirSync(join(srcDir, "..", ".slock"), { recursive: true });
+      mkdirPrivateSync(join(srcDir, "..", ".slock"));
       writeFileSync(plannedRestartMarker, String(Date.now()));
     } catch {
       /* best-effort */

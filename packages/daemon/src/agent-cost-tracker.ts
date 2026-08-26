@@ -1,7 +1,8 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { parseCostBudgetUsd } from "./config.js";
 import { errMessage } from "./errors.js";
+import { mkdirPrivateSync } from "./private-dir.js";
 
 export { parseCostBudgetUsd } from "./config.js";
 
@@ -259,7 +260,7 @@ export const createJsonCostTracker = (filePath: string, opts?: { now?: () => num
   const now = opts?.now ?? (() => Date.now());
 
   const ensureDir = (): void => {
-    mkdirSync(dirname(filePath), { recursive: true });
+    mkdirPrivateSync(dirname(filePath));
   };
 
   const readAll = (): StoreFile => {

@@ -1,5 +1,6 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { mkdirPrivateSync } from "./private-dir.js";
 
 /**
  * D2 thread↔session 映射（Step 6，prompt 隔离批）。
@@ -43,7 +44,7 @@ export const createJsonThreadSessionStore = (filePath: string, opts?: { now?: ()
   };
 
   const writeAll = (data: StoreFile): void => {
-    mkdirSync(dirname(filePath), { recursive: true });
+    mkdirPrivateSync(dirname(filePath));
     const tmp = filePath + ".tmp";
     try {
       writeFileSync(tmp, JSON.stringify(data, null, 2), "utf-8");

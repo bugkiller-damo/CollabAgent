@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DaemonCore } from "./daemon-core.js";
+import { mkdirPrivateSync } from "./private-dir.js";
 
 /**
  * 单实例守卫：.slock/daemon.pid 里若躺着一个还活着的旧 daemon，先整树杀掉再
@@ -16,7 +17,7 @@ function enforceSingleInstance(): void {
   const slockDir = join(dirname(fileURLToPath(import.meta.url)), "..", ".slock");
   const pidFile = join(slockDir, "daemon.pid");
   try {
-    mkdirSync(slockDir, { recursive: true });
+    mkdirPrivateSync(slockDir);
     if (existsSync(pidFile)) {
       const oldPid = Number(readFileSync(pidFile, "utf-8").trim());
       if (oldPid && oldPid !== process.pid) {

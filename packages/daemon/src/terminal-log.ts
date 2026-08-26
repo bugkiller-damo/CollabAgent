@@ -1,6 +1,8 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { safeAgentDirName } from "./agent-dir-name.js";
+import { mkdirPrivateSync } from "./private-dir.js";
+import { redactSecrets } from "./redact.js";
 
 /**
  * 终端日志落盘（G3 历史回看）：run 退出时把终端镜像文本追加写到
@@ -26,13 +28,14 @@ function logPath(agentName: string): string {
 
 export function appendTerminalLog(agentName: string, runId: string, exitCode: number | null, text: string): void {
   try {
-    mkdirSync(LOG_DIR, { recursive: true });
+    mkdirPrivateSync(LOG_DIR);
     const path = logPath(agentName);
     const header =
       `\n\n═══════════════════════════════════════════════════\n` +
       `run ${runId.slice(0, 8)} · 结束于 ${new Date().toLocaleString("zh-CN")} · exit=${exitCode ?? "?"}\n` +
       `═══════════════════════════════════════════════════\n\n`;
-    appendFileSync(path, header + text, "utf-8");
+    // P1.15：落盘前脱敏——agent 可能把自己的 scoped token echo 到终端输出
+    appendFileSync(path, header + redactSecrets(text), "utf-8");
     // 体积控制：超限则截断保留尾部
     const size = statSync(path).size;
     if (size > MAX_FILE_BYTES) {

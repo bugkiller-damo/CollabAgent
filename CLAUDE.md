@@ -49,7 +49,7 @@ AI agents, and routes messages between them.
 | 运行时编排 | `agent-runtime.ts`（核心）+ `agent-runtime-dispatch.ts`（工厂）+ `agent-runtime-dispatch-{pty,headless,stream}.ts` + `-spawn/-exit/-state/-credentials/-turn-tracker/-terms-dialog.ts` |
 | 驱动 | `drivers/persistent-claude.ts`（默认）/ `claude-print.ts`（one-shot）/ `drivers/probe.ts` |
 | 队列与生命周期 | `agent-dispatch-queue.ts` / `live-run-registry.ts` / `agent-run-store.ts` / `agent-cost-tracker.ts`（D3） / `agent-context-builder.ts`（D1） / `agent-thread-sessions.ts`（D2） / `agent-progress.ts`（D4 进度条） / `idle-reclaimer.ts` / `supervisor.ts` |
-| 安全 | `agent-tokens.ts` / `agent-token-file.ts` / `agent-env-whitelist.ts` / `command-presets.ts` / `command-resolver.ts` / `auth.ts` |
+| 安全 | `agent-tokens.ts` / `agent-token-file.ts` / `agent-env-whitelist.ts` / `command-presets.ts` / `command-resolver.ts` / `auth.ts` / `redact.ts`（P1.15：`sk_agent_/sk_machine_` 出口脱敏） / `private-dir.ts`（P1.15：`.slock` 0700） |
 | 启动与提示 | `agent-startup.ts` / `system-prompt.ts` / `setup-slock-wrapper.ts` / `restart-summary.ts` |
 | PTY 兜底（❄️冻结保留） | `agent-manager.ts` / `agent-manager-support.ts` / `post-start-input-writer.ts` / `pty-output-bus.ts` / `terminal-state.ts` / `terminal-log.ts`* |
 | 会话 | `agent-sessions.ts`（sessionId 捕获/恢复）/ `agent-dir-name.ts` |
@@ -69,7 +69,7 @@ import（headless 全程不加载 node-pty）；`agent-runtime-spawn.ts` 已纯�
 
 ```
 npx tsc --noEmit -p packages/daemon/tsconfig.json
-pnpm vitest run          # packages/daemon 测试（test/ 33 文件）
+pnpm vitest run          # packages/daemon 测试（test/ 40 文件）
 ```
 
 ## 历史档案（已完结，勿再按此工作）

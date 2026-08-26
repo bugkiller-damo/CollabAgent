@@ -1,10 +1,10 @@
 # Slock Daemon 综合评估报告
 
 > 评估日期：2026-08-24（进展批注更新至 2026-08-26）  
-> 评估范围：评估时 `packages/daemon/src/` 50 源文件、27 测试文件；2026-08-26 现状 88 源文件（含 `cli/*`、`handlers/*` 拆分产物 + P1.13 `claude-stream`/`errors`/`handlers/inbound`）、37 测试文件  
+> 评估范围：评估时 `packages/daemon/src/` 50 源文件、27 测试文件；2026-08-26 现状 90 源文件（含 `cli/*`、`handlers/*` 拆分产物 + P1.13 `claude-stream`/`errors`/`handlers/inbound` + P1.15 `redact`/`private-dir`）、40 测试文件  
 > 评估方法：6 名子 agent 并行按维度精读源码与测试，输出结构化结论后由主编综合去重、定级  
-> 当前基线（2026-08-26 复核）：`pnpm typecheck` 通过；`pnpm vitest run` 37 文件 / 350 用例全绿（约 40s）  
-> 版本上下文：headless 为默认驱动（2026-08-18 起），PTY 代码冻结保留（2026-08-20 Step 3），Step 4-7（D3/T8/D1/D2/D4）已落地；评估报告 P0.1–P0.8、P1.9–P1.13 已落地（P1.9–P1.11 已合入 main，`46642b7`）。
+> 当前基线（2026-08-26 复核）：`pnpm typecheck` 通过；`pnpm vitest run` 40 文件 / 374 用例全绿（约 45s）  
+> 版本上下文：headless 为默认驱动（2026-08-18 起），PTY 代码冻结保留（2026-08-20 Step 3），Step 4-7（D3/T8/D1/D2/D4）已落地；评估报告 P0.1–P0.8、P1.9–P1.15 已落地（P1.9–P1.11 已合入 main，`46642b7`）。
 
 ---
 
@@ -178,7 +178,7 @@
 
 - **P0**：~~将 `resolveAgentEnvMode()` 默认值改为 `whitelist`，保留 `SLOCK_ENV_INHERIT=1` 作为显式排障回退。~~ **✅ 2026-08-25 已修**（P0.4）。
 - **P0**：统一 token 吊销路径：要么让 `agent-runtime-dispatch.ts` 在 mint 后将 token 注册到 `agent-tokens.ts` 并确保 exit handler 双吊销，要么移除 `agent-tokens.ts` 并更新文档，明确吊销完全由 server 承担。
-- **P1**：关闭或最小化 `shell: true`；对 observation / terminal-log / audit 流增加 token 脱敏（匹配 `sk_agent_[a-z0-9]+` 模式）；显式设置 `.slock` 目录权限 0700。
+- **P1**：关闭或最小化 `shell: true`；~~对 observation / terminal-log / audit 流增加 token 脱敏（匹配 `sk_agent_[a-z0-9]+` 模式）；显式设置 `.slock` 目录权限 0700~~ **✅ 2026-08-26 已修**（P1.15：`redact.ts` + `private-dir.ts`，全部 `.slock` mkdir 点统一 0700）。
 - **P1**：对用户注入内容做 prompt 边界包装（XML/分隔符），降低 prompt 注入成功率。
 - **P2**：MCP server 侧加 capability 预检；减少 headless 路径的 token churn；增加安全相关 metrics。
 
@@ -271,7 +271,7 @@
 
 ## 4. 优先级路线图
 
-> **进度总览（2026-08-26 复核）**：P0 八项 ✅ 全部完成；P1 八项中 ✅ 完成 6 项（P1.9/P1.10/P1.11 已合入 main，P1.12/P1.13/P1.14 本批落地）、⬜ 待办 2 项（P1.15、P1.16）；P2 六项均未启动（18 的「按 thread 记录成本」子项已由 P1.11 覆盖）。下一焦点 **P1.15**。
+> **进度总览（2026-08-26 复核）**：P0 八项 ✅ 全部完成；P1 八项中 ✅ 完成 7 项（P1.9/P1.10/P1.11 已合入 main，P1.12–P1.15 本批落地）、⬜ 待办 1 项（P1.16）；P2 六项均未启动（18 的「按 thread 记录成本」子项已由 P1.11 覆盖）。下一焦点 **P1.16**。
 
 ### P0 · 立即 —— ✅ 全部完成（2026-08-24 ~ 2026-08-25）
 
@@ -292,7 +292,7 @@
 12. **~~清理 `PersistentClaude` 事件监听器 + headless 会话创建加锁~~** —— ✅ 2026-08-26（P1.12）：`cleanup` 成对卸 `stdout/stderr/exit/error`；`ensurePersistentSession` 单飞；`send` reject / enterWorking 失败走 `dropStalePersistentSession`（身份校验 + 清成本基线）。`test/persistent-claude.test.ts` + `test/agent-runtime-dispatch-headless.test.ts`。
 13. **~~减少 `any`/`as` 使用~~** —— ✅ 2026-08-26（P1.13）：`ClaudeStreamEvent` + `asClaudeStreamEvent` 收 stream-json；`parseWsToDaemonMessage` 归一化 `thread_id` / 摊平 deliver / agent:start 三变体；handlers 吃收窄联合；`errMessage` 顺手收口热路径。不引入 Zod（热路径静默忽略未知 type）。`test/p1-13-protocol.test.ts`。
 14. **~~（P1.14）统一错误模型~~** —— ✅ 2026-08-26：`DispatchError(code)` + `retriable` 由 code 推导（agent-unknown/agent-stopped/session-lost 永久失败 → 队列首次失败即死信；inflight-timeout/credential-mint-failed 可重试）；未分类普通 Error 保持旧「一律重试」语义（冻结 PTY 路径等未迁移抛点行为不变）；派发链 5 处抛点迁移。注：采用错误分类而非 `Result<T,E>` 全链改造——错误语义的核心痛点是「队列重试策略不区分永久/临时」，已由分类解决。`test/errors.test.ts` +6、队列 +3。
-15. ⬜ **（P1.15）对 observation/terminal-log/audit 流做 token 脱敏**，设置 `.slock` 目录 0700 权限。
+15. **~~（P1.15）对 observation/terminal-log/audit 流做 token 脱敏~~** —— ✅ 2026-08-26：新建 `redact.ts`（`redactSecrets` 匹配 `sk_(agent|machine)_[a-z0-9]{4,}` → `sk_$1_***`，`redactDeep` 递归脱敏结构化 payload）+ `private-dir.ts`（`mkdirPrivateSync` = mkdir recursive + best-effort chmod 0700）。观察帧在源头脱敏（`truncate` 先脱敏再截断防止半截 token 泄露；`push` 对 payload 深脱敏兜底，含 tool_use 的 `toolInput`）；`terminal-log` 落盘前过 `redactSecrets`；全部 10 处 `.slock` mkdir 点统一换 `mkdirPrivateSync`。`test/redact.test.ts` 8 例 + `test/terminal-log.test.ts` 3 例 + 观察帧/token-file 补 4 例。
 16. ⬜ **（P1.16）移除 `SLOCK_DISPATCH_QUEUE=0` 回退路径与 `dispatchPromises` Map**。
 
 ### P2 · 中期（评估时建议 1-2 个月内；均未启动）
@@ -325,6 +325,10 @@
 > **2026-08-26 P1.12**：`PersistentClaude.cleanup()` 成对卸 `stdout/stderr/exit/error`（`bound` 引用 + `detachProcListeners`；已入队 emit 仍靠 gen 守卫）；headless `ensurePersistentSession` per-agent 单飞，挡住 A1 in-flight 超时与仍在跑的 deliver 重叠双 spawn；`send` reject / `enterWorking` 失败走 `dropStalePersistentSession`（只踢本回合实例 + `forgetSessionCost`）。`test/agent-runtime-dispatch-headless.test.ts` 8 例 + persistent-claude / dispatch 回归。typecheck + 36 文件 342 用例全绿。下一焦点 P1.13。
 >
 > **2026-08-26 P1.13**：stream-json / WS 类型收紧——新建 `claude-stream.ts`（保守联合 + `asClaudeStreamEvent`，JSON.parse 边界收口，未知 type 返回 null 不抛）；`handlers/inbound.ts` `parseWsToDaemonMessage` 归一化 `thread_id` / `message||自身` / agent:start 三变体；handlers 改吃 `Extract<WsToDaemonMessage, {type}>`，不再 `as Record`/`as any`；`errMessage` 顺手收口热路径 catch。不引入 Zod（热路径静默忽略未知 type，与既有单测一致）。`test/p1-13-protocol.test.ts`。typecheck + 37 文件 350 用例全绿。下一焦点 P1.14。
+>
+> **2026-08-26 P1.14**：统一错误模型——`DispatchError(code)` + `retriable` 由 code 推导（agent-unknown/agent-stopped/session-lost 永久失败 → 队列首次失败即死信；inflight-timeout/credential-mint-failed 可重试）；未分类普通 Error 保持旧「一律重试」语义（冻结 PTY 路径等未迁移抛点行为不变）；派发链 5 处抛点迁移。`test/errors.test.ts` +6、队列 +3，38 文件 359 用例全绿。下一焦点 P1.15。
+>
+> **2026-08-26 P1.15**：token 脱敏 + `.slock` 0700——新建 `redact.ts`（`redactSecrets`/`redactDeep`，匹配 `sk_(agent|machine)_[a-z0-9]{4,}`，保留前缀置 `***`）与 `private-dir.ts`（`mkdirPrivateSync`，best-effort chmod 0700）。观察帧源头脱敏（`truncate` 先脱敏再截断，防半截 token 泄露；`push` 深脱敏兜底含 `toolInput`）；terminal-log 落盘前脱敏；10 处 `.slock` mkdir 点统一 0700。新增 `test/redact.test.ts`（8）+ `test/terminal-log.test.ts`（3），观察帧/token-file 补 4 例。typecheck + 40 文件 374 用例全绿。下一焦点 P1.16（移除 `SLOCK_DISPATCH_QUEUE=0` 回退路径）。
 
 ---
 
@@ -337,13 +341,14 @@
 | `agent-runtime-state.ts` | 是 | 高 | 合法/非法迁移、定时器 |
 | `agent-run-store.ts` | 是 | 高 | 多 agent、active 列表顺序 |
 | `agent-tokens.ts` | 是 | 高 | issue/validate/revoke 竞态 |
-| `agent-token-file.ts` | 是 | 高 | 含 `auth.ts` 的 TOKEN_FILE 路径 |
+| `agent-token-file.ts` | 是 | 高 | 含 `auth.ts` 的 TOKEN_FILE 路径；P1.15：`.slock` 目录 0700 |
 | `agent-env-whitelist.ts` | 是 | 高 | 白名单/warn/inherit 模式 |
 | `command-presets.ts` | 是 | 高 | 白名单、resume 参数 |
-| `agent-observation.ts` | 是 | 高 | 帧解析、bus、replay、transcript；P1.13：入参 `ClaudeStreamEvent` |
+| `agent-observation.ts` | 是 | 高 | 帧解析、bus、replay、transcript；P1.13：入参 `ClaudeStreamEvent`；P1.15：帧脱敏 |
 | `claude-stream.ts` | 是 | 高 | P1.13：`asClaudeStreamEvent` 四 type / 未知→null |
 | `handlers/inbound.ts` | 是 | 高 | P1.13：`parseWsToDaemonMessage` 归一化 thread_id / 摊平 deliver / agent:start |
-| `errors.ts` | 是 | 高 | P1.13：`errMessage` |
+| `errors.ts` | 是 | 高 | P1.13：`errMessage`；P1.14：`DispatchError` 可重试分类 |
+| `redact.ts` / `private-dir.ts` | 是 | 高 | P1.15：token 脱敏（sk_agent_/sk_machine_、深脱敏、词边界）；`.slock` 0700（POSIX 断言） |
 | `agent-progress.ts` | 是 | 高 | 节流、finish rewrite、关闭 |
 | `agent-cost-tracker.ts` | 是 | 高 | 聚合、budget、circuit-break；P1.11：thread 分行、spendByChannel/Day、CLI `--channel/--day/--thread/--group` |
 | `agent-context-builder.ts` | 是 | 高 | 打包、截断、隔离信封 |
@@ -376,7 +381,7 @@
 | `exit-coordinator.ts` / `exit-handler.ts` | **否** | **无** | 退出时序保护 |
 | `system-prompt.ts` / `agent-startup.ts` | **否** | **无** | 系统提示生成 |
 | `mcp-bundle.ts` / `setup-slock-wrapper.ts` | **否** | **无** | esbuild 打包 |
-| `terminal-log.ts` / `restart-summary.ts` | **否** | **无** | 日志/摘要 |
+| `terminal-log.ts` / `restart-summary.ts` | 部分 | 中 | P1.15：`terminal-log` 补测（脱敏 + 0700）；`restart-summary` 仍无测 |
 
 ---
 
