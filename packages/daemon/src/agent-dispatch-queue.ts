@@ -16,6 +16,7 @@
  */
 
 import { loadDaemonEnv } from "./config.js";
+import { errMessage } from "./errors.js";
 
 export interface DispatchQueueItem {
   id: string;
@@ -226,7 +227,7 @@ export const createAgentDispatchQueue = (opts: DispatchQueueOptions): AgentDispa
             // 队列自己不再持有这条消息。
             console.error(
               `[DispatchQueue] @${agentName} message dead-lettered after ${item.attempts} attempts:`,
-              (err as any)?.message ?? err,
+              errMessage(err),
             );
             settleDone(item);
             safe(() => opts.onDeadLetter?.(agentName, item, err));

@@ -14,6 +14,7 @@ import { resolveCommand } from "./command-resolver.js";
 import { loadDaemonEnv } from "./config.js";
 import type { PersistentClaude } from "./drivers/persistent-claude.js";
 import { resolveCommandOnPath } from "./drivers/probe.js";
+import { errMessage } from "./errors.js";
 import { createIdleReclaimer, reclaimIdleAgent } from "./idle-reclaimer.js";
 import { createPostStartInputWriter, type PostStartInputWriter } from "./post-start-input-writer.js";
 import type {
@@ -24,6 +25,8 @@ import type {
   IAgentTokenRegistry,
   ILiveRunRegistry,
 } from "./types/index.js";
+
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
 // 重新导出，保持既有 import { BUSY_MARKER_RE, PROMPT_RE } from "./agent-runtime.js" 的调用方
 // （包括 test/round-end-detection.test.ts）不需要跟着改路径
@@ -582,18 +585,26 @@ export const createAgentRuntime = (
         // 非 2xx 必须显式失败：此前 500 时 data.agents 为 undefined，会静默注册 0 个
         // agent，之后所有 @mention 都被 hasAgent() 挡掉且无任何日志（2026-08-24 实锤）。
         if (!res.ok) throw new Error(`HTTP ${res.status} from /api/agents?mine=1`);
-        const data = (await res.json()) as any;
-        if (!Array.isArray(data?.agents)) throw new Error("unexpected /api/agents response shape");
+        const data: unknown = await res.json();
+        const agents = isRecord(data) && Array.isArray(data.agents) ? data.agents : null;
+        if (!agents) throw new Error("unexpected /api/agents response shape");
         const onDutyNames = new Set<string>();
-        for (const agent of data.agents || []) {
-          const name = agent.name as string;
+        for (const row of agents) {
+          if (!isRecord(row)) continue;
+          const name = typeof row.name === "string" ? row.name : "";
           if (!name) continue;
-          if (agent.duty === "off") continue;
+          if (row.duty === "off") continue;
           onDutyNames.add(name);
-          if (agent.id) agentNameToId.set(name, agent.id as string);
-          agentInfo.set(name, { displayName: agent.display_name, description: agent.description, model: agent.model });
+          if (typeof row.id === "string" && row.id) agentNameToId.set(name, row.id);
+          agentInfo.set(name, {
+            displayName: typeof row.display_name === "string" ? row.display_name : undefined,
+            description: typeof row.description === "string" ? row.description : undefined,
+            model: typeof row.model === "string" ? row.model : undefined,
+          });
           if (!agentDrivers.has(name)) {
-            console.log("[Daemon] Registered (lazy): @" + name + " -> " + (agent.id || "?").slice(0, 8));
+            console.log(
+              "[Daemon] Registered (lazy): @" + name + " -> " + (typeof row.id === "string" ? row.id : "?").slice(0, 8),
+            );
             agentDrivers.set(name, true);
             transitionState(name, "idle");
           }
@@ -604,8 +615,8 @@ export const createAgentRuntime = (
             runtimeApi.unregisterAgent(name);
           }
         }
-      } catch (err: any) {
-        console.error("[Daemon] Could not load agents:", err?.message || String(err));
+      } catch (err) {
+        console.error("[Daemon] Could not load agents:", errMessage(err));
       }
     },
 

@@ -2,8 +2,10 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { applyAgentEnv } from "../agent-env-whitelist.js";
+import { asClaudeStreamEvent, type ClaudeStreamEvent } from "../claude-stream.js";
 import { getClaudePermissionArgs } from "../command-presets.js";
 import { loadDaemonEnv } from "../config.js";
+import { errMessage } from "../errors.js";
 
 // 复用 claude-print 的命令查找逻辑
 function findClaudeCmd(): string {
@@ -27,7 +29,7 @@ export interface PersistentClaudeOpts {
    * B1：每个解析出的 stream-json 事件回调（观察帧数据源）。
    * 回调抛错由 driver 吞掉——观察是旁路，不能影响主链路。
    */
-  onStreamEvent?: (ev: any) => void;
+  onStreamEvent?: (ev: ClaudeStreamEvent) => void;
   /**
    * 当前进程退出回调（崩溃 / OOM / 外部 kill）。headless 路径的回合边界靠
    * result 事件，但进程死了就不会有 result——上层靠这个回调把状态机从
@@ -126,8 +128,8 @@ export class PersistentClaude {
         // A2 / P0.4：默认 whitelist；SLOCK_ENV_INHERIT=1 才全量继承。
         env: applyAgentEnv(this.opts.env, `Persistent${this.opts.label ? " " + this.opts.label : ""}`),
       });
-    } catch (err: any) {
-      console.error(`${this.tag()} spawn error:`, err?.message);
+    } catch (err) {
+      console.error(`${this.tag()} spawn error:`, errMessage(err));
       this.proc = null;
       return false;
     }
@@ -340,17 +342,18 @@ export class PersistentClaude {
       this.buf = this.buf.slice(idx + 1);
       if (!line) continue;
       try {
-        const ev = JSON.parse(line);
-        // 不活跃超时续命：回合进行中任何事件到达都重置计时（见 armTurnTimer 注释）
+        const parsed: unknown = JSON.parse(line);
+        // 不活跃超时续命：回合进行中任何合法 JSON 行都重置计时（见 armTurnTimer 注释）
         if (this.busy) this.armTurnTimer();
-        if (this.opts.onStreamEvent) {
+        const ev = asClaudeStreamEvent(parsed);
+        if (ev && this.opts.onStreamEvent) {
           try {
             this.opts.onStreamEvent(ev);
           } catch {
             /* 观察旁路抛错不影响主链路 */
           }
         }
-        if (ev.type === "result") {
+        if (ev?.type === "result") {
           // 一个用户回合结束——resolve 回合 Promise（A1 队列的 in-flight 至此完结）
           if (this.turnTimer) {
             clearTimeout(this.turnTimer);

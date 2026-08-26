@@ -1,10 +1,13 @@
+import type { WsToDaemonMessage } from "@collabagent/shared";
 import { listWorkspaceFiles, readWorkspaceFile } from "../agent-workspace.js";
 import type { HandlerContext } from "./types.js";
 
-export function handleWorkspaceRead(ctx: HandlerContext, msg: Record<string, unknown>): void {
-  const requestId = String(msg.requestId || "");
-  const agentName = String(msg.agentName || "");
-  const rel = typeof msg.path === "string" && msg.path ? msg.path : "";
+type WorkspaceMsg = Extract<WsToDaemonMessage, { type: "workspace:read" }>;
+
+export function handleWorkspaceRead(ctx: HandlerContext, msg: WorkspaceMsg): void {
+  const requestId = msg.requestId;
+  const agentName = msg.agentName;
+  const rel = msg.path ?? "";
   if (!requestId || !agentName) return;
   if (rel) {
     const r = readWorkspaceFile(agentName, rel);

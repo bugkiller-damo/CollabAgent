@@ -7,14 +7,11 @@ import { handleTerminalHistory, handleTerminalResize, handleTerminalUnwatch, han
 import type { HandlerContext } from "./types.js";
 import { handleWorkspaceRead } from "./workspace.js";
 
+export { parseWsToDaemonMessage } from "./inbound.js";
 export type { HandlerContext } from "./types.js";
 
-export async function dispatchDaemonMessage(ctx: HandlerContext, msgWire: WsToDaemonMessage): Promise<void> {
-  // 接收体保留防御性解析：线协议有松散变体（thread_id 蛇形、msg.message||msg
-  // 双路径、agent:start 三种变体），规范类型约束在发送侧生效（sendWs）。
-  const msg = msgWire as Record<string, unknown>;
-  const type = msg.type as string | undefined;
-  switch (type) {
+export async function dispatchDaemonMessage(ctx: HandlerContext, msg: WsToDaemonMessage): Promise<void> {
+  switch (msg.type) {
     case "agent:start":
       handleAgentStart(ctx, msg);
       break;
@@ -47,6 +44,8 @@ export async function dispatchDaemonMessage(ctx: HandlerContext, msgWire: WsToDa
       break;
     case "ping":
       handlePing(ctx);
+      break;
+    case "connected":
       break;
   }
 }

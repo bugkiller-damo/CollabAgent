@@ -17,6 +17,8 @@
 // ObservationFrame 规范定义在 @collabagent/shared（WS 线协议 terminal:obs-frame
 // 的载荷类型，2026-08-20 S2.3 收敛）。此处 re-export，既有 import 方不用改路径。
 import type { ObservationFrame } from "@collabagent/shared";
+import { type ClaudeStreamEvent, isPlainObject } from "./claude-stream.js";
+import { errMessage } from "./errors.js";
 
 export type { ObservationFrame };
 
@@ -45,7 +47,19 @@ const truncate = (s: string, max: number): string =>
  * - {"type":"user","message":{"content":[tool_result...]}}   工具结果回灌
  * - {"type":"result","subtype":"success"|"error",...}        回合结束（精确边界）
  */
-export const streamEventToFrames = (agentName: string, ev: any, allocSeq: () => number): ObservationFrame[] => {
+const blockText = (content: unknown): string => {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.map((c) => (isPlainObject(c) ? String(c.text ?? "") : "")).join("\n");
+  }
+  return JSON.stringify(content ?? "");
+};
+
+export const streamEventToFrames = (
+  agentName: string,
+  ev: ClaudeStreamEvent | null | undefined,
+  allocSeq: () => number,
+): ObservationFrame[] => {
   const frames: ObservationFrame[] = [];
   const base = { agentName, timestamp: Date.now() };
   const push = (kind: ObservationFrame["kind"], turnId: string | null, payload: ObservationFrame["payload"]): void => {
@@ -62,14 +76,15 @@ export const streamEventToFrames = (agentName: string, ev: any, allocSeq: () => 
       const turnId = ev.message?.id ?? null;
       const blocks = Array.isArray(ev.message?.content) ? ev.message.content : [];
       for (const b of blocks) {
-        if (b?.type === "text" && typeof b.text === "string") {
+        if (!isPlainObject(b)) continue;
+        if (b.type === "text" && typeof b.text === "string") {
           push("text", turnId, { text: truncate(b.text, 4000) });
-        } else if (b?.type === "thinking" && typeof b.thinking === "string") {
+        } else if (b.type === "thinking" && typeof b.thinking === "string") {
           push("thinking", turnId, { text: truncate(b.thinking, 1000) });
-        } else if (b?.type === "tool_use") {
+        } else if (b.type === "tool_use") {
           push("tool_use", turnId, {
-            toolName: b.name ?? "?",
-            toolUseId: b.id ?? undefined,
+            toolName: typeof b.name === "string" ? b.name : "?",
+            toolUseId: typeof b.id === "string" ? b.id : undefined,
             toolInput: b.input,
             text: truncate(JSON.stringify(b.input ?? {}), 500),
           });
@@ -81,16 +96,11 @@ export const streamEventToFrames = (agentName: string, ev: any, allocSeq: () => 
       // stream-json 里工具结果以 user 消息回灌
       const blocks = Array.isArray(ev.message?.content) ? ev.message.content : [];
       for (const b of blocks) {
-        if (b?.type === "tool_result") {
-          const text =
-            typeof b.content === "string"
-              ? b.content
-              : Array.isArray(b.content)
-                ? b.content.map((c: any) => c?.text ?? "").join("\n")
-                : JSON.stringify(b.content ?? "");
+        if (!isPlainObject(b)) continue;
+        if (b.type === "tool_result") {
           push("tool_result", null, {
-            toolUseId: b.tool_use_id ?? undefined,
-            text: truncate(text, 1000),
+            toolUseId: typeof b.tool_use_id === "string" ? b.tool_use_id : undefined,
+            text: truncate(blockText(b.content), 1000),
           });
         }
       }
@@ -100,11 +110,14 @@ export const streamEventToFrames = (agentName: string, ev: any, allocSeq: () => 
       // 数值 cost/duration/turns 只进 summary 字符串；落库在
       // agent-runtime-dispatch.handleStreamEvent（D3 / Step 4）。
       const ok = ev.subtype === "success";
+      const durationMs = Number(ev.duration_ms);
+      const costUsd = Number(ev.total_cost_usd);
+      const numTurns = Number(ev.num_turns);
       const summary = [
         ok ? "success" : `error (${ev.subtype ?? "?"})`,
-        ev.duration_ms != null ? `${(ev.duration_ms / 1000).toFixed(1)}s` : null,
-        ev.total_cost_usd != null ? `$${Number(ev.total_cost_usd).toFixed(4)}` : null,
-        ev.num_turns != null ? `${ev.num_turns} turns` : null,
+        ev.duration_ms != null && Number.isFinite(durationMs) ? `${(durationMs / 1000).toFixed(1)}s` : null,
+        ev.total_cost_usd != null && Number.isFinite(costUsd) ? `$${costUsd.toFixed(4)}` : null,
+        ev.num_turns != null && Number.isFinite(numTurns) ? `${numTurns} turns` : null,
       ]
         .filter(Boolean)
         .join(", ");
@@ -164,8 +177,8 @@ export const createObservationBus = (opts: ObservationBusOptions = {}): Observat
       for (const listener of set) {
         try {
           listener(frame);
-        } catch (err: any) {
-          console.error("[ObservationBus] listener error:", err?.message ?? err);
+        } catch (err) {
+          console.error("[ObservationBus] listener error:", errMessage(err));
         }
       }
     },
