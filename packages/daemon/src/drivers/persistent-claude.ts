@@ -59,6 +59,18 @@ export class PersistentClaude {
    * 与 this.procGen 不一致即视为已被替换的旧进程（P0.1 kill→exit 竞态）。
    */
   private procGen = 0;
+  /**
+   * P1.12：当前进程上我们挂的监听。cleanup 必须成对卸掉，否则每次
+   * kill/超时都会留下一组闭包（高频率重启时内存累积）。
+   * 已入队的 emit 仍可能在 off 之后弹出——isCurrent/gen 守卫继续有效。
+   */
+  private bound: {
+    proc: ChildProcess;
+    onStdout: (d: Buffer | string) => void;
+    onStderr: (d: Buffer | string) => void;
+    onExit: (code: number | null, signal: NodeJS.Signals | null) => void;
+    onError: (err: Error) => void;
+  } | null = null;
   private busy = false;
   private starting = false;
   // 回合级交付（2026-08-18 真机修正）：send() 返回的 Promise 挂在回合上——
@@ -121,19 +133,26 @@ export class PersistentClaude {
     }
     const proc = this.proc;
     this.alive = true;
+    // 换进程前卸掉上一组（正常路径 cleanup 已卸；这里是防御）。
+    this.detachProcListeners();
     // 所有监听都闭包捕获本次 spawn 的 proc/gen：事件可能在 cleanup/kill 之后
-    // 才从事件队列弹出（removeAllListeners 拦不住已入队的 emit）。
-    proc.stdout?.on("data", (d) => {
+    // 才从事件队列弹出（off 拦不住已入队的 emit）。
+    const onStdout = (d: Buffer | string) => {
       if (!this.isCurrent(proc, gen)) return;
       this.onStdout(d.toString());
-    });
-    proc.stderr?.on("data", (d) => {
+    };
+    const onStderr = (d: Buffer | string) => {
       if (!this.isCurrent(proc, gen)) return;
       const t = d.toString().trim();
       if (t) console.error(`${this.tag()} stderr: ${t.slice(0, 160)}`);
-    });
-    proc.on("exit", (code) => this.handleProcExit(proc, gen, code));
-    proc.on("error", (err) => this.handleProcError(proc, gen, err));
+    };
+    const onExit = (code: number | null, _signal: NodeJS.Signals | null) => this.handleProcExit(proc, gen, code);
+    const onError = (err: Error) => this.handleProcError(proc, gen, err);
+    proc.stdout?.on("data", onStdout);
+    proc.stderr?.on("data", onStderr);
+    proc.on("exit", onExit);
+    proc.on("error", onError);
+    this.bound = { proc, onStdout, onStderr, onExit, onError };
     return true;
   }
 
@@ -192,6 +211,17 @@ export class PersistentClaude {
     this.pump();
   }
 
+  /** P1.12：卸掉当前进程上我们挂的监听。已入队 emit 仍靠 isCurrent/gen 忽略。 */
+  private detachProcListeners(): void {
+    const b = this.bound;
+    if (!b) return;
+    this.bound = null;
+    b.proc.stdout?.off("data", b.onStdout);
+    b.proc.stderr?.off("data", b.onStderr);
+    b.proc.off("exit", b.onExit);
+    b.proc.off("error", b.onError);
+  }
+
   private cleanup() {
     if (this.turnTimer) {
       clearTimeout(this.turnTimer);
@@ -201,6 +231,7 @@ export class PersistentClaude {
       clearTimeout(this.startupTimer);
       this.startupTimer = null;
     }
+    this.detachProcListeners();
     this.proc = null;
     this.alive = false;
     this.busy = false;

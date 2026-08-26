@@ -25,6 +25,12 @@ export interface DispatchHeadlessTurnOpts {
   mintAgentCredential: ICredentialsClient["mintAgentCredential"];
   agentInfo: Map<string, { displayName?: string; description?: string }>;
   persistentSessions: Map<string, PersistentClaude>;
+  /**
+   * P1.12：per-agent 会话创建单飞。A1 队列在 in-flight 超时后会与仍在跑的
+   * deliver 重叠，两个 dispatchHeadlessTurn 都可能看到空 map 并各 new 一个
+   * PersistentClaude——后写覆盖前写，旧实例永不 stop。
+   */
+  sessionCreates: Map<string, Promise<PersistentClaude>>;
   agentSessions: Map<string, string>;
   threadSessions?: IThreadSessionStore;
   turnGuards: Map<string, TurnGuard>;
@@ -35,7 +41,66 @@ export interface DispatchHeadlessTurnOpts {
   enterWorking: (agentName: string, expectedGen?: number) => boolean;
   releaseToIdle: (agentName: string) => void;
   assertLive: () => void;
+  /** P0.5 / P1.12：丢掉常驻会话后清成本基线，避免新进程少记 */
+  forgetSessionCost?: (agentName: string) => void;
 }
+
+/**
+ * P1.12：同一 agent 的 PersistentClaude 创建单飞。
+ * 先在同步路径占坑 `sessionCreates`，再 `then` 里 create——两个从 await mint
+ * 回来的调用会共用同一个 Promise，不会各 new 一个实例。create 抛错不占
+ * persistentSessions，锁在 finally 清掉，调用方可重试。
+ */
+export const ensurePersistentSession = (
+  agentName: string,
+  persistentSessions: Map<string, PersistentClaude>,
+  sessionCreates: Map<string, Promise<PersistentClaude>>,
+  create: () => PersistentClaude,
+): Promise<PersistentClaude> => {
+  const hit = persistentSessions.get(agentName);
+  if (hit) return Promise.resolve(hit);
+  const pending = sessionCreates.get(agentName);
+  if (pending) return pending;
+
+  const created = Promise.resolve().then(() => {
+    const raced = persistentSessions.get(agentName);
+    if (raced) return raced;
+    const session = create();
+    persistentSessions.set(agentName, session);
+    return session;
+  });
+  sessionCreates.set(agentName, created);
+  // catch 吞掉这条旁路链上的拒绝，避免 create 抛错时变成 unhandled rejection
+  // （调用方仍通过返回的 created 自己处理）。
+  void created
+    .finally(() => {
+      if (sessionCreates.get(agentName) === created) sessionCreates.delete(agentName);
+    })
+    .catch(() => {});
+  return created;
+};
+
+/** P1.12：只踢掉「本回合持有」的实例，避免误杀并发赢家刚换上的新会话。 */
+export const dropStalePersistentSession = (
+  agentName: string,
+  persistentSessions: Map<string, PersistentClaude>,
+  session: PersistentClaude | undefined,
+  forgetSessionCost?: (agentName: string) => void,
+): void => {
+  if (!session) return;
+  if (persistentSessions.get(agentName) !== session) return;
+  try {
+    session.stop();
+  } catch {
+    /* stop 失败仍要从 map 摘掉，避免下次 send 打到死实例 */
+  }
+  persistentSessions.delete(agentName);
+  try {
+    forgetSessionCost?.(agentName);
+  } catch {
+    /* 基线清理是旁路 */
+  }
+};
 
 export const dispatchHeadlessTurn = async (opts: DispatchHeadlessTurnOpts): Promise<void> => {
   const {
@@ -50,6 +115,7 @@ export const dispatchHeadlessTurn = async (opts: DispatchHeadlessTurnOpts): Prom
     mintAgentCredential,
     agentInfo,
     persistentSessions,
+    sessionCreates,
     agentSessions,
     threadSessions,
     turnGuards,
@@ -58,6 +124,7 @@ export const dispatchHeadlessTurn = async (opts: DispatchHeadlessTurnOpts): Prom
     enterWorking,
     releaseToIdle,
     assertLive,
+    forgetSessionCost,
   } = opts;
   const { transitionState } = stateMachine;
 
@@ -110,29 +177,34 @@ export const dispatchHeadlessTurn = async (opts: DispatchHeadlessTurnOpts): Prom
 
     const usePersistent = !loadDaemonEnv().oneshotClaude;
     if (usePersistent) {
-      let session = persistentSessions.get(agentName);
-      if (!session) {
-        session = new PersistentClaude({
-          cwd: workspace,
-          systemPromptFile: promptFile,
-          env,
-          label: "@" + agentName,
-          onStreamEvent: (ev) => handleStreamEvent(agentName, ev),
-          // 当前进程崩溃 / 外部 kill：headless 下不会再有 result 事件，状态机
-          // 靠这个回调从 working 解封。沉默超时由 session.send reject → 下方
-          // catch 解封，不走本回调（P0.1：迟到 onExit 会拆掉新回合的进度条）。
-          onExit: () => {
-            if (stateMachine.getState(agentName) === "working") {
-              transitionState(agentName, "idle");
-              idleReclaimer.touch(agentName);
-              console.log(`[Daemon] @${agentName} persistent process exited mid-turn, state -> idle`);
-            }
-            abortTurnGuards(agentName, turnGuards, progressTurns, opts.onProgress);
-          },
-        });
-        persistentSessions.set(agentName, session);
-      }
+      // P1.12：创建加锁。mint/MCP 之后再 ensure，避免两个重叠的 deliver
+      // 各 new 一个 PersistentClaude，后写覆盖前写、旧实例永不 stop。
+      const session = await ensurePersistentSession(
+        agentName,
+        persistentSessions,
+        sessionCreates,
+        () =>
+          new PersistentClaude({
+            cwd: workspace,
+            systemPromptFile: promptFile,
+            env,
+            label: "@" + agentName,
+            onStreamEvent: (ev) => handleStreamEvent(agentName, ev),
+            // 当前进程崩溃 / 外部 kill：headless 下不会再有 result 事件，状态机
+            // 靠这个回调从 working 解封。沉默超时由 session.send reject → 下方
+            // catch 解封，不走本回调（P0.1：迟到 onExit 会拆掉新回合的进度条）。
+            onExit: () => {
+              if (stateMachine.getState(agentName) === "working") {
+                transitionState(agentName, "idle");
+                idleReclaimer.touch(agentName);
+                console.log(`[Daemon] @${agentName} persistent process exited mid-turn, state -> idle`);
+              }
+              abortTurnGuards(agentName, turnGuards, progressTurns, opts.onProgress);
+            },
+          }),
+      );
       if (!enterWorking(agentName, haltGen)) {
+        dropStalePersistentSession(agentName, persistentSessions, session, forgetSessionCost);
         throw new Error(`[Daemon] @${agentName} is stopped, cannot dispatch`);
       }
       if (persistentSessions.get(agentName) !== session) {
@@ -152,10 +224,18 @@ export const dispatchHeadlessTurn = async (opts: DispatchHeadlessTurnOpts): Prom
         createProgressPoster: opts.createProgressPoster,
         onProgress: opts.onProgress,
       });
-      // 回合级交付：await 到 result 事件（进程 mid-turn 退出则 reject → A1 队列
-      // 退避重试，换 fresh 会话重投这条消息）。状态机回 idle 由 handleStreamEvent
-      // 的 result 分支负责（早于这里的 resolve，顺序无害）。
-      await session.send(userMsg);
+      try {
+        // 回合级交付：await 到 result 事件（进程 mid-turn 退出则 reject → A1 队列
+        // 退避重试，换 fresh 会话重投这条消息）。状态机回 idle 由 handleStreamEvent
+        // 的 result 分支负责（早于这里的 resolve，顺序无害）。
+        await session.send(userMsg);
+      } catch (err) {
+        // P1.12：send 失败后踢掉本实例。否则下一条以为无需 spawn，
+        // 直接对死/停过的实例 send（Fake 不会自愈；真驱动虽能 respawn
+        // 但 env/onExit 仍是失败那次的）。
+        dropStalePersistentSession(agentName, persistentSessions, session, forgetSessionCost);
+        throw err;
+      }
       console.log(`[Daemon] @${agentName} turn finished (persistent)`);
     } else {
       if (!enterWorking(agentName, haltGen)) {
