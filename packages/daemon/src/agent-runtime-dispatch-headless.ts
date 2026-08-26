@@ -10,7 +10,7 @@ import { claudePrint } from "./claude-print.js";
 import type { ClaudeStreamEvent } from "./claude-stream.js";
 import { loadDaemonEnv } from "./config.js";
 import { PersistentClaude } from "./drivers/persistent-claude.js";
-import { errMessage } from "./errors.js";
+import { DispatchError, errMessage } from "./errors.js";
 import type { IIdleReclaimer } from "./idle-reclaimer.js";
 import { bundleSlockMcpServer } from "./mcp-bundle.js";
 
@@ -205,11 +205,11 @@ export const dispatchHeadlessTurn = async (opts: DispatchHeadlessTurnOpts): Prom
       );
       if (!enterWorking(agentName, haltGen)) {
         dropStalePersistentSession(agentName, persistentSessions, session, forgetSessionCost);
-        throw new Error(`[Daemon] @${agentName} is stopped, cannot dispatch`);
+        throw new DispatchError("agent-stopped", `[Daemon] @${agentName} is stopped, cannot dispatch`);
       }
       if (persistentSessions.get(agentName) !== session) {
         releaseToIdle(agentName);
-        throw new Error(`[Daemon] @${agentName} session was stopped during spawn`);
+        throw new DispatchError("session-lost", `[Daemon] @${agentName} session was stopped during spawn`);
       }
       // 与 PTY 复用分支对齐：进入 working 后从空闲计时器摘掉，
       // 否则上一回合 touch 的倒计时会在本回合中途把常驻进程杀掉（P0.2）。
@@ -239,7 +239,7 @@ export const dispatchHeadlessTurn = async (opts: DispatchHeadlessTurnOpts): Prom
       console.log(`[Daemon] @${agentName} turn finished (persistent)`);
     } else {
       if (!enterWorking(agentName, haltGen)) {
-        throw new Error(`[Daemon] @${agentName} is stopped, cannot dispatch`);
+        throw new DispatchError("agent-stopped", `[Daemon] @${agentName} is stopped, cannot dispatch`);
       }
       armTurnGuard({
         agentName,

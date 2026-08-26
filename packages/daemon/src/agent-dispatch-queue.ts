@@ -16,7 +16,7 @@
  */
 
 import { loadDaemonEnv } from "./config.js";
-import { errMessage } from "./errors.js";
+import { DispatchError, errMessage, isRetriableError } from "./errors.js";
 
 export interface DispatchQueueItem {
   id: string;
@@ -191,7 +191,7 @@ export const createAgentDispatchQueue = (opts: DispatchQueueOptions): AgentDispa
     let settled = false;
     const timeout = new Promise<never>((_, reject) => {
       setTimeout(() => {
-        if (!settled) reject(new Error(`dispatch in-flight timeout (${inflightMs}ms)`));
+        if (!settled) reject(new DispatchError("inflight-timeout", `dispatch in-flight timeout (${inflightMs}ms)`));
       }, inflightMs);
     });
 
@@ -214,6 +214,17 @@ export const createAgentDispatchQueue = (opts: DispatchQueueOptions): AgentDispa
         }
         if (opts.isDeliverable && !opts.isDeliverable(agentName)) {
           for (const item of batch) {
+            settleDone(item);
+            safe(() => opts.onDeadLetter?.(agentName, item, err));
+          }
+          return;
+        }
+        // P1.14：显式标注 retriable=false 的 DispatchError（agent stopped /
+        // 无 agentId / 会话被换）重试无意义，首次失败即死信，不空转退避。
+        // 未分类的普通 Error 由 isRetriableError 视为可重试，保持既有行为。
+        if (!isRetriableError(err)) {
+          for (const item of batch) {
+            console.error(`[DispatchQueue] @${agentName} message dead-lettered (non-retriable ${errMessage(err)})`);
             settleDone(item);
             safe(() => opts.onDeadLetter?.(agentName, item, err));
           }
@@ -258,7 +269,7 @@ export const createAgentDispatchQueue = (opts: DispatchQueueOptions): AgentDispa
       const { agentName } = input;
       // 永久失败快速通道：agent 已停止/无 id 时重试无意义，直接死信
       if (opts.isDeliverable && !opts.isDeliverable(agentName)) {
-        const err = new Error(`@${agentName} not deliverable (stopped or unknown agent)`);
+        const err = new DispatchError("agent-stopped", `@${agentName} not deliverable (stopped or unknown agent)`);
         const item: DispatchQueueItem = {
           id: `dq-${nextId++}`,
           agentName,

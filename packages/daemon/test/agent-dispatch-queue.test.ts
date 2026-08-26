@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createAgentDispatchQueue, type DispatchQueueItem } from "../src/agent-dispatch-queue.js";
+import { DispatchError } from "../src/errors.js";
 
 /** 等所有微任务 + 一小段真实时间（队列退避用的小延迟） */
 const flush = async (ms = 20): Promise<void> => {
@@ -249,6 +250,66 @@ describe("agent-dispatch-queue", () => {
     await flush(100); // 退避结束合并批 [m1,m2] 再失败：m1 死信，m2 attempts=1 → 再退避 → 再失败死信
     expect(dead).toContain("m1");
     expect(dead).toContain("m2");
+    q.dispose();
+  });
+
+  it("P1.14：非可重试 DispatchError（agent-stopped）首次失败即死信，不空转退避", async () => {
+    const deliver = vi.fn().mockRejectedValue(new DispatchError("agent-stopped", "is stopped"));
+    const onRetry = vi.fn();
+    const onDeadLetter = vi.fn();
+    const q = createAgentDispatchQueue({
+      deliver,
+      onRetry,
+      onDeadLetter,
+      baseDelayMs: 5,
+      maxDelayMs: 10,
+      maxRetries: 3,
+    });
+    q.enqueue(makeItem());
+    await flush(50);
+    expect(deliver).toHaveBeenCalledTimes(1); // 只投一次
+    expect(onRetry).not.toHaveBeenCalled();
+    expect(onDeadLetter).toHaveBeenCalledTimes(1);
+    expect(onDeadLetter.mock.calls[0][2]).toBeInstanceOf(DispatchError);
+    q.dispose();
+  });
+
+  it("P1.14：可重试 DispatchError（inflight-timeout）保持退避重试语义", async () => {
+    const deliver = vi
+      .fn()
+      .mockRejectedValueOnce(new DispatchError("inflight-timeout", "dispatch in-flight timeout"))
+      .mockResolvedValue(undefined);
+    const onRetry = vi.fn();
+    const onDeadLetter = vi.fn();
+    const q = createAgentDispatchQueue({
+      deliver,
+      onRetry,
+      onDeadLetter,
+      baseDelayMs: 5,
+      maxDelayMs: 10,
+    });
+    q.enqueue(makeItem());
+    await flush(50);
+    expect(deliver).toHaveBeenCalledTimes(2);
+    expect(onRetry).toHaveBeenCalledTimes(1);
+    expect(onDeadLetter).not.toHaveBeenCalled();
+    q.dispose();
+  });
+
+  it("P1.14：未分类普通 Error 视为可重试（冻结 PTY 路径等未迁移抛点行为不变）", async () => {
+    const deliver = vi.fn().mockRejectedValue(new Error("always fails"));
+    const onDeadLetter = vi.fn();
+    const q = createAgentDispatchQueue({
+      deliver,
+      onDeadLetter,
+      baseDelayMs: 5,
+      maxDelayMs: 10,
+      maxRetries: 2,
+    });
+    q.enqueue(makeItem());
+    await flush(100);
+    expect(deliver).toHaveBeenCalledTimes(2); // 与旧「一律重试」行为一致
+    expect(onDeadLetter).toHaveBeenCalledTimes(1);
     q.dispose();
   });
 });

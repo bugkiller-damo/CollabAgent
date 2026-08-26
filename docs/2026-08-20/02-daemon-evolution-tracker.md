@@ -11,8 +11,8 @@
 
 ## ★ 当前焦点
 
-> **评估报告 P1.13 stream-json / WS 类型收紧已落地**（2026-08-26）。
-> 下一焦点：评估报告 P1.14 统一错误模型（`DispatchResult` / `Result<T, E>`）。
+> **评估报告 P1.14 统一错误模型已落地**（2026-08-26）。
+> 下一焦点：评估报告剩余 P1.x / P2 项（按评估报告排序）。
 > 注意：「评估报告 P0.x」与本文件「方案 P0.1 = PTY 冻结」（Step 3，已完成）不是同一件事。
 
 ---
@@ -265,4 +265,5 @@ daemon prompt 含三选一与沉默协议。L3 手动 E2E 待上线走剧本。
 | 评估 P1.10 | 2026-08-25 | （待提交） | 统一配置层：`src/config.ts` `loadDaemonEnv()` 集中读取/校验全部 daemon 进程级 `SLOCK_*`；调用方不再直读；`test/config.test.ts` 11 例；typecheck + 34 文件 320 用例全绿 |
 | 评估 P1.11 | 2026-08-26 | （待提交） | one-shot 走 `handleStreamEvent` 记成本；PTY 在 `doDispatch` 成功后记 `costUsd=0` 回合（不改冻结文件）；`slock cost show --channel/--day/--thread/--group`；账本按 thread 分行（旧行兼容空 thread）；typecheck + 35 文件 331 用例全绿 |
 | 评估 P1.12 | 2026-08-26 | （待提交） | PersistentClaude cleanup 成对卸 stdout/stderr/exit/error；headless `ensurePersistentSession` 单飞 + `dropStalePersistentSession`（send 失败踢本实例并 forget 成本基线）；`test/agent-runtime-dispatch-headless.test.ts` 8 例；typecheck + 36 文件 342 用例全绿 |
-| 评估 P1.13 | 2026-08-26 | （待提交） | stream-json / WS 类型收紧：`ClaudeStreamEvent` + `asClaudeStreamEvent`；`parseWsToDaemonMessage` 归一化入站；handlers 吃收窄联合；`errMessage` 顺手收口热路径；`test/p1-13-protocol.test.ts`；typecheck + 37 文件 350 用例全绿 |
+| 评估 P1.13 | 2026-08-26 | `c3bbc12` | stream-json / WS 类型收紧：`ClaudeStreamEvent` + `asClaudeStreamEvent`；`parseWsToDaemonMessage` 归一化入站；handlers 吃收窄联合；`errMessage` 顺手收口热路径；`test/p1-13-protocol.test.ts`；typecheck + 37 文件 350 用例全绿 |
+| 评估 P1.14 | 2026-08-26 | `f501a5a` | 统一错误模型：`DispatchError(code)` + `retriable` 由 code 推导（agent-unknown/agent-stopped/session-lost 永久失败，inflight-timeout/credential-mint-failed 可重试）；队列对非可重试错误首次失败即死信不空转退避，未分类 Error 保持旧「一律重试」；派发链 5 处抛点迁移；`test/errors.test.ts` +6、队列 +3；typecheck + 38 文件 359 用例全绿 |

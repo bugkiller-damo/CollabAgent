@@ -6,6 +6,8 @@
  * 有效的 sk_agent_... token，注入子进程 env；PTY 退出时撤销。取代之前
  * "共享账号级 apiKey"的临时方案。
  */
+import { DispatchError, errMessage } from "./errors.js";
+
 export interface ICredentialsClient {
   mintAgentCredential(agentId: string): Promise<string>;
   /** best-effort：撤销失败不影响调用方的退出清理流程（token 反正有 24h TTL 兜底） */
@@ -20,7 +22,11 @@ export const createCredentialsClient = (serverUrl: string, apiKey: string): ICre
         headers: { Authorization: `Bearer ${apiKey}` },
       });
       if (!res.ok) {
-        throw new Error(`mint credential failed: ${res.status} ${await res.text().catch(() => "")}`);
+        // P1.14：mint 失败多为网络/服务端临时故障，retriable=true 走队列退避重试
+        throw new DispatchError(
+          "credential-mint-failed",
+          `mint credential failed: ${res.status} ${await res.text().catch(() => "")}`,
+        );
       }
       const data = (await res.json()) as { token: string };
       return data.token;
@@ -33,8 +39,8 @@ export const createCredentialsClient = (serverUrl: string, apiKey: string): ICre
           headers: { Authorization: `Bearer ${apiKey}` },
         });
         if (!res.ok) console.warn(`[Runtime] revoke credential for agent ${agentId} returned ${res.status}`);
-      } catch (err: any) {
-        console.warn(`[Runtime] revoke credential failed for agent ${agentId}:`, err?.message ?? err);
+      } catch (err) {
+        console.warn(`[Runtime] revoke credential failed for agent ${agentId}:`, errMessage(err));
       }
     },
   };
