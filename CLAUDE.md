@@ -30,7 +30,7 @@ AI agents, and routes messages between them.
 - **成本记账（D3，2026-08-20 Step 4；P0.5 2026-08-25）**：`agent-cost-tracker.ts` 按
   (agent, channel, UTC day) 累计；`result.total_cost_usd` 是会话累计，落库前做
   「本次 − 上次」差值（`createSessionCostDelta`）；`SLOCK_COST_BUDGET_USD` 超限 →
-  A1 拒投 + 频道熔断消息；`slock cost show` 查近 7 天。
+  A1 拒投 + 频道熔断消息；`slock cost show` 查近 7 天（P1.11：`--channel`/`--day`/`--thread`/`--group`；one-shot 记真实 USD，PTY 记零美元回合）。
 - **Context Builder（D1，2026-08-21 Step 6）**：线程追问入队前拉该线程历史并截断注入；
   顶层 @ / DM / 巡检不注入。D2 本批仅 prompt 隔离 + `daemon-thread-sessions.json`
   （不拆 (agent, thread) 进程池）。

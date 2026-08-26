@@ -5,8 +5,8 @@ import { parseCostBudgetUsd } from "./config.js";
 export { parseCostBudgetUsd } from "./config.js";
 
 /**
- * D3 成本记账（Step 4）：按 (agent, channel, day) 累计 stream-json `result`
- * 事件里的成本 / 时长 / 工具轮次。
+ * D3 成本记账（Step 4）：按 (agent, channel, day, thread) 累计 stream-json `result`
+ * 事件里的成本 / 时长 / 工具轮次。thread 为空时与历史无 threadId 行兼容。
  *
  * 独立 JSON 文件，不挂在 AgentRunRecord 上——headless 默认路径从不
  * insertAgentRun（那是 PTY spawn 专属），往 runs 上长字段会空转。
@@ -27,6 +27,8 @@ export interface AgentCostRecord {
   channel: string;
   /** UTC 日历日 YYYY-MM-DD */
   day: string;
+  /** 线程 id；顶层/DM/巡检为空串。旧账本缺字段视为 "" */
+  threadId?: string;
   costUsd: number;
   durationMs: number;
   numTurns: number;
@@ -47,10 +49,22 @@ export interface CostTurnInput {
   agentName: string;
   agentId?: string | null;
   channel: string;
+  /** 可选；不进 channel 字段。空/缺省与旧行（无 threadId）同一把钥匙 */
+  threadId?: string | null;
   costUsd?: number | null;
   durationMs?: number | null;
   numTurns?: number | null;
   at?: number;
+}
+
+export interface CostRecordFilter {
+  agentName?: string;
+  channel?: string;
+  threadId?: string;
+  sinceDay?: string;
+  untilDay?: string;
+  /** 若设，覆盖 sinceDay/untilDay 为这一天 */
+  day?: string;
 }
 
 export interface CostSpendRow {
@@ -66,21 +80,41 @@ export interface CostSpendRow {
   contextTurns: number;
 }
 
+export interface CostChannelSpendRow extends CostSpendRow {
+  channel: string;
+}
+
+export interface CostDaySpendRow {
+  day: string;
+  costUsd: number;
+  durationMs: number;
+  numTurns: number;
+  turnCount: number;
+  contextChars: number;
+  contextMessages: number;
+  contextDropped: number;
+  contextTurns: number;
+}
+
 export interface ICostTracker {
   recordTurn(input: CostTurnInput): AgentCostRecord;
-  /** D1：Context Builder 注入量（不另开 LLM，计入同 (agent, channel, day)） */
+  /** D1：Context Builder 注入量（不另开 LLM，计入同 (agent, channel, day, thread)） */
   recordContext(
     agentName: string,
     agentId: string | null,
     channel: string,
-    stats: { chars: number; messages: number; dropped: number },
+    stats: { chars: number; messages: number; dropped: number; threadId?: string | null },
     at?: number,
   ): AgentCostRecord;
   /** 该 agent 当天（UTC）所有频道合计 */
   spendToday(agentName: string, at?: number): number;
   /** 最近 `days` 个 UTC 日（含今天）按 agent 合计 */
-  spendByAgent(days?: number, at?: number): CostSpendRow[];
-  listRecords(filter?: { agentName?: string; sinceDay?: string; untilDay?: string }): AgentCostRecord[];
+  spendByAgent(days?: number, at?: number, filter?: CostRecordFilter): CostSpendRow[];
+  /** P1.11：按 (channel, agent) 合计 */
+  spendByChannel(days?: number, at?: number, filter?: CostRecordFilter): CostChannelSpendRow[];
+  /** P1.11：按 UTC 日合计 */
+  spendByDay(days?: number, at?: number, filter?: CostRecordFilter): CostDaySpendRow[];
+  listRecords(filter?: CostRecordFilter): AgentCostRecord[];
 }
 
 interface StoreFile {
@@ -182,8 +216,43 @@ export const buildCircuitBreakMessage = (agentName: string, spendUsd: number, bu
 
 export const defaultCostStorePath = (): string => join(process.cwd(), ".slock", "daemon-costs.json");
 
-const recordKey = (r: Pick<AgentCostRecord, "agentName" | "channel" | "day">): string =>
-  `${r.agentName}\0${r.channel}\0${r.day}`;
+/** 频道归一化：去 #、丢掉 thread 后缀。`#general:thread8` → `general`。 */
+export const normalizeCostChannel = (raw: string | undefined | null): string =>
+  (raw || "unknown").replace(/^#/, "").split(":")[0] || "unknown";
+
+const normalizeThreadId = (raw: string | undefined | null): string => (raw ?? "").trim();
+
+const recordKey = (r: { agentName: string; channel: string; day: string; threadId?: string | null }): string =>
+  `${r.agentName}\0${r.channel}\0${r.day}\0${normalizeThreadId(r.threadId)}`;
+
+const emptyMetrics = () => ({
+  costUsd: 0,
+  durationMs: 0,
+  numTurns: 0,
+  turnCount: 0,
+  contextChars: 0,
+  contextMessages: 0,
+  contextDropped: 0,
+  contextTurns: 0,
+});
+
+const addRecordMetrics = <T extends ReturnType<typeof emptyMetrics>>(acc: T, r: AgentCostRecord): T => {
+  acc.costUsd += r.costUsd;
+  acc.durationMs += r.durationMs;
+  acc.numTurns += r.numTurns;
+  acc.turnCount += r.turnCount;
+  acc.contextChars += r.contextChars ?? 0;
+  acc.contextMessages += r.contextMessages ?? 0;
+  acc.contextDropped += r.contextDropped ?? 0;
+  acc.contextTurns += r.contextTurns ?? 0;
+  return acc;
+};
+
+const lookbackWindow = (days: number, at: number): { sinceDay: string; untilDay: string } => {
+  const untilDay = utcDay(at);
+  const sinceTs = at - (Math.max(1, days) - 1) * 86_400_000;
+  return { sinceDay: utcDay(sinceTs), untilDay };
+};
 
 export const createJsonCostTracker = (filePath: string, opts?: { now?: () => number }): ICostTracker => {
   const now = opts?.now ?? (() => Date.now());
@@ -217,9 +286,10 @@ export const createJsonCostTracker = (filePath: string, opts?: { now?: () => num
   const recordTurn = (input: CostTurnInput): AgentCostRecord => {
     const at = input.at ?? now();
     const day = utcDay(at);
-    const channel = (input.channel || "unknown").replace(/^#/, "").split(":")[0] || "unknown";
+    const channel = normalizeCostChannel(input.channel);
+    const threadId = normalizeThreadId(input.threadId);
     const data = readAll();
-    const key = recordKey({ agentName: input.agentName, channel, day });
+    const key = recordKey({ agentName: input.agentName, channel, day, threadId });
     const idx = data.records.findIndex((r) => recordKey(r) === key);
     const addCost = finiteOrZero(input.costUsd);
     const addDur = finiteOrZero(input.durationMs);
@@ -229,6 +299,7 @@ export const createJsonCostTracker = (filePath: string, opts?: { now?: () => num
       const next: AgentCostRecord = {
         ...prev,
         agentId: input.agentId ?? prev.agentId,
+        threadId: prev.threadId ?? threadId,
         costUsd: prev.costUsd + addCost,
         durationMs: prev.durationMs + addDur,
         numTurns: prev.numTurns + addTurns,
@@ -244,6 +315,7 @@ export const createJsonCostTracker = (filePath: string, opts?: { now?: () => num
       agentId: input.agentId ?? null,
       channel,
       day,
+      threadId,
       costUsd: addCost,
       durationMs: addDur,
       numTurns: addTurns,
@@ -259,11 +331,17 @@ export const createJsonCostTracker = (filePath: string, opts?: { now?: () => num
     return created;
   };
 
-  const listRecords = (filter?: { agentName?: string; sinceDay?: string; untilDay?: string }): AgentCostRecord[] => {
+  const listRecords = (filter?: CostRecordFilter): AgentCostRecord[] => {
+    const sinceDay = filter?.day ?? filter?.sinceDay;
+    const untilDay = filter?.day ?? filter?.untilDay;
+    const channel = filter?.channel ? normalizeCostChannel(filter.channel) : undefined;
+    const threadId = filter?.threadId !== undefined ? normalizeThreadId(filter.threadId) : undefined;
     return readAll().records.filter((r) => {
       if (filter?.agentName && r.agentName !== filter.agentName) return false;
-      if (filter?.sinceDay && r.day < filter.sinceDay) return false;
-      if (filter?.untilDay && r.day > filter.untilDay) return false;
+      if (channel && r.channel !== channel) return false;
+      if (threadId !== undefined && normalizeThreadId(r.threadId) !== threadId) return false;
+      if (sinceDay && r.day < sinceDay) return false;
+      if (untilDay && r.day > untilDay) return false;
       return true;
     });
   };
@@ -273,51 +351,67 @@ export const createJsonCostTracker = (filePath: string, opts?: { now?: () => num
     return listRecords({ agentName, sinceDay: day, untilDay: day }).reduce((s, r) => s + r.costUsd, 0);
   };
 
-  const spendByAgent = (days = 7, at?: number): CostSpendRow[] => {
-    const end = at ?? now();
-    const untilDay = utcDay(end);
-    const sinceTs = end - (Math.max(1, days) - 1) * 86_400_000;
-    const sinceDay = utcDay(sinceTs);
+  const windowFor = (days: number, at: number | undefined, filter?: CostRecordFilter) =>
+    filter?.day ? { sinceDay: filter.day, untilDay: filter.day } : lookbackWindow(days, at ?? now());
+
+  const spendByAgent = (days = 7, at?: number, filter?: CostRecordFilter): CostSpendRow[] => {
+    const { sinceDay, untilDay } = windowFor(days, at, filter);
     const map = new Map<string, CostSpendRow>();
-    for (const r of listRecords({ sinceDay, untilDay })) {
-      const prev = map.get(r.agentName) ?? {
-        agentName: r.agentName,
-        agentId: r.agentId,
-        costUsd: 0,
-        durationMs: 0,
-        numTurns: 0,
-        turnCount: 0,
-        contextChars: 0,
-        contextMessages: 0,
-        contextDropped: 0,
-        contextTurns: 0,
-      };
+    for (const r of listRecords({ ...filter, sinceDay, untilDay })) {
+      const prev =
+        map.get(r.agentName) ??
+        ({ agentName: r.agentName, agentId: r.agentId, ...emptyMetrics() } satisfies CostSpendRow);
       prev.agentId = r.agentId ?? prev.agentId;
-      prev.costUsd += r.costUsd;
-      prev.durationMs += r.durationMs;
-      prev.numTurns += r.numTurns;
-      prev.turnCount += r.turnCount;
-      prev.contextChars += r.contextChars ?? 0;
-      prev.contextMessages += r.contextMessages ?? 0;
-      prev.contextDropped += r.contextDropped ?? 0;
-      prev.contextTurns += r.contextTurns ?? 0;
+      addRecordMetrics(prev, r);
       map.set(r.agentName, prev);
     }
     return Array.from(map.values()).sort((a, b) => b.costUsd - a.costUsd);
+  };
+
+  const spendByChannel = (days = 7, at?: number, filter?: CostRecordFilter): CostChannelSpendRow[] => {
+    const { sinceDay, untilDay } = windowFor(days, at, filter);
+    const map = new Map<string, CostChannelSpendRow>();
+    for (const r of listRecords({ ...filter, sinceDay, untilDay })) {
+      const k = `${r.channel}\0${r.agentName}`;
+      const prev =
+        map.get(k) ??
+        ({
+          channel: r.channel,
+          agentName: r.agentName,
+          agentId: r.agentId,
+          ...emptyMetrics(),
+        } satisfies CostChannelSpendRow);
+      prev.agentId = r.agentId ?? prev.agentId;
+      addRecordMetrics(prev, r);
+      map.set(k, prev);
+    }
+    return Array.from(map.values()).sort((a, b) => b.costUsd - a.costUsd || a.channel.localeCompare(b.channel));
+  };
+
+  const spendByDay = (days = 7, at?: number, filter?: CostRecordFilter): CostDaySpendRow[] => {
+    const { sinceDay, untilDay } = windowFor(days, at, filter);
+    const map = new Map<string, CostDaySpendRow>();
+    for (const r of listRecords({ ...filter, sinceDay, untilDay })) {
+      const prev = map.get(r.day) ?? ({ day: r.day, ...emptyMetrics() } satisfies CostDaySpendRow);
+      addRecordMetrics(prev, r);
+      map.set(r.day, prev);
+    }
+    return Array.from(map.values()).sort((a, b) => (a.day < b.day ? 1 : a.day > b.day ? -1 : 0));
   };
 
   const recordContext = (
     agentName: string,
     agentId: string | null,
     channelRaw: string,
-    stats: { chars: number; messages: number; dropped: number },
+    stats: { chars: number; messages: number; dropped: number; threadId?: string | null },
     at?: number,
   ): AgentCostRecord => {
     const ts = at ?? now();
     const day = utcDay(ts);
-    const channel = (channelRaw || "unknown").replace(/^#/, "").split(":")[0] || "unknown";
+    const channel = normalizeCostChannel(channelRaw);
+    const threadId = normalizeThreadId(stats.threadId);
     const data = readAll();
-    const key = recordKey({ agentName, channel, day });
+    const key = recordKey({ agentName, channel, day, threadId });
     const idx = data.records.findIndex((r) => recordKey(r) === key);
     const addChars = finiteOrZero(stats.chars);
     const addMsgs = finiteOrZero(stats.messages);
@@ -327,6 +421,7 @@ export const createJsonCostTracker = (filePath: string, opts?: { now?: () => num
       const next: AgentCostRecord = {
         ...prev,
         agentId: agentId ?? prev.agentId,
+        threadId: prev.threadId ?? threadId,
         contextChars: (prev.contextChars ?? 0) + addChars,
         contextMessages: (prev.contextMessages ?? 0) + addMsgs,
         contextDropped: (prev.contextDropped ?? 0) + addDrop,
@@ -342,6 +437,7 @@ export const createJsonCostTracker = (filePath: string, opts?: { now?: () => num
       agentId,
       channel,
       day,
+      threadId,
       costUsd: 0,
       durationMs: 0,
       numTurns: 0,
@@ -357,5 +453,5 @@ export const createJsonCostTracker = (filePath: string, opts?: { now?: () => num
     return created;
   };
 
-  return { recordTurn, recordContext, spendToday, spendByAgent, listRecords };
+  return { recordTurn, recordContext, spendToday, spendByAgent, spendByChannel, spendByDay, listRecords };
 };

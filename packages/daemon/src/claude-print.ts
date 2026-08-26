@@ -29,6 +29,7 @@ export function claudePrint(
   systemPromptFile?: string,
   extraEnv?: Record<string, string>,
   cwd?: string,
+  onStreamEvent?: (ev: any) => void,
 ): Promise<ClaudePrintResult> {
   return new Promise((resolve) => {
     const cmd = findClaudeCmd();
@@ -84,6 +85,11 @@ export function claudePrint(
         if (!line.trim()) continue;
         try {
           const ev = JSON.parse(line.trim());
+          try {
+            onStreamEvent?.(ev);
+          } catch {
+            /* callback 不阻断 print */
+          }
           if (ev.type === "system" && ev.session_id) newSid = ev.session_id as string;
           if (ev.type === "result" && ev.result) reply = ev.result as string;
           if (ev.type === "assistant") {
