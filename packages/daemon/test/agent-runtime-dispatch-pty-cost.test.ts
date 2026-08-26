@@ -78,7 +78,6 @@ const makeHarness = (overrides?: { tracker?: FakeTracker | undefined }): Harness
     runIdByAgent: new Map(),
     persistentSessions: new Map(),
     agentSessions: new Map(),
-    dispatchPromises: new Map(),
     observationBus: createObservationBus(),
     costTracker: tracker as any,
     onReplyMissing: vi.fn(),
@@ -97,14 +96,12 @@ describe("P1.11 PTY cost record (doDispatch hook)", () => {
     vi.mocked(dispatchPtyTurn).mockClear().mockResolvedValue(undefined);
     delete process.env.SLOCK_COST_BUDGET_USD;
     delete process.env.SLOCK_DISPATCH_MAX_RETRIES;
-    delete process.env.SLOCK_DISPATCH_QUEUE;
   });
 
   afterEach(() => {
     harness?.dispatch.disposeQueue();
     delete process.env.SLOCK_COST_BUDGET_USD;
     delete process.env.SLOCK_DISPATCH_MAX_RETRIES;
-    delete process.env.SLOCK_DISPATCH_QUEUE;
   });
 
   it("records a zero-USD turn after successful dispatchPtyTurn", async () => {

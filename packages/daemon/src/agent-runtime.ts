@@ -252,9 +252,6 @@ export const createAgentRuntime = (
   // ---- 四态模型（见 agent-runtime-state.ts）----
   const stateMachine = createAgentStateMachine();
 
-  // ---- 并发保护 ----
-  const dispatchPromises = new Map<string, Promise<void>>();
-
   // ---- 回合消息计数 + "是否已经观察到忙碌过"（见 agent-runtime-turn-tracker.ts）----
   const turnTracker = createTurnTracker();
   const { hasPending, hasBeenBusy } = turnTracker;
@@ -499,7 +496,6 @@ export const createAgentRuntime = (
     runIdByAgent,
     persistentSessions,
     agentSessions,
-    dispatchPromises,
     onDeliveryQueued: options.onDeliveryQueued,
     onDeliveryDeadLetter: options.onDeliveryDeadLetter,
     observationBus,

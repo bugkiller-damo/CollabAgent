@@ -144,8 +144,6 @@ export interface DispatchDeps {
   sessionCreates?: Map<string, Promise<PersistentClaude>>;
   /** claudePrint 一次性模式的 session 缓存 */
   agentSessions: Map<string, string>;
-  /** 按 agentName 串行化 dispatch（门控投递队列的链尾） */
-  dispatchPromises: Map<string, Promise<void>>;
   /**
    * 门控投递反馈：消息因 agent 忙碌被排队时回调一次（daemon-core 经 WS 上报
    * server → 浏览器 toast"已缓冲，空闲后投递"）。可选，测试注入时可以不传。
@@ -154,7 +152,6 @@ export interface DispatchDeps {
   /**
    * 死信上报（A1 派发队列）：消息重试耗尽或入队即判不可投递（agent stopped/无 id）
    * 时回调。daemon-core 经 WS 上报 server，由 server 决定如何呈现——不再静默丢消息。
-   * 旧门控链模式（SLOCK_DISPATCH_QUEUE=0）下不会触发。
    */
   onDeliveryDeadLetter?: (agentName: string, channelName: string, err: unknown) => void;
   /** B1：headless 观察帧总线（agent-runtime 创建，persistent 路径发布帧） */
@@ -206,7 +203,6 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
     runIdByAgent,
     persistentSessions,
     agentSessions,
-    dispatchPromises,
   } = deps;
   const sessionCreates = deps.sessionCreates ?? new Map<string, Promise<PersistentClaude>>();
   const { transitionState, clearStartupTimer } = stateMachine;
@@ -295,8 +291,8 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
     userMsg: string,
     threadId?: string,
   ): Promise<void> => {
-    // P0.6：执行前成本门。队列模式 drain 已拦过一次，这里是兜底——覆盖
-    // SLOCK_DISPATCH_QUEUE=0 旧链路径与「drain 检查后才耗尽预算」的竞态窗口。
+    // P0.6：执行前成本门。队列 drain 已拦过一次，这里是兜底——覆盖
+    // 「drain 检查后才耗尽预算」的竞态窗口。
     // 熔断是有意丢弃（已通知频道），不是投递错误，所以 return 而非 throw。
     const costGate = evaluateCostGate(deps.costTracker, agentName);
     if (costGate.blocked) {
@@ -306,8 +302,7 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
 
     const agentId = resolveAgentId(agentName);
     if (!agentId) {
-      // A1：抛错而非静默 return——队列模式靠 reject 触发死信；旧链模式由
-      // 链上 .catch(() => {}) 吞掉，行为与旧实现等价。
+      // A1：抛错而非静默 return——队列靠 reject 触发死信。
       // P1.14：agent-unknown 是永久失败（retriable=false），队列首次失败即死信。
       throw new DispatchError("agent-unknown", `[Daemon] No agent id for @${agentName}, skip dispatch`);
     }
@@ -399,58 +394,55 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
   const REMINDER_TAIL = (agentName: string): string =>
     `\n\n<slock-reminder>你是 @${agentName}（CollabAgent 平台的 AI Agent）。对外回复只能用 \`send_message\` 工具（或 \`slock\` CLI），直接打字不会被发送；回合开始先读工作区里的 MEMORY.md。</slock-reminder>`;
 
-  // A1 派发队列（默认）：doDispatch 作为投递执行器，重试/死信/dedup/合并由
-  // 队列负责。isDeliverable 把「agent stopped / 无 agentId」这类永久失败挡在
-  // 入队时直接死信，不浪费重试。SLOCK_DISPATCH_QUEUE=0 回退旧门控链。
+  // A1 派发队列（P1.16 起唯一路径）：doDispatch 作为投递执行器，重试/死信/
+  // dedup/合并由队列负责。isDeliverable 把「agent stopped / 无 agentId」这类
+  // 永久失败挡在入队时直接死信，不浪费重试。旧 SLOCK_DISPATCH_QUEUE=0 门控链
+  // 已删除（评估报告 P1.16：两套错误处理/重试/死信逻辑并存，旧路径无退避与死信）。
   const envCfg = loadDaemonEnv();
-  const useDispatchQueue = envCfg.dispatchQueue;
-  const dispatchQueue = useDispatchQueue
-    ? createAgentDispatchQueue({
-        // in-flight 截止放宽到 6 分钟：persistent 路径的 deliver 是回合级的
-        // （2026-08-18 起 await 到 result 事件），正常回合轻松超过默认 60s。
-        // 真正的看门狗是 PersistentClaude 的不活跃超时（300s 沉默必杀 → reject），
-        // 这里的截止只是「deliver Promise 泄漏」的兜底，不参与卡死检测。
-        inflightMs: envCfg.dispatchInflightMs,
-        maxRetries: envCfg.dispatchMaxRetries,
-        deliver: async (agentName, items) => {
-          // 合并重提示：多条积压拼成一条复合 prompt，reminder tail 只追加一次
-          const merged = items.map((i) => i.content).join("\n\n");
-          if (items.length > 1) {
-            console.log(`[Daemon] @${agentName} merged ${items.length} queued messages into one dispatch`);
-          }
-          await doDispatch(agentName, items[0].channelName, merged + REMINDER_TAIL(agentName), items[0].threadId);
-        },
-        isDeliverable: (agentName) =>
-          stateMachine.getState(agentName) !== "stopped" && resolveAgentId(agentName) !== null,
-        // P0.6：drain 出队前再过一次成本门——入队时放行、排空时已熔断的积压/
-        // 退避消息在此被拦下，熔断真正止血（不只拦截新入队）。
-        deliveryGate: (agentName) => {
-          const g = evaluateCostGate(deps.costTracker, agentName);
-          return { blocked: g.blocked, reason: g.message ?? undefined };
-        },
-        onDeliveryBlocked: (agentName, items) => {
-          const g = evaluateCostGate(deps.costTracker, agentName);
-          if (g.blocked) notifyCircuitBreak(agentName, items[0]?.channelName ?? "", g);
-        },
-        onRetry: (agentName, item, err, nextDelayMs) => {
-          console.warn(
-            `[Daemon] @${agentName} dispatch attempt ${item.attempts} failed, retry in ${nextDelayMs}ms:`,
-            errMessage(err),
-          );
-        },
-        onDeadLetter: (agentName, item, err) => {
-          try {
-            deps.onDeliveryDeadLetter?.(agentName, item.channelName, err);
-          } catch {
-            /* 回调失败不阻塞队列 */
-          }
-        },
-      })
-    : null;
+  const dispatchQueue = createAgentDispatchQueue({
+    // in-flight 截止放宽到 6 分钟：persistent 路径的 deliver 是回合级的
+    // （2026-08-18 起 await 到 result 事件），正常回合轻松超过默认 60s。
+    // 真正的看门狗是 PersistentClaude 的不活跃超时（300s 沉默必杀 → reject），
+    // 这里的截止只是「deliver Promise 泄漏」的兜底，不参与卡死检测。
+    inflightMs: envCfg.dispatchInflightMs,
+    maxRetries: envCfg.dispatchMaxRetries,
+    deliver: async (agentName, items) => {
+      // 合并重提示：多条积压拼成一条复合 prompt，reminder tail 只追加一次
+      const merged = items.map((i) => i.content).join("\n\n");
+      if (items.length > 1) {
+        console.log(`[Daemon] @${agentName} merged ${items.length} queued messages into one dispatch`);
+      }
+      await doDispatch(agentName, items[0].channelName, merged + REMINDER_TAIL(agentName), items[0].threadId);
+    },
+    isDeliverable: (agentName) => stateMachine.getState(agentName) !== "stopped" && resolveAgentId(agentName) !== null,
+    // P0.6：drain 出队前再过一次成本门——入队时放行、排空时已熔断的积压/
+    // 退避消息在此被拦下，熔断真正止血（不只拦截新入队）。
+    deliveryGate: (agentName) => {
+      const g = evaluateCostGate(deps.costTracker, agentName);
+      return { blocked: g.blocked, reason: g.message ?? undefined };
+    },
+    onDeliveryBlocked: (agentName, items) => {
+      const g = evaluateCostGate(deps.costTracker, agentName);
+      if (g.blocked) notifyCircuitBreak(agentName, items[0]?.channelName ?? "", g);
+    },
+    onRetry: (agentName, item, err, nextDelayMs) => {
+      console.warn(
+        `[Daemon] @${agentName} dispatch attempt ${item.attempts} failed, retry in ${nextDelayMs}ms:`,
+        errMessage(err),
+      );
+    },
+    onDeadLetter: (agentName, item, err) => {
+      try {
+        deps.onDeliveryDeadLetter?.(agentName, item.channelName, err);
+      } catch {
+        /* 回调失败不阻塞队列 */
+      }
+    },
+  });
 
-  // 门控投递队列（替代旧的"in-flight 就丢弃"）：同一 agent 的消息挂到 promise
-  // 链尾串行执行——agent 忙时新消息在链上缓冲，上一条 dispatch 完成后按序投递，
-  // 不再丢消息。投递时机仍由 postStartWriter 的提示符就绪门控保证（写入会等到
+  // 门控投递队列：同一 agent 的消息入 A1 队列串行执行——agent 忙时新消息在
+  // 队列里缓冲（busy 合并 + 15s 去重），上一条 dispatch 完成后按序投递，不再
+  // 丢消息。投递时机仍由 postStartWriter 的提示符就绪门控保证（写入会等到
   // Claude 出现输入提示符，思考/工具执行期间的输入由 Claude Code 自己排队处理）。
   const dispatchToAgent = (
     agentName: string,
@@ -464,44 +456,21 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
       return Promise.resolve();
     }
 
-    if (dispatchQueue) {
-      // 「已缓冲」toast 保持旧语义：只有 agent 确实在忙（在途/积压/退避中）才提示，
-      // 空闲时队列会立即排空，不打扰用户
-      const wasBusy = dispatchQueue.isBusy(agentName);
-      const res = dispatchQueue.enqueue({ agentName, channelName, content: userMsg, kind: "message", threadId });
-      if (wasBusy) {
-        console.log(`[Daemon] @${agentName} busy — message queued (dispatch queue)`);
-        try {
-          deps.onDeliveryQueued?.(agentName, channelName);
-        } catch {
-          /* 回调失败不阻塞排队 */
-        }
-      }
-      // await 语义与旧门控链一致：resolve = 投递完成（delivered 或死信完结），
-      // 不 reject——错误经 onDeliveryDeadLetter 上报
-      return res.status === "queued" ? res.done : Promise.resolve();
-    }
-
-    const msgWithReminder = userMsg + REMINDER_TAIL(agentName);
-    const inFlight = dispatchPromises.get(agentName);
-    if (inFlight) {
-      console.log(`[Daemon] @${agentName} busy — message queued (gated delivery)`);
+    // 「已缓冲」toast 保持旧语义：只有 agent 确实在忙（在途/积压/退避中）才提示，
+    // 空闲时队列会立即排空，不打扰用户
+    const wasBusy = dispatchQueue.isBusy(agentName);
+    const res = dispatchQueue.enqueue({ agentName, channelName, content: userMsg, kind: "message", threadId });
+    if (wasBusy) {
+      console.log(`[Daemon] @${agentName} busy — message queued (dispatch queue)`);
       try {
         deps.onDeliveryQueued?.(agentName, channelName);
       } catch {
         /* 回调失败不阻塞排队 */
       }
     }
-    const next = (inFlight ?? Promise.resolve())
-      .catch(() => {}) // 上一条失败不阻断队列后续消息
-      .then(() => doDispatch(agentName, channelName, msgWithReminder, threadId));
-    dispatchPromises.set(agentName, next);
-    // 链尾清理：map 里还是这条链才删（期间有新消息入队则保留链尾）
-    const cleanup = () => {
-      if (dispatchPromises.get(agentName) === next) dispatchPromises.delete(agentName);
-    };
-    next.then(cleanup, cleanup);
-    return next;
+    // await 语义：resolve = 投递完成（delivered 或死信完结），
+    // 不 reject——错误经 onDeliveryDeadLetter 上报
+    return res.status === "queued" ? res.done : Promise.resolve();
   };
   dispatchToAgentRef = dispatchToAgent;
 
@@ -620,12 +589,10 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
     runAgentReminder,
     runAgentTriage,
     clearAgentQueue: (agentName) => {
-      dispatchPromises.delete(agentName);
-      return dispatchQueue?.clear(agentName) ?? 0;
+      return dispatchQueue.clear(agentName);
     },
     disposeQueue: () => {
-      dispatchPromises.clear();
-      dispatchQueue?.dispose();
+      dispatchQueue.dispose();
     },
     forgetSessionCost: (agentName) => {
       sessionCostDelta.forget(agentName);

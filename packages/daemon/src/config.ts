@@ -25,7 +25,6 @@ export const DEFAULT_AGENT_ALLOWED_TOOLS = "Bash,Read,Write,Edit,MultiEdit,Glob,
 export const DAEMON_ENV_DEFAULTS = {
   usePty: false,
   oneshotClaude: false,
-  dispatchQueue: true,
   replyGuard: true,
   channelProgress: true,
   contextBuilder: true,
@@ -54,8 +53,6 @@ export type DaemonEnv = {
   usePty: boolean;
   /** `SLOCK_ONESHOT_CLAUDE=1`：headless 退到 claudePrint 一次性模式 */
   oneshotClaude: boolean;
-  /** `SLOCK_DISPATCH_QUEUE=0` 关闭 A1 队列，回退旧门控链（P1.16 将删除） */
-  dispatchQueue: boolean;
   /** `SLOCK_REPLY_GUARD=0` 关闭「回合结束未发消息则代发」 */
   replyGuard: boolean;
   /** `SLOCK_CHANNEL_PROGRESS=0` 关频道内 ⏳ 进度（顶栏仍在） */
@@ -133,7 +130,6 @@ export const loadDaemonEnv = (env: NodeJS.ProcessEnv = process.env): DaemonEnv =
   return {
     usePty: env.SLOCK_USE_PTY === "1",
     oneshotClaude: env.SLOCK_ONESHOT_CLAUDE === "1",
-    dispatchQueue: env.SLOCK_DISPATCH_QUEUE !== "0",
     replyGuard: env.SLOCK_REPLY_GUARD !== "0",
     channelProgress: env.SLOCK_CHANNEL_PROGRESS !== "0",
     contextBuilder: env.SLOCK_CONTEXT_BUILDER !== "0",
