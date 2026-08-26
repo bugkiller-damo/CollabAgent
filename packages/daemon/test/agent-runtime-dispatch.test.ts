@@ -176,7 +176,6 @@ const makeHarness = (overrides?: {
     runIdByAgent: new Map(),
     persistentSessions: new Map(),
     agentSessions: new Map(),
-    dispatchPromises: new Map(),
     observationBus: createObservationBus(),
     costTracker: tracker as any,
     onReplyMissing,
@@ -224,7 +223,6 @@ describe("agent-runtime-dispatch (headless)", () => {
     vi.mocked(buildThreadContextEnvelope).mockReset().mockResolvedValue(null);
     delete process.env.SLOCK_COST_BUDGET_USD;
     delete process.env.SLOCK_DISPATCH_MAX_RETRIES;
-    delete process.env.SLOCK_DISPATCH_QUEUE;
     delete process.env.SLOCK_REPLY_GUARD;
     delete process.env.SLOCK_CHANNEL_PROGRESS;
     delete process.env.SLOCK_ONESHOT_CLAUDE;
@@ -238,7 +236,6 @@ describe("agent-runtime-dispatch (headless)", () => {
     cleanupWorkspace(AGENT2);
     delete process.env.SLOCK_COST_BUDGET_USD;
     delete process.env.SLOCK_DISPATCH_MAX_RETRIES;
-    delete process.env.SLOCK_DISPATCH_QUEUE;
     delete process.env.SLOCK_REPLY_GUARD;
     delete process.env.SLOCK_ONESHOT_CLAUDE;
     vi.restoreAllMocks();
@@ -502,32 +499,6 @@ describe("agent-runtime-dispatch (headless)", () => {
       expect(inst.sent).toHaveLength(2); // third 从未送达
       expect(harness.onCircuitBreak).toHaveBeenCalledTimes(1);
       expect(harness.onDeliveryDeadLetter).not.toHaveBeenCalled(); // 熔断丢弃 ≠ 死信
-    });
-
-    it("旧门控链（SLOCK_DISPATCH_QUEUE=0）：doDispatch 入口兜底门同样拦截", async () => {
-      const tracker = makeTracker();
-      tracker.spend = 9;
-      process.env.SLOCK_COST_BUDGET_USD = "1";
-      process.env.SLOCK_DISPATCH_QUEUE = "0"; // 必须早于 createDispatch
-      harness = makeHarness({ tracker });
-
-      await harness.dispatch.dispatchToAgent(AGENT, "general", "legacy-blocked");
-      await flush();
-      expect(FakePersistentClaude.instances).toHaveLength(0);
-      expect(harness.onCircuitBreak).toHaveBeenCalledTimes(1);
-    });
-
-    it("旧门控链：两条消息串行投递，顺序保持", async () => {
-      process.env.SLOCK_DISPATCH_QUEUE = "0";
-      harness = makeHarness();
-      const p1 = harness.dispatch.dispatchToAgent(AGENT, "general", "first-msg");
-      const p2 = harness.dispatch.dispatchToAgent(AGENT, "general", "second-msg");
-      await p1;
-      await p2;
-      const inst = FakePersistentClaude.instances[0]!;
-      expect(inst.sent).toHaveLength(2);
-      expect(inst.sent[0]).toContain("first-msg");
-      expect(inst.sent[1]).toContain("second-msg");
     });
   });
 

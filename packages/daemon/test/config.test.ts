@@ -11,7 +11,6 @@ import {
 const KEYS = [
   "SLOCK_USE_PTY",
   "SLOCK_ONESHOT_CLAUDE",
-  "SLOCK_DISPATCH_QUEUE",
   "SLOCK_REPLY_GUARD",
   "SLOCK_CHANNEL_PROGRESS",
   "SLOCK_CONTEXT_BUILDER",
@@ -69,14 +68,12 @@ describe("config / loadDaemonEnv", () => {
   });
 
   it('opt-out flags stay on unless exactly "0"', () => {
-    expect(loadDaemonEnv({ SLOCK_DISPATCH_QUEUE: "0" }).dispatchQueue).toBe(false);
     expect(loadDaemonEnv({ SLOCK_REPLY_GUARD: "0" }).replyGuard).toBe(false);
     expect(loadDaemonEnv({ SLOCK_CHANNEL_PROGRESS: "0" }).channelProgress).toBe(false);
     expect(loadDaemonEnv({ SLOCK_CONTEXT_BUILDER: "0" }).contextBuilder).toBe(false);
     expect(loadDaemonEnv({ SLOCK_SESSION_RESUME: "0" }).sessionResume).toBe(false);
     expect(loadDaemonEnv({ SLOCK_VERBOSE_PTY: "0" }).logPtyBus).toBe(false);
     expect(loadDaemonEnv({ SLOCK_VERBOSE_PTY: "0" }).verbosePty).toBe(false);
-    expect(loadDaemonEnv({ SLOCK_DISPATCH_QUEUE: "false" }).dispatchQueue).toBe(true);
   });
 
   it("invalid / non-positive numbers fall back (no NaN leak)", () => {

@@ -3,8 +3,8 @@
 > 评估日期：2026-08-24（进展批注更新至 2026-08-26）  
 > 评估范围：评估时 `packages/daemon/src/` 50 源文件、27 测试文件；2026-08-26 现状 90 源文件（含 `cli/*`、`handlers/*` 拆分产物 + P1.13 `claude-stream`/`errors`/`handlers/inbound` + P1.15 `redact`/`private-dir`）、40 测试文件  
 > 评估方法：6 名子 agent 并行按维度精读源码与测试，输出结构化结论后由主编综合去重、定级  
-> 当前基线（2026-08-26 复核）：`pnpm typecheck` 通过；`pnpm vitest run` 40 文件 / 374 用例全绿（约 45s）  
-> 版本上下文：headless 为默认驱动（2026-08-18 起），PTY 代码冻结保留（2026-08-20 Step 3），Step 4-7（D3/T8/D1/D2/D4）已落地；评估报告 P0.1–P0.8、P1.9–P1.15 已落地（P1.9–P1.11 已合入 main，`46642b7`）。
+> 当前基线（2026-08-26 复核）：`pnpm typecheck` 通过；`pnpm vitest run` 40 文件 / 372 用例全绿（约 45s）  
+> 版本上下文：headless 为默认驱动（2026-08-18 起），PTY 代码冻结保留（2026-08-20 Step 3），Step 4-7（D3/T8/D1/D2/D4）已落地；评估报告 P0.1–P0.8、P1.9–P1.16 已落地（P1.9–P1.11 已合入 main，`46642b7`）。
 
 ---
 
@@ -63,7 +63,7 @@
 | 高 | 多处 | ~~环境变量读取极度分散，约 15+ 文件直接访问 `process.env.SLOCK_*`~~ **✅ 2026-08-25 已修**（P1.10）：`src/config.ts` `loadDaemonEnv()` 集中读取/校验/默认值；调用方不再直读 `process.env.SLOCK_*`（MCP 子进程注入键除外） | 缺少默认值、类型、校验与文档的集中来源；新增配置容易遗漏、命名不一致 |
 | 中高 | `daemon-core.ts` | ~~`handleMessage` 是超大 switch~~ **✅ 2026-08-25 已修**（P1.9）：路由迁到 `handlers/*`；`DaemonCore` 只保留 WS/auth/`handleMessage` 转发 | 入口层变成业务编排层，单测困难，任何新消息类型都会继续膨胀该文件 |
 | 中 | `cli.ts` | ~~所有子命令堆在一个 1075 行文件~~ **✅ 2026-08-25 已修**（P1.9）：按域拆到 `cli/*.ts`；`cli.ts` 仅 Command 注册与 parse | 低内聚、协作冲突概率高、命令域无显式边界 |
-| 中 | `agent-runtime-dispatch.ts:633-730` | `SLOCK_DISPATCH_QUEUE=0` 时回退到旧的 `dispatchPromises` 链式缓冲，与新的 A1 队列并存 | 同一语义有两套错误处理/重试/死信/合并逻辑，旧路径缺乏退避和死信上报 |
+| 中 | `agent-runtime-dispatch.ts:633-730` | ~~`SLOCK_DISPATCH_QUEUE=0` 时回退到旧的 `dispatchPromises` 链式缓冲，与新的 A1 队列并存~~ **✅ 2026-08-26 已修**（P1.16）：旧链路径与 `dispatchPromises` Map 整体删除，A1 队列成唯一派发路径 | 同一语义有两套错误处理/重试/死信/合并逻辑，旧路径缺乏退避和死信上报 |
 | 中低 | `agent-runtime.ts:194-625` | runtime 同时持有 `runIdByAgent`（PTY 常驻）、`persistentSessions`（headless 常驻）、`observationBus`，并内嵌 stuck 检测器 | 仍是“小上帝模块”，新增驱动模式时修改面大 |
 | 低 | `types/index.ts:36-52` / `:112-136` | `AgentRunSnapshot` 与 `PtyOutputBus` 等 PTY 专用类型与通用运行时接口混在同一文件 | headless 并不实现这些类型，删除 PTY 时容易遗漏类型清理 |
 
@@ -73,7 +73,7 @@
 - **P0**：~~建立统一配置层 `src/config.ts`，一次性读取并校验所有 `SLOCK_*` 环境变量，提供类型化配置对象与默认值。~~ **✅ 2026-08-25 已修**（P1.10）。
 - **P1**：~~拆分 `daemon-core.ts` 的消息路由为 `handlers/*` 模块~~ **✅ 2026-08-25 已修**（P1.9）：`handlers/{agent,deliver,reminder,terminal,workspace,ping}.ts`；`DaemonCore.handleMessage` 转发。
 - **P1**：~~按域拆分 `cli.ts`~~ **✅ 2026-08-25 已修**（P1.9）：`cli/{auth,channel,message,task,...}.ts`；`cli.ts` 仅 Command 注册与入口解析。
-- **P1**：删除 `SLOCK_DISPATCH_QUEUE=0` 回退路径与 `dispatchPromises` Map，只保留 A1 队列一条路。
+- **P1**：~~删除 `SLOCK_DISPATCH_QUEUE=0` 回退路径与 `dispatchPromises` Map，只保留 A1 队列一条路。~~ **✅ 2026-08-26 已修**（P1.16）。
 
 ---
 
@@ -99,7 +99,7 @@
 | P1 | `agent-runtime-dispatch-headless.ts` `session.send` | ~~`persistentSessions.set` 后若 `session.send` reject，catch 未 `delete` stale session~~ **✅ 2026-08-26 已修**（P1.12）：`dropStalePersistentSession` 只踢本回合持有的实例（`stop` + delete + `forgetSessionCost`），避免误杀并发赢家 | 下一条消息认为无需 spawn，直接对死实例 send |
 | P1 | `agent-runtime.ts:343-408` | `lastWarnedAt` 等 Map 按 agentName 记录，但 agent unregister/stop 后从不清理；`_stuckDetectorInstalled` 一旦置 true 永不重置 | 长期运行 + 频繁增删 agent 时 Map 持续累积 |
 | P2 | `agent-runtime-state.ts:55-70` | 非法迁移被 `transitionState` catch 后只 `console.warn` 并 `return` | 外部模块无法订阅状态变化或非法迁移事件，调试困难 |
-| P2 | `agent-runtime-dispatch.ts:667-730` | fallback `dispatchPromises` 链未感知 `stopAgent`/`unregisterAgent` | 旧模式下停止 agent 后，链中消息仍会尝试 spawn |
+| P2 | `agent-runtime-dispatch.ts:667-730` | ~~fallback `dispatchPromises` 链未感知 `stopAgent`/`unregisterAgent`~~ **✅ 2026-08-26 随路径删除消解**（P1.16）：旧链已删，stop 后由队列 `clear` + `isDeliverable` 拦截 | 旧模式下停止 agent 后，链中消息仍会尝试 spawn |
 | P2 | `supervisor.ts:34-49` | `killTree` fire-and-forget，不等待进程树实际退出 | 热重启时孙子进程可能尚未终止就启动新 daemon，导致双 daemon、重复 spawn |
 
 #### 改进建议
@@ -271,7 +271,7 @@
 
 ## 4. 优先级路线图
 
-> **进度总览（2026-08-26 复核）**：P0 八项 ✅ 全部完成；P1 八项中 ✅ 完成 7 项（P1.9/P1.10/P1.11 已合入 main，P1.12–P1.15 本批落地）、⬜ 待办 1 项（P1.16）；P2 六项均未启动（18 的「按 thread 记录成本」子项已由 P1.11 覆盖）。下一焦点 **P1.16**。
+> **进度总览（2026-08-26 复核）**：P0 八项 ✅ 全部完成；P1 八项 ✅ 全部完成（P1.9/P1.10/P1.11 已合入 main，P1.12–P1.16 本批落地）；P2 六项均未启动（18 的「按 thread 记录成本」子项已由 P1.11 覆盖）。下一焦点转入 **P2 批**。
 
 ### P0 · 立即 —— ✅ 全部完成（2026-08-24 ~ 2026-08-25）
 
@@ -284,7 +284,7 @@
 7. **~~headless 路径与 PTY 解耦~~** —— ✅ 2026-08-25（P0.7）：`agent-manager-lazy.ts` 懒加载；`writeMcpConfig` 迁出到 `agent-mcp-config.ts`。
 8. **~~为核心编排器补单元测试~~** —— ✅ 2026-08-25（P0.8）：`agent-runtime-dispatch.test.ts`（23）+ `agent-runtime.test.ts`（10）+ `daemon-core.test.ts`（24），覆盖 `runAgent`、`doDispatch`、成本熔断、reply guard、WS 路由。
 
-### P1 · 近期 —— 进行中（9/10/11/12/13 已完成，14–16 待办）
+### P1 · 近期 —— ✅ 全部完成（9–16）
 
 9. **~~拆分巨型函数/模块~~** —— ✅ 2026-08-25（P1.9）：`createDispatch` 抽出 pty/headless/stream；`handleMessage` → `handlers/*`；`cli.ts` → `cli/*.ts`。`createAgentRuntime` 仍偏大，不在本项。
 10. **~~统一配置层~~** —— ✅ 2026-08-25（P1.10）：`src/config.ts` `loadDaemonEnv()` 集中解析全部 daemon 进程级 `SLOCK_*`（默认值 + `Number.isFinite` 校验 + 类型化 `DaemonEnv`）；调用方改为 `loadDaemonEnv()`；`test/config.test.ts` 11 例；MCP 子进程注入键（`SLOCK_AGENT_ID`/`TOKEN`/`SERVER_URL`）不迁入。
@@ -293,7 +293,7 @@
 13. **~~减少 `any`/`as` 使用~~** —— ✅ 2026-08-26（P1.13）：`ClaudeStreamEvent` + `asClaudeStreamEvent` 收 stream-json；`parseWsToDaemonMessage` 归一化 `thread_id` / 摊平 deliver / agent:start 三变体；handlers 吃收窄联合；`errMessage` 顺手收口热路径。不引入 Zod（热路径静默忽略未知 type）。`test/p1-13-protocol.test.ts`。
 14. **~~（P1.14）统一错误模型~~** —— ✅ 2026-08-26：`DispatchError(code)` + `retriable` 由 code 推导（agent-unknown/agent-stopped/session-lost 永久失败 → 队列首次失败即死信；inflight-timeout/credential-mint-failed 可重试）；未分类普通 Error 保持旧「一律重试」语义（冻结 PTY 路径等未迁移抛点行为不变）；派发链 5 处抛点迁移。注：采用错误分类而非 `Result<T,E>` 全链改造——错误语义的核心痛点是「队列重试策略不区分永久/临时」，已由分类解决。`test/errors.test.ts` +6、队列 +3。
 15. **~~（P1.15）对 observation/terminal-log/audit 流做 token 脱敏~~** —— ✅ 2026-08-26：新建 `redact.ts`（`redactSecrets` 匹配 `sk_(agent|machine)_[a-z0-9]{4,}` → `sk_$1_***`，`redactDeep` 递归脱敏结构化 payload）+ `private-dir.ts`（`mkdirPrivateSync` = mkdir recursive + best-effort chmod 0700）。观察帧在源头脱敏（`truncate` 先脱敏再截断防止半截 token 泄露；`push` 对 payload 深脱敏兜底，含 tool_use 的 `toolInput`）；`terminal-log` 落盘前过 `redactSecrets`；全部 10 处 `.slock` mkdir 点统一换 `mkdirPrivateSync`。`test/redact.test.ts` 8 例 + `test/terminal-log.test.ts` 3 例 + 观察帧/token-file 补 4 例。
-16. ⬜ **（P1.16）移除 `SLOCK_DISPATCH_QUEUE=0` 回退路径与 `dispatchPromises` Map**。
+16. **~~（P1.16）移除 `SLOCK_DISPATCH_QUEUE=0` 回退路径与 `dispatchPromises` Map~~** —— ✅ 2026-08-26（`b19b269`）：旧门控链分支整体删除（`dispatchToAgent` 只走 A1 队列；`dispatchQueue` 无条件创建），`DispatchDeps.dispatchPromises` 字段与 `agent-runtime.ts` 的 Map 注入移除，`config.ts` 不再解析 `SLOCK_DISPATCH_QUEUE`；顺带消解 2.2 P2「旧链未感知 stopAgent/unregisterAgent」（stop 后由队列 `clear` + `isDeliverable` 拦截）。测试：删 2 个旧链用例 + config 2 条断言 + 两个 harness 的 deps 字段。
 
 ### P2 · 中期（评估时建议 1-2 个月内；均未启动）
 
@@ -329,6 +329,8 @@
 > **2026-08-26 P1.14**：统一错误模型——`DispatchError(code)` + `retriable` 由 code 推导（agent-unknown/agent-stopped/session-lost 永久失败 → 队列首次失败即死信；inflight-timeout/credential-mint-failed 可重试）；未分类普通 Error 保持旧「一律重试」语义（冻结 PTY 路径等未迁移抛点行为不变）；派发链 5 处抛点迁移。`test/errors.test.ts` +6、队列 +3，38 文件 359 用例全绿。下一焦点 P1.15。
 >
 > **2026-08-26 P1.15**：token 脱敏 + `.slock` 0700——新建 `redact.ts`（`redactSecrets`/`redactDeep`，匹配 `sk_(agent|machine)_[a-z0-9]{4,}`，保留前缀置 `***`）与 `private-dir.ts`（`mkdirPrivateSync`，best-effort chmod 0700）。观察帧源头脱敏（`truncate` 先脱敏再截断，防半截 token 泄露；`push` 深脱敏兜底含 `toolInput`）；terminal-log 落盘前脱敏；10 处 `.slock` mkdir 点统一 0700。新增 `test/redact.test.ts`（8）+ `test/terminal-log.test.ts`（3），观察帧/token-file 补 4 例。typecheck + 40 文件 374 用例全绿。下一焦点 P1.16（移除 `SLOCK_DISPATCH_QUEUE=0` 回退路径）。
+>
+> **2026-08-26 P1.16**：移除 `SLOCK_DISPATCH_QUEUE=0` 回退路径与 `dispatchPromises` Map——旧门控链分支（promise 链尾串行缓冲，无退避/死信/不感知 stop）整体删除，A1 队列成为唯一派发路径（无条件创建）；`DispatchDeps.dispatchPromises` 字段、`agent-runtime.ts` 的 Map 注入、`config.ts` 的 `dispatchQueue` 解析一并移除。2.2 P2「旧链未感知 stopAgent/unregisterAgent」随路径删除消解（stop 后由队列 `clear` + `isDeliverable` 拦截）。测试：删 2 个旧链用例与 config 的 2 条 `SLOCK_DISPATCH_QUEUE` 断言，两个 dispatch harness 同步删字段。typecheck + 40 文件 372 用例全绿。**至此 P1 八项全部完成**，下一焦点转入 P2 批。
 
 ---
 
