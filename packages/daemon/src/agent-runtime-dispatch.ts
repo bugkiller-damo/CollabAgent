@@ -20,7 +20,7 @@ import type { ITurnTracker } from "./agent-runtime-turn-tracker.js";
 import type { IThreadSessionStore } from "./agent-thread-sessions.js";
 import { loadDaemonEnv } from "./config.js";
 import type { PersistentClaude } from "./drivers/persistent-claude.js";
-import { errMessage } from "./errors.js";
+import { DispatchError, errMessage } from "./errors.js";
 import type { IIdleReclaimer } from "./idle-reclaimer.js";
 import type { PostStartInputWriter } from "./post-start-input-writer.js";
 
@@ -307,17 +307,18 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
     const agentId = resolveAgentId(agentName);
     if (!agentId) {
       // A1：抛错而非静默 return——队列模式靠 reject 触发死信；旧链模式由
-      // 链上 .catch(() => {}) 吞掉，行为与旧实现等价
-      throw new Error(`[Daemon] No agent id for @${agentName}, skip dispatch`);
+      // 链上 .catch(() => {}) 吞掉，行为与旧实现等价。
+      // P1.14：agent-unknown 是永久失败（retriable=false），队列首次失败即死信。
+      throw new DispatchError("agent-unknown", `[Daemon] No agent id for @${agentName}, skip dispatch`);
     }
 
     if (isStopped(agentName)) {
-      throw new Error(`[Daemon] @${agentName} is stopped, cannot dispatch`);
+      throw new DispatchError("agent-stopped", `[Daemon] @${agentName} is stopped, cannot dispatch`);
     }
     const haltGen = deps.getStopGeneration?.(agentName) ?? 0;
     const assertLive = (): void => {
       if (isStopped(agentName) || (deps.getStopGeneration?.(agentName) ?? 0) !== haltGen) {
-        throw new Error(`[Daemon] @${agentName} is stopped, cannot dispatch`);
+        throw new DispatchError("agent-stopped", `[Daemon] @${agentName} is stopped, cannot dispatch`);
       }
     };
 

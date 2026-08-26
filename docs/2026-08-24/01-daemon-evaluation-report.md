@@ -271,7 +271,7 @@
 
 ## 4. 优先级路线图
 
-> **进度总览（2026-08-26 复核）**：P0 八项 ✅ 全部完成；P1 八项中 ✅ 完成 5 项（P1.9/P1.10/P1.11 已合入 main，P1.12/P1.13 本批落地）、⬜ 待办 3 项（P1.14–P1.16）；P2 六项均未启动（18 的「按 thread 记录成本」子项已由 P1.11 覆盖）。下一焦点 **P1.14**。
+> **进度总览（2026-08-26 复核）**：P0 八项 ✅ 全部完成；P1 八项中 ✅ 完成 6 项（P1.9/P1.10/P1.11 已合入 main，P1.12/P1.13/P1.14 本批落地）、⬜ 待办 2 项（P1.15、P1.16）；P2 六项均未启动（18 的「按 thread 记录成本」子项已由 P1.11 覆盖）。下一焦点 **P1.15**。
 
 ### P0 · 立即 —— ✅ 全部完成（2026-08-24 ~ 2026-08-25）
 
@@ -291,7 +291,7 @@
 11. **~~补齐 one-shot / PTY 路径成本记录~~** —— ✅ 2026-08-26（P1.11）：one-shot 复用 `handleStreamEvent`；PTY 记零美元回合（冻结文件不动）；`slock cost show --channel/--day/--thread/--group`；thread 分行兼容旧账本。已合入 main（`46642b7`）。
 12. **~~清理 `PersistentClaude` 事件监听器 + headless 会话创建加锁~~** —— ✅ 2026-08-26（P1.12）：`cleanup` 成对卸 `stdout/stderr/exit/error`；`ensurePersistentSession` 单飞；`send` reject / enterWorking 失败走 `dropStalePersistentSession`（身份校验 + 清成本基线）。`test/persistent-claude.test.ts` + `test/agent-runtime-dispatch-headless.test.ts`。
 13. **~~减少 `any`/`as` 使用~~** —— ✅ 2026-08-26（P1.13）：`ClaudeStreamEvent` + `asClaudeStreamEvent` 收 stream-json；`parseWsToDaemonMessage` 归一化 `thread_id` / 摊平 deliver / agent:start 三变体；handlers 吃收窄联合；`errMessage` 顺手收口热路径。不引入 Zod（热路径静默忽略未知 type）。`test/p1-13-protocol.test.ts`。
-14. ⬜ **（P1.14，下一焦点）统一错误模型**：引入标准化 `DispatchResult` 或 `Result<T, E>`，避免错误语义散落在 `console.warn` 和 `catch` 中。
+14. **~~（P1.14）统一错误模型~~** —— ✅ 2026-08-26：`DispatchError(code)` + `retriable` 由 code 推导（agent-unknown/agent-stopped/session-lost 永久失败 → 队列首次失败即死信；inflight-timeout/credential-mint-failed 可重试）；未分类普通 Error 保持旧「一律重试」语义（冻结 PTY 路径等未迁移抛点行为不变）；派发链 5 处抛点迁移。注：采用错误分类而非 `Result<T,E>` 全链改造——错误语义的核心痛点是「队列重试策略不区分永久/临时」，已由分类解决。`test/errors.test.ts` +6、队列 +3。
 15. ⬜ **（P1.15）对 observation/terminal-log/audit 流做 token 脱敏**，设置 `.slock` 目录 0700 权限。
 16. ⬜ **（P1.16）移除 `SLOCK_DISPATCH_QUEUE=0` 回退路径与 `dispatchPromises` Map**。
 
