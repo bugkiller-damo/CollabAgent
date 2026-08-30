@@ -46,7 +46,7 @@ function setup(overrides: {
   const statuses: [WsConnStatus, number][] = [];
   const connects: boolean[] = [];
   const mgr = createWsManager({
-    url: "ws://test/ws/chat",
+    url: "ws://test/ws",
     minReconnectDelayMs: 100,
     maxReconnectDelayMs: 400,
     inboundWatchdogMs: 1000,

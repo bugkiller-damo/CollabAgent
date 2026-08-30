@@ -18,9 +18,7 @@ export default defineConfig({
       // daemon/agent 内部接口（mint 凭证、agent 消息等）：接入向导用 window.location.origin
       // 生成命令，dev 环境下是 5174——不代理的话 mint credential 会拿到 Vite 的 404
       "/internal": { target: "http://localhost:3001" },
-      // 浏览器走 /ws/chat（重写到后端 /ws）；daemon 走 /ws（接入向导生成的命令用 origin=5174）。
-      // /ws/chat 必须排在 /ws 前面，否则前缀匹配会被 /ws 吞掉。
-      "/ws/chat": { target: "ws://localhost:3001", ws: true, rewrite: () => "/ws" },
+      // 浏览器与 daemon 均走 /ws（dev 下代理到后端；接入向导生成的命令用 origin=5174）。
       "/ws": { target: "ws://localhost:3001", ws: true },
     },
   },

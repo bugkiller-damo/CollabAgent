@@ -162,7 +162,7 @@ onMounted(() => {
 
 // 必须 start：init 只创建句柄，不建连。漏调时聊天/观察全靠刷新 REST 才能看见。
 const wsManager = initWsManager({
-  url: window.location.origin.replace(/^http/, "ws") + "/ws/chat",
+  url: window.location.origin.replace(/^http/, "ws") + "/ws",
   onEvent: dispatchWsEvent,
   onStatus: (status, attempt) => uiStore.setWsStatus(status, attempt),
   onConnect: (isReconnect) => {
