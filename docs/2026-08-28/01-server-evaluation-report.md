@@ -4,7 +4,7 @@
 > 评估范围：`packages/server/src/` 61 个源文件（routes 23 + lib 28 + db 5 + ws 1 + index + types）、`test/` 31 个测试文件 + helpers（289 用例）；并交叉核对 daemon（client.ts / daemon-core / mcp / cli）、web（Vue3 api 层）与 `@collabagent/shared` 的三端契约  
 > 评估方法：7 名子 agent 并行按维度精读源码与测试（架构 / 路由完成度 / 数据层与 WS / 安全 / 后台任务与集成 / 测试质量 / 接口契约），结构化结论由主编综合去重、定级；所有问题均带 file:line 证据，标注「待确认」处需运行时核实  
 > 当前基线（2026-08-28 本机实测）：`tsc --noEmit` 零错误；server 本机可启动（`.env` + 本地 PG，`/api/health` 返回 `{db:true}`）；vitest 为黑盒集成测试，**须先以 `NODE_ENV=test` 启动 server**（`rate-limit.ts:74` 依赖此开关跳过限流），正确姿势下 **32/32 文件、283/283 用例全绿**（约 83s）；以普通模式起 server 会被套件自身注册量触发 429（实测 146 过 / 20 败，败因全部为 `请求过于频繁`）  
-> 版本上下文：当前分支 `feature/web-vue3`（web 为 Vue3 重写版）；daemon 侧评估报告 P0.1–P1.16 已全部落地（`docs/2026-08-24/01-daemon-evaluation-report.md`）；**server 侧 P0.1–P0.9 已落地。注：P0.1/P0.2 修复（b230648/2670d0f）当时只提交推送到了 `feature/web-vue3`，未合并回 main，导致 main 工作区一度复核为「失实」；2026-08-30 经 merge（4fdf1f9）补入 main 并与 P0.3/P0.4 一并复验（33/33 文件 295 用例全绿）；P0.5 于同日落地后复验 299 用例全绿；P0.6/P0.7 同日落地复验 301 用例全绿；P0.8 同日落地复验 34/34 文件 306 用例全绿；P0.9 于 2026-08-31 落地复验 34/34 文件 307 用例全绿**
+> 版本上下文：当前分支 `feature/web-vue3`（web 为 Vue3 重写版）；daemon 侧评估报告 P0.1–P1.16 已全部落地（`docs/2026-08-24/01-daemon-evaluation-report.md`）；**server 侧 P0.1–P0.10 已落地。注：P0.1/P0.2 修复（b230648/2670d0f）当时只提交推送到了 `feature/web-vue3`，未合并回 main，导致 main 工作区一度复核为「失实」；2026-08-30 经 merge（4fdf1f9）补入 main 并与 P0.3/P0.4 一并复验（33/33 文件 295 用例全绿）；P0.5 于同日落地后复验 299 用例全绿；P0.6/P0.7 同日落地复验 301 用例全绿；P0.8 同日落地复验 34/34 文件 306 用例全绿；P0.9 于 2026-08-31 落地复验 34/34 文件 307 用例全绿；P0.10 于 2026-08-31 落地复验 35/35 文件 310 用例全绿**
 
 ---
 
@@ -45,7 +45,7 @@
 | P0.7 | ~~`/files/` 静态路径补限流 hook（addHook 移到 filesScope 之前），并文档化 capability URL 模型或收敛到 by-key ACL~~ **✅ 2026-08-30 已修**：① `server.addHook("onRequest", rateLimitHook)` 上移到 filesScope 注册之前（Fastify 子作用域按 register 时父上下文快照继承 hook，后挂不回溯），`/files/` 纳入 api 桶（100/min）；② capability URL 模型选择「文档化」而非收敛 by-key——`index.ts` filesScope 块与 `storage.ts` `publicUrl` docstring 双处立此存照（uuid 前缀 122bit 为能力凭证、登录即可下载、泄漏由不可猜测性兜底、严 ACL 走 by-key、收敛方向已注明）。实测：非 test 模式 server（PORT=3002）打 `/files/probe` 110 次，恰 100×401 + 10×429；全量复验 33/33 文件 301 用例绿 | `index.ts:204-210`、`storage.ts:82-84` | 消除"不限流 + 登录即全量"的附件下载面 |
 | P0.8 | ~~`actions.prepare` 补 `canAccessChannel` + action.type 白名单；无产品规划则冻结 action_cards~~ **✅ 2026-08-30 已修**：写入口保留但加固——type 白名单（`channel:create`/`agent:create`，取自历史审批卡片设计）、target 必填 + 频道 404（顺带修掉 `ch?.id||null` 撞 NOT NULL 约束的必 500）、`canAccessChannel` 403、action_data 8KB 上限；文件头注明「半成品冻结」状态与产品化重启清单。新增 `test/actions.test.ts` 5 用例（白名单收/拒、400/404、非成员 403、成员 200）；`test/helpers.ts` 清理补 `action_cards` 按 created_by/target_user 维度（投到 #general 的卡片原清理不到，会 FK 违例）；全量复验 34/34 文件 306 用例绿 | `routes/actions.ts:6-18` | 消除向任意私有频道投卡片的越权写入 |
 | P0.9 | ~~`GET /server` 补私有频道过滤与成员校验（对齐 `GET /` 谓词），或确认产品语义后注释立此存照~~ **✅ 2026-08-31 已修**：channels 查询补 `AND (c.type <> 'private' OR cm.role IS NOT NULL)`，与 `GET /`（channels.ts:23）及 `orgs.ts /server/info`（已带同谓词）三处口径一致——产品语义定稿为「工作区总览不泄露非成员私有频道」；join 条件顺带对齐 `cm.member_id::text = $1`；server 成员 403 校验本已存在（channels.ts:380-384）无需改动。`channels.test.ts` 新增 1 回归用例（个人 org 加第二用户为 member：owner 可见私有频道、同 server 非频道成员 200 但不可枚举）；复验 34/34 文件 307 用例绿 | `channels.ts:385-391` | 消除私有频道名称/描述的枚举可见性 |
-| P0.10 | `migrate.ts` 加 `pg_advisory_lock` 包裹整个 runMigrations + 每文件包事务（`sql.begin`） | `db/migrate.ts:27-36` | 消除多实例启动迁移竞态与半态迁移 |
+| P0.10 | ~~`migrate.ts` 加 `pg_advisory_lock` 包裹整个 runMigrations + 每文件包事务（`sql.begin`）~~ **✅ 2026-08-31 已修**：`sql.reserve()` 独占连接 + 会话级 `pg_advisory_lock(712043)`（固定 key，避开审计链 712042）包裹全程——多实例并发启动及 index.ts/pgPlugin 双处触发均串行，后到者锁后读到完整 _migrations 自然全 skip；每文件手动 BEGIN/COMMIT/ROLLBACK（postgres.js ReservedSql 无 `.begin()` 运行时方法，实测踩坑后改手写），迁移内容与 _migrations 记录同生共死、失败整体回滚可从断点续跑；签名加 `opts?: { dir?: string }`（测试注入 scratch 目录用）并返回应用数（现有三调用方不传参不读返回值，兼容）。新增 `test/migrate.test.ts` 3 用例（并发同目录恰应用一次、失败回滚+修复重入、真实目录 no-op）；复验 35/35 文件 310 用例绿 | `db/migrate.ts:27-36` | 消除多实例启动迁移竞态与半态迁移 |
 | P0.11 | `PATCH/DELETE /api/agents/:agentId` 补所有权校验（`requireOwnAgent` 或 `a.user_id = caller`，与 internal 侧对齐） | `agents-public.ts:177、241` | 消除共享 org 内编辑/删除他人 agent 的水平越权 |
 
 ---
@@ -126,7 +126,7 @@
 | 高 | `ws/handler.ts:439-453` | ~~broadcast fail-open~~ **✅ 2026-08-30 已修（P0.2，改 fail-closed）**（另见 P0.2） | ~~私有频道明文跨租户广播~~ |
 | 高 | `channels.ts:385-391` | ~~`GET /server` 无私有频道过滤/成员校验（另见 P0.9）~~ **✅ 2026-08-31 已修（P0.9，对齐 `GET /` 谓词）** | ~~私有频道名称/描述可枚举~~ |
 | 中高 | `ws/handler.ts:553-558` | channel 信封对 `daemonClients` 无条件全发（含私有频道/DM） | 所有用户 daemon 收到他人私有频道明文；多用户托管应收敛 |
-| 中高 | `db/migrate.ts:27-36` | 迁移非事务、无 advisory lock（另见 P0.10） | 多实例并发启动失败；中途失败留半态 |
+| 中高 | `db/migrate.ts:27-36` | ~~迁移非事务、无 advisory lock（另见 P0.10）~~ **✅ 2026-08-31 已修（P0.10，会话锁 + 每文件事务）** | ~~多实例并发启动失败；中途失败留半态~~ |
 | 中 | `docker-compose.yml:28` | 挂载不存在的 `src/db/schema.sql` 到 initdb | 幽灵文件；双轨初始化已断裂成单轨仍误导排障 |
 | 中 | `db/schema.ts` vs migrations | drizzle 模型系统性漂移（无 `client_nonce`、索引口径、无 TZ、缺 dispatches 等） | 两份 schema 真相；drizzle-kit 生成迁移会灾难 |
 | 中 | `pubsub.ts:97-102` | Redis 故障 publish 静默吞错仅一次日志 | 多实例下 Valkey 抖动 → 实例间互达中断且无告警 |
@@ -210,7 +210,7 @@
 
 - **覆盖良好**（真实行为断言）：auth、messages（+幂等/并发）、channels（+dm）、agents-reminders（patrol）、profile、people、computers、attachments、audit（哈希链端到端）、notifications、metrics、access-cache、config、cookies、dm、login-lock、manager-triage、runtime-probe、storage(-s3)、tenant、token-hash(+bcrypt)、ws（认证/广播/定向 14 it）、session-check、audit-api。
 - **部分覆盖**：tasks（6 it，看板查询类未全）、agents（duty 良好其余少）、agents-dispatch（GET 台账无测）、agents-public（PATCH/成员查询无测）、orgs（invites 全套无测）、reminders（人类侧仅 1 次命中）、metrics restore、pubsub（Valkey 真实路径无测）、task-events（间接）。
-- **零覆盖（按风险排序）**：① `agents-messages.ts`（327 行 12 端点，agent 侧消息面全盲）；② `preview.ts`（SSRF 面）+ `integrations.ts`；③ `agents-credentials.ts`（凭据生命周期，安全敏感）；④ `lib/reminder-scheduler.ts`（194 行，tick 逻辑仅手动 E2E）；⑤ `lib/rate-limit.ts`（全局 hook 无回归网）；⑥ orgs invites；⑦ actions.ts；⑧ `db/migrate.ts`（坏一次全员启动失败）。
+- **零覆盖（按风险排序）**：① `agents-messages.ts`（327 行 12 端点，agent 侧消息面全盲）；② `preview.ts`（SSRF 面）+ `integrations.ts`；③ `agents-credentials.ts`（凭据生命周期，安全敏感）；④ `lib/reminder-scheduler.ts`（194 行，tick 逻辑仅手动 E2E）；⑤ `lib/rate-limit.ts`（全局 hook 无回归网）；⑥ orgs invites；⑦ actions.ts；~~⑧ `db/migrate.ts`（坏一次全员启动失败）~~（2026-08-31 P0.10 已补 3 用例）。
 
 **测试基建两个脆弱点**
 
