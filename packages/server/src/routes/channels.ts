@@ -384,10 +384,12 @@ export async function channelRoutes(app: FastifyInstance) {
     if (member.rows.length === 0) return reply.status(403).send({ error: "not a member of that server" });
     const [channels, agents, humans] = await Promise.all([
       app.pg.query(
+        // P0.9：私有频道过滤对齐 GET / 谓词——非成员不可枚举私有频道的名称/描述
         `SELECT c.*, cm.role
          FROM channels c
-         LEFT JOIN channel_members cm ON cm.channel_id = c.id AND cm.member_id = $1
-         WHERE c.server_id = $2 AND c.archived = false AND c.type <> 'dm'`,
+         LEFT JOIN channel_members cm ON cm.channel_id = c.id AND cm.member_id::text = $1
+         WHERE c.server_id = $2 AND c.archived = false AND c.type <> 'dm'
+           AND (c.type <> 'private' OR cm.role IS NOT NULL)`,
         [req.user.sub, serverId],
       ),
       app.pg.query("SELECT * FROM agents WHERE server_id = $1", [serverId]),

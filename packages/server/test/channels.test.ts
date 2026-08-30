@@ -152,6 +152,42 @@ describe("channels: 创建 / 列取 / 成员 / 权限 / 邀请 / DM", () => {
     expect(r.data).toHaveProperty("humans");
   });
 
+  it("服务器信息：同 server 非成员不可枚举私有频道（P0.9 回归）", async () => {
+    // 注册不自动加入默认 server，故用 ck 的个人 org 作共享 server：ck 是 owner，把另一用户加为 member
+    const orgId = (await (await api("/api/orgs", { cookie: ck })).data.orgs[0]?.id) || "";
+    const other = await registerUser();
+    expect(
+      (
+        await api(`/api/orgs/${orgId}/members`, {
+          method: "POST",
+          cookie: ck,
+          csrf: cs,
+          body: { handle: other.handle },
+        })
+      ).status,
+    ).toBe(200);
+    // ck 在该 server 建私有频道（创建者自动以 owner 角色入圈）
+    const privName = "priv_" + Date.now().toString(36);
+    expect(
+      (
+        await api("/api/channels", {
+          method: "POST",
+          cookie: ck,
+          csrf: cs,
+          body: { name: privName, type: "private", serverId: orgId },
+        })
+      ).status,
+    ).toBe(200);
+    // 频道成员（owner）可见
+    const mine = await api("/api/channels/server?serverId=" + orgId, { cookie: ck });
+    expect(mine.status).toBe(200);
+    expect(mine.data.channels.map((c: any) => c.name)).toContain(privName);
+    // 同 server 成员但非频道成员：通过 server 成员校验（200），但私有频道不可枚举
+    const theirs = await api("/api/channels/server?serverId=" + orgId, { cookie: other.cookie });
+    expect(theirs.status).toBe(200);
+    expect(theirs.data.channels.map((c: any) => c.name)).not.toContain(privName);
+  });
+
   it("删除频道", async () => {
     const n = "del_" + Date.now().toString(36);
     const ch = (await api("/api/channels", { method: "POST", cookie: ck, csrf: cs, body: { name: n } })).data.channel;
