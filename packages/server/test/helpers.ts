@@ -111,6 +111,8 @@ export async function cleanupTestData(): Promise<void> {
     await sql`DELETE FROM channels WHERE id::text = ANY(${cids})`;
   }
   await sql`DELETE FROM messages WHERE sender_id::text = ANY(${uids})`;
+  // 按用户补刀：投递到种子频道（如 #general，非测试用户创建）的卡片不在上面的频道维度清理范围
+  await sql`DELETE FROM action_cards WHERE created_by::text = ANY(${uids}) OR target_user::text = ANY(${uids})`;
   await sql`DELETE FROM message_reactions WHERE user_id::text = ANY(${uids})`;
   await sql`DELETE FROM channel_members WHERE member_id::text = ANY(${uids})`;
   await sql`DELETE FROM reminders WHERE owner_id::text = ANY(${uids})`;
