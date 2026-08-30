@@ -4,7 +4,7 @@
 > 评估范围：`packages/server/src/` 61 个源文件（routes 23 + lib 28 + db 5 + ws 1 + index + types）、`test/` 31 个测试文件 + helpers（289 用例）；并交叉核对 daemon（client.ts / daemon-core / mcp / cli）、web（Vue3 api 层）与 `@collabagent/shared` 的三端契约  
 > 评估方法：7 名子 agent 并行按维度精读源码与测试（架构 / 路由完成度 / 数据层与 WS / 安全 / 后台任务与集成 / 测试质量 / 接口契约），结构化结论由主编综合去重、定级；所有问题均带 file:line 证据，标注「待确认」处需运行时核实  
 > 当前基线（2026-08-28 本机实测）：`tsc --noEmit` 零错误；server 本机可启动（`.env` + 本地 PG，`/api/health` 返回 `{db:true}`）；vitest 为黑盒集成测试，**须先以 `NODE_ENV=test` 启动 server**（`rate-limit.ts:74` 依赖此开关跳过限流），正确姿势下 **32/32 文件、283/283 用例全绿**（约 83s）；以普通模式起 server 会被套件自身注册量触发 429（实测 146 过 / 20 败，败因全部为 `请求过于频繁`）  
-> 版本上下文：当前分支 `feature/web-vue3`（web 为 Vue3 重写版）；daemon 侧评估报告 P0.1–P1.16 已全部落地（`docs/2026-08-24/01-daemon-evaluation-report.md`）；**server 侧 P0.3–P0.4 已落地（2026-08-30，32/32 文件 287 用例全绿）；⚠️ 此前标注的「P0.1–P0.2 已落地」与工作区不符（修复代码与测试均缺失，2026-08-30 复核确认），需重做——详见 §1.3 P0.1/P0.2 行内警示**
+> 版本上下文：当前分支 `feature/web-vue3`（web 为 Vue3 重写版）；daemon 侧评估报告 P0.1–P1.16 已全部落地（`docs/2026-08-24/01-daemon-evaluation-report.md`）；**server 侧 P0.1–P0.4 已落地。注：P0.1/P0.2 修复（b230648/2670d0f）当时只提交推送到了 `feature/web-vue3`，未合并回 main，导致 main 工作区一度复核为「失实」；2026-08-30 经 merge（4fdf1f9）补入 main 并与 P0.3/P0.4 一并复验（33/33 文件 295 用例全绿）**
 
 ---
 
@@ -36,10 +36,10 @@
 
 | # | 行动项 | 位置 | 预期收益 |
 |---|---|---|---|
-| P0.1 | `sk_agent_`/`sk_machine_` 生成换 CSPRNG（`crypto.randomBytes(24).toString("base64url")`） **⚠️ 2026-08-30 复核：此前「已修」标注失实——`agents-credentials.ts:21`、`profile.ts:209` 仍在用 `Math.random()`，修复代码不在工作区（可能未保存/未提交），需重做** | `routes/agents-credentials.ts:18-24`、`routes/profile.ts:206-210` | 消除凭据可预测性（一行级修复） |
-| P0.2 | `broadcast()` 查频道类型/成员失败改 fail-closed（放弃或仅公开频道） **⚠️ 2026-08-30 复核：此前「已修」标注失实——`ws/handler.ts:452` 仍 fail-open（退回全发），声称新增的 `test/ws-broadcast.test.ts` 不存在，需重做** | `ws/handler.ts:436-471` | 消除 DB 抖动时私有频道内容全网广播 |
+| P0.1 | ~~`sk_agent_`/`sk_machine_` 生成换 CSPRNG（`crypto.randomBytes(24).toString("base64url")`）~~ **✅ 2026-08-30 已修**：两处生成点均换 `randomBytes(24).toString("base64url")`（192 bit 熵）；`token-hash.ts` 注释同步修正。注：修复（b230648）当时只推到了 `feature/web-vue3` 未合并回 main，2026-08-30 经 merge 补入并复验 | `routes/agents-credentials.ts:18-24`、`routes/profile.ts:206-210` | 消除凭据可预测性（一行级修复） |
+| P0.2 | ~~`broadcast()` 查频道类型/成员失败改 fail-closed（放弃或仅公开频道）~~ **✅ 2026-08-30 已修**：解析失败一律丢弃事件并 warn（安全优先于送达，消息可按 seq 游标 REST 补拉）；private/dm 成员定向与 public 全发语义不变；新增 `test/ws-broadcast.test.ts` 8 用例回归。注：修复（2670d0f）当时只推到了 `feature/web-vue3` 未合并回 main，2026-08-30 经 merge 补入并复验 | `ws/handler.ts:436-471` | 消除 DB 抖动时私有频道内容全网广播 |
 | P0.3 | ~~web WS 路径统一为 `/ws`（改 `AppLayout.vue:165`，删 vite 代理重写与测试 URL）~~ **✅ 2026-08-30 已修**：`AppLayout.vue:165` 连接路径改 `/ws`；`vite.config.ts` 删除 `/ws/chat` 重写代理条目（保留 `/ws` 直连代理）；`wsManager.test.ts` 测试 URL 同步改 `ws://test/ws`。全仓仅剩 docs 历史文档提及 `/ws/chat`；vue-tsc 零错误、web 41/41 用例绿 | web `AppLayout.vue:165` ↔ server `index.ts:259` | 消除生产静态托管下实时功能全断的隐形雷 |
-| P0.4 | ~~`/internal/agent` 旧版路由收敛：修复/下线 PATCH（更新不存在的列 `runtime`/`model`，必 500）；`GET /`、`GET /channel/:id`、`POST /` 补 org/频道校验或直接下线改用 `/api/agents`；join/leave 限定 `(server_id, name)`~~ **✅ 2026-08-30 已修**：四个零调用方顶层端点（GET /、GET /channel/:id、POST /、PATCH /:agentId）下线（`/api/agents` 新版全覆盖；PATCH 更新不存在的列必 500）；join/leave 改租户候选集合解析（agent 所在 org 优先 + owner 所属 orgs + 单租户默认社区豁免，对齐 resolveTenant O3 哲学；候选外一律 404 不泄露存在性）；顺手清理 `agents.ts:5-7` 死 import。新增 5 个回归用例（旧端点 404 ×1、join/leave 租户收敛 ×4）；全量 32/32 文件 287 用例绿（⚠️ 基线与此前标注的 33 文件 291 用例不符，差异即 P0.2 失实的 ws-broadcast.test.ts） | `routes/agents.ts`（整文件重写） | 消除必 500 假实现 + 水平越权 + 跨租户串频道 |
+| P0.4 | ~~`/internal/agent` 旧版路由收敛：修复/下线 PATCH（更新不存在的列 `runtime`/`model`，必 500）；`GET /`、`GET /channel/:id`、`POST /` 补 org/频道校验或直接下线改用 `/api/agents`；join/leave 限定 `(server_id, name)`~~ **✅ 2026-08-30 已修**：四个零调用方顶层端点（GET /、GET /channel/:id、POST /、PATCH /:agentId）下线（`/api/agents` 新版全覆盖；PATCH 更新不存在的列必 500）；join/leave 改租户候选集合解析（agent 所在 org 优先 + owner 所属 orgs + 单租户默认社区豁免，对齐 resolveTenant O3 哲学；候选外一律 404 不泄露存在性）；顺手清理 `agents.ts:5-7` 死 import。新增 5 个回归用例（旧端点 404 ×1、join/leave 租户收敛 ×4）；merge P0.1/P0.2 后全量复验 33/33 文件 295 用例绿 | `routes/agents.ts`（整文件重写） | 消除必 500 假实现 + 水平越权 + 跨租户串频道 |
 | P0.5 | 任务取号加 `UNIQUE(channel_id, task_number) WHERE task_number IS NOT NULL` 部分索引；claim 改条件更新（`AND task_assignee IS NULL RETURNING *`） | migrations + `agents-tasks.ts:85-87`、`agents-dispatch.ts:117-125`、`tasks.ts:65-77` | 消除并发重号 / 双 claim 串任务 |
 | P0.6 | `/api/messages` 两处 limit 加 clamp（`Math.min(≤200)`，对齐 notifications 写法） | `routes/messages.ts:71、435` | 消除单请求全量捞取的响应体/DB 压力 DoS 面 |
 | P0.7 | `/files/` 静态路径补限流 hook（addHook 移到 filesScope 之前），并文档化 capability URL 模型或收敛到 by-key ACL | `index.ts:204-210`、`storage.ts:82-84` | 消除"不限流 + 登录即全量"的附件下载面 |
@@ -67,7 +67,7 @@
 | 严重度 | 文件:行号 | 问题 | 后果 |
 |---|---|---|---|
 | 中高 | `index.ts:204-210` | `filesScope`（`/files/` 静态附件）注册于 `rateLimitHook`/CSRF 的 `addHook` **之前**，Fastify hook 不回溯已注册路由 | 附件静态下载完全不限流、CSRF 也不覆盖，与「全局限流」注释不符 |
-| 中高 | `ws/handler.ts:451-453` | `broadcast()` 频道类型查询失败时「退回全发」——fail-open **⚠️ 2026-08-30 复核：P0.2「已修」标注失实，fail-open 仍在（另见 P0.1/P0.2 警示）** | DB 抖动窗口内私有频道消息事件广播给全部浏览器（另见 P0.2） |
+| 中高 | `ws/handler.ts:451-453` | ~~`broadcast()` 频道类型查询失败时「退回全发」——fail-open~~ **✅ 2026-08-30 已修（P0.2，改 fail-closed）** | ~~DB 抖动窗口内私有频道消息事件广播给全部浏览器~~（另见 P0.2） |
 | 中高 | `login-lock.ts:151-153` | `clientIpOf` 无条件信任 XFF 第一段；全局限流用 `request.ip`（`rate-limit.ts:77`），两套 IP 判定方向相反 | 伪造 XFF 绕过 IP 维度登录锁定；反代下 API 限流按代理 IP 全员共享一桶 |
 | 中高 | `index.ts:157-173`、`ws/handler.ts:163-174` | 未知 `sk_machine_` token 触发全表拉取 + 逐行 bcrypt（12 轮），HTTP/WS 两处、无熔断 | 无效 token 可稳定触发 O(N×12) CPU，DoS 放大面 |
 | 中 | `index.ts:136-175` vs `ws/handler.ts:145-179` | 机器令牌校验逻辑逐行重复两份；WS 侧 JWT 不做 session 回查，与 HTTP 侧深度不一致 | logout-all/改密后 WS 长连接仍有效；修 bug 需改两处，注定漂移 |
@@ -123,7 +123,7 @@
 
 | 严重度 | 文件:行号 | 问题 | 后果 |
 |---|---|---|---|
-| 高 | `ws/handler.ts:439-453` | broadcast fail-open **⚠️ 2026-08-30 复核：P0.2「已修」标注失实，仍在（另见 P0.2）** | 私有频道明文跨租户广播 |
+| 高 | `ws/handler.ts:439-453` | ~~broadcast fail-open~~ **✅ 2026-08-30 已修（P0.2，改 fail-closed）**（另见 P0.2） | ~~私有频道明文跨租户广播~~ |
 | 高 | `channels.ts:385-391` | `GET /server` 无私有频道过滤/成员校验（另见 P0.9） | 私有频道名称/描述可枚举 |
 | 中高 | `ws/handler.ts:553-558` | channel 信封对 `daemonClients` 无条件全发（含私有频道/DM） | 所有用户 daemon 收到他人私有频道明文；多用户托管应收敛 |
 | 中高 | `db/migrate.ts:27-36` | 迁移非事务、无 advisory lock（另见 P0.10） | 多实例并发启动失败；中途失败留半态 |
@@ -155,7 +155,7 @@
 
 | 严重度 | 文件:行号 | 问题 | 后果 |
 |---|---|---|---|
-| 高 | `agents-credentials.ts:18-24`、`profile.ts:206-210` | token 随机部分用 `Math.random()`（另见 P0.1）**⚠️ 2026-08-30 复核：P0.1「已修」标注失实，`Math.random()` 仍在** | 凭据可预测（PRNG 状态恢复攻击） |
+| 高 | `agents-credentials.ts:18-24`、`profile.ts:206-210` | ~~token 随机部分用 `Math.random()`~~ **✅ 2026-08-30 已修**（P0.1）：生成源换 `crypto.randomBytes(24)` CSPRNG | ~~凭据可预测（PRNG 状态恢复攻击）~~ 已消除 |
 | 中 | `index.ts:204-207`、`storage.ts:82-84` | `/files/` 仅登录即放行，无频道级 ACL；S3 后端走 by-key 有完整 ACL——两后端鉴权模型不一致 | 登录用户持 storage_url 可绕过私有频道 403 直取文件（uuid 前缀构成弱 capability URL，泄漏即失效） |
 | 中 | `agents-public.ts:177-189、241-250` | PATCH/DELETE agent 只校验 org 成员不校验所有权（另见 P0.11） | 共享 org 内水平越权（改 runtime/删 agent） |
 | 中 | `login-lock.ts:151-154` | XFF 无条件采信（另见 §2.1 中高） | IP 维度锁定可旁路，分布式撞库喷洒 |
@@ -166,7 +166,7 @@
 | 中低 | `session-check.ts:28-32`、`index.ts:184` | 无 tv/sid 的历史 token 跳过 token_version/会话校验 | 存量旧 token 对 logout-all/改密免疫（迁移边界，待确认存量） |
 | 低 | dev-token 靠 NODE_ENV 挡、`/docs` 生产暴露、session 缓存无清扫、MIME 无魔数嗅探、Valkey PEXPIRE NX 需 ≥7.0、审计链无外部锚定、org 内 hostname 泄漏 | 见 §4 P2 | 择期处理 |
 
-**安全机制状态清单（摘要）**：bcrypt12 ✅ / 双密钥 JWT ✅ / refresh 轮换 ✅ / 会话回查 ✅ / 防爆破 ✅（IP 维度可旁路）/ 全局限流 ✅（未配 trustProxy）/ CSRF ✅ / cookie httpOnly ✅（Secure ❌）/ sk_machine_ ⚠️（Math.random() 仍在——P0.1「已修」标注失实需重做；永不过期 → P1.12）/ sk_agent_ scoped ✅ / legacy bcrypt 退役观测 ✅ / requireOwnAgent ✅（/api 侧 agent PATCH/DELETE 例外）/ 上传防护 ✅（无魔数/配额）/ 附件 ACL ⚠️（/files/ 无）/ 租户边界 ✅（默认豁免是文档化决定）/ 审计链 ✅（无外部锚定）/ secrets 硬校验 ✅。
+**安全机制状态清单（摘要）**：bcrypt12 ✅ / 双密钥 JWT ✅ / refresh 轮换 ✅ / 会话回查 ✅ / 防爆破 ✅（IP 维度可旁路）/ 全局限流 ✅（未配 trustProxy）/ CSRF ✅ / cookie httpOnly ✅（Secure ❌）/ sk_machine_ ⚠️（~~Math.random~~ 生成已换 CSPRNG ✅ P0.1；永不过期 → P1.12）/ sk_agent_ scoped ✅ / legacy bcrypt 退役观测 ✅ / requireOwnAgent ✅（/api 侧 agent PATCH/DELETE 例外）/ 上传防护 ✅（无魔数/配额）/ 附件 ACL ⚠️（/files/ 无）/ 租户边界 ✅（默认豁免是文档化决定）/ 审计链 ✅（无外部锚定）/ secrets 硬校验 ✅。
 
 ### 2.5 后台任务与 Agent 集成（6.0 / 10）
 
