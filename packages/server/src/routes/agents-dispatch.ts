@@ -3,6 +3,7 @@ import { getAgent, isChannelManager, requireOwnAgent } from "../lib/agent-helper
 import { resolveChannel } from "../lib/channel.js";
 import { resolvePeer } from "../lib/dm.js";
 import { recordTaskEvent } from "../lib/task-events.js";
+import { acquireTaskNumberLock } from "../lib/task-numbering.js";
 import { broadcast } from "../ws/handler.js";
 
 const STATUSES = ["open", "reported", "cancelled"];
@@ -113,16 +114,21 @@ export async function agentDispatchRoutes(app: FastifyInstance) {
     );
 
     // P1 同步：dispatch 通知消息同时成为看板卡片（in_progress + assignee=worker），
-    // 原子取号防并发重号；台账记 task_message_id 供 report/cancel 联动
-    const cardUpd = await app.pg.query<{ task_number: number }>(
-      `UPDATE messages
-         SET task_number = (SELECT COALESCE(MAX(task_number), 0) + 1 FROM messages
-                            WHERE channel_id = $2 AND task_number IS NOT NULL),
-             task_status = 'in_progress', task_assignee = $3, updated_at = now()
-       WHERE id = $1
-       RETURNING task_number`,
-      [msgId, ch.id, peer.id],
-    );
+    // 台账记 task_message_id 供 report/cancel 联动
+    // P0.5：MAX+1 子查询「单语句」不等于「原子」——READ COMMITTED 下并发派发各写
+    // 不同消息行、行锁不互斥，会取到同一个号。取号持频道级 advisory lock 串行化。
+    const cardUpd = await app.pg.transaction(async (tx) => {
+      await acquireTaskNumberLock(tx, ch.id);
+      return tx.query<{ task_number: number }>(
+        `UPDATE messages
+           SET task_number = (SELECT COALESCE(MAX(task_number), 0) + 1 FROM messages
+                              WHERE channel_id = $2 AND task_number IS NOT NULL),
+               task_status = 'in_progress', task_assignee = $3, updated_at = now()
+         WHERE id = $1
+         RETURNING task_number`,
+        [msgId, ch.id, peer.id],
+      );
+    });
     await app.pg.query("UPDATE dispatches SET task_message_id = $1 WHERE id = $2", [msgId, dispatch.id]);
     if (cardUpd.rows[0]) {
       await recordTaskEvent(app, {

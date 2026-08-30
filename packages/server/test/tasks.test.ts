@@ -311,3 +311,144 @@ describe("tasks: 操作历史 + 批注（detail/comments）", () => {
     expect(c.status).toBe(404);
   });
 });
+
+// P0.5：claim 条件更新（双 claim 只有一个成功）+ 取号互斥（advisory lock）+ 唯一索引兜底
+describe("P0.5: claim 条件更新与取号唯一性", () => {
+  async function setupChannelWithTask(taskCount = 1) {
+    const a = await registerUser();
+    const chName = uniqHandle();
+    const create = await api("/api/channels", { method: "POST", cookie: a.cookie, body: { name: chName } });
+    expect(create.status).toBe(200);
+    const mk = await api("/api/tasks", {
+      method: "POST",
+      cookie: a.cookie,
+      body: { channel: "#" + chName, tasks: Array.from({ length: taskCount }, (_, i) => ({ title: `t${i}` })) },
+    });
+    expect(mk.status).toBe(200);
+    return { a, chName, nums: (mk.data.tasks as any[]).map((t) => t.task_number) };
+  }
+
+  it("双 claim 串行：第二人 already_claimed_by_other；done 后 claim → task_is_done", async () => {
+    const { a, chName, nums } = await setupChannelWithTask();
+    const num = nums[0];
+    const b = await registerUser();
+
+    const c1 = await api("/api/tasks/claim", {
+      method: "POST",
+      cookie: a.cookie,
+      body: { channel: "#" + chName, task_numbers: [num] },
+    });
+    expect(c1.data.results[0]).toMatchObject({ status: "claimed" });
+
+    const c2 = await api("/api/tasks/claim", {
+      method: "POST",
+      cookie: b.cookie,
+      body: { channel: "#" + chName, task_numbers: [num] },
+    });
+    expect(c2.data.results[0]).toEqual({ number: num, status: "conflict", error: "already_claimed_by_other" });
+
+    await api("/api/tasks/update-status", {
+      method: "POST",
+      cookie: a.cookie,
+      body: { channel: "#" + chName, number: num, status: "done" },
+    });
+    const c3 = await api("/api/tasks/claim", {
+      method: "POST",
+      cookie: b.cookie,
+      body: { channel: "#" + chName, task_numbers: [num] },
+    });
+    expect(c3.data.results[0]).toEqual({ number: num, status: "conflict", error: "task_is_done" });
+  });
+
+  it("并发双 claim：恰好一个成功", async () => {
+    const { a, chName, nums } = await setupChannelWithTask();
+    const b = await registerUser();
+    const num = nums[0];
+    const [r1, r2] = await Promise.all([
+      api("/api/tasks/claim", {
+        method: "POST",
+        cookie: a.cookie,
+        body: { channel: "#" + chName, task_numbers: [num] },
+      }),
+      api("/api/tasks/claim", {
+        method: "POST",
+        cookie: b.cookie,
+        body: { channel: "#" + chName, task_numbers: [num] },
+      }),
+    ]);
+    const statuses = [r1.data.results[0].status, r2.data.results[0].status].sort();
+    expect(statuses).toEqual(["claimed", "conflict"]);
+    const errs = [r1.data.results[0].error, r2.data.results[0].error].filter(Boolean);
+    expect(errs).toEqual(["already_claimed_by_other"]);
+  });
+
+  it("并发建任务：取号互不重复且看板连号（advisory lock + 唯一索引兜底）", async () => {
+    const a = await registerUser();
+    const chName = uniqHandle();
+    await api("/api/channels", { method: "POST", cookie: a.cookie, body: { name: chName } });
+    const rs = await Promise.all(
+      Array.from({ length: 6 }, () =>
+        api("/api/tasks", {
+          method: "POST",
+          cookie: a.cookie,
+          body: { channel: "#" + chName, tasks: [{ title: "x" }] },
+        }),
+      ),
+    );
+    for (const r of rs) expect(r.status).toBe(200);
+    const nums = rs.flatMap((r) => r.data.tasks.map((t: any) => t.task_number));
+    expect(new Set(nums).size).toBe(nums.length);
+
+    const list = await api(`/api/tasks?channel=${encodeURIComponent("#" + chName)}`, { cookie: a.cookie });
+    const board = (list.data.tasks as any[]).map((t) => t.task_number).sort((x, y) => x - y);
+    expect(board).toEqual(board.map((_, i) => i + 1));
+  });
+
+  it("agent 侧 claim 同样走条件更新（agent A 认领后 agent B 冲突）", async () => {
+    const owner = await registerUser();
+    const chName = uniqHandle();
+    await api("/api/channels", { method: "POST", cookie: owner.cookie, body: { name: chName } });
+    const mkTask = await api("/api/tasks", {
+      method: "POST",
+      cookie: owner.cookie,
+      body: { channel: "#" + chName, tasks: [{ title: "agent claim" }] },
+    });
+    const num = mkTask.data.tasks[0].task_number;
+
+    const mkAgent = async (name: string) => {
+      const r = await api("/api/agents", {
+        method: "POST",
+        cookie: owner.cookie,
+        csrf: owner.csrf,
+        body: { name, displayName: name },
+      });
+      expect(r.status).toBe(200);
+      const agent = r.data.agent;
+      const j = await api(`/internal/agent/${agent.id}/channels/${chName}/join`, {
+        method: "POST",
+        cookie: owner.cookie,
+        csrf: owner.csrf,
+      });
+      expect(j.status).toBe(200);
+      return agent;
+    };
+    const agA = await mkAgent("tk_a_" + uniqHandle());
+    const agB = await mkAgent("tk_b_" + uniqHandle());
+
+    const c1 = await api(`/internal/agent/${agA.id}/tasks/claim`, {
+      method: "POST",
+      cookie: owner.cookie,
+      csrf: owner.csrf,
+      body: { channel: "#" + chName, task_numbers: [num] },
+    });
+    expect(c1.data.results[0].status).toBe("claimed");
+
+    const c2 = await api(`/internal/agent/${agB.id}/tasks/claim`, {
+      method: "POST",
+      cookie: owner.cookie,
+      csrf: owner.csrf,
+      body: { channel: "#" + chName, task_numbers: [num] },
+    });
+    expect(c2.data.results[0]).toEqual({ number: num, status: "conflict", error: "already_claimed_by_other" });
+  });
+});

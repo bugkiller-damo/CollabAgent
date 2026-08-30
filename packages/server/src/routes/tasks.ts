@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { canAccessChannel } from "../lib/access.js";
 import { resolveChannel } from "../lib/channel.js";
 import { recordTaskEvent, resolveMemberName } from "../lib/task-events.js";
+import { acquireTaskNumberLock } from "../lib/task-numbering.js";
 import { resolveTenant } from "../lib/tenant.js";
 
 const STATUSES = ["todo", "in_progress", "in_review", "done", "closed"];
@@ -62,24 +63,31 @@ export async function taskRoutes(app: FastifyInstance) {
     const ch = await resolveAccessible(req, channel, req.user.sub, reply, "id, server_id");
     if (!ch) return;
     const userId = req.user.sub;
-    const maxNum = await app.pg.query<{ n: number }>(
-      "SELECT COALESCE(MAX(task_number), 0) as n FROM messages WHERE channel_id = $1 AND task_number IS NOT NULL",
-      [ch.id],
-    );
-    let next = Number(maxNum.rows[0]!.n);
-    const created: any[] = [];
-    for (const t of tasks) {
-      next++;
-      const result = await app.pg.query<{ id: string; task_number: number; content: string }>(
-        `INSERT INTO messages (channel_id, server_id, sender_id, sender_type, content, task_number, task_status)
-         VALUES ($1, $2, $3, 'human', $4, $5, 'todo') RETURNING id, task_number, content`,
-        [ch.id, ch.server_id, userId, t.title, next],
+    // P0.5：取号持频道级 advisory lock 串行化，锁内读 MAX + 连续 INSERT，防并发重号
+    const created: { id: string; task_number: number; content: string }[] = await app.pg.transaction(async (tx) => {
+      await acquireTaskNumberLock(tx, ch.id);
+      const maxNum = await tx.query<{ n: number }>(
+        "SELECT COALESCE(MAX(task_number), 0) as n FROM messages WHERE channel_id = $1 AND task_number IS NOT NULL",
+        [ch.id],
       );
-      created.push(result.rows[0]);
+      let next = Number(maxNum.rows[0]!.n);
+      const rows: { id: string; task_number: number; content: string }[] = [];
+      for (const t of tasks) {
+        next++;
+        const result = await tx.query<{ id: string; task_number: number; content: string }>(
+          `INSERT INTO messages (channel_id, server_id, sender_id, sender_type, content, task_number, task_status)
+           VALUES ($1, $2, $3, 'human', $4, $5, 'todo') RETURNING id, task_number, content`,
+          [ch.id, ch.server_id, userId, t.title, next],
+        );
+        rows.push(result.rows[0]!);
+      }
+      return rows;
+    });
+    for (const row of created) {
       await recordTaskEvent(app, {
-        messageId: result.rows[0].id,
+        messageId: row.id,
         channelId: ch.id,
-        taskNumber: next,
+        taskNumber: row.task_number,
         actorId: userId,
         action: "created",
         toStatus: "todo",
@@ -113,15 +121,20 @@ export async function taskRoutes(app: FastifyInstance) {
       return reply.status(409).send({ error: "message is already a task", task_number: msg.task_number });
     }
     if (!msg.content) return reply.status(400).send({ error: "cannot convert a deleted message" });
-    const result = await app.pg.query<{ id: string; task_number: number; task_status: string; content: string }>(
-      `UPDATE messages
-         SET task_number = (SELECT COALESCE(MAX(task_number), 0) + 1 FROM messages
-                            WHERE channel_id = $2 AND task_number IS NOT NULL),
-             task_status = 'todo', updated_at = now()
-       WHERE id = $1 AND task_number IS NULL
-       RETURNING id, task_number, task_status, content`,
-      [message_id, msg.channel_id],
-    );
+    // P0.5：取号持频道级 advisory lock——单语句 UPDATE 的 MAX+1 子查询在 READ
+    // COMMITTED 并发下仍会重号（各写不同行、行锁不互斥）
+    const result = await app.pg.transaction(async (tx) => {
+      await acquireTaskNumberLock(tx, msg.channel_id);
+      return tx.query<{ id: string; task_number: number; task_status: string; content: string }>(
+        `UPDATE messages
+           SET task_number = (SELECT COALESCE(MAX(task_number), 0) + 1 FROM messages
+                              WHERE channel_id = $2 AND task_number IS NOT NULL),
+               task_status = 'todo', updated_at = now()
+         WHERE id = $1 AND task_number IS NULL
+         RETURNING id, task_number, task_status, content`,
+        [message_id, msg.channel_id],
+      );
+    });
     if (result.rows.length === 0) {
       return reply.status(409).send({ error: "message is already a task" });
     }
@@ -150,37 +163,41 @@ export async function taskRoutes(app: FastifyInstance) {
     const userId = req.user.sub;
     const results: any[] = [];
     for (const num of task_numbers || []) {
-      const existing = await app.pg.query("SELECT * FROM messages WHERE channel_id = $1 AND task_number = $2", [
-        chId,
-        num,
-      ]);
-      if (existing.rows.length === 0) {
-        results.push({ number: num, status: "conflict", error: "not_found" });
-        continue;
-      }
-      const msg = existing.rows[0];
-      if (msg.task_status === "done" || msg.task_status === "closed") {
-        results.push({ number: num, status: "conflict", error: "task_is_done" });
-        continue;
-      }
-      if (msg.task_assignee && msg.task_assignee !== userId) {
-        results.push({ number: num, status: "conflict", error: "already_claimed_by_other" });
-        continue;
-      }
-      await app.pg.query(
-        "UPDATE messages SET task_status = 'in_progress', task_assignee = $1, updated_at = now() WHERE channel_id = $2 AND task_number = $3",
+      // P0.5：claim 改条件更新——WHERE 带非终态 + 无人认领（或本人）条件，
+      // 并发双 claim 只有一个 UPDATE 匹配成功，不再先读后写（读到的旧值会失效）
+      const upd = await app.pg.query<{ id: string; old_status: string | null }>(
+        `UPDATE messages m
+           SET task_status = 'in_progress', task_assignee = $1, updated_at = now()
+         FROM (SELECT id, task_status AS old_status FROM messages
+                WHERE channel_id = $2 AND task_number = $3 AND task_number IS NOT NULL) old
+         WHERE m.id = old.id
+           AND (m.task_status IS NULL OR m.task_status NOT IN ('done', 'closed'))
+           AND (m.task_assignee IS NULL OR m.task_assignee = $1)
+         RETURNING m.id, old.old_status`,
         [userId, chId, num],
       );
-      await recordTaskEvent(app, {
-        messageId: String(msg.id),
-        channelId: chId,
-        taskNumber: num,
-        actorId: userId,
-        action: "claimed",
-        fromStatus: (msg.task_status as string | null) ?? null,
-        toStatus: "in_progress",
-      });
-      results.push({ number: num, status: "claimed" });
+      if (upd.rows[0]) {
+        await recordTaskEvent(app, {
+          messageId: String(upd.rows[0].id),
+          channelId: chId,
+          taskNumber: num,
+          actorId: userId,
+          action: "claimed",
+          fromStatus: upd.rows[0].old_status,
+          toStatus: "in_progress",
+        });
+        results.push({ number: num, status: "claimed" });
+        continue;
+      }
+      // 未匹配：读当前行做冲突分类（尽力而为，仅用于错误码兼容）
+      const cur = await app.pg.query<{ task_status: string | null; task_assignee: string | null }>(
+        "SELECT task_status, task_assignee FROM messages WHERE channel_id = $1 AND task_number = $2 AND task_number IS NOT NULL",
+        [chId, num],
+      );
+      if (!cur.rows[0]) results.push({ number: num, status: "conflict", error: "not_found" });
+      else if (cur.rows[0].task_status === "done" || cur.rows[0].task_status === "closed")
+        results.push({ number: num, status: "conflict", error: "task_is_done" });
+      else results.push({ number: num, status: "conflict", error: "already_claimed_by_other" });
     }
     return { results };
   });
