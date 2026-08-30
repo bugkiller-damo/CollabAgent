@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import bcrypt from "bcryptjs";
 import type { FastifyInstance } from "fastify";
 import { clearAuthCookies } from "../lib/cookies.js";
@@ -204,11 +205,9 @@ export async function profileRoutes(app: FastifyInstance) {
     }
 
     const prefix = "sk_machine_";
-    const randomPart = Array.from(
-      { length: 32 },
-      () => "abcdefghijklmnopqrstuvwxyz0123456789"[Math.floor(Math.random() * 36)],
-    ).join("");
-    const tokenValue = prefix + randomPart;
+    // 24 字节 CSPRNG → base64url 32 字符（192 bit 熵）；Math.random 是可预测的
+    // V8 PRNG，不能作为凭据随机源（评估报告 P0.1）
+    const tokenValue = prefix + randomBytes(24).toString("base64url");
     // 高熵随机令牌用 sha256 落库（见 lib/token-hash.ts）——认证走唯一索引 O(1)，
     // 取代全表扫描 + 逐行 bcrypt 的热路径
     const { sha256Token } = await import("../lib/token-hash.js");
