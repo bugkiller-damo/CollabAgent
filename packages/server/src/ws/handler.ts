@@ -428,28 +428,43 @@ function persistComputerReady(
  * 按频道定向广播：
  * - 公开频道：投递给所有浏览器连接 + 所有 daemon。
  * - 私有频道：浏览器端只投递给该频道的人类成员；daemon 端仍全发（agent 是否响应由其按成员/@提及自行判断）。
- * channelId 传频道 UUID。解析失败则退回全发（避免漏发）。
+ * channelId 传频道 UUID。
+ *
+ * P0.2 fail-closed：频道类型/成员解析失败（DB 抖动、频道不存在、类型未知）时放弃广播，
+ * 不再退回全发——否则 DB 抖动窗口内私有频道/DM 的明文事件会广播给全部浏览器（内容泄露）。
+ * 代价是抖动窗口内丢事件，但消息可经 REST 按 seq 游标补拉恢复，安全优先于送达。
  *
  * O1：改为跨实例 pub/sub —— 本实例解析完成员后，把「信封」发布到 Valkey channel，
  * 每个实例（含本实例）订阅后按各自的本地 socket 表投递。多实例部署时实例间不再互相看不见。
  */
 export async function broadcast(channelId: string, event: WsChannelBroadcast) {
   let allowedHumanIds: string[] | null = null; // null = 不限制（公开）
+  let resolved = false;
   try {
     if (wsPg && channelId) {
       const ch = await wsPg.query<{ type: string }>("SELECT type FROM channels WHERE id = $1", [channelId]);
       const t = ch.rows[0]?.type;
-      // 私有频道与 DM 都按成员定向：仅其人类成员的浏览器收到
       if (t === "private" || t === "dm") {
+        // 私有频道与 DM 都按成员定向：仅其人类成员的浏览器收到
         const m = await wsPg.query<{ member_id: string }>(
           "SELECT member_id FROM channel_members WHERE channel_id = $1 AND member_type = 'human'",
           [channelId],
         );
         allowedHumanIds = m.rows.map((r) => String(r.member_id));
+        resolved = true;
+      } else if (t === "public") {
+        resolved = true;
       }
+      // t 为 undefined（频道不存在）或未知类型值（type 列暂无 CHECK 约束，见 P1.32）
+      // → resolved 保持 false，走下方 fail-closed
     }
   } catch {
-    /* 解析失败：allowedHumanIds 保持 null，退回全发 */
+    /* 解析失败：fail-closed，见下 */
+  }
+
+  if (!resolved) {
+    console.warn(`[WS] broadcast: channel resolve failed (id=${channelId}), dropping event (fail-closed)`);
+    return;
   }
 
   publish({ kind: "channel", channelId, allowedHumanIds, event });

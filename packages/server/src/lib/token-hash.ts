@@ -3,7 +3,8 @@ import { createHash } from "node:crypto";
 /**
  * 机器/Agent 令牌哈希策略：sha256(token)。
  *
- * 这类令牌是 32 位随机串（~165 bit 熵），离线爆破在数学上不可行，
+ * 这类令牌是 32 字符随机串（crypto.randomBytes(24) → base64url，192 bit 熵，
+ * 生成点见 routes/profile.ts / routes/agents-credentials.ts），离线爆破在数学上不可行，
  * 不需要 bcrypt 的抗暴力破解特性。用 sha256 直接落库后，认证可以
  * `WHERE token_hash = $1` 走唯一索引 O(1) 命中，取代原来「全表扫描 +
  * 逐行 bcrypt.compare」的 O(N×100ms) 热路径。
