@@ -1,89 +1,53 @@
 import type { FastifyInstance } from "fastify";
-import { decorateAgentPresence } from "../lib/agent-duty.js";
 import { requireOwnAgent } from "../lib/agent-helpers.js";
-import { sendToDaemon } from "../ws/handler.js";
-import { agentMessageRoutes } from "./agents-messages.js";
-import { agentReminderRoutes } from "./agents-reminders.js";
-import { agentTaskRoutes } from "./agents-tasks.js";
+import { cleanChannelName } from "../lib/channel.js";
+import { getUserOrgIds } from "../lib/orgs.js";
+import { getDefaultServerId } from "../lib/server.js";
+import { getTenantHostMap } from "../lib/tenant.js";
+
+/**
+ * join/leave 共用的租户安全频道解析（评估报告 P0.4）。
+ *
+ * 频道名只在 (server_id, lower(name)) 内唯一（idx_channels_server_name），裸名
+ * `WHERE name=$1` 会跨租户命中其他社区的同名频道——把 agent 加进/踢出别的租户的频道。
+ * 解析候选与 resolveTenant 的 O3 豁免哲学对齐：
+ *   - agent 自己的 org（同名时优先命中）；
+ *   - agent owner 所属的 org；
+ *   - 单租户部署（未配置 SERVER_HOST_MAP）下的默认社区——默认社区是开放社区，
+ *     公开频道对全体登录用户可见（web 建频道/列频道即走此兜底），join 语义保持一致。
+ * 候选之外一律返回 null（调用方回 404），不泄露其他租户频道的存在性。
+ */
+async function resolveTenantChannel(
+  app: FastifyInstance,
+  agentId: string,
+  ownerUserId: string,
+  rawChannelName: string,
+): Promise<{ id: string; type: string } | null> {
+  const name = cleanChannelName(rawChannelName);
+  if (!name) return null;
+  const ag = await app.pg.query<{ server_id: string }>("SELECT server_id FROM agents WHERE id = $1", [agentId]);
+  const agentServerId = ag.rows[0]?.server_id;
+  if (!agentServerId) return null;
+  const candidates = new Set<string>([String(agentServerId), ...(await getUserOrgIds(app, ownerUserId))]);
+  if (getTenantHostMap().size === 0) {
+    const fallback = await getDefaultServerId(app);
+    if (fallback) candidates.add(fallback);
+  }
+  const r = await app.pg.query<{ id: string; type: string }>(
+    `SELECT id, type FROM channels
+      WHERE name = $1 AND server_id::text = ANY($2)
+      ORDER BY (server_id::text = $3) DESC
+      LIMIT 1`,
+    [name, [...candidates], String(agentServerId)],
+  );
+  return r.rows[0] ?? null;
+}
 
 export async function agentRoutes(app: FastifyInstance) {
-  // List all agents with online status（需登录：agent 列表含归属 user_id，不宜公开）
-  app.get("/", { preHandler: [app.authenticate] }, async () => {
-    const result = await app.pg.query<{
-      id: string;
-      user_id: string;
-      name: string;
-      display_name: string;
-      description: string;
-      avatar_url: string;
-      status: string;
-      duty: string;
-      runtime_profile: unknown;
-      created_at: string;
-    }>(
-      "SELECT id, user_id, name, display_name, description, avatar_url, status, duty, runtime_profile, created_at FROM agents ORDER BY created_at DESC",
-    );
-    return { agents: result.rows.map((a) => decorateAgentPresence(a)) };
-  });
-
-  // List agents in a channel（需登录）
-  app.get("/channel/:channelId", { preHandler: [app.authenticate] }, async (req) => {
-    const { channelId } = req.params as Record<string, string>;
-    const result = await app.pg.query<{
-      id: string;
-      user_id: string;
-      name: string;
-      display_name: string;
-      description: string;
-      avatar_url: string;
-      status: string;
-      duty: string;
-      runtime_profile: unknown;
-      role: string;
-    }>(
-      "SELECT a.id, a.user_id, a.name, a.display_name, a.description, a.avatar_url, a.status, a.duty, a.runtime_profile, cm.role FROM agents a JOIN channel_members cm ON cm.member_id = a.id AND cm.member_type = 'agent' WHERE cm.channel_id = $1",
-      [channelId],
-    );
-    return { agents: result.rows.map((a) => decorateAgentPresence(a)) };
-  });
-
-  // Create agent
-  app.post("/", { preHandler: [app.authenticate] }, async (req, reply) => {
-    const { name, displayName, description, runtime, model, serverId } = req.body as Record<string, unknown>;
-    if (!name || !serverId) return reply.status(400).send({ error: "name and serverId required" });
-    const userId = req.user.sub;
-    const { sql } = await import("../db/connection.js");
-    const result = await app.pg.query(
-      "INSERT INTO agents (user_id, server_id, name, display_name, description, runtime_profile) VALUES ($1, $2, $3, $4, $5, $6::jsonb) RETURNING *",
-      [
-        userId,
-        serverId as string,
-        name as string,
-        (displayName || name) as string,
-        description || "",
-        sql.json({ runtime: (runtime as string) || "claude", model: (model as string) || "sonnet" }),
-      ],
-    );
-    const agent = result.rows[0] as any;
-    const rp =
-      (typeof agent.runtime_profile === "string" ? JSON.parse(agent.runtime_profile) : agent.runtime_profile) || {};
-    // 只通知这个 agent 真正的所有者的 daemon——广播给所有 daemon 会导致别的 daemon
-    // 也把这个 agent 注册进本地的 agentDrivers（hasAgent() 返回 true），但它们的
-    // 账号级 apiKey 换不出这个 agent 的凭证，@ 提及/派发到它时会在 spawn 阶段
-    // 403 "not your agent"。
-    sendToDaemon(String(agent.user_id), {
-      type: "agent:start",
-      agentId: agent.id,
-      config: {
-        name: agent.name,
-        displayName: agent.display_name,
-        description: agent.description,
-        runtime: rp.runtime || "claude",
-        model: rp.model || "sonnet",
-      },
-    });
-    return { agent };
-  });
+  // 旧版 GET /、GET /channel/:id、POST /、PATCH /:agentId 已下线（评估报告 P0.4）：
+  // 列表/创建/编辑统一走 /api/agents（org 归属校验 + runtime 校验）；旧 PATCH 更新的
+  // 是不存在的 runtime/model 列（必 500 假实现）。频道内 agent 列表走
+  // /internal/agent/:agentId/channel-members（requireOwnAgent）。
 
   // Agent 自主加入/退出公开频道（daemon CLI `slock join/leave` 调用的端点——
   // 此前路由缺失，CLI 调用返回 404 "Not Found"）。
@@ -93,17 +57,14 @@ export async function agentRoutes(app: FastifyInstance) {
     { preHandler: [app.authenticate, requireOwnAgent] },
     async (req, reply) => {
       const { agentId, channelName } = req.params as Record<string, string>;
-      const name = channelName.replace(/^#/, "").split(":")[0];
-      const ch = await app.pg.query<{ id: string; type: string }>("SELECT id, type FROM channels WHERE name = $1", [
-        name,
-      ]);
-      if (ch.rows.length === 0) return reply.status(404).send({ error: "channel not found" });
-      if (ch.rows[0].type !== "public") {
+      const ch = await resolveTenantChannel(app, agentId, String(req.user.sub), channelName);
+      if (!ch) return reply.status(404).send({ error: "channel not found" });
+      if (ch.type !== "public") {
         return reply.status(403).send({ error: "private channels require an invite from a channel admin" });
       }
       await app.pg.query(
         "INSERT INTO channel_members (channel_id, member_id, member_type, role) VALUES ($1, $2, 'agent', 'member') ON CONFLICT DO NOTHING",
-        [ch.rows[0].id, agentId],
+        [ch.id, agentId],
       );
       return { ok: true };
     },
@@ -114,12 +75,11 @@ export async function agentRoutes(app: FastifyInstance) {
     { preHandler: [app.authenticate, requireOwnAgent] },
     async (req, reply) => {
       const { agentId, channelName } = req.params as Record<string, string>;
-      const name = channelName.replace(/^#/, "").split(":")[0];
-      const ch = await app.pg.query<{ id: string }>("SELECT id FROM channels WHERE name = $1", [name]);
-      if (ch.rows.length === 0) return reply.status(404).send({ error: "channel not found" });
+      const ch = await resolveTenantChannel(app, agentId, String(req.user.sub), channelName);
+      if (!ch) return reply.status(404).send({ error: "channel not found" });
       await app.pg.query(
         "DELETE FROM channel_members WHERE channel_id = $1 AND member_id = $2 AND member_type = 'agent'",
-        [ch.rows[0].id, agentId],
+        [ch.id, agentId],
       );
       return { ok: true };
     },
@@ -174,30 +134,5 @@ export async function agentRoutes(app: FastifyInstance) {
     );
     if (r.rows.length === 0) return reply.status(404).send({ error: "agent not found" });
     return { type: "agent", ...r.rows[0] };
-  });
-
-  // Update runtime config
-  app.patch("/:agentId", { preHandler: [app.authenticate, requireOwnAgent] }, async (req, reply) => {
-    const { agentId } = req.params as Record<string, string>;
-    const { status, runtime, model } = req.body as Record<string, unknown>;
-    const sets: string[] = [];
-    const params: unknown[] = [];
-    let p = 1;
-    if (status) {
-      sets.push("status = $" + p++);
-      params.push(status);
-    }
-    if (runtime) {
-      sets.push("runtime = $" + p++);
-      params.push(runtime);
-    }
-    if (model) {
-      sets.push("model = $" + p++);
-      params.push(model);
-    }
-    if (sets.length === 0) return reply.status(400).send({ error: "no fields" });
-    params.push(agentId);
-    await app.pg.query("UPDATE agents SET " + sets.join(", ") + " WHERE id = $" + p, params);
-    return { ok: true };
   });
 }

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { api, cleanupTestData, closeSql, registerUser } from "./helpers.js";
+import { api, cleanupTestData, closeSql, registerUser, sql, uniqHandle } from "./helpers.js";
 
 afterAll(async () => {
   await cleanupTestData();
@@ -105,8 +105,31 @@ describe("agent/profile/org: 综合集成测试", () => {
     expect(r.data).toHaveProperty("channels");
   });
 
-  it("GET /internal/agent/ — 内部 agent 列表", async () => {
-    expect((await api("/internal/agent/", { cookie: ck })).status).toBe(200);
+  it("旧版 /internal/agent 顶层路由已下线（P0.4）", async () => {
+    expect((await api("/internal/agent/", { cookie: ck })).status).toBe(404);
+    expect((await api("/internal/agent/channel/00000000-0000-0000-0000-000000000000", { cookie: ck })).status).toBe(
+      404,
+    );
+    expect(
+      (
+        await api("/internal/agent/", {
+          method: "POST",
+          cookie: ck,
+          csrf: cs,
+          body: { name: "x", serverId: "00000000-0000-0000-0000-000000000000" },
+        })
+      ).status,
+    ).toBe(404);
+    expect(
+      (
+        await api("/internal/agent/00000000-0000-0000-0000-000000000000", {
+          method: "PATCH",
+          cookie: ck,
+          csrf: cs,
+          body: { runtime: "claude" },
+        })
+      ).status,
+    ).toBe(404);
   });
 
   it("POST /api/agents/:id/duty — owner 可停班/值班", async () => {
@@ -134,5 +157,103 @@ describe("agent/profile/org: 综合集成测试", () => {
     expect(["idle", "computer_offline"]).toContain(on.data.presence);
     const bad = await api(`/api/agents/${id}/duty`, { method: "POST", cookie: ck, csrf: cs, body: { duty: "maybe" } });
     expect(bad.status).toBe(400);
+  });
+});
+
+// P0.4：join/leave 租户收敛——频道名只在 (server_id, lower(name)) 内唯一，
+// 裸名解析不得命中其他租户的同名频道（跨租户串频道）。
+describe("P0.4: agent join/leave 租户收敛", () => {
+  async function mkAgent(cookie: string, csrf: string) {
+    const r = await api("/api/agents", {
+      method: "POST",
+      cookie,
+      csrf,
+      body: { name: "join_" + uniqHandle(), displayName: "JoinTest" },
+    });
+    expect(r.status).toBe(200);
+    return r.data.agent as { id: string; server_id: string };
+  }
+
+  async function mkChannel(cookie: string, csrf: string, body: Record<string, unknown>) {
+    const r = await api("/api/channels", { method: "POST", cookie, csrf, body });
+    expect(r.status).toBe(200);
+    return r.data.channel as { id: string; server_id: string };
+  }
+
+  async function agentChannelIds(agentId: string): Promise<string[]> {
+    const rows =
+      await sql`SELECT channel_id::text AS id FROM channel_members WHERE member_id = ${agentId} AND member_type = 'agent'`;
+    return rows.map((r: any) => String(r.id));
+  }
+
+  it("同名频道命中 agent 自己的 org；leave 移除成员行", async () => {
+    const a = await registerUser();
+    const b = await registerUser();
+    const agA = await mkAgent(a.cookie, a.csrf);
+    const agB = await mkAgent(b.cookie, b.csrf);
+    const chName = "zz_join_" + Date.now().toString(36);
+    const chA = await mkChannel(a.cookie, a.csrf, { name: chName, type: "public", serverId: agA.server_id });
+    const chB = await mkChannel(b.cookie, b.csrf, { name: chName, type: "public", serverId: agB.server_id });
+    expect(chA.id).not.toBe(chB.id);
+
+    const j = await api(`/internal/agent/${agB.id}/channels/${chName}/join`, {
+      method: "POST",
+      cookie: b.cookie,
+      csrf: b.csrf,
+    });
+    expect(j.status).toBe(200);
+    expect(await agentChannelIds(agB.id)).toEqual([chB.id]);
+
+    const l = await api(`/internal/agent/${agB.id}/channels/${chName}/leave`, {
+      method: "POST",
+      cookie: b.cookie,
+      csrf: b.csrf,
+    });
+    expect(l.status).toBe(200);
+    expect(await agentChannelIds(agB.id)).toEqual([]);
+  });
+
+  it("跨租户频道 join → 404（不泄露存在性）", async () => {
+    const a = await registerUser();
+    const b = await registerUser();
+    const agA = await mkAgent(a.cookie, a.csrf);
+    const agB = await mkAgent(b.cookie, b.csrf);
+    const chName = "zz_only_" + Date.now().toString(36);
+    await mkChannel(a.cookie, a.csrf, { name: chName, type: "public", serverId: agA.server_id });
+
+    const j = await api(`/internal/agent/${agB.id}/channels/${chName}/join`, {
+      method: "POST",
+      cookie: b.cookie,
+      csrf: b.csrf,
+    });
+    expect(j.status).toBe(404);
+  });
+
+  it("默认社区公开频道 join 保持放行（单租户豁免回归）", async () => {
+    const c = await registerUser();
+    const agC = await mkAgent(c.cookie, c.csrf);
+    // 不带 serverId 建频道 → resolveTenant 兜底默认 server（web 建频道的实际形态）
+    const chName = "zz_def_" + Date.now().toString(36);
+    const ch = await mkChannel(c.cookie, c.csrf, { name: chName, type: "public" });
+    const j = await api(`/internal/agent/${agC.id}/channels/${chName}/join`, {
+      method: "POST",
+      cookie: c.cookie,
+      csrf: c.csrf,
+    });
+    expect(j.status).toBe(200);
+    expect(await agentChannelIds(agC.id)).toContain(ch.id);
+  });
+
+  it("私有频道 join 仍 403（须邀请）", async () => {
+    const c = await registerUser();
+    const agC = await mkAgent(c.cookie, c.csrf);
+    const chName = "zz_priv_" + Date.now().toString(36);
+    await mkChannel(c.cookie, c.csrf, { name: chName, type: "private", serverId: agC.server_id });
+    const j = await api(`/internal/agent/${agC.id}/channels/${chName}/join`, {
+      method: "POST",
+      cookie: c.cookie,
+      csrf: c.csrf,
+    });
+    expect(j.status).toBe(403);
   });
 });
