@@ -68,7 +68,8 @@ export async function messageRoutes(app: FastifyInstance) {
     if (!(await canAccessChannel(app, channelId, userId, accessOptsOf(tenant)))) {
       return reply.status(403).send({ error: "no access to this channel" });
     }
-    const lim = Number(limit) || 50;
+    // P0.6：limit 钳制到 [1,200]（对齐 notifications 写法），防单请求全量捞取的响应体/DB 压力
+    const lim = Math.min(Math.max(parseInt(limit || "50", 10) || 50, 1), 200);
     const result = await app.pg.query(
       'SELECT m.id, m.channel_id, m.server_id, m.sender_id as "senderId", m.sender_type as "senderType", COALESCE(u.display_name, u.handle, ag.display_name, ag.name, \'User\') as "senderName", COALESCE(u.handle, ag.name) as "senderHandle", m.content, m.seq, m.thread_id, m.task_number, m.task_status, m.task_assignee, m.created_at as "time", m.edited_at as "editedAt", (SELECT COUNT(*) FROM messages WHERE thread_id = m.id)::int as "replyCount", ' +
         reactionsJson() +
@@ -431,11 +432,13 @@ export async function messageRoutes(app: FastifyInstance) {
     //   hasMore 表示「还有更新的」，客户端用本页最大 seq 作为下一个 after 继续前翻。
     //   （DESC 语义下 after 只能拿到窗口内最新一页，游标一步到顶，>1 页的缺口会被静默截断。）
     const forward = after !== undefined && before === undefined;
+    // P0.6：limit 钳制到 [1,200]（对齐 notifications 写法），防单请求全量捞取的响应体/DB 压力
+    const lim = Math.min(Math.max(parseInt(limit || "50", 10) || 50, 1), 200);
     query += forward ? " ORDER BY seq ASC LIMIT $" + p : " ORDER BY seq DESC LIMIT $" + p;
-    params.push(Number(limit) || 50);
+    params.push(lim);
     const result = await app.pg.query(query, params);
     const rows = forward ? result.rows : result.rows.reverse();
-    return { messages: rows, hasMore: result.rows.length >= (Number(limit) || 50) };
+    return { messages: rows, hasMore: result.rows.length >= lim };
   });
 
   app.get("/search", { preHandler: [app.authenticate] }, async (req) => {

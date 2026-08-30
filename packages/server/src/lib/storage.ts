@@ -20,10 +20,16 @@ export interface Storage {
   remove(key: string): Promise<void>;
   /**
    * 浏览器可直接访问的同源 URL：
-   * - local：/files/<key>（@fastify/static + onRequest 鉴权）；
+   * - local：/files/<key>（@fastify/static + onRequest 鉴权 + 全局限流）；
    * - s3：配置了 S3_PUBLIC_BASE_URL 时为 <base>/<key>（公共桶/CDN 直链），
    *   否则为 /api/attachments/by-key?key=<encodeURIComponent(key)>（服务端鉴权 +
    *   访问控制后代理字节，私有桶不暴露签名密钥）。
+   *
+   * P0.7 capability URL 模型（立此存照）：local 后端的 /files/<uuid>/<文件名>
+   * 以 uuid 前缀（122 bit 熵）作为不可猜测的能力凭证，登录即可下载、不做频道级
+   * ACL——这是为浏览器内联渲染（<img>/<a>）有意保留的宽口径，泄漏后果由 uuid
+   * 不可猜测性兜底；严 ACL 访问一律走 by-key。若附件敏感度升级，把本方法返回值
+   * 切到 by-key 即完成收敛（index.ts filesScope 注释同步）。
    */
   publicUrl(key: string): string;
 }

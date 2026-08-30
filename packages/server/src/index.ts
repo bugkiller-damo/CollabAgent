@@ -197,17 +197,26 @@ server.decorate("authenticate", async (request: any, reply: any) => {
   return reply.status(401).send({ error: "Unauthorized" });
 });
 
+// 全局限流（onRequest 早于 CSRF 校验，先拦截异常流量）。
+// P0.7：必须在 filesScope 注册之前 addHook——Fastify 子作用域在 register 时按
+// 当时的父上下文快照继承 hook，之后补挂的全局 hook 不回溯已注册路由。
+server.addHook("onRequest", rateLimitHook);
+
 // /files/ 静态附件下载同样需要鉴权：浏览器 <img>/<a> 同源自动带 cookie，
 // daemon 走 sk_* Bearer —— 两者都能过 authenticate；未登录匿名访问直接 401。
 // 注意：这里只能挡「未登录」，频道成员级别的细粒度校验在 /api/attachments/:id 里做。
 // 必须在 authenticate 装饰器注册之后再挂 hook，否则 hook 拿到的是 undefined。
+//
+// Capability URL 模型（P0.7 立此存照）：/files/<uuid>/<净化文件名> 的 uuid 前缀
+// （122 bit 熵）是不可猜测的能力凭证——任何登录用户持 URL 即可下载，不做频道级 ACL。
+// 与 by-key 端点（/api/attachments/by-key，完整频道 ACL）是两种有意并存的模型：
+// 前者服务浏览器内联渲染（<img> 无法带 per-request 业务校验上下文），泄漏后果以
+// uuid 不可猜测性兜底；需要严 ACL 的访问走 by-key。若未来附件敏感度升级，收敛方向
+// 是把 publicUrl 切到 by-key（storage.ts 注释同步）。
 await server.register(async (filesScope) => {
   filesScope.addHook("onRequest", server.authenticate as any);
   await filesScope.register(fastifyStatic, { root: UPLOAD_DIR, prefix: "/files/", decorateReply: false });
 });
-
-// 全局限流（onRequest 早于 CSRF 校验，先拦截异常流量）
-server.addHook("onRequest", rateLimitHook);
 
 // CSRF（double-submit）：仅对「cookie 鉴权 + 改写型方法」生效；Bearer/机器令牌与登录引导路径豁免。
 server.addHook("onRequest", async (request: any, reply: any) => {

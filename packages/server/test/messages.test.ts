@@ -83,6 +83,29 @@ describe("messages: 发送 / 列取 / 编辑 / 搜索 / 反应 / 删除", () => 
     expect(r.data.messages.length).toBeLessThanOrEqual(2);
   });
 
+  it("limit 钳制：超上限按 200、负数按 1（P0.6）", async () => {
+    // 此时 #general 已有数条消息
+    const big = await api("/api/messages?channel=" + encodeURIComponent("#general") + "&limit=99999", { cookie: ck });
+    expect(big.status).toBe(200);
+    expect(big.data.messages.length).toBeLessThanOrEqual(200);
+    const low = await api("/api/messages?channel=" + encodeURIComponent("#general") + "&limit=-5", { cookie: ck });
+    expect(low.status).toBe(200);
+    expect(low.data.messages.length).toBe(1);
+  });
+
+  it("history limit 钳制：超上限按 200、负数按 1（P0.6）", async () => {
+    const big = await api("/api/messages/history?channel=" + encodeURIComponent("#general") + "&limit=99999", {
+      cookie: ck,
+    });
+    expect(big.status).toBe(200);
+    expect(big.data.messages.length).toBeLessThanOrEqual(200);
+    const low = await api("/api/messages/history?channel=" + encodeURIComponent("#general") + "&limit=-5", {
+      cookie: ck,
+    });
+    expect(low.status).toBe(200);
+    expect(low.data.messages.length).toBe(1);
+  });
+
   it("编辑自己的消息", async () => {
     const s = await api("/api/messages/send", {
       method: "POST",
