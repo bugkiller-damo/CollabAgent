@@ -257,3 +257,86 @@ describe("P0.4: agent join/leave 租户收敛", () => {
     expect(j.status).toBe(403);
   });
 });
+
+// P0.11：PATCH/DELETE /api/agents/:id 所有权校验——org 成员校验挡不住共享 org 内
+// 改/删他人 agent 的水平越权，收敛到 requireOwnAgent（与 /internal/agent 侧对齐）。
+describe("P0.11: agent 编辑/删除所有权", () => {
+  it("同 org 非 owner PATCH/DELETE 他人 agent → 403；owner 正常编辑/删除", async () => {
+    const owner = await registerUser();
+    const member = await registerUser();
+    const orgId = (await (await api("/api/orgs", { cookie: owner.cookie })).data.orgs[0]?.id) || "";
+    // member 加入 owner 的个人 org：org 校验本会放行，所有权校验必须拦下
+    expect(
+      (
+        await api(`/api/orgs/${orgId}/members`, {
+          method: "POST",
+          cookie: owner.cookie,
+          csrf: owner.csrf,
+          body: { handle: member.handle },
+        })
+      ).status,
+    ).toBe(200);
+    const created = await api("/api/agents", {
+      method: "POST",
+      cookie: owner.cookie,
+      csrf: owner.csrf,
+      body: { name: "own_" + uniqHandle(), displayName: "Owned", serverId: orgId },
+    });
+    expect(created.status).toBe(200);
+    const id = created.data.agent.id as string;
+
+    const patch = await api(`/api/agents/${id}`, {
+      method: "PATCH",
+      cookie: member.cookie,
+      csrf: member.csrf,
+      body: { displayName: "Hacked" },
+    });
+    expect(patch.status).toBe(403);
+    expect(patch.data.error).toBe("not your agent");
+    const del = await api(`/api/agents/${id}`, { method: "DELETE", cookie: member.cookie, csrf: member.csrf });
+    expect(del.status).toBe(403);
+    expect(del.data.error).toBe("not your agent");
+
+    // 越权未遂后 agent 原样保留
+    const listed = await api("/api/agents", { cookie: owner.cookie });
+    const row = (listed.data.agents as any[]).find((a) => a.id === id);
+    expect(row).toBeTruthy();
+    expect(row.display_name).toBe("Owned");
+
+    // owner 正常路径：PATCH 生效 → DELETE 成功 → 再次访问 404
+    const okPatch = await api(`/api/agents/${id}`, {
+      method: "PATCH",
+      cookie: owner.cookie,
+      csrf: owner.csrf,
+      body: { displayName: "Renamed" },
+    });
+    expect(okPatch.status).toBe(200);
+    expect(okPatch.data.agent.display_name).toBe("Renamed");
+    const okDel = await api(`/api/agents/${id}`, { method: "DELETE", cookie: owner.cookie, csrf: owner.csrf });
+    expect(okDel.status).toBe(200);
+    expect(okDel.data.ok).toBe(true);
+    const gone = await api(`/api/agents/${id}`, {
+      method: "PATCH",
+      cookie: owner.cookie,
+      csrf: owner.csrf,
+      body: { displayName: "x" },
+    });
+    expect(gone.status).toBe(404);
+  });
+
+  it("非 org 成员 DELETE 他人 agent → 403（不泄露删除能力）", async () => {
+    const owner = await registerUser();
+    const outsider = await registerUser();
+    const created = await api("/api/agents", {
+      method: "POST",
+      cookie: owner.cookie,
+      csrf: owner.csrf,
+      body: { name: "own_" + uniqHandle(), displayName: "Owned" },
+    });
+    expect(created.status).toBe(200);
+    const id = created.data.agent.id as string;
+    const del = await api(`/api/agents/${id}`, { method: "DELETE", cookie: outsider.cookie, csrf: outsider.csrf });
+    expect(del.status).toBe(403);
+    expect(del.data.error).toBe("not your agent");
+  });
+});

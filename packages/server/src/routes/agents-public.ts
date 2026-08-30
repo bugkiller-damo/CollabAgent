@@ -174,19 +174,11 @@ export async function agentPublicRoutes(app: FastifyInstance) {
   });
 
   // PATCH /agents/:agentId — 编辑（资料 + 运行时）
-  app.patch("/agents/:agentId", { preHandler: [app.authenticate] }, async (req: any, reply: any) => {
+  app.patch("/agents/:agentId", { preHandler: [app.authenticate, requireOwnAgent] }, async (req: any, reply: any) => {
     const { agentId } = req.params;
-    // POST /agents（创建）已经检查了调用者是否属于目标 org；PATCH/DELETE 之前完全没做
-    // 同类检查——任何登录用户都能改/删服务器上任意一个 agent。这里补上跟创建端点
-    // 一致的 org 归属校验。
-    const existing = await app.pg.query<{ server_id: string; user_id: string }>(
-      "SELECT server_id, user_id FROM agents WHERE id = $1",
-      [agentId],
-    );
-    if (existing.rows.length === 0) return reply.status(404).send({ error: "agent not found" });
-    const myOrgs = await getUserOrgIds(app, req.user.sub);
-    if (!myOrgs.includes(String(existing.rows[0].server_id)))
-      return reply.status(403).send({ error: "not a member of that org" });
+    // P0.11：所有权校验收敛到 requireOwnAgent（与 /internal/agent 侧对齐）。此前只有
+    // org 成员校验——共享 org 内任何成员都能改他人 agent（改 runtime/model 即重推
+    // agent:start），是水平越权。web 侧编辑/删除本就按 ownedByMe 门控，服务端滞后。
     const existingDuty = await app.pg.query<{ duty: string }>("SELECT duty FROM agents WHERE id = $1", [agentId]);
     const wasOff = parseAgentDuty(existingDuty.rows[0]?.duty) === "off";
     const { name, displayName, description, avatarUrl, runtime, model } = req.body || {};
@@ -238,20 +230,12 @@ export async function agentPublicRoutes(app: FastifyInstance) {
   });
 
   // DELETE /agents/:agentId — 删除（连带频道成员关系；保留历史消息）
-  app.delete("/agents/:agentId", { preHandler: [app.authenticate] }, async (req: any, reply: any) => {
+  app.delete("/agents/:agentId", { preHandler: [app.authenticate, requireOwnAgent] }, async (req: any) => {
     const { agentId } = req.params;
-    const exists = await app.pg.query<{ server_id: string; user_id: string }>(
-      "SELECT server_id, user_id FROM agents WHERE id = $1",
-      [agentId],
-    );
-    if (exists.rows.length === 0) return reply.status(404).send({ error: "agent not found" });
-    const myOrgs = await getUserOrgIds(app, req.user.sub);
-    if (!myOrgs.includes(String(exists.rows[0].server_id)))
-      return reply.status(403).send({ error: "not a member of that org" });
-
+    // P0.11：requireOwnAgent 已保证 agent 存在且属于调用者，sendToDaemon 目标即调用者本人。
     await app.pg.query("DELETE FROM channel_members WHERE member_id = $1 AND member_type = 'agent'", [agentId]);
     await app.pg.query("DELETE FROM agents WHERE id = $1", [agentId]);
-    sendToDaemon(String(exists.rows[0].user_id), { type: "agent:stop", agentId });
+    sendToDaemon(String(req.user.sub), { type: "agent:stop", agentId });
     return { ok: true };
   });
 
