@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { requireOwnAgent } from "../lib/agent-helpers.js";
 import { sha256Token } from "../lib/token-hash.js";
@@ -16,11 +17,9 @@ const TOKEN_PREFIX = "sk_agent_";
 const TTL_MS = 24 * 60 * 60 * 1000; // 24h：足够覆盖单次长会话，daemon 重启后下次 dispatch 会自然重新 mint
 
 function generateToken(): string {
-  const randomPart = Array.from(
-    { length: 32 },
-    () => "abcdefghijklmnopqrstuvwxyz0123456789"[Math.floor(Math.random() * 36)],
-  ).join("");
-  return TOKEN_PREFIX + randomPart;
+  // 24 字节 CSPRNG → base64url 32 字符（192 bit 熵）；Math.random 是可预测的
+  // V8 PRNG，不能作为凭据随机源（评估报告 P0.1）
+  return TOKEN_PREFIX + randomBytes(24).toString("base64url");
 }
 
 /** 防止一个已签发的 scoped token 自己给自己续期/自己撤销自己——必须用账号级
