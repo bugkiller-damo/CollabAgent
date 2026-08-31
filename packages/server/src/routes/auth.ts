@@ -11,6 +11,11 @@ import {
 } from "../lib/login-lock.js";
 import { validatePassword } from "../lib/validators.js";
 
+// P1.16：假 bcrypt 哈希（内容无关，仅耗时特征有效——12 轮 bcrypt.compare 恒失败）。
+// 「用户不存在」路径与之比对，使该路径与「密码错误」路径执行同量级的 KDF 耗时，
+// 抹平响应时序差，防账号存在性探测（配合统一 401 文案）。
+const TIMING_BALANCE_BCRYPT_HASH = "$2a$12$dPMf9jDeKEnTNtkoIRO3Be8CnqGzM/CSoKAgfw6heCExMN/Td4aqW";
+
 function sessionMaxAge(remember?: boolean): number {
   return (remember ? 30 : 7) * 24 * 3600;
 }
@@ -132,17 +137,23 @@ export async function authRoutes(app: FastifyInstance) {
     );
 
     if (result.rows.length === 0) {
+      // P1.16：用户不存在与密码错误走完全相同的失败形态——先做一次假 bcrypt
+      // 比对平衡 KDF 时序（否则「不存在」跳过 12 轮 bcrypt 的时序差可探测账号
+      // 存在性），再统一 401 通用文案，不再区分「用户不存在/密码错误」。
+      await bcrypt.compare(password as string, TIMING_BALANCE_BCRYPT_HASH);
       await recordLoginFailure(lockKey, ip);
-      return reply.status(401).send({ error: "用户不存在" });
+      return reply.status(401).send({ error: "用户名或密码错误" });
     }
 
     const user = result.rows[0] as Record<string, unknown>;
-    if (user.deactivated_at) {
-      return reply.status(403).send({ error: "该账户已注销" });
-    }
     if (!(await bcrypt.compare(password as string, user.password_hash as string))) {
       await recordLoginFailure(lockKey, ip);
-      return reply.status(401).send({ error: "密码错误" });
+      return reply.status(401).send({ error: "用户名或密码错误" });
+    }
+    // P1.16：注销账号的 403 挪到密码校验之后——原先在校验前返回，任意密码
+    // 都能探测「账号存在且已注销」；现在必须持有正确密码才能得知注销状态。
+    if (user.deactivated_at) {
+      return reply.status(403).send({ error: "该账户已注销" });
     }
 
     await clearLoginFailures(lockKey, ip);
@@ -170,17 +181,22 @@ export async function authRoutes(app: FastifyInstance) {
   // ---- Refresh（轮换：吊销旧会话 → 创新会话 → 发新 refresh + 新 CSRF）----
   app.post("/refresh", async (req, reply) => {
     const body = (req.body as Record<string, unknown>) || {};
-    const { parseCookies, ACCESS_COOKIE } = await import("../lib/cookies.js");
+    // P1.16：删除「cookie 回退」死码分支——原逻辑在没有 body.refreshToken 时读
+    // access cookie 顶替，随后仍按 REFRESH_SECRET 验签（永远验不过，恒 401），
+    // 只会误导维护者。refresh 令牌仅接受 body 显式传入（web 侧即如此调用）。
     const refreshToken = body.refreshToken as string | undefined;
     if (!refreshToken) {
-      const cookieTok = parseCookies(req.headers.cookie)[ACCESS_COOKIE];
-      if (!cookieTok) return reply.status(400).send({ error: "refreshToken required" });
+      return reply.status(400).send({ error: "refreshToken required" });
     }
     try {
       // P1.15：refresh 令牌验证走 @fastify/jwt refresh namespace（独立 REFRESH_SECRET）
       const decoded = app.jwt.refresh.verify(refreshToken as string) as Record<string, unknown>;
       if (decoded.type !== "refresh") throw new Error("not a refresh token");
-      if (decoded.sid) {
+      // P1.16：sid 强制必须存在——本服务签发的 refresh token 都带 sid；无 sid 的
+      // （伪造/极早期）令牌不再跳过吊销校验，直接按无效处理，封掉「无 sid 的
+      // refresh 绕过会话吊销检查」的理论缺口。
+      if (!decoded.sid) throw new Error("missing sid");
+      {
         const s = await app.pg.query(
           "SELECT id FROM user_sessions WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL",
           [decoded.sid, decoded.sub],

@@ -38,6 +38,66 @@ describe("auth: register / login / cookie / csrf / sessions / deactivate", () =>
     expect(r.status).toBe(401);
   });
 
+  it("登录失败统一 401 通用文案：用户不存在与密码错误不可区分（P1.16）", async () => {
+    const u = await registerUser();
+    const wrong = await api("/api/auth/login", { method: "POST", body: { handle: u.handle, password: "wrongpass" } });
+    const ghost = await api("/api/auth/login", {
+      method: "POST",
+      body: { handle: uniqHandle(), password: "Whatever123" },
+    });
+    expect(wrong.status).toBe(401);
+    expect(ghost.status).toBe(401);
+    expect(ghost.data.error).toBe(wrong.data.error);
+    expect(wrong.data.error).toBe("用户名或密码错误");
+  });
+
+  it("已注销账号：错误密码按普通失败 401，正确密码才暴露 403（P1.16 挪序）", async () => {
+    const u = await registerUser();
+    const de = await api("/api/profile/deactivate", {
+      method: "POST",
+      cookie: u.cookie,
+      csrf: u.csrf,
+      body: { password: "Test1234" },
+    });
+    expect(de.status).toBe(200);
+    const wrong = await api("/api/auth/login", { method: "POST", body: { handle: u.handle, password: "nope" } });
+    expect(wrong.status).toBe(401);
+    expect(wrong.data.error).toBe("用户名或密码错误");
+    const right = await api("/api/auth/login", { method: "POST", body: { handle: u.handle, password: "Test1234" } });
+    expect(right.status).toBe(403);
+  });
+
+  it("refresh 仅接受 body.refreshToken：cookie 兜底死码已删，缺参 400（P1.16）", async () => {
+    const u = await registerUser();
+    const r = await api("/api/auth/refresh", { method: "POST", cookie: u.cookie });
+    expect(r.status).toBe(400);
+  });
+
+  it("refresh 轮换闭环：新 refresh 可继续轮换、旧 refresh 吊销 401、access 不可当 refresh 用（P1.16）", async () => {
+    const h = uniqHandle();
+    const reg = await api("/api/auth/register", {
+      method: "POST",
+      body: { email: `${h}@test.local`, handle: h, password: "Test1234" },
+    });
+    expect(reg.status).toBe(200);
+    const refresh1 = reg.data.refreshToken as string;
+    expect(refresh1).toBeTruthy();
+
+    const r1 = await api("/api/auth/refresh", { method: "POST", body: { refreshToken: refresh1 } });
+    expect(r1.status).toBe(200);
+    expect(r1.data.refreshToken).toBeTruthy();
+    expect(r1.data.refreshToken).not.toBe(refresh1);
+    // 轮换出的新 refresh 仍可用
+    const r2 = await api("/api/auth/refresh", { method: "POST", body: { refreshToken: r1.data.refreshToken } });
+    expect(r2.status).toBe(200);
+    // 旧 refresh 对应会话已吊销 → 401
+    const r3 = await api("/api/auth/refresh", { method: "POST", body: { refreshToken: refresh1 } });
+    expect(r3.status).toBe(401);
+    // access token（JWT_SECRET）与 refresh（REFRESH_SECRET）不同 secret，不能互相顶替
+    const asRefresh = await api("/api/auth/refresh", { method: "POST", body: { refreshToken: reg.data.token } });
+    expect(asRefresh.status).toBe(401);
+  });
+
   it("cookie-auth mutating request without CSRF header is 403, with header is allowed", async () => {
     const u = await registerUser();
     // 无 csrf 头 → 403
