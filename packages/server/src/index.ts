@@ -84,14 +84,17 @@ const CORS_ORIGINS = process.env.CORS_ORIGINS?.split(",") || [
 ];
 await server.register(cors, { origin: CORS_ORIGINS, credentials: true });
 
-// OpenAPI / Swagger
-await server.register(swagger, {
-  openapi: {
-    info: { title: "CollabAgent API", version: "0.1.0", description: "Collaborative Agent Platform API" },
-    servers: [{ url: `http://localhost:${config.PORT}` }],
-  },
-});
-await server.register(swaggerUi, { routePrefix: "/docs" });
+// OpenAPI / Swagger——P1.17：生产不注册（swagger 零 schema 的空壳 + /docs 无鉴权
+// 泄露 /internal/agent/* 内部路由结构）；本地开发保留便于调试。
+if (process.env.NODE_ENV !== "production") {
+  await server.register(swagger, {
+    openapi: {
+      info: { title: "CollabAgent API", version: "0.1.0", description: "Collaborative Agent Platform API" },
+      servers: [{ url: `http://localhost:${config.PORT}` }],
+    },
+  });
+  await server.register(swaggerUi, { routePrefix: "/docs" });
+}
 
 await server.register(fastifyWebsocket);
 // P1.15：双 namespace 注册（fastify.jwt.access / fastify.jwt.refresh，类型见
@@ -122,7 +125,10 @@ server.decorate("authenticate", async (request: any, reply: any) => {
   const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : authHeader;
 
   if (authHeader === "Bearer dev-token") {
-    if (process.env.NODE_ENV === "production") {
+    // P1.17：dev-token 改显式 SLOCK_DEV_TOKEN=1 开关（默认关）——此前仅靠
+    // NODE_ENV 挡生产，dev server 一旦暴露到网络即成无凭据后门。生产误配由
+    // collectInsecureConfig 在启动时拦截（validateConfig 直接 exit(1)）。
+    if (process.env.SLOCK_DEV_TOKEN !== "1") {
       return reply.status(401).send({ error: "Unauthorized" });
     }
     request.user = { sub: "dev-user", handle: "dev" };

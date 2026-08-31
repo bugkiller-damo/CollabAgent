@@ -3,6 +3,7 @@
 // 用法：node scripts/smoke-agent.mjs [agentId]
 //   BASE 环境变量可覆盖服务器地址（默认 http://localhost:3001）
 // 鉴权用 dev-token（服务端 authenticate 接受 "Bearer dev-token"）。
+// P1.17 起 dev-token 默认关闭：须以 SLOCK_DEV_TOKEN=1 启动 server 才可用。
 // 会创建一个临时任务/反应并在结束时尽量清理。
 
 const BASE = process.env.BASE || "http://localhost:3001";

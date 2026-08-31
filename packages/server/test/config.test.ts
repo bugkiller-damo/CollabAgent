@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { collectInsecureConfig, INSECURE_DEV_DEFAULTS, parseTrustProxy } from "../src/lib/config.js";
+import { collectInsecureConfig, INSECURE_DEV_DEFAULTS, parseCookieSecure, parseTrustProxy } from "../src/lib/config.js";
 
 // O5：配置危险默认值硬校验——collectInsecureConfig 为纯函数，直接断言各分支。
 describe("collectInsecureConfig", () => {
@@ -73,5 +73,44 @@ describe("parseTrustProxy", () => {
     expect(parseTrustProxy("10.0.0.1, 10.0.0.2")).toEqual(["10.0.0.1", "10.0.0.2"]);
     expect(parseTrustProxy("127.0.0.1")).toEqual(["127.0.0.1"]);
     expect(parseTrustProxy("10.0.0.1,,10.0.0.2")).toEqual(["10.0.0.1", "10.0.0.2"]);
+  });
+});
+
+// P1.17：COOKIE_SECURE 解析——显式开/关优先，缺省 auto（应用层按 NODE_ENV 判定）
+describe("parseCookieSecure", () => {
+  it("空 / 未识别 → auto（按 NODE_ENV=production 判定）", () => {
+    expect(parseCookieSecure("")).toBe("auto");
+    expect(parseCookieSecure("   ")).toBe("auto");
+    expect(parseCookieSecure("whatever")).toBe("auto");
+  });
+
+  it("显式开启（1/true/yes/on，大小写不敏感）", () => {
+    for (const v of ["1", "true", "YES", "On"]) expect(parseCookieSecure(v)).toBe(true);
+  });
+
+  it("显式关闭（0/false/no/off，大小写不敏感）", () => {
+    for (const v of ["0", "false", "No", "OFF"]) expect(parseCookieSecure(v)).toBe(false);
+  });
+});
+
+// P1.17：dev-token 后门显式开启即标记（生产经 validateConfig 拒绝启动）
+describe("collectInsecureConfig：SLOCK_DEV_TOKEN（P1.17）", () => {
+  it("SLOCK_DEV_TOKEN=1 被标记", () => {
+    const issues = collectInsecureConfig({
+      JWT_SECRET: "ok",
+      REFRESH_SECRET: "ok",
+      DATABASE_URL: "postgresql://u:p@db/app",
+      SLOCK_DEV_TOKEN: "1",
+    });
+    expect(issues.some((i) => i.includes("SLOCK_DEV_TOKEN"))).toBe(true);
+  });
+
+  it("未设置时不产生额外标记（基线仍为零问题）", () => {
+    const issues = collectInsecureConfig({
+      JWT_SECRET: "ok",
+      REFRESH_SECRET: "ok",
+      DATABASE_URL: "postgresql://u:p@db/app",
+    });
+    expect(issues).toEqual([]);
   });
 });

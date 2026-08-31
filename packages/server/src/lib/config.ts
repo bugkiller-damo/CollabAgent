@@ -54,6 +54,21 @@ export function parseTrustProxy(raw: string): boolean | string[] {
     .filter(Boolean);
 }
 
+/**
+ * P1.17：解析 COOKIE_SECURE 环境变量为 Cookie Secure 属性判定（纯函数，可单测）。
+ * "1"/"true"/"yes"/"on" 显式开启；"0"/"false"/"no"/"off" 显式关闭；空或未识别
+ * → "auto"（由应用层按 NODE_ENV=production 判定）。应用层自行判定而非依赖
+ * 反代改写 Set-Cookie——部署疏漏不再导致凭据明文传输（httpOnly access cookie）。
+ */
+export function parseCookieSecure(raw: string): boolean | "auto" {
+  const v = String(raw || "")
+    .trim()
+    .toLowerCase();
+  if (["1", "true", "yes", "on"].includes(v)) return true;
+  if (["0", "false", "no", "off"].includes(v)) return false;
+  return "auto";
+}
+
 export const config = {
   PORT: Number(process.env.PORT) || 3001,
   HOST: process.env.HOST || "0.0.0.0",
@@ -90,6 +105,9 @@ export const config = {
   // （nginx 同机反代填 127.0.0.1），之后 req.ip 才按 X-Forwarded-For 解析
   // （限流与登录锁定共用同一判定）。
   TRUST_PROXY: parseTrustProxy(env("TRUST_PROXY", "")),
+  // P1.17：Cookie Secure 属性判定（"auto" = NODE_ENV=production 时开启；应用层
+  // 判定，不依赖反代改写）。显式覆盖见 parseCookieSecure。
+  COOKIE_SECURE: parseCookieSecure(env("COOKIE_SECURE", "")),
 } as const;
 
 /**
@@ -117,6 +135,11 @@ export function collectInsecureConfig(e: NodeJS.ProcessEnv = process.env): strin
     for (const key of ["S3_ENDPOINT", "S3_BUCKET", "S3_ACCESS_KEY", "S3_SECRET_KEY"] as const) {
       if (!e[key]) issues.push(`STORAGE_BACKEND=${backend} 需要设置 ${key}（对象存储连接参数缺失）`);
     }
+  }
+  // P1.17：dev-token 无凭据后门显式开启即标记——生产环境经 validateConfig 直接
+  // 拒绝启动（本地开发仅告警），配合 index.ts authenticate 的显式开关。
+  if (e.SLOCK_DEV_TOKEN === "1") {
+    issues.push("SLOCK_DEV_TOKEN=1（dev-token 无凭据后门已开启，仅限本地开发调试，禁止用于真实部署）");
   }
   return issues;
 }
