@@ -7,6 +7,7 @@ import Fastify from "fastify";
 import pgPlugin, { closeDb, sql } from "./db/connection.js";
 import { runMigrations } from "./db/migrate.js";
 import { config, validateConfig } from "./lib/config.js";
+import { ACTIVE_TOKEN_PREDICATE, machineTokenRenewalDue } from "./lib/machine-token-policy.js";
 import { createPubSub } from "./lib/pubsub.js";
 import { rateLimitHook } from "./lib/rate-limit.js";
 import { UPLOAD_DIR } from "./lib/storage.js";
@@ -135,15 +136,29 @@ server.decorate("authenticate", async (request: any, reply: any) => {
   // Machine token (sk_machine_*)
   if (token.startsWith("sk_machine_")) {
     const { sha256Token, isBcryptHash } = await import("./lib/token-hash.js");
-    // 快路径：sha256 哈希直接按唯一索引命中（新签发的令牌都走这里）
-    const fast = await server.pg.query<{ user_id: string; scope: string }>(
-      "SELECT user_id, scope FROM machine_tokens WHERE token_hash = $1 AND revoked_at IS NULL",
+    // 快路径：sha256 哈希直接按唯一索引命中（新签发的令牌都走这里）。
+    // P1.12：过期谓词拒绝超期令牌（NULL 豁免存量行，见 lib/machine-token-policy.ts）。
+    const fast = await server.pg.query<{ id: string; user_id: string; scope: string; expires_at: Date | null }>(
+      `SELECT id, user_id, scope, expires_at FROM machine_tokens
+        WHERE token_hash = $1 AND revoked_at IS NULL AND ${ACTIVE_TOKEN_PREDICATE}`,
       [sha256Token(token)],
     );
     if (fast.rows.length > 0) {
-      const user = await server.pg.query("SELECT id, handle FROM users WHERE id = $1", [fast.rows[0].user_id]);
+      const row = fast.rows[0]!;
+      const user = await server.pg.query("SELECT id, handle FROM users WHERE id = $1", [row.user_id]);
       if (user.rows.length > 0) {
-        request.user = { sub: user.rows[0].id, handle: user.rows[0].handle, scope: fast.rows[0].scope };
+        request.user = { sub: user.rows[0].id, handle: user.rows[0].handle, scope: row.scope };
+        // P1.12 滚动续期：剩余 <30 天才写库顺延到 +90 天（HTTP 每请求都走这里，
+        // 阈值门控把写放大压到每令牌最多每 60 天一次）；续期失败不影响本次认证。
+        if (machineTokenRenewalDue(row.expires_at)) {
+          try {
+            await server.pg.query("UPDATE machine_tokens SET expires_at = now() + interval '90 days' WHERE id = $1", [
+              row.id,
+            ]);
+          } catch (e) {
+            request.log.warn({ err: e }, "machine token rolling renewal failed (non-fatal)");
+          }
+        }
         return;
       }
       return reply.status(401).send({ error: "Invalid machine token" });
@@ -151,11 +166,14 @@ server.decorate("authenticate", async (request: any, reply: any) => {
     // 兼容路径：历史 bcrypt 哈希的令牌（等全部轮换/吊销后可删除此分支，O8）。
     // 观测：machineAuthBcryptScans/Hits 计数器（/api/metrics）+ 命中 warn 日志；
     // 退役判定见 docs/2026-08-16/08-bcrypt-token-retirement.md。
+    // P1.12：同样拒绝过期令牌；此路径不做滚动续期——存量 bcrypt 令牌靠过期
+    // 压力促成轮换退役。
     const { inc } = await import("./lib/metrics.js");
     inc("machineAuthBcryptScans");
     const bcrypt = (await import("bcryptjs")).default;
     const legacy = await server.pg.query<{ user_id: string; scope: string; token_hash: string }>(
-      "SELECT user_id, scope, token_hash FROM machine_tokens WHERE revoked_at IS NULL",
+      `SELECT user_id, scope, token_hash FROM machine_tokens
+        WHERE revoked_at IS NULL AND ${ACTIVE_TOKEN_PREDICATE}`,
     );
     for (const row of legacy.rows) {
       if (isBcryptHash(row.token_hash) && (await bcrypt.compare(token, row.token_hash))) {

@@ -4,7 +4,7 @@
 > 评估范围：`packages/server/src/` 61 个源文件（routes 23 + lib 28 + db 5 + ws 1 + index + types）、`test/` 31 个测试文件 + helpers（289 用例）；并交叉核对 daemon（client.ts / daemon-core / mcp / cli）、web（Vue3 api 层）与 `@collabagent/shared` 的三端契约  
 > 评估方法：7 名子 agent 并行按维度精读源码与测试（架构 / 路由完成度 / 数据层与 WS / 安全 / 后台任务与集成 / 测试质量 / 接口契约），结构化结论由主编综合去重、定级；所有问题均带 file:line 证据，标注「待确认」处需运行时核实  
 > 当前基线（2026-08-28 本机实测）：`tsc --noEmit` 零错误；server 本机可启动（`.env` + 本地 PG，`/api/health` 返回 `{db:true}`）；vitest 为黑盒集成测试，**须先以 `NODE_ENV=test` 启动 server**（`rate-limit.ts:74` 依赖此开关跳过限流），正确姿势下 **32/32 文件、283/283 用例全绿**（约 83s）；以普通模式起 server 会被套件自身注册量触发 429（实测 146 过 / 20 败，败因全部为 `请求过于频繁`）  
-> 版本上下文：当前分支 `feature/web-vue3`（web 为 Vue3 重写版）；daemon 侧评估报告 P0.1–P1.16 已全部落地（`docs/2026-08-24/01-daemon-evaluation-report.md`）；**server 侧 P0.1–P0.10 已落地。注：P0.1/P0.2 修复（b230648/2670d0f）当时只提交推送到了 `feature/web-vue3`，未合并回 main，导致 main 工作区一度复核为「失实」；2026-08-30 经 merge（4fdf1f9）补入 main 并与 P0.3/P0.4 一并复验（33/33 文件 295 用例全绿）；P0.5 于同日落地后复验 299 用例全绿；P0.6/P0.7 同日落地复验 301 用例全绿；P0.8 同日落地复验 34/34 文件 306 用例全绿；P0.9 于 2026-08-31 落地复验 34/34 文件 307 用例全绿；P0.10 于 2026-08-31 落地复验 35/35 文件 310 用例全绿；P0.11 于 2026-08-31 落地复验 35/35 文件 312 用例全绿**
+> 版本上下文：当前分支 `feature/web-vue3`（web 为 Vue3 重写版）；daemon 侧评估报告 P0.1–P1.16 已全部落地（`docs/2026-08-24/01-daemon-evaluation-report.md`）；**server 侧 P0.1–P0.10 已落地。注：P0.1/P0.2 修复（b230648/2670d0f）当时只提交推送到了 `feature/web-vue3`，未合并回 main，导致 main 工作区一度复核为「失实」；2026-08-30 经 merge（4fdf1f9）补入 main 并与 P0.3/P0.4 一并复验（33/33 文件 295 用例全绿）；P0.5 于同日落地后复验 299 用例全绿；P0.6/P0.7 同日落地复验 301 用例全绿；P0.8 同日落地复验 34/34 文件 306 用例全绿；P0.9 于 2026-08-31 落地复验 34/34 文件 307 用例全绿；P0.10 于 2026-08-31 落地复验 35/35 文件 310 用例全绿；P0.11 于 2026-08-31 落地复验 35/35 文件 312 用例全绿；P1.12 于 2026-08-31 落地复验 36/36 文件 320 用例全绿**
 
 ---
 
@@ -159,14 +159,14 @@
 | 中 | `index.ts:204-207`、`storage.ts:82-84` | `/files/` 仅登录即放行，无频道级 ACL；S3 后端走 by-key 有完整 ACL——两后端鉴权模型不一致 | 登录用户持 storage_url 可绕过私有频道 403 直取文件（uuid 前缀构成弱 capability URL，泄漏即失效） |
 | 中 | `agents-public.ts:177-189、241-250` | ~~PATCH/DELETE agent 只校验 org 成员不校验所有权（另见 P0.11）~~ **✅ 2026-08-31 已修（P0.11，requireOwnAgent）** | ~~共享 org 内水平越权（改 runtime/删 agent）~~ |
 | 中 | `login-lock.ts:151-154` | XFF 无条件采信（另见 §2.1 中高） | IP 维度锁定可旁路，分布式撞库喷洒 |
-| 中 | `profile.ts:217-220` | machine_tokens 无 `expires_at`（对比 sk_agent_ 24h） | 账号级全权 token 永不过期、可无限签发 |
+| 中 | `profile.ts:217-220` | ~~machine_tokens 无 `expires_at`（对比 sk_agent_ 24h）~~ **✅ 2026-08-31 已修（P1.12，默认 90 天滚动续期 + 签发上限）** | ~~账号级全权 token 永不过期、可无限签发~~ 已消除 |
 | 中低 | `auth.ts:140-152` | 登录错误细分用户不存在/密码错误；用户不存在时跳过 bcrypt 时序差 | 用户名枚举 + 存在性探测（限流缓解不消除） |
 | 中低 | `cookies.ts:26-31` | cookie 永不设 `Secure`、无 `__Host-` 前缀，依赖反代改写 | 部署疏漏即凭据明文传输 |
 | 中低 | `auth.ts:177-185` | `/refresh` cookie 兜底死码；无 sid 的 refresh 跳过吊销校验 | 带 cookie 不带 body 的刷新全挂；理论吊销缺口 |
 | 中低 | `session-check.ts:28-32`、`index.ts:184` | 无 tv/sid 的历史 token 跳过 token_version/会话校验 | 存量旧 token 对 logout-all/改密免疫（迁移边界，待确认存量） |
 | 低 | dev-token 靠 NODE_ENV 挡、`/docs` 生产暴露、session 缓存无清扫、MIME 无魔数嗅探、Valkey PEXPIRE NX 需 ≥7.0、审计链无外部锚定、org 内 hostname 泄漏 | 见 §4 P2 | 择期处理 |
 
-**安全机制状态清单（摘要）**：bcrypt12 ✅ / 双密钥 JWT ✅ / refresh 轮换 ✅ / 会话回查 ✅ / 防爆破 ✅（IP 维度可旁路）/ 全局限流 ✅（未配 trustProxy）/ CSRF ✅ / cookie httpOnly ✅（Secure ❌）/ sk_machine_ ⚠️（~~Math.random~~ 生成已换 CSPRNG ✅ P0.1；永不过期 → P1.12）/ sk_agent_ scoped ✅ / legacy bcrypt 退役观测 ✅ / requireOwnAgent ✅（/api 侧 agent PATCH/DELETE 例外已于 P0.11 补齐）/ 上传防护 ✅（无魔数/配额）/ 附件 ACL ⚠️（/files/ 无）/ 租户边界 ✅（默认豁免是文档化决定）/ 审计链 ✅（无外部锚定）/ secrets 硬校验 ✅。
+**安全机制状态清单（摘要）**：bcrypt12 ✅ / 双密钥 JWT ✅ / refresh 轮换 ✅ / 会话回查 ✅ / 防爆破 ✅（IP 维度可旁路）/ 全局限流 ✅（未配 trustProxy）/ CSRF ✅ / cookie httpOnly ✅（Secure ❌）/ sk_machine_ ⚠️（~~Math.random~~ 生成已换 CSPRNG ✅ P0.1；~~永不过期/无限签发~~ 默认 90 天滚动续期 + 单用户活跃上限 10 ✅ P1.12）/ sk_agent_ scoped ✅ / legacy bcrypt 退役观测 ✅ / requireOwnAgent ✅（/api 侧 agent PATCH/DELETE 例外已于 P0.11 补齐）/ 上传防护 ✅（无魔数/配额）/ 附件 ACL ⚠️（/files/ 无）/ 租户边界 ✅（默认豁免是文档化决定）/ 审计链 ✅（无外部锚定）/ secrets 硬校验 ✅。
 
 ### 2.5 后台任务与 Agent 集成（6.0 / 10）
 
@@ -256,7 +256,7 @@
 
 | # | 行动项 | 位置 |
 |---|---|---|
-| P1.12 | `machine_tokens` 加默认过期（如 90 天滚动续期）+ 同用户签发数量上限 | `profile.ts:217-220` |
+| P1.12 | ~~`machine_tokens` 加默认过期（如 90 天滚动续期）+ 同用户签发数量上限~~ **✅ 2026-08-31 已修**：① 新增 `lib/machine-token-policy.ts` 集中承载策略（TTL 90 天 / HTTP 续期阈值 30 天 / 单用户活跃上限 10 个 / `ACTIVE_TOKEN_PREDICATE` 过期谓词）；② 迁移 `019_machine_token_expiry.sql` 把存量 NULL `expires_at` 统一回填为「迁移时刻 + 90 天」（完整轮换缓冲，不再有永不过期的令牌）；③ 签发点两处——`POST /api/profile/machine-token` 加活跃令牌计数上限（超限 409，吊销/过期即释放额度）+ INSERT 带 90 天 `expires_at`；`POST /api/computers/me/token` 轮换签发同样带 90 天（该端点先吊销全部旧钥，rotation 自限无需 cap）；④ 校验点四处——HTTP/WS sha256 快路径加过期谓词（NULL 豁免存量/手工行），HTTP 剩余 <30 天才写库顺延到 +90 天（阈值门控把写放大压到每令牌最多每 60 天一次，续期失败仅 warn 不影响认证），WS 连接即续期（连接频率低不做阈值，与 HTTP 共同构成「活跃令牌不过期」），legacy bcrypt 全表扫描路径加过期谓词但**不续期**（靠过期压力促成 O8 轮换退役）；⑤ `GET /tokens` 本就返回 `expires_at` 可直接展示。新增 `test/machine-token-expiry.test.ts` 8 用例（签发 90 天、上限 409+吊销释放、过期 HTTP 401 / WS 4001、阈值续期、充裕期不写、WS 连接续期、NULL 豁免）；全量复验 36/36 文件 320 用例绿 | `lib/machine-token-policy.ts`（新）+ `db/migrations/019`（新）+ `profile.ts` + `computers.ts` + `index.ts:136-198` + `ws/handler.ts:150-190` | 消除账号级全权令牌永不过期、可无限签发 |
 | P1.13 | 统一 IP 策略：Fastify 显式 `trustProxy` 配置 + 仅在确认反代链时采信 XFF；`clientIpOf` 与 `rateLimitHook` 同源 | `login-lock.ts:151-154`、`rate-limit.ts:77` |
 | P1.14 | bcrypt 兼容路径加全局并发/速率护栏，或按退役文档加速轮换 | `index.ts:157-173`、`ws/handler.ts:163-174` |
 | P1.15 | 抽 `lib/auth-token.ts` 收敛机器令牌校验（HTTP/WS 共用）；WS 侧 JWT 补 session 回查并与 `@fastify/jwt` 同源，消灭 `jsonwebtoken` 直用 | `index.ts:136-175`、`ws/handler.ts:145-181` |

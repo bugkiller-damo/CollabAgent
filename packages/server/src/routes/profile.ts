@@ -2,6 +2,11 @@ import { randomBytes } from "node:crypto";
 import bcrypt from "bcryptjs";
 import type { FastifyInstance } from "fastify";
 import { clearAuthCookies } from "../lib/cookies.js";
+import {
+  countActiveMachineTokens,
+  MACHINE_TOKEN_MAX_ACTIVE_PER_USER,
+  MACHINE_TOKEN_TTL_DAYS,
+} from "../lib/machine-token-policy.js";
 import { validatePassword } from "../lib/validators.js";
 
 export async function profileRoutes(app: FastifyInstance) {
@@ -213,9 +218,21 @@ export async function profileRoutes(app: FastifyInstance) {
     const { sha256Token } = await import("../lib/token-hash.js");
     const hash = sha256Token(tokenValue);
 
+    // P1.12：同用户活跃令牌数量上限——sk_machine_ 是账号级全权令牌，可无限签发
+    // 等于可无限持有。吊销（DELETE /tokens/:id）或令牌过期即释放额度。
+    const activeCount = await countActiveMachineTokens(app, userId);
+    if (activeCount >= MACHINE_TOKEN_MAX_ACTIVE_PER_USER) {
+      return reply.status(409).send({
+        error: `活跃机器令牌已达上限（${MACHINE_TOKEN_MAX_ACTIVE_PER_USER} 个），请先在令牌列表中吊销不再使用的令牌`,
+      });
+    }
+
+    // P1.12：默认 90 天有效期（此前永不过期）；剩余 <30 天时由认证路径滚动续期，
+    // 策略常量与谓词集中在 lib/machine-token-policy.ts
+    const expiresAt = new Date(Date.now() + MACHINE_TOKEN_TTL_DAYS * 86_400_000);
     await app.pg.query(
-      "INSERT INTO machine_tokens (user_id, server_id, token_hash, token_prefix, scope) VALUES ($1, $2, $3, $4, $5)",
-      [userId, orgId, hash, prefix, JSON.stringify({ send: true, read: true, tasks: true })],
+      "INSERT INTO machine_tokens (user_id, server_id, token_hash, token_prefix, scope, expires_at) VALUES ($1, $2, $3, $4, $5, $6)",
+      [userId, orgId, hash, prefix, JSON.stringify({ send: true, read: true, tasks: true }), expiresAt],
     );
     return { token: tokenValue, prefix, serverId: orgId, message: "Save this token — it won't be shown again" };
   });

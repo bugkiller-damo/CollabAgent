@@ -10,6 +10,7 @@ import jwt from "jsonwebtoken";
 import type { WebSocket } from "ws";
 import { appendEvent } from "../lib/audit.js";
 import { config } from "../lib/config.js";
+import { ACTIVE_TOKEN_PREDICATE } from "../lib/machine-token-policy.js";
 import type { PubSub } from "../lib/pubsub.js";
 import { normalizeRuntimes } from "../lib/runtime-probe.js";
 
@@ -148,20 +149,36 @@ async function resolveUserId(token: string | null, isDaemon: boolean): Promise<s
     if (!wsPg) return "anon";
     try {
       const { sha256Token, isBcryptHash } = await import("../lib/token-hash.js");
-      // 快路径：sha256 直接索引命中（新令牌）
-      const fast = await wsPg.query<{ user_id: string }>(
-        "SELECT user_id FROM machine_tokens WHERE token_hash = $1 AND revoked_at IS NULL",
+      // 快路径：sha256 直接索引命中（新令牌）。
+      // P1.12：过期谓词拒绝超期令牌（NULL 豁免存量行，见 lib/machine-token-policy.ts）。
+      const fast = await wsPg.query<{ id: string; user_id: string; expires_at: Date | null }>(
+        `SELECT id, user_id, expires_at FROM machine_tokens
+          WHERE token_hash = $1 AND revoked_at IS NULL AND ${ACTIVE_TOKEN_PREDICATE}`,
         [sha256Token(token)],
       );
-      if (fast.rows.length > 0) return String(fast.rows[0].user_id);
+      if (fast.rows.length > 0) {
+        const row = fast.rows[0]!;
+        // P1.12 滚动续期：daemon 连接即把有效期顺延到 +90 天——连接频率低，
+        // 不做 HTTP 侧的阈值门控；与 HTTP 阈值续期共同构成「活跃令牌不过期」。
+        // 续期失败不得影响本次认证结果（外层 catch 会把错误吞成 anon → 4001），
+        // 所以这里单独兜住。
+        try {
+          await wsPg.query("UPDATE machine_tokens SET expires_at = now() + interval '90 days' WHERE id = $1", [row.id]);
+        } catch (e) {
+          console.warn("[WS] machine token rolling renewal failed (non-fatal)", e);
+        }
+        return String(row.user_id);
+      }
       // 兼容路径：历史 bcrypt 令牌逐行比对（O8：轮换后可删除，判定见
       // docs/2026-08-16/08-bcrypt-token-retirement.md）。
       // 观测：machineAuthBcryptScans/Hits 计数器 + 命中 warn 日志。
+      // P1.12：同样拒绝过期令牌；此路径不续期——存量 bcrypt 令牌靠过期压力促成轮换退役。
       const { inc } = await import("../lib/metrics.js");
       inc("machineAuthBcryptScans");
       const bcrypt = (await import("bcryptjs")).default;
       const result = await wsPg.query<{ user_id: string; token_hash: string }>(
-        "SELECT user_id, token_hash FROM machine_tokens WHERE revoked_at IS NULL",
+        `SELECT user_id, token_hash FROM machine_tokens
+          WHERE revoked_at IS NULL AND ${ACTIVE_TOKEN_PREDICATE}`,
       );
       for (const row of result.rows) {
         if (isBcryptHash(row.token_hash) && (await bcrypt.compare(token, row.token_hash))) {

@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import type { RuntimeProbe } from "@collabagent/shared";
 import type { FastifyInstance } from "fastify";
+import { MACHINE_TOKEN_TTL_DAYS } from "../lib/machine-token-policy.js";
 import { getOrCreatePersonalOrg, getUserOrgIds } from "../lib/orgs.js";
 import { normalizeRuntimes } from "../lib/runtime-probe.js";
 import { sha256Token } from "../lib/token-hash.js";
@@ -192,14 +193,18 @@ export async function computerRoutes(app: FastifyInstance) {
     ]);
 
     const tokenValue = mintMachineTokenValue();
+    // P1.12：轮换签发同样带 90 天默认有效期（滚动续期见 lib/machine-token-policy.ts）。
+    // 该端点先吊销全部旧钥再签发（rotation 自限），无需再做数量上限检查。
+    const expiresAt = new Date(Date.now() + MACHINE_TOKEN_TTL_DAYS * 86_400_000);
     await app.pg.query(
-      "INSERT INTO machine_tokens (user_id, server_id, token_hash, token_prefix, scope) VALUES ($1, $2, $3, $4, $5)",
+      "INSERT INTO machine_tokens (user_id, server_id, token_hash, token_prefix, scope, expires_at) VALUES ($1, $2, $3, $4, $5, $6)",
       [
         userId,
         serverId,
         sha256Token(tokenValue),
         "sk_machine_",
         JSON.stringify({ send: true, read: true, tasks: true }),
+        expiresAt,
       ],
     );
 
