@@ -25,6 +25,14 @@ export const MACHINE_TOKEN_MAX_ACTIVE_PER_USER = 10;
  */
 export const ACTIVE_TOKEN_PREDICATE = "(expires_at IS NULL OR expires_at > now())";
 
+/**
+ * bcrypt 形态哈希谓词（P1.14）：legacy 兼容路径的全表扫描用 SQL 侧预过滤，
+ * 只取 $2a$/$2b$/$2y$ 前缀的行——存量全部轮换为 sha256 后该查询稳定返回 0 行，
+ * 兼容路径退化为一次廉价查询（与 08-bcrypt-token-retirement.md 的审计 SQL 同口径）。
+ * JS 侧 isBcryptHash 校验保留作纵深防御。
+ */
+export const BCRYPT_TOKEN_PREDICATE = "(token_hash LIKE '$2a$%' OR token_hash LIKE '$2b$%' OR token_hash LIKE '$2y$%')";
+
 /** 剩余有效期是否已进入续期窗口（NULL 表示无过期时间，无需续期） */
 export function machineTokenRenewalDue(expiresAt: Date | string | null): boolean {
   if (expiresAt == null) return false;

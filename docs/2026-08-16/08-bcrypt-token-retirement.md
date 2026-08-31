@@ -15,6 +15,12 @@ bcrypt 兼容分支：
 | `packages/server/src/index.ts`（HTTP `authenticate` 装饰器，machine token 段） | sha256 索引未命中后，`SELECT user_id, scope, token_hash FROM machine_tokens WHERE revoked_at IS NULL` 全表扫描 + 逐行 `bcrypt.compare` |
 | `packages/server/src/ws/handler.ts`（WS `resolveUserId`，daemon 段） | 同上（`SELECT user_id, token_hash ...`） |
 
+> 2026-08-31 更新（评估报告 P1.14）：两处兼容分支已加全局护栏（`lib/machine-token-guard.ts`，
+> HTTP/WS 共用单例：per-IP 速率 20/min + 并发信号量 2，超预算 HTTP 429 / WS 4001，
+> 计数器 `machineAuthBcryptRejected`），扫描查询另加 bcrypt 形态 SQL 预过滤
+> （`BCRYPT_TOKEN_PREDICATE`）——存量轮换完后兼容路径退化为一次 0 行廉价查询。
+> 本文档第 3/4 节退役判定与步骤不变。
+
 ## 2. 观测手段（已落地）
 
 - **metrics 计数器**（`GET /api/metrics` → `counters`）：

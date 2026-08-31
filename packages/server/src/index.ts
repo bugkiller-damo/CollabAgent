@@ -7,7 +7,7 @@ import Fastify from "fastify";
 import pgPlugin, { closeDb, sql } from "./db/connection.js";
 import { runMigrations } from "./db/migrate.js";
 import { config, validateConfig } from "./lib/config.js";
-import { ACTIVE_TOKEN_PREDICATE, machineTokenRenewalDue } from "./lib/machine-token-policy.js";
+import { ACTIVE_TOKEN_PREDICATE, BCRYPT_TOKEN_PREDICATE, machineTokenRenewalDue } from "./lib/machine-token-policy.js";
 import { createPubSub } from "./lib/pubsub.js";
 import { rateLimitHook } from "./lib/rate-limit.js";
 import { UPLOAD_DIR } from "./lib/storage.js";
@@ -183,26 +183,42 @@ server.decorate("authenticate", async (request: any, reply: any) => {
     // 退役判定见 docs/2026-08-16/08-bcrypt-token-retirement.md。
     // P1.12：同样拒绝过期令牌；此路径不做滚动续期——存量 bcrypt 令牌靠过期
     // 压力促成轮换退役。
+    // P1.14：未知令牌走此路径 = 全表拉取 + 逐行 bcrypt（O(N×12) CPU）的 DoS
+    // 放大面——先过全局护栏（per-IP 速率 + 并发信号量，与 WS 共用单例，
+    // 见 lib/machine-token-guard.ts），超限直接 429，不再触达 DB 与 bcrypt。
     const { inc } = await import("./lib/metrics.js");
-    inc("machineAuthBcryptScans");
-    const bcrypt = (await import("bcryptjs")).default;
-    const legacy = await server.pg.query<{ user_id: string; scope: string; token_hash: string }>(
-      `SELECT user_id, scope, token_hash FROM machine_tokens
-        WHERE revoked_at IS NULL AND ${ACTIVE_TOKEN_PREDICATE}`,
-    );
-    for (const row of legacy.rows) {
-      if (isBcryptHash(row.token_hash) && (await bcrypt.compare(token, row.token_hash))) {
-        inc("machineAuthBcryptHits");
-        request.log.warn(
-          { userId: row.user_id, scope: row.scope },
-          "legacy bcrypt machine token used — rotate/revoke it (see 08-bcrypt-token-retirement.md)",
-        );
-        const user = await server.pg.query("SELECT id, handle FROM users WHERE id = $1", [row.user_id]);
-        if (user.rows.length > 0) {
-          request.user = { sub: user.rows[0].id, handle: user.rows[0].handle, scope: row.scope };
-          return;
+    const { machineTokenBcryptGuard } = await import("./lib/machine-token-guard.js");
+    const verdict = await machineTokenBcryptGuard.tryEnter(request.ip || "");
+    if (verdict !== "allowed") {
+      inc("machineAuthBcryptRejected");
+      request.log.warn({ verdict }, "machine token bcrypt fallback rejected by guard");
+      return reply.status(429).send({ error: "请求过于频繁，请稍后再试" });
+    }
+    try {
+      inc("machineAuthBcryptScans");
+      const bcrypt = (await import("bcryptjs")).default;
+      // SQL 侧按 bcrypt 哈希形态预过滤（P1.14，与退役审计 SQL 同口径）：存量
+      // 全部轮换为 sha256 后此查询稳定 0 行；JS 侧 isBcryptHash 保留作纵深防御。
+      const legacy = await server.pg.query<{ user_id: string; scope: string; token_hash: string }>(
+        `SELECT user_id, scope, token_hash FROM machine_tokens
+          WHERE revoked_at IS NULL AND ${ACTIVE_TOKEN_PREDICATE} AND ${BCRYPT_TOKEN_PREDICATE}`,
+      );
+      for (const row of legacy.rows) {
+        if (isBcryptHash(row.token_hash) && (await bcrypt.compare(token, row.token_hash))) {
+          inc("machineAuthBcryptHits");
+          request.log.warn(
+            { userId: row.user_id, scope: row.scope },
+            "legacy bcrypt machine token used — rotate/revoke it (see 08-bcrypt-token-retirement.md)",
+          );
+          const user = await server.pg.query("SELECT id, handle FROM users WHERE id = $1", [row.user_id]);
+          if (user.rows.length > 0) {
+            request.user = { sub: user.rows[0].id, handle: user.rows[0].handle, scope: row.scope };
+            return;
+          }
         }
       }
+    } finally {
+      machineTokenBcryptGuard.release();
     }
     return reply.status(401).send({ error: "Invalid machine token" });
   }

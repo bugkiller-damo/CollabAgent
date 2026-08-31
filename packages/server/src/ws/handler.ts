@@ -10,7 +10,7 @@ import jwt from "jsonwebtoken";
 import type { WebSocket } from "ws";
 import { appendEvent } from "../lib/audit.js";
 import { config } from "../lib/config.js";
-import { ACTIVE_TOKEN_PREDICATE } from "../lib/machine-token-policy.js";
+import { ACTIVE_TOKEN_PREDICATE, BCRYPT_TOKEN_PREDICATE } from "../lib/machine-token-policy.js";
 import type { PubSub } from "../lib/pubsub.js";
 import { normalizeRuntimes } from "../lib/runtime-probe.js";
 
@@ -107,7 +107,12 @@ export function wsHandler(connection: WebSocket, req: any) {
   };
   connection.on("message", bufferEarly);
 
-  void resolveUserId(token, isDaemon)
+  // P1.14：客户端 IP 传给 resolveUserId，供 bcrypt 兼容路径护栏按 IP 限速——
+  // 与 HTTP 侧 request.ip 同源（@fastify/websocket 传 FastifyRequest 有 .ip；
+  // 兜底 raw req 的 socket.remoteAddress）。
+  const clientIp = String(req?.ip || req?.socket?.remoteAddress || "");
+
+  void resolveUserId(token, isDaemon, clientIp)
     .then((userId) => {
       connection.off("message", bufferEarly);
       // daemon 令牌无效/被吊销 → resolveUserId 返回 "anon"。明确用 4001 关闭，
@@ -143,7 +148,7 @@ export function wsHandler(connection: WebSocket, req: any) {
     });
 }
 
-async function resolveUserId(token: string | null, isDaemon: boolean): Promise<string> {
+async function resolveUserId(token: string | null, isDaemon: boolean, clientIp = ""): Promise<string> {
   if (!token) return "anon";
   if (isDaemon) {
     if (!wsPg) return "anon";
@@ -173,21 +178,35 @@ async function resolveUserId(token: string | null, isDaemon: boolean): Promise<s
       // docs/2026-08-16/08-bcrypt-token-retirement.md）。
       // 观测：machineAuthBcryptScans/Hits 计数器 + 命中 warn 日志。
       // P1.12：同样拒绝过期令牌；此路径不续期——存量 bcrypt 令牌靠过期压力促成轮换退役。
+      // P1.14：先过全局护栏（与 HTTP 共用单例；per-IP 速率 + 并发信号量，
+      // 见 lib/machine-token-guard.ts）——超限按 anon 返回（上游以 4001 关闭），
+      // 不触达 DB 与 bcrypt；SQL 侧按 bcrypt 哈希形态预过滤，JS 侧 isBcryptHash 保留。
       const { inc } = await import("../lib/metrics.js");
-      inc("machineAuthBcryptScans");
-      const bcrypt = (await import("bcryptjs")).default;
-      const result = await wsPg.query<{ user_id: string; token_hash: string }>(
-        `SELECT user_id, token_hash FROM machine_tokens
-          WHERE revoked_at IS NULL AND ${ACTIVE_TOKEN_PREDICATE}`,
-      );
-      for (const row of result.rows) {
-        if (isBcryptHash(row.token_hash) && (await bcrypt.compare(token, row.token_hash))) {
-          inc("machineAuthBcryptHits");
-          console.warn(
-            `[WS] legacy bcrypt machine token used by user=${row.user_id} — rotate/revoke it (see 08-bcrypt-token-retirement.md)`,
-          );
-          return String(row.user_id);
+      const { machineTokenBcryptGuard } = await import("../lib/machine-token-guard.js");
+      const verdict = await machineTokenBcryptGuard.tryEnter(clientIp);
+      if (verdict !== "allowed") {
+        inc("machineAuthBcryptRejected");
+        console.warn(`[WS] machine token bcrypt fallback rejected by guard (${verdict})`);
+        return "anon";
+      }
+      try {
+        inc("machineAuthBcryptScans");
+        const bcrypt = (await import("bcryptjs")).default;
+        const result = await wsPg.query<{ user_id: string; token_hash: string }>(
+          `SELECT user_id, token_hash FROM machine_tokens
+            WHERE revoked_at IS NULL AND ${ACTIVE_TOKEN_PREDICATE} AND ${BCRYPT_TOKEN_PREDICATE}`,
+        );
+        for (const row of result.rows) {
+          if (isBcryptHash(row.token_hash) && (await bcrypt.compare(token, row.token_hash))) {
+            inc("machineAuthBcryptHits");
+            console.warn(
+              `[WS] legacy bcrypt machine token used by user=${row.user_id} — rotate/revoke it (see 08-bcrypt-token-retirement.md)`,
+            );
+            return String(row.user_id);
+          }
         }
+      } finally {
+        machineTokenBcryptGuard.release();
       }
     } catch {
       /* fall through to anon */
