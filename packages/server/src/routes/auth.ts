@@ -1,8 +1,6 @@
 import { randomUUID } from "node:crypto";
 import bcrypt from "bcryptjs";
 import type { FastifyInstance } from "fastify";
-import jwt from "jsonwebtoken";
-import { config } from "../lib/config.js";
 import { clearAuthCookies, newCsrfToken, setAuthCookies } from "../lib/cookies.js";
 import {
   clearLoginFailures,
@@ -12,12 +10,6 @@ import {
   recordLoginFailure,
 } from "../lib/login-lock.js";
 import { validatePassword } from "../lib/validators.js";
-
-const REFRESH_SECRET = config.REFRESH_SECRET;
-
-function signRefresh(payload: object): string {
-  return jwt.sign(payload, REFRESH_SECRET, { expiresIn: "30d" });
-}
 
 function sessionMaxAge(remember?: boolean): number {
   return (remember ? 30 : 7) * 24 * 3600;
@@ -90,11 +82,13 @@ export async function authRoutes(app: FastifyInstance) {
     }
 
     const sid = await recordSession(app, req, String(user.id));
-    const accessToken = app.jwt.sign(
+    // P1.15：签发走 @fastify/jwt 双 namespace（access/refresh，注册见 index.ts），
+    // 取代 jsonwebtoken 直签的双库并存。
+    const accessToken = app.jwt.access.sign(
       { sub: user.id, handle: user.handle, tv: user.token_version, sid },
       { expiresIn: "7d" },
     );
-    const refreshToken = signRefresh({ sub: user.id, type: "refresh", sid });
+    const refreshToken = app.jwt.refresh.sign({ sub: user.id, type: "refresh", sid });
     const csrf = newCsrfToken();
     setAuthCookies(reply, accessToken, csrf, sessionMaxAge(false));
 
@@ -155,8 +149,11 @@ export async function authRoutes(app: FastifyInstance) {
 
     const sid = await recordSession(app, req, String(user.id));
     const expiresIn = remember ? "30d" : "7d";
-    const accessToken = app.jwt.sign({ sub: user.id, handle: user.handle, tv: user.token_version, sid }, { expiresIn });
-    const refreshToken = signRefresh({ sub: user.id, type: "refresh", sid });
+    const accessToken = app.jwt.access.sign(
+      { sub: user.id, handle: user.handle, tv: user.token_version, sid },
+      { expiresIn },
+    );
+    const refreshToken = app.jwt.refresh.sign({ sub: user.id, type: "refresh", sid });
     const csrf = newCsrfToken();
     setAuthCookies(reply, accessToken, csrf, sessionMaxAge(!!remember));
     const { inc } = await import("../lib/metrics.js");
@@ -180,7 +177,8 @@ export async function authRoutes(app: FastifyInstance) {
       if (!cookieTok) return reply.status(400).send({ error: "refreshToken required" });
     }
     try {
-      const decoded = jwt.verify(refreshToken as string, REFRESH_SECRET) as Record<string, unknown>;
+      // P1.15：refresh 令牌验证走 @fastify/jwt refresh namespace（独立 REFRESH_SECRET）
+      const decoded = app.jwt.refresh.verify(refreshToken as string) as Record<string, unknown>;
       if (decoded.type !== "refresh") throw new Error("not a refresh token");
       if (decoded.sid) {
         const s = await app.pg.query(
@@ -196,11 +194,11 @@ export async function authRoutes(app: FastifyInstance) {
       const u = user.rows[0] as Record<string, unknown>;
       // 新会话
       const newSid = await recordSession(app, req, String(u.id));
-      const accessToken = app.jwt.sign(
+      const accessToken = app.jwt.access.sign(
         { sub: u.id, handle: u.handle, tv: u.token_version, sid: newSid },
         { expiresIn: "7d" },
       );
-      const newRefresh = signRefresh({ sub: u.id, type: "refresh", sid: newSid });
+      const newRefresh = app.jwt.refresh.sign({ sub: u.id, type: "refresh", sid: newSid });
       const csrf = newCsrfToken();
       setAuthCookies(reply, accessToken, csrf, sessionMaxAge(true));
       return { token: accessToken, refreshToken: newRefresh, csrf };

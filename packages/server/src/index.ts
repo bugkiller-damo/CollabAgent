@@ -6,8 +6,8 @@ import fastifyWebsocket from "@fastify/websocket";
 import Fastify from "fastify";
 import pgPlugin, { closeDb, sql } from "./db/connection.js";
 import { runMigrations } from "./db/migrate.js";
+import { verifyBrowserToken, verifyMachineToken } from "./lib/auth-token.js";
 import { config, validateConfig } from "./lib/config.js";
-import { ACTIVE_TOKEN_PREDICATE, BCRYPT_TOKEN_PREDICATE, machineTokenRenewalDue } from "./lib/machine-token-policy.js";
 import { createPubSub } from "./lib/pubsub.js";
 import { rateLimitHook } from "./lib/rate-limit.js";
 import { UPLOAD_DIR } from "./lib/storage.js";
@@ -94,9 +94,12 @@ await server.register(swagger, {
 await server.register(swaggerUi, { routePrefix: "/docs" });
 
 await server.register(fastifyWebsocket);
-await server.register(fastifyJwt, {
-  secret: config.JWT_SECRET,
-});
+// P1.15：双 namespace 注册（fastify.jwt.access / fastify.jwt.refresh，类型见
+// types/fastify.d.ts 的 FastifyJWT.namespaces 声明）。access=浏览器 access token；
+await server.register(fastifyJwt, { secret: config.JWT_SECRET, namespace: "access" });
+// P1.15：refresh 令牌用独立 secret 的 @fastify/jwt namespace——此前 @fastify/jwt 与
+// jsonwebtoken 双 JWT 库并存，靠注释约定保持 secret/算法同步。
+await server.register(fastifyJwt, { secret: config.REFRESH_SECRET, namespace: "refresh", sign: { expiresIn: "30d" } });
 await server.register(pgPlugin);
 // 注入 pg 给 WS 层，用于按频道成员定向投递（关闭私有频道泄露面）
 {
@@ -149,98 +152,36 @@ server.decorate("authenticate", async (request: any, reply: any) => {
   }
 
   // Machine token (sk_machine_*)
+  // P1.15：sk_machine_ 校验逻辑（sha256 快路径 + P1.12 滚动续期 + bcrypt 兼容
+  // 路径 + P1.14 护栏 + O8 退役指引）已收敛到 lib/auth-token.ts，HTTP/WS 共用
+  // 同一实现（此前逐行重复两份，修 bug 必改两处）。renewal="threshold"：
+  // HTTP 每请求都走校验，阈值门控（剩余 <30 天才写）压续期写放大。
   if (token.startsWith("sk_machine_")) {
-    const { sha256Token, isBcryptHash } = await import("./lib/token-hash.js");
-    // 快路径：sha256 哈希直接按唯一索引命中（新签发的令牌都走这里）。
-    // P1.12：过期谓词拒绝超期令牌（NULL 豁免存量行，见 lib/machine-token-policy.ts）。
-    const fast = await server.pg.query<{ id: string; user_id: string; scope: string; expires_at: Date | null }>(
-      `SELECT id, user_id, scope, expires_at FROM machine_tokens
-        WHERE token_hash = $1 AND revoked_at IS NULL AND ${ACTIVE_TOKEN_PREDICATE}`,
-      [sha256Token(token)],
-    );
-    if (fast.rows.length > 0) {
-      const row = fast.rows[0]!;
-      const user = await server.pg.query("SELECT id, handle FROM users WHERE id = $1", [row.user_id]);
-      if (user.rows.length > 0) {
-        request.user = { sub: user.rows[0].id, handle: user.rows[0].handle, scope: row.scope };
-        // P1.12 滚动续期：剩余 <30 天才写库顺延到 +90 天（HTTP 每请求都走这里，
-        // 阈值门控把写放大压到每令牌最多每 60 天一次）；续期失败不影响本次认证。
-        if (machineTokenRenewalDue(row.expires_at)) {
-          try {
-            await server.pg.query("UPDATE machine_tokens SET expires_at = now() + interval '90 days' WHERE id = $1", [
-              row.id,
-            ]);
-          } catch (e) {
-            request.log.warn({ err: e }, "machine token rolling renewal failed (non-fatal)");
-          }
-        }
-        return;
-      }
-      return reply.status(401).send({ error: "Invalid machine token" });
+    const v = await verifyMachineToken(server.pg, token, {
+      clientIp: request.ip || "",
+      renewal: "threshold",
+      log: request.log,
+    });
+    if (v.ok) {
+      request.user = { sub: v.userId, handle: v.handle, scope: v.scope };
+      return;
     }
-    // 兼容路径：历史 bcrypt 哈希的令牌（等全部轮换/吊销后可删除此分支，O8）。
-    // 观测：machineAuthBcryptScans/Hits 计数器（/api/metrics）+ 命中 warn 日志；
-    // 退役判定见 docs/2026-08-16/08-bcrypt-token-retirement.md。
-    // P1.12：同样拒绝过期令牌；此路径不做滚动续期——存量 bcrypt 令牌靠过期
-    // 压力促成轮换退役。
-    // P1.14：未知令牌走此路径 = 全表拉取 + 逐行 bcrypt（O(N×12) CPU）的 DoS
-    // 放大面——先过全局护栏（per-IP 速率 + 并发信号量，与 WS 共用单例，
-    // 见 lib/machine-token-guard.ts），超限直接 429，不再触达 DB 与 bcrypt。
-    const { inc } = await import("./lib/metrics.js");
-    const { machineTokenBcryptGuard } = await import("./lib/machine-token-guard.js");
-    const verdict = await machineTokenBcryptGuard.tryEnter(request.ip || "");
-    if (verdict !== "allowed") {
-      inc("machineAuthBcryptRejected");
-      request.log.warn({ verdict }, "machine token bcrypt fallback rejected by guard");
+    if (v.reason === "guard-rejected") {
       return reply.status(429).send({ error: "请求过于频繁，请稍后再试" });
-    }
-    try {
-      inc("machineAuthBcryptScans");
-      const bcrypt = (await import("bcryptjs")).default;
-      // SQL 侧按 bcrypt 哈希形态预过滤（P1.14，与退役审计 SQL 同口径）：存量
-      // 全部轮换为 sha256 后此查询稳定 0 行；JS 侧 isBcryptHash 保留作纵深防御。
-      const legacy = await server.pg.query<{ user_id: string; scope: string; token_hash: string }>(
-        `SELECT user_id, scope, token_hash FROM machine_tokens
-          WHERE revoked_at IS NULL AND ${ACTIVE_TOKEN_PREDICATE} AND ${BCRYPT_TOKEN_PREDICATE}`,
-      );
-      for (const row of legacy.rows) {
-        if (isBcryptHash(row.token_hash) && (await bcrypt.compare(token, row.token_hash))) {
-          inc("machineAuthBcryptHits");
-          request.log.warn(
-            { userId: row.user_id, scope: row.scope },
-            "legacy bcrypt machine token used — rotate/revoke it (see 08-bcrypt-token-retirement.md)",
-          );
-          const user = await server.pg.query("SELECT id, handle FROM users WHERE id = $1", [row.user_id]);
-          if (user.rows.length > 0) {
-            request.user = { sub: user.rows[0].id, handle: user.rows[0].handle, scope: row.scope };
-            return;
-          }
-        }
-      }
-    } finally {
-      machineTokenBcryptGuard.release();
     }
     return reply.status(401).send({ error: "Invalid machine token" });
   }
 
   // 纯 httpOnly Cookie 鉴权（Bearer JWT 路径已废弃 —— 强制从 cookie 取 JWT，避免 XSS 窃 token）
+  // P1.15：浏览器 JWT 校验收敛到 lib/auth-token.ts verifyBrowserToken，与 WS 共用
+  // 同一实现；新增强制 sid（无 sid 的旧 token 直接拒绝）+ 会话回查（logout-all /
+  // 改密 / 注销后旧 token 立即失效，5s 缓存见 lib/session-check.ts）。
   const cookieTok = parseCookies(request.headers.cookie)[ACCESS_COOKIE];
   if (cookieTok) {
-    try {
-      const payload = server.jwt.verify(cookieTok) as { sub: string; sid?: string; tv?: string };
-      // 会话状态回查：logout-all / 改密 / 注销会吊销 session 或滚动 token_version，
-      // 不查的话旧 access token 在 7 天有效期内仍能用（lib/session-check.ts，5s 缓存）。
-      if (payload?.sid) {
-        const { isSessionValid } = await import("./lib/session-check.js");
-        if (!(await isSessionValid(server, String(payload.sid), String(payload.sub), payload.tv))) {
-          return reply.status(401).send({ error: "Session expired or revoked" });
-        }
-      }
-      request.user = payload;
-      return;
-    } catch {
-      return reply.status(401).send({ error: "Unauthorized" });
-    }
+    const payload = await verifyBrowserToken(server.jwt.access, server.pg, cookieTok);
+    if (!payload) return reply.status(401).send({ error: "Unauthorized" });
+    request.user = payload;
+    return;
   }
 
   return reply.status(401).send({ error: "Unauthorized" });

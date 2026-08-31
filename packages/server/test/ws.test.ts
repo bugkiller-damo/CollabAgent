@@ -97,6 +97,24 @@ describe("WS: connection auth", () => {
     expect(code).toBe(4001);
   });
 
+  it("browser JWT 被 logout-all 吊销后 WS 握手 4001（P1.15 session 回查）", async () => {
+    // 此前 WS 侧浏览器 JWT 只验签名不做会话回查，logout-all 后长连接/重连仍有效；
+    // P1.15 校验收敛到 lib/auth-token.ts verifyBrowserToken（与 HTTP 共用）后，
+    // 已吊销的会话在 WS 握手同样 fail-closed → 4001。
+    const u = await registerUser();
+    // 先确认原 cookie 握手正常（会话有效）
+    const ok = connectWs({ Cookie: u.cookie });
+    expect((await ok.connected).type).toBe("connected");
+    ok.ws.close();
+    // logout-all 吊销全部会话（cookie 本身的 JWT 在 7 天有效期内，仅会话被吊销）
+    const out = await api("/api/auth/logout-all", { method: "POST", cookie: u.cookie });
+    expect(out.status).toBe(200);
+    // 用已吊销的旧 cookie 再握手 → 4001
+    const ws = new WebSocket(WS_BASE, { headers: { Cookie: u.cookie } });
+    const code = await closeCode(ws);
+    expect(code).toBe(4001);
+  });
+
   it("daemon with valid machine token connects and receives serverTime", async () => {
     const u = await registerUser();
     const tr = await api("/api/profile/machine-token", {

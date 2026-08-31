@@ -6,16 +6,14 @@ import type {
   WsToBrowserMessage,
   WsToDaemonMessage,
 } from "@collabagent/shared";
-import jwt from "jsonwebtoken";
 import type { WebSocket } from "ws";
 import { appendEvent } from "../lib/audit.js";
-import { config } from "../lib/config.js";
-import { ACTIVE_TOKEN_PREDICATE, BCRYPT_TOKEN_PREDICATE } from "../lib/machine-token-policy.js";
+// P1.15：令牌校验逻辑统一在 lib/auth-token.ts——机器令牌（sk_machine_）与浏览器
+// JWT 的校验 HTTP/WS 共用同一实现（此前逐行重复两份，修 bug 必改两处；浏览器
+// JWT 此前 jsonwebtoken 直验，与 @fastify/jwt 双库并存靠注释约定同步 secret）。
+import { verifyBrowserToken, verifyMachineToken } from "../lib/auth-token.js";
 import type { PubSub } from "../lib/pubsub.js";
 import { normalizeRuntimes } from "../lib/runtime-probe.js";
-
-// 必须与 fastify-jwt 注册时的默认一致，否则浏览器 token 验不过 → 都变 "anon"
-const JWT_SECRET = config.JWT_SECRET;
 
 // Anonymous browser clients (keyed by userId)
 export const browserClients = new Map<string, Set<WebSocket>>();
@@ -112,7 +110,7 @@ export function wsHandler(connection: WebSocket, req: any) {
   // 兜底 raw req 的 socket.remoteAddress）。
   const clientIp = String(req?.ip || req?.socket?.remoteAddress || "");
 
-  void resolveUserId(token, isDaemon, clientIp)
+  void resolveUserId(token, isDaemon, clientIp, req)
     .then((userId) => {
       connection.off("message", bufferEarly);
       // daemon 令牌无效/被吊销 → resolveUserId 返回 "anon"。明确用 4001 关闭，
@@ -148,74 +146,34 @@ export function wsHandler(connection: WebSocket, req: any) {
     });
 }
 
-async function resolveUserId(token: string | null, isDaemon: boolean, clientIp = ""): Promise<string> {
+async function resolveUserId(token: string | null, isDaemon: boolean, clientIp = "", req?: any): Promise<string> {
   if (!token) return "anon";
   if (isDaemon) {
     if (!wsPg) return "anon";
     try {
-      const { sha256Token, isBcryptHash } = await import("../lib/token-hash.js");
-      // 快路径：sha256 直接索引命中（新令牌）。
-      // P1.12：过期谓词拒绝超期令牌（NULL 豁免存量行，见 lib/machine-token-policy.ts）。
-      const fast = await wsPg.query<{ id: string; user_id: string; expires_at: Date | null }>(
-        `SELECT id, user_id, expires_at FROM machine_tokens
-          WHERE token_hash = $1 AND revoked_at IS NULL AND ${ACTIVE_TOKEN_PREDICATE}`,
-        [sha256Token(token)],
-      );
-      if (fast.rows.length > 0) {
-        const row = fast.rows[0]!;
-        // P1.12 滚动续期：daemon 连接即把有效期顺延到 +90 天——连接频率低，
-        // 不做 HTTP 侧的阈值门控；与 HTTP 阈值续期共同构成「活跃令牌不过期」。
-        // 续期失败不得影响本次认证结果（外层 catch 会把错误吞成 anon → 4001），
-        // 所以这里单独兜住。
-        try {
-          await wsPg.query("UPDATE machine_tokens SET expires_at = now() + interval '90 days' WHERE id = $1", [row.id]);
-        } catch (e) {
-          console.warn("[WS] machine token rolling renewal failed (non-fatal)", e);
-        }
-        return String(row.user_id);
-      }
-      // 兼容路径：历史 bcrypt 令牌逐行比对（O8：轮换后可删除，判定见
-      // docs/2026-08-16/08-bcrypt-token-retirement.md）。
-      // 观测：machineAuthBcryptScans/Hits 计数器 + 命中 warn 日志。
-      // P1.12：同样拒绝过期令牌；此路径不续期——存量 bcrypt 令牌靠过期压力促成轮换退役。
-      // P1.14：先过全局护栏（与 HTTP 共用单例；per-IP 速率 + 并发信号量，
-      // 见 lib/machine-token-guard.ts）——超限按 anon 返回（上游以 4001 关闭），
-      // 不触达 DB 与 bcrypt；SQL 侧按 bcrypt 哈希形态预过滤，JS 侧 isBcryptHash 保留。
-      const { inc } = await import("../lib/metrics.js");
-      const { machineTokenBcryptGuard } = await import("../lib/machine-token-guard.js");
-      const verdict = await machineTokenBcryptGuard.tryEnter(clientIp);
-      if (verdict !== "allowed") {
-        inc("machineAuthBcryptRejected");
-        console.warn(`[WS] machine token bcrypt fallback rejected by guard (${verdict})`);
-        return "anon";
-      }
-      try {
-        inc("machineAuthBcryptScans");
-        const bcrypt = (await import("bcryptjs")).default;
-        const result = await wsPg.query<{ user_id: string; token_hash: string }>(
-          `SELECT user_id, token_hash FROM machine_tokens
-            WHERE revoked_at IS NULL AND ${ACTIVE_TOKEN_PREDICATE} AND ${BCRYPT_TOKEN_PREDICATE}`,
-        );
-        for (const row of result.rows) {
-          if (isBcryptHash(row.token_hash) && (await bcrypt.compare(token, row.token_hash))) {
-            inc("machineAuthBcryptHits");
-            console.warn(
-              `[WS] legacy bcrypt machine token used by user=${row.user_id} — rotate/revoke it (see 08-bcrypt-token-retirement.md)`,
-            );
-            return String(row.user_id);
-          }
-        }
-      } finally {
-        machineTokenBcryptGuard.release();
-      }
+      // P1.15：sk_machine_ 校验（sha256 快路径 + bcrypt 兼容路径 + P1.14 护栏 +
+      // O8 退役指引）收敛到 lib/auth-token.ts，HTTP/WS 共用同一实现。
+      // renewal="always"：P1.12 daemon 连接即把有效期顺延到 +90 天——连接频率低，
+      // 不做 HTTP 侧的阈值门控；与 HTTP 阈值续期共同构成「活跃令牌不过期」。
+      // guard-rejected / invalid 都按 "anon" 返回（上游以 4001 关闭）：
+      // 护栏超限不触达 DB 与 bcrypt，过期/未知/用户缺失不通过。
+      const v = await verifyMachineToken(wsPg, token, {
+        clientIp,
+        renewal: "always",
+        log: { warn: (obj, msg) => console.warn("[WS] " + msg, obj) },
+      });
+      return v.ok ? v.userId : "anon";
     } catch {
       /* fall through to anon */
     }
     return "anon";
   }
   try {
-    const decoded = jwt.verify(token, JWT_SECRET) as { sub: string; handle?: string };
-    return decoded.sub;
+    // 浏览器分支：与 HTTP 同源的浏览器 JWT 校验（@fastify/jwt access namespace +
+    // P1.15 session 回查 + 强制 sid）——此前 jsonwebtoken 直验且不回查，
+    // logout-all 后 WS 长连接仍有效。
+    const u = await verifyBrowserToken(req?.server?.jwt?.access, wsPg, token);
+    return u ? u.userId : "anon";
   } catch {
     return "anon"; // Invalid token — treat as anonymous browser client
   }
