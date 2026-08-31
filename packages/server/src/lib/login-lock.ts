@@ -147,10 +147,15 @@ export function normalizeAccount(login: string): string {
     .toLowerCase();
 }
 
-/** 客户端 IP：尊重反向代理的 x-forwarded-for（取第一个），否则 req.ip。 */
-export function clientIpOf(req: { headers?: Record<string, unknown>; ip?: string }): string {
-  const xff = (req.headers?.["x-forwarded-for"] as string | undefined)?.split(",")[0]?.trim();
-  return String(xff || req.ip || "").slice(0, 64);
+/**
+ * 客户端 IP：与全局限流（rate-limit.ts 的 request.ip）同源——一律取 Fastify 的 req.ip。
+ * P1.13：XFF 是否采信由 Fastify trustProxy（TRUST_PROXY env）统一决定——默认不信任
+ * 任何代理，req.ip 即 TCP 对端地址，伪造 X-Forwarded-For 无法影响 IP 维度登录锁定；
+ * 确认反代链后配置 TRUST_PROXY，req.ip 由 Fastify 按 XFF 解析。此前这里无条件采信
+ * XFF 第一段、与 rate-limit 方向相反：直连场景可伪造 XFF 绕过 IP 维度锁定。
+ */
+export function clientIpOf(req: { ip?: string }): string {
+  return String(req.ip || "").slice(0, 64);
 }
 
 /** 当前锁定剩余毫秒：账号与 IP 两个维度取最大值（任一命中即锁）。 */

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { collectInsecureConfig, INSECURE_DEV_DEFAULTS } from "../src/lib/config.js";
+import { collectInsecureConfig, INSECURE_DEV_DEFAULTS, parseTrustProxy } from "../src/lib/config.js";
 
 // O5：配置危险默认值硬校验——collectInsecureConfig 为纯函数，直接断言各分支。
 describe("collectInsecureConfig", () => {
@@ -54,5 +54,24 @@ describe("collectInsecureConfig", () => {
   it("空对象（模拟生产裸启动）报告全部三项", () => {
     const issues = collectInsecureConfig({});
     expect(issues).toHaveLength(3);
+  });
+});
+
+// P1.13：TRUST_PROXY 解析——默认 fail-closed（不信任任何代理，req.ip = TCP 对端）
+describe("parseTrustProxy", () => {
+  it("空 / false → 不信任任何代理", () => {
+    expect(parseTrustProxy("")).toBe(false);
+    expect(parseTrustProxy("   ")).toBe(false);
+    expect(parseTrustProxy("false")).toBe(false);
+  });
+
+  it("true → 全信任（仅限流量全部经过可信反代链的部署）", () => {
+    expect(parseTrustProxy("true")).toBe(true);
+  });
+
+  it("其余 → 逗号分隔可信代理 IP/CIDR 列表（不支持 Express 式跳数，Fastify 语义无此选项）", () => {
+    expect(parseTrustProxy("10.0.0.1, 10.0.0.2")).toEqual(["10.0.0.1", "10.0.0.2"]);
+    expect(parseTrustProxy("127.0.0.1")).toEqual(["127.0.0.1"]);
+    expect(parseTrustProxy("10.0.0.1,,10.0.0.2")).toEqual(["10.0.0.1", "10.0.0.2"]);
   });
 });

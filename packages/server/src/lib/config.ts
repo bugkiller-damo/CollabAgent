@@ -36,6 +36,24 @@ export const INSECURE_DEV_DEFAULTS = {
   DATABASE_URL: "postgresql://collabagent:collabagent_dev@localhost:5432/collabagent",
 } as const;
 
+/**
+ * P1.13：解析 TRUST_PROXY 环境变量为 Fastify trustProxy 选项值（纯函数，可单测）。
+ * 默认（空/"false"）不信任任何代理——req.ip 即 TCP 对端地址，伪造 X-Forwarded-For
+ * 无法影响 IP 判定（fail-closed）；仅当部署确认处于已知反代链后时才显式声明：
+ * "true"（全信任，仅限确信流量全部经过可信反代）或逗号分隔的可信代理 IP/CIDR 列表
+ * （nginx 同机反代填 127.0.0.1；不支持 Express 式跳数——Fastify 语义无此选项，
+ * IP 列表比跳数更精确，还天然排除不可信链路上的伪造 XFF）。
+ */
+export function parseTrustProxy(raw: string): boolean | string[] {
+  const v = String(raw || "").trim();
+  if (!v || v === "false") return false;
+  if (v === "true") return true;
+  return v
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 export const config = {
   PORT: Number(process.env.PORT) || 3001,
   HOST: process.env.HOST || "0.0.0.0",
@@ -67,6 +85,11 @@ export const config = {
   LOGIN_LOCK_MS: Number(process.env.LOGIN_LOCK_MS) || 15 * 60 * 1000,
   // IP 维度登录失败阈值（NAT 共享 IP，默认显著高于账号维度）
   LOGIN_IP_MAX_ATTEMPTS: Number(process.env.LOGIN_IP_MAX_ATTEMPTS) || 20,
+  // P1.13：反代信任链——默认空 = 不信任任何代理（req.ip = TCP 对端，XFF 忽略）。
+  // 确认部署在反代后时显式设置：true（全信任）或可信代理 IP/CIDR 列表
+  // （nginx 同机反代填 127.0.0.1），之后 req.ip 才按 X-Forwarded-For 解析
+  // （限流与登录锁定共用同一判定）。
+  TRUST_PROXY: parseTrustProxy(env("TRUST_PROXY", "")),
 } as const;
 
 /**

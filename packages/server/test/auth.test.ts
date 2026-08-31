@@ -87,6 +87,10 @@ describe("auth: register / login / cookie / csrf / sessions / deactivate", () =>
 });
 
 describe("auth: 登录防爆破（O6 账号+IP 双维度）", () => {
+  // P1.13 起请求里的 x-forwarded-for 头对 IP 判定无效（clientIpOf 与限流同源
+  // req.ip，XFF 采信与否由 TRUST_PROXY 决定，测试 server 默认不信任）。
+  // 用例中保留这些头，恰恰回归验证「伪造 XFF 不能影响/绕过锁定」。
+  // IP 维度的阈值语义由 login-lock.test.ts 高层 API 直测覆盖。
   it("同账号跨 IP 失败 5 次后锁定：换 IP + 正确密码仍 429", async () => {
     const u = await registerUser();
     const fail = (ip: string) =>

@@ -130,10 +130,14 @@ describe("normalizeAccount / clientIpOf", () => {
   it("账号小写化 + trim", () => {
     expect(normalizeAccount("  Alice@X.com ")).toBe("alice@x.com");
   });
-  it("clientIpOf：x-forwarded-for 取第一个，否则 req.ip，截断 64", () => {
-    expect(clientIpOf({ headers: { "x-forwarded-for": "1.2.3.4, 5.6.7.8" }, ip: "9.9.9.9" })).toBe("1.2.3.4");
+  it("clientIpOf：一律取 req.ip（P1.13 与限流同源；XFF 由 trustProxy 统一解析，不自行读头），截断 64", () => {
     expect(clientIpOf({ ip: "9.9.9.9" })).toBe("9.9.9.9");
-    expect(clientIpOf({ headers: { "x-forwarded-for": "  " }, ip: "9.9.9.9" })).toBe("9.9.9.9");
+    // 伪造 XFF 不再影响判定——直连场景无法借此绕过 IP 维度登录锁定
+    const forged = { headers: { "x-forwarded-for": "1.2.3.4, 5.6.7.8" }, ip: "9.9.9.9" };
+    expect(clientIpOf(forged)).toBe("9.9.9.9");
+    expect(clientIpOf({ headers: { "x-forwarded-for": "1.2.3.4" } })).toBe("");
+    expect(clientIpOf({})).toBe("");
+    expect(clientIpOf({ ip: "x".repeat(100) })).toHaveLength(64);
   });
 });
 

@@ -50,7 +50,22 @@ const server = Fastify({
   // 请求关联：尊重入站 x-request-id，否则自动生成，日志里随每条请求记录
   requestIdHeader: "x-request-id",
   requestIdLogLabel: "reqId",
+  // P1.13：显式信任代理——默认不信任任何代理（req.ip 即 TCP 对端地址，伪造
+  // X-Forwarded-For 无法影响 IP 判定）。仅当部署确认处于反代链后时通过
+  // TRUST_PROXY 显式声明（true / 可信代理 IP/CIDR 列表），之后 req.ip 按 XFF
+  // 解析，与全局限流（rate-limit.ts）、登录锁定（login-lock.ts）同一判定来源。
+  trustProxy: config.TRUST_PROXY,
 });
+
+// TRUST_PROXY=true（全信任）仅在「流量全部来自可信反代链」时安全：若 server
+// 可被直连，客户端可伪造 XFF 冒充任意 IP。不做启动拦截（部分 PaaS 只能这么配），
+// 但大声提醒，引导收敛到可信代理 IP 列表。
+if (config.TRUST_PROXY === true) {
+  server.log.warn(
+    "TRUST_PROXY=true —— 全信任 X-Forwarded-For：仅限所有请求都经过可信反代链的部署；" +
+      "server 可直连时客户端可伪造 XFF 冒充任意 IP。建议改为可信代理 IP/CIDR 列表（如同机 nginx 填 127.0.0.1）。",
+  );
+}
 
 // 统一错误处理：结构化记录 + 计数 + 不泄露堆栈
 server.setErrorHandler(async (err: any, request: any, reply: any) => {
