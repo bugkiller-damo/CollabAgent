@@ -14,54 +14,10 @@ export interface ApiResponse<T = unknown> {
 export class ApiClient {
   constructor(private ctx: AgentContext) {}
 
-  private usesAgentApiSurface(): boolean {
-    return this.ctx.clientMode === "managed-runner" || this.ctx.clientMode === "self-hosted-runner";
-  }
-
-  /** Rewrite internal agent paths to the agent-api surface (14 rules). */
-  rewriteAgentCredentialPath(pathname: string): string {
-    if (!this.usesAgentApiSurface()) return pathname;
-
-    // Attachment download passthrough
-    const attachMatch = /^\/api\/attachments\/([^/?]+)(.*)$/.exec(pathname);
-    if (attachMatch) {
-      return `/internal/agent-api/attachments/${attachMatch[1]}${attachMatch[2] ?? ""}`;
-    }
-
-    const agentPrefix = `/internal/agent/${encodeURIComponent(this.ctx.agentId)}`;
-    if (!pathname.startsWith(agentPrefix)) return pathname;
-
-    const suffix = pathname.slice(agentPrefix.length);
-
-    // 14 path rewrite rules
-    if (suffix === "/server") return "/internal/agent-api/server";
-    if (suffix === "/send") return "/internal/agent-api/send";
-    if (suffix.startsWith("/history")) return `/internal/agent-api/history${suffix.slice("/history".length)}`;
-    if (suffix.startsWith("/search")) return `/internal/agent-api/search${suffix.slice("/search".length)}`;
-    if (suffix.startsWith("/channel-members"))
-      return `/internal/agent-api/channel-members${suffix.slice("/channel-members".length)}`;
-    if (suffix === "/profile" || suffix.startsWith("/profile/")) return `/internal/agent-api${suffix}`;
-    if (suffix === "/integrations" || suffix.startsWith("/integrations/")) return `/internal/agent-api${suffix}`;
-    if (suffix === "/upload") return "/internal/agent-api/upload";
-    if (suffix === "/resolve-channel") return "/internal/agent-api/resolve-channel";
-    if (suffix === "/threads/unfollow") return "/internal/agent-api/threads/unfollow";
-    if (suffix === "/prepare-action") return "/internal/agent-api/prepare-action";
-    if (suffix === "/tasks" || suffix.startsWith("/tasks?") || suffix.startsWith("/tasks/"))
-      return `/internal/agent-api${suffix}`;
-    if (suffix === "/reminders" || suffix.startsWith("/reminders?") || suffix.startsWith("/reminders/"))
-      return `/internal/agent-api${suffix}`;
-    if (suffix === "/receive" || suffix.startsWith("/receive?")) return "/internal/agent-api/events?since=latest";
-
-    // Reaction: /messages/{id}/reactions
-    const reactionMatch = /^\/messages\/([^/]+)\/reactions$/.exec(suffix);
-    if (reactionMatch) return `/internal/agent-api/messages/${reactionMatch[1]}/reactions`;
-
-    // Channel membership: /channels/{name}/(join|leave)
-    const chMatch = /^\/channels\/([^/]+)\/(join|leave)$/.exec(suffix);
-    if (chMatch) return `/internal/agent-api/channels/${chMatch[1]}/${chMatch[2]}`;
-
-    return pathname;
-  }
+  // P1.20：删除 /internal/agent-api 重写面（原 usesAgentApiSurface + rewriteAgentCredentialPath
+  // 共 14 条规则）——该 surface 在 server 上从未存在，managed-runner/self-hosted-runner 模式
+  // 一旦激活所有 agent REST 请求都会 404（潜伏地雷）；当前 spawn 链路只走 legacy-machine，
+  // 重写面从未生效过。clientMode 字段保留（cli auth 自省展示用）。
 
   private buildAuthHeaders(): Record<string, string> {
     const headers: Record<string, string> = {
@@ -127,7 +83,6 @@ export class ApiClient {
   }
 
   async request<T = unknown>(method: string, pathname: string, body?: unknown): Promise<ApiResponse<T>> {
-    pathname = this.rewriteAgentCredentialPath(pathname);
     const url = new URL(pathname, this.ctx.serverUrl).toString();
     const headers = this.buildAuthHeaders();
     // content-type 只在有 body 时带：无 body 的 DELETE/POST 带 JSON content-type
@@ -144,7 +99,6 @@ export class ApiClient {
   }
 
   async requestMultipart<T = unknown>(method: string, pathname: string, form: FormData): Promise<ApiResponse<T>> {
-    pathname = this.rewriteAgentCredentialPath(pathname);
     const url = new URL(pathname, this.ctx.serverUrl).toString();
     const headers = this.buildAuthHeaders();
     // Let fetch set Content-Type with boundary

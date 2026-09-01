@@ -1,0 +1,13 @@
+-- P1.20（2026-09-01）：自助找回密码——补齐 web 忘记密码页契约
+-- （/api/auth/forgot-password + /api/auth/reset-password；页面/路由/CSRF 豁免早已就绪，
+--   端点此前不存在，页提交必 404，见评估报告 §3 drift #2）。
+--
+-- 000_canonical_schema 已预留 users.reset_code / reset_expires 两列但从未使用（死列）；
+-- 本迁移把 reset_code 从 VARCHAR(10) 拓宽到 VARCHAR(64)：存 sha256(验证码) 十六进制
+-- 而非明文——库泄露不直接泄露可用验证码；比对走时序安全函数（lib/password-reset.ts）。
+--
+-- 流程语义：6 位 CSPRNG 数字码、10 分钟 TTL、单次使用（消费即清空，与改密同一条
+-- 条件 UPDATE 原子完成）、新码签发使旧码失效（单列自然覆盖）。
+-- 默认关闭；SLOCK_DEV_RESET_CODE=1 显式开启（仓库无邮件基建，devCode 回传响应），
+-- 生产经 collectInsecureConfig 拒绝启动——同 P1.17 SLOCK_DEV_TOKEN 模式。
+ALTER TABLE users ALTER COLUMN reset_code TYPE VARCHAR(64);

@@ -114,3 +114,25 @@ describe("collectInsecureConfig：SLOCK_DEV_TOKEN（P1.17）", () => {
     expect(issues).toEqual([]);
   });
 });
+
+// P1.20：找回密码 dev 验证码流显式开启即标记（生产经 validateConfig 拒绝启动）
+describe("collectInsecureConfig：SLOCK_DEV_RESET_CODE（P1.20）", () => {
+  it("SLOCK_DEV_RESET_CODE=1 被标记", () => {
+    const issues = collectInsecureConfig({
+      JWT_SECRET: "ok",
+      REFRESH_SECRET: "ok",
+      DATABASE_URL: "postgresql://u:p@db/app",
+      SLOCK_DEV_RESET_CODE: "1",
+    });
+    expect(issues.some((i) => i.includes("SLOCK_DEV_RESET_CODE"))).toBe(true);
+  });
+
+  it("未设置时不产生额外标记", () => {
+    const issues = collectInsecureConfig({
+      JWT_SECRET: "ok",
+      REFRESH_SECRET: "ok",
+      DATABASE_URL: "postgresql://u:p@db/app",
+    });
+    expect(issues).toEqual([]);
+  });
+});

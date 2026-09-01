@@ -9,6 +9,7 @@ import {
   normalizeAccount,
   recordLoginFailure,
 } from "../lib/login-lock.js";
+import { generateResetCode, hashResetCode, RESET_CODE_TTL_MS, resetCodeMatches } from "../lib/password-reset.js";
 import { validatePassword } from "../lib/validators.js";
 
 // P1.16：假 bcrypt 哈希（内容无关，仅耗时特征有效——12 轮 bcrypt.compare 恒失败）。
@@ -176,6 +177,78 @@ export async function authRoutes(app: FastifyInstance) {
       csrf,
       user: { id: user.id, handle: user.handle, displayName: user.display_name, email: user.email },
     };
+  });
+
+  // ---- Forgot / Reset password（P1.20：补齐 web ForgotPasswordPage.vue 契约）----
+  // web 契约：forgot → {message, devCode?}；reset → {email, code, password}。
+  // 仓库无邮件基建：完整验证码流仅在 SLOCK_DEV_RESET_CODE=1 显式开启（devCode 回传
+  // 响应，仅限本地开发/演示；collectInsecureConfig 标记，生产无 ALLOW_INSECURE 启动即
+  // 拒——同 P1.17 SLOCK_DEV_TOKEN 模式）。开关关闭时恒返回诚实文案、不落任何状态；
+  // 两路径已在 index.ts CSRF 豁免名单（登录前无会话，regex 覆盖 forgot|reset 前缀）。
+  const RESET_DISABLED_MSG = "密码重置未开放，请联系工作区管理员重置密码";
+  // 通用失败文案：无此邮箱/无有效码/已过期/码不符/已被并发消费 统一形态，不区分原因
+  const RESET_INVALID_MSG = "重置码无效或已过期";
+  const RESET_GENERIC_MSG = "如果该邮箱已注册，重置验证码已生成，请按页面提示使用";
+  const devResetEnabled = () => process.env.SLOCK_DEV_RESET_CODE === "1";
+
+  app.post("/forgot-password", async (req) => {
+    if (!devResetEnabled()) return { message: RESET_DISABLED_MSG };
+    const { email } = (req.body as Record<string, unknown>) || {};
+    const e = typeof email === "string" ? email.trim().toLowerCase() : "";
+    // 非法/未注册邮箱同形态返回（不泄露存在性；dev 开关下 devCode 有无仍可探测
+    // 存在性——该开关本身即不安全模式，已由 collectInsecureConfig 立此存照）
+    if (!e || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) return { message: RESET_GENERIC_MSG };
+    const u = await app.pg.query<{ id: string }>("SELECT id FROM users WHERE lower(email) = $1", [e]);
+    if (u.rows.length === 0) return { message: RESET_GENERIC_MSG };
+    const code = generateResetCode();
+    // 新码签发即覆盖旧码（单列自然失效），TTL 10 分钟
+    await app.pg.query("UPDATE users SET reset_code = $2, reset_expires = $3 WHERE id = $1", [
+      u.rows[0].id,
+      hashResetCode(code),
+      new Date(Date.now() + RESET_CODE_TTL_MS),
+    ]);
+    return { message: RESET_GENERIC_MSG, devCode: code };
+  });
+
+  app.post("/reset-password", async (req, reply) => {
+    if (!devResetEnabled()) return reply.status(403).send({ error: RESET_DISABLED_MSG });
+    const { email, code, password } = (req.body as Record<string, unknown>) || {};
+    if (typeof email !== "string" || typeof code !== "string" || typeof password !== "string" || !email || !code) {
+      return reply.status(400).send({ error: RESET_INVALID_MSG });
+    }
+    const pwErr = validatePassword(password);
+    if (pwErr) return reply.status(400).send({ error: pwErr });
+    const u = await app.pg.query<{ id: string; reset_code: string | null; reset_expires: Date | null }>(
+      "SELECT id, reset_code, reset_expires FROM users WHERE lower(email) = $1",
+      [email.trim().toLowerCase()],
+    );
+    const row = u.rows[0];
+    // 验证码校验（sha256 时序安全比对 + JS 侧快速 TTL 预检）；无码/过期/不符同文案
+    if (!row || !row.reset_code || !row.reset_expires || new Date(row.reset_expires) <= new Date()) {
+      return reply.status(400).send({ error: RESET_INVALID_MSG });
+    }
+    if (!resetCodeMatches(code, row.reset_code)) {
+      return reply.status(400).send({ error: RESET_INVALID_MSG });
+    }
+    // 消费 + TTL 复核 + 改密 + token_version 轮换一条条件 UPDATE 原子完成：
+    // 并发双 reset 只有一个成功（单次使用）；被消费（reset_code 已置 NULL）后 0 行
+    const hash = await bcrypt.hash(password, 12);
+    const done = await app.pg.query<{ id: string }>(
+      `UPDATE users
+         SET password_hash = $2, reset_code = NULL, reset_expires = NULL,
+             token_version = gen_random_uuid()::text, updated_at = now()
+       WHERE id = $1 AND reset_code = $3 AND reset_expires > now()
+       RETURNING id`,
+      [row.id, hash, row.reset_code],
+    );
+    if (done.rows.length === 0) return reply.status(400).send({ error: RESET_INVALID_MSG });
+    // 密码已变 → 吊销全部会话（对齐 logout-all / change-password 语义：旧设备全下线）
+    await app.pg.query("UPDATE user_sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL", [
+      row.id,
+    ]);
+    const { clearSessionCache } = await import("../lib/session-check.js");
+    clearSessionCache();
+    return { ok: true };
   });
 
   // ---- Refresh（轮换：吊销旧会话 → 创新会话 → 发新 refresh + 新 CSRF）----

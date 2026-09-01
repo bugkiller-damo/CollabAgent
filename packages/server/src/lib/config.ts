@@ -141,6 +141,11 @@ export function collectInsecureConfig(e: NodeJS.ProcessEnv = process.env): strin
   if (e.SLOCK_DEV_TOKEN === "1") {
     issues.push("SLOCK_DEV_TOKEN=1（dev-token 无凭据后门已开启，仅限本地开发调试，禁止用于真实部署）");
   }
+  // P1.20：找回密码 dev 验证码流显式开启即标记——无邮件基建下验证码经响应体回传，
+  // 仅限本地开发/演示；生产经 validateConfig 直接拒绝启动（同 SLOCK_DEV_TOKEN 口径）。
+  if (e.SLOCK_DEV_RESET_CODE === "1") {
+    issues.push("SLOCK_DEV_RESET_CODE=1（找回密码 dev 验证码流已开启，验证码将回传响应，禁止用于真实部署）");
+  }
   return issues;
 }
 
