@@ -498,6 +498,10 @@ export type WsFromDaemonMessage =
 
 export type WsToBrowserMessage =
   | { type: "connected"; time: ISO8601 }
+  // P1.21：应用层心跳——web 看门狗（70s 无 onmessage 即重连）感知不了协议层 ping/pong，
+  // 连接建立即发一条 + 每 30s 广播（仅 browser 面；web wsManager 特判 ping→回 pong 喂狗，
+  // pong 类型早在 WsFromBrowserMessage 预留）。
+  | { type: "ping" }
   | { type: "agent:deliver"; seq?: number; message: WsDeliverMessage }
   | { type: "message:update"; message: { id: UUID; content: string; editedAt: ISO8601 } }
   | { type: "message:delete"; message: { id: UUID } }

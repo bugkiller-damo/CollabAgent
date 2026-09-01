@@ -651,7 +651,16 @@ function heartbeatPong(ws: WebSocket) {
 setInterval(() => {
   for (const [, ws] of daemonClients) heartbeatPing(ws);
   for (const [, sockets] of browserClients) {
-    for (const ws of sockets) heartbeatPing(ws);
+    for (const ws of sockets) {
+      heartbeatPing(ws);
+      // P1.21：JSON 应用层 ping——web 看门狗（70s 无 onmessage 即重连）感知不了协议层
+      // ping/pong，靠应用层 ping 喂狗；连接建立时也即发一条（registerConnection）。
+      try {
+        ws.send(JSON.stringify({ type: "ping" }));
+      } catch {
+        /* ignore */
+      }
+    }
   }
 }, HEARTBEAT_INTERVAL);
 

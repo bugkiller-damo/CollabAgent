@@ -33,16 +33,33 @@ function nextMessage(ws: WebSocket, timeout = 8000): Promise<any> {
       ws.removeAllListeners("close");
       reject(new Error("WS message timeout"));
     }, timeout);
-    ws.once("message", (raw) => {
-      clearTimeout(timer);
+    // P1.21：server 每 30s 向 browser 广播应用层 JSON ping——对用例透明化：
+    // 收到 ping 即回 pong 并继续等下一条业务消息（长跑套件中连接跨过 30s tick
+    // 也不会让序位断言/负向断言误吃 ping 帧）。
+    const handler = (raw: unknown) => {
+      let msg: any;
       try {
-        resolve(JSON.parse(raw.toString()));
+        msg = JSON.parse(String(raw));
       } catch {
-        resolve(raw.toString());
+        msg = String(raw);
       }
-    });
+      if (msg && typeof msg === "object" && msg.type === "ping") {
+        try {
+          ws.send(JSON.stringify({ type: "pong" }));
+        } catch {
+          /* ignore */
+        }
+        return; // 继续等下一条（总超时不变）
+      }
+      clearTimeout(timer);
+      ws.removeListener("message", handler);
+      ws.removeAllListeners("close");
+      resolve(msg);
+    };
+    ws.on("message", handler);
     ws.once("close", (code) => {
       clearTimeout(timer);
+      ws.removeListener("message", handler);
       reject(new Error(`WS closed with code ${code} before message arrived`));
     });
   });
