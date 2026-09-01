@@ -25,7 +25,10 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./packages/server/src/db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      # P1.19：不挂载 initdb schema——原挂载的 src/db/schema.sql 是不存在的幽灵文件
+      # （挂载不存在的宿主路径时 Docker 会在源码树创建同名空目录，initdb 撞目录即失败）。
+      # schema 唯一真相是 packages/server/src/db/migrations/*.sql（P1.18 立此存照），
+      # 由 server 启动时 runMigrations() 自动建表；此处只需提供空库。
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U collabagent -d collabagent"]
       interval: 10s

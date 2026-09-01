@@ -47,6 +47,10 @@ RUN addgroup -S slock && adduser -S slock -G slock
 
 WORKDIR /app
 COPY --from=build --chown=slock:slock /app ./
+# P1.19：迁移 SQL 随镜像分发——runMigrations 按 __dirname(=dist/db)/migrations 相对解析，
+# 而 tsc 不拷非 TS 文件、deploy 阶段又 rm -rf /app/src，镜像内原本无迁移可用，
+# 全新 compose 部署会在启动建表时 ENOENT。schema 唯一真相即 db/migrations/*.sql（P1.18）。
+COPY --from=build --chown=slock:slock /repo/packages/server/src/db/migrations ./dist/db/migrations
 # O14：web 前端产物（server 静态托管 SPA 用；dist 由构建阶段 vite build 产出）
 COPY --from=build --chown=slock:slock /repo/packages/web/dist ./web-dist
 # 本地存储后端的上传目录（生产建议挂卷 uploads-data）
