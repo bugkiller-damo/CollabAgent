@@ -58,6 +58,14 @@ export interface NotificationNewEvent {
   };
 }
 
+// ---- notification.read（P1.25：server 标记已读后的多端同步广播） ------------
+// all=true 表示「全部已读」（ids 恒 null）；否则 ids 为本次标记的 id 列表。
+export interface NotificationReadEvent {
+  type: "notification.read";
+  ids: string[] | null;
+  all: boolean;
+}
+
 // ---- terminal:frame（G3 终端观察，daemon 推来的实时帧） ---------------------
 export interface TerminalFrameEvent {
   type: "terminal:frame";
@@ -110,9 +118,10 @@ export interface AgentStatusEvent {
   detail?: string;
 }
 
-/** shared 联合之外、由本文件补齐的 6 个本地运行时事件 */
+/** shared 联合之外、由本文件补齐的 7 个本地运行时事件 */
 export type LocalWsEvent =
   | NotificationNewEvent
+  | NotificationReadEvent
   | TerminalFrameEvent
   | AgentActivityEvent
   | AgentDeliveryQueuedEvent

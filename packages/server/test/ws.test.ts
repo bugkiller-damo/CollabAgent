@@ -43,11 +43,16 @@ function nextMessage(ws: WebSocket, timeout = 8000): Promise<any> {
       } catch {
         msg = String(raw);
       }
-      if (msg && typeof msg === "object" && msg.type === "ping") {
-        try {
-          ws.send(JSON.stringify({ type: "pong" }));
-        } catch {
-          /* ignore */
+      // P1.25：DM 现在伴随 dm 通知——notification.new（用户定向面）会先于频道
+      // 广播面的 agent:deliver 到达接收方浏览器。对投递序位类断言透明跳过
+      // （ping 仍回 pong）。
+      if (msg && typeof msg === "object" && (msg.type === "ping" || msg.type === "notification.new")) {
+        if (msg.type === "ping") {
+          try {
+            ws.send(JSON.stringify({ type: "pong" }));
+          } catch {
+            /* ignore */
+          }
         }
         return; // 继续等下一条（总超时不变）
       }

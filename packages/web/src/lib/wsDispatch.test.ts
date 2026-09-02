@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useAgentStore } from "../stores/agentStore";
 import { useChannelStore } from "../stores/channelStore";
 import { useMessageStore } from "../stores/messageStore";
+import { useNotificationStore } from "../stores/notificationStore";
 import { useTerminalStore } from "../stores/terminalStore";
 import { dispatchWsEvent } from "./wsDispatch";
 
@@ -178,5 +179,86 @@ describe("wsDispatch", () => {
     } as any);
     dispatchWsEvent({ type: "message:delete", message: { id: "m-p" } } as any);
     expect(messageStore.messagesByTarget["#general"].find((m: any) => m.id === "m-p")).toBeUndefined();
+  });
+
+  // P1.25：已读多端同步——notification.read 按 ids / all 两形态路由到 notificationStore
+  it("notification.read（ids）→ 指定通知标记已读，未读数递减", () => {
+    const notificationStore = useNotificationStore();
+    notificationStore.setNotifications([
+      {
+        id: "n-1",
+        type: "dm",
+        actorId: "a",
+        actorName: null,
+        channelId: null,
+        messageId: null,
+        title: "t1",
+        body: null,
+        metadata: null,
+        read: false,
+        createdAt: "t",
+      },
+      {
+        id: "n-2",
+        type: "dm",
+        actorId: "a",
+        actorName: null,
+        channelId: null,
+        messageId: null,
+        title: "t2",
+        body: null,
+        metadata: null,
+        read: false,
+        createdAt: "t",
+      },
+    ] as any);
+    notificationStore.setUnreadCount(2);
+
+    dispatchWsEvent({ type: "notification.read", ids: ["n-1"], all: false } as any);
+    const items = notificationStore.notifications;
+    expect(items.find((n) => n.id === "n-1")!.read).toBe(true);
+    expect(items.find((n) => n.id === "n-2")!.read).toBe(false);
+    expect(notificationStore.unreadCount).toBe(1);
+  });
+
+  it("notification.read（all）→ 全部已读；重复广播幂等", () => {
+    const notificationStore = useNotificationStore();
+    notificationStore.setNotifications([
+      {
+        id: "n-1",
+        type: "dm",
+        actorId: "a",
+        actorName: null,
+        channelId: null,
+        messageId: null,
+        title: "t1",
+        body: null,
+        metadata: null,
+        read: false,
+        createdAt: "t",
+      },
+      {
+        id: "n-2",
+        type: "dm",
+        actorId: "a",
+        actorName: null,
+        channelId: null,
+        messageId: null,
+        title: "t2",
+        body: null,
+        metadata: null,
+        read: false,
+        createdAt: "t",
+      },
+    ] as any);
+    notificationStore.setUnreadCount(2);
+
+    dispatchWsEvent({ type: "notification.read", ids: null, all: true } as any);
+    expect(notificationStore.notifications.every((n) => n.read)).toBe(true);
+    expect(notificationStore.unreadCount).toBe(0);
+
+    // 重复广播（其他标签页各标记一次）：幂等，不把计数打成负数
+    dispatchWsEvent({ type: "notification.read", ids: null, all: true } as any);
+    expect(notificationStore.unreadCount).toBe(0);
   });
 });

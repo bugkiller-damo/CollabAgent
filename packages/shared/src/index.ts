@@ -506,6 +506,10 @@ export type WsToBrowserMessage =
   | { type: "message:update"; message: { id: UUID; content: string; editedAt: ISO8601 } }
   | { type: "message:delete"; message: { id: UUID } }
   | { type: "notification.new"; notification: WsNotification }
+  // P1.25：已读广播——notifications 路由标记已读后 sendToUser 给该用户全部浏览器
+  // 连接（多标签页同步；发起端 store 已乐观更新，消费端按 ids/all 幂等套用）。
+  // all=true 表示「全部已读」（此时 ids 恒 null），否则 ids 为本次标记的 id 列表。
+  | { type: "notification.read"; ids: UUID[] | null; all: boolean }
   // ---- 以下为 daemon 上报、server 中继 ----
   | { type: "agent:status"; agentId: string; agentName: string; status: string; detail: string }
   | {

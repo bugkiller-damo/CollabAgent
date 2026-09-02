@@ -331,6 +331,26 @@ export async function messageRoutes(app: FastifyInstance) {
     if (dm) {
       const others = await dmOtherMembers(app, resolvedChannelId, userId);
       dmAgentRecipients = others.agents.map((a) => a.handle);
+      // P1.25：DM → 对端人类收 dm 通知（agent 对端无通知中心，靠 daemon WS 唤醒，
+      // 由上面 dmAgentRecipients 承担；人机双成员的 DM 只通知人类一方）。放事务外
+      // best-effort：单个收方失败不阻断发送，与上方 @mention 通知同语义。
+      // 自言自语（DM 频道只有自己）时 others.humans 为空，自然不通知。
+      for (const h of others.humans) {
+        try {
+          await createNotification(app, {
+            userId: h.id,
+            type: "dm",
+            actorId: String(userId),
+            actorName: senderHandle,
+            channelId: resolvedChannelId,
+            messageId: String(msg.id),
+            title: `${senderHandle} 给你发来私信`,
+            body: (content || "").slice(0, 200),
+          });
+        } catch (err: any) {
+          req.log.warn({ err }, "dm notification failed");
+        }
+      }
     }
     const channelIdOut = dm ? "dm:" + resolvedChannelId : "#" + cleanChannelName(target);
     broadcast(resolvedChannelId, {

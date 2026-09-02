@@ -1,4 +1,3 @@
-import type { WsServerMessage } from "@collabagent/shared";
 import { useAgentStore, useChannelStore, useMessageStore } from "../stores";
 import type { AgentActivity } from "../stores/agentStore";
 import { useNotificationStore } from "../stores/notificationStore";
@@ -23,6 +22,13 @@ export function dispatchWsEvent(msg: WsServerEvent): void {
 
   if (type === "notification.new") {
     notificationStore.prependNotification((msg as any).notification);
+  }
+  // P1.25：已读多端同步——任一标签页标记已读后 server 广播回来（发起端 store 已
+  // 乐观更新，markAsRead/markAllAsRead 幂等：已读行直接跳过/计数不重复减）。
+  if (type === "notification.read") {
+    const m = msg as unknown as { ids?: string[] | null; all?: boolean };
+    if (m.all) notificationStore.markAllAsRead();
+    else if (Array.isArray(m.ids)) for (const id of m.ids) notificationStore.markAsRead(id);
   }
   // 终端观察（G3）：daemon 推来的终端帧写入 terminalStore
   if (type === "terminal:frame") {

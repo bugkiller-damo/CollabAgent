@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { sendToUser } from "../ws/handler.js";
 
 const NOTIFICATION_FIELDS =
   "id, user_id, type, actor_id, actor_name, channel_id, message_id, title, body, metadata, read, created_at";
@@ -41,6 +42,8 @@ export async function notificationRoutes(app: FastifyInstance) {
       [id, userId],
     );
     if (result.rows.length === 0) return reply.status(404).send({ error: "notification not found" });
+    // P1.25：已读广播——该用户全部浏览器连接同步（发起端已乐观更新，幂等套用）
+    sendToUser(userId, { type: "notification.read", ids: [id], all: false });
     return { ok: true };
   });
 
@@ -53,8 +56,16 @@ export async function notificationRoutes(app: FastifyInstance) {
         ids,
         userId,
       ]);
+      // P1.25：已读广播（批量 ids 面）——只广播本次请求携带的 id
+      sendToUser(userId, {
+        type: "notification.read",
+        ids: ids.filter((x): x is string => typeof x === "string"),
+        all: false,
+      });
     } else {
       await app.pg.query("UPDATE notifications SET read = true WHERE user_id = $1", [userId]);
+      // P1.25：已读广播（全部面）——all=true 语义，消费端直接套「全部已读」
+      sendToUser(userId, { type: "notification.read", ids: null, all: true });
     }
     return { ok: true };
   });
