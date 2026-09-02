@@ -12,6 +12,8 @@ export default defineConfig({
   server: {
     // dev 端口 5174；生产形态由 server 静态托管 dist（WEB_DIST_DIR，见 server/src/index.ts）
     port: 5174,
+    // 监听所有网卡，允许局域网访问（否则只绑 localhost，他机 ip:5174 连接不可达）
+    host: true,
     proxy: {
       "/api": { target: "http://localhost:3001" },
       "/files": { target: "http://localhost:3001" },
