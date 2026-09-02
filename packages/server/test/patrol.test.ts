@@ -148,4 +148,48 @@ describe("patrol: agent 定时巡检路由", () => {
     const r = await api(`/internal/agent/${agentId}/reminders?kind=patrol`, { cookie: other.cookie });
     expect(r.status).toBe(403);
   });
+
+  // ---- P1.23：IANA 时区显式入库（daily@HH:MM 不再依赖 server 本地时区）----
+  it("timezone:缺省落 server 本地 IANA;显式 Asia/Shanghai 入库并回显", async () => {
+    const def = await createPatrol({ title: "默认tz", repeat: "every:10m" });
+    expect(def.status).toBe(200);
+    expect(typeof def.data.reminder.timezone).toBe("string");
+    expect(def.data.reminder.timezone!.length).toBeGreaterThan(0);
+    createdReminderIds.push(def.data.reminder.id);
+
+    const sh = await createPatrol({ title: "上海tz", repeat: "daily@09:00", timezone: "Asia/Shanghai" });
+    expect(sh.status).toBe(200);
+    expect(sh.data.reminder.timezone).toBe("Asia/Shanghai");
+    // daily@09:00（上海）的初始锚点必须是未来时刻
+    expect(new Date(sh.data.reminder.fireAt).getTime()).toBeGreaterThan(Date.now());
+    createdReminderIds.push(sh.data.reminder.id);
+  });
+
+  it("timezone:非法 IANA 名 → 400", async () => {
+    const r = await createPatrol({ title: "坏tz", repeat: "every:10m", timezone: "Mars/Olympus" });
+    expect(r.status).toBe(400);
+    expect(r.data.error).toMatch(/invalid timezone/);
+  });
+
+  it("timezone:PATCH 改合法 tz → 200 回显;改非法 → 400", async () => {
+    const c = await createPatrol({ title: "patchtz", repeat: "every:10m" });
+    expect(c.status).toBe(200);
+    const id = c.data.reminder.id;
+    createdReminderIds.push(id);
+    const ok = await api(`/internal/agent/${agentId}/reminders/${id}`, {
+      method: "PATCH",
+      cookie,
+      csrf,
+      body: { timezone: "America/New_York" },
+    });
+    expect(ok.status).toBe(200);
+    expect(ok.data.reminder.timezone).toBe("America/New_York");
+    const bad = await api(`/internal/agent/${agentId}/reminders/${id}`, {
+      method: "PATCH",
+      cookie,
+      csrf,
+      body: { timezone: "Nope/Nope" },
+    });
+    expect(bad.status).toBe(400);
+  });
 });

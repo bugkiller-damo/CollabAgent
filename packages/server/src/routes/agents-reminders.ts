@@ -2,10 +2,12 @@ import type { FastifyInstance } from "fastify";
 import { requireOwnAgent } from "../lib/agent-helpers.js";
 import {
   initialFireAt,
+  isValidIANATimezone,
   nextFireFromRepeat,
   PATROL_MAX_PER_AGENT,
   parseDurationToMs,
   reminderToDto,
+  serverLocalTimezone,
   validatePatrolRepeat,
 } from "../lib/reminders.js";
 
@@ -33,11 +35,19 @@ export async function agentReminderRoutes(app: FastifyInstance) {
         return reply.status(400).send({ error: `too many active patrols (max ${PATROL_MAX_PER_AGENT})` });
       }
     }
-    const fireAt = initialFireAt(body);
+    // P1.23：IANA 时区显式入库（daily@HH:MM 按它计算，不再依赖 server 本地时区）。
+    // daemon（跑在用户机器上）创建时随附本机时区；未指定时落 server 本地 tz——
+    // 显式化后 server 换机器/改 TZ 不再隐性改变触发时刻。
+    const tzParam = body.timezone ? String(body.timezone) : null;
+    if (tzParam && !isValidIANATimezone(tzParam)) {
+      return reply.status(400).send({ error: "invalid timezone (expect IANA name, e.g. Asia/Shanghai)" });
+    }
+    const timezone = tzParam ?? serverLocalTimezone();
+    const fireAt = initialFireAt(body, timezone);
     if (!fireAt) return reply.status(400).send({ error: "need fireAt, delaySeconds, or repeat" });
     const r = await app.pg.query(
-      `INSERT INTO reminders (owner_id, title, fire_at, repeat_rule, channel_ref, status, kind, instructions, max_consecutive_silent)
-       VALUES ($1, $2, $3, $4, $5, 'scheduled', $6, $7, $8) RETURNING *`,
+      `INSERT INTO reminders (owner_id, title, fire_at, repeat_rule, channel_ref, status, kind, instructions, max_consecutive_silent, timezone)
+       VALUES ($1, $2, $3, $4, $5, 'scheduled', $6, $7, $8, $9) RETURNING *`,
       [
         agentId,
         body.title,
@@ -47,6 +57,7 @@ export async function agentReminderRoutes(app: FastifyInstance) {
         kind,
         body.instructions ? String(body.instructions) : null,
         Math.max(1, Math.min(100, Number(body.maxConsecutiveSilent) || 5)),
+        timezone,
       ],
     );
     return { reminder: reminderToDto(r.rows[0]) };
@@ -135,14 +146,21 @@ export async function agentReminderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const agentId = (req.params as Record<string, string>).agentId,
         reminderId = (req.params as Record<string, string>).reminderId;
-      const cur = await app.pg.query<{ repeat_rule: string | null; status: string; title: string }>(
-        "SELECT repeat_rule, status, title FROM reminders WHERE id = $1 AND owner_id = $2",
-        [reminderId, agentId],
-      );
+      const cur = await app.pg.query<{
+        repeat_rule: string | null;
+        status: string;
+        title: string;
+        timezone: string | null;
+      }>("SELECT repeat_rule, status, title, timezone FROM reminders WHERE id = $1 AND owner_id = $2", [
+        reminderId,
+        agentId,
+      ]);
       if (cur.rows.length === 0) return reply.status(404).send({ error: "reminder not found" });
       const row = cur.rows[0]!;
       if (row.status === "canceled") return reply.status(400).send({ error: "canceled reminder cannot resume" });
-      const fireAt = (row.repeat_rule ? nextFireFromRepeat(row.repeat_rule, new Date()) : null) ?? new Date();
+      // P1.23：resume 重排按存储的 IANA 时区（daily@HH:MM 不再受 server 本地时区摆布）
+      const fireAt =
+        (row.repeat_rule ? nextFireFromRepeat(row.repeat_rule, new Date(), row.timezone) : null) ?? new Date();
       const r = await app.pg.query(
         `UPDATE reminders SET paused = false, consecutive_silent = 0,
            status = 'scheduled', fire_at = $1, updated_at = now()
@@ -197,8 +215,19 @@ export async function agentReminderRoutes(app: FastifyInstance) {
         sets.push(`repeat_rule = $${p++}`);
         params.push(body.repeat || null);
       }
+      // P1.23：timezone 可改（null 显式重置为「回退 server 本地时区」语义）
+      if (body.timezone !== undefined) {
+        const t = body.timezone === null ? null : String(body.timezone);
+        if (t && !isValidIANATimezone(t)) {
+          return reply.status(400).send({ error: "invalid timezone (expect IANA name, e.g. Asia/Shanghai)" });
+        }
+        sets.push(`timezone = $${p++}`);
+        params.push(t);
+      }
       if (body.fireAt || body.delaySeconds != null) {
-        const f = initialFireAt(body);
+        // initial fire 锚点用请求里的 tz（缺省 server 本地）；与存储 tz 不一致时
+        // 只影响这一个锚点，后续 scheduler 重排一律按存储 tz 计算
+        const f = initialFireAt(body, typeof body.timezone === "string" ? body.timezone : undefined);
         if (f) {
           sets.push(`fire_at = $${p++}`);
           params.push(f.toISOString());

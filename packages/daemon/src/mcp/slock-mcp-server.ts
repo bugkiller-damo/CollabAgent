@@ -455,13 +455,17 @@ server.registerTool(
       delaySeconds: z.number().int().positive().optional().describe("多少秒后触发（与 fireAt 二选一）"),
       fireAt: z.string().optional().describe("ISO 时间字符串（与 delaySeconds 二选一）"),
       channel: z.string().optional().describe('可选：关联频道，如 "#general"'),
+      // P1.23：daily@HH:MM 类规则按此 IANA 时区计算（缺省随附 daemon 本机时区，
+      // 提醒按「用户的钟」触发，不受 server 部署时区摆布）
+      timezone: z.string().optional().describe("IANA 时区（如 Asia/Shanghai；缺省用本机时区）"),
     },
   },
-  async ({ title, delaySeconds, fireAt, channel }) => {
+  async ({ title, delaySeconds, fireAt, channel, timezone }) => {
     try {
+      const machineTz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
       const result = await callSlock("/reminders", {
         method: "POST",
-        body: JSON.stringify({ title, delaySeconds, fireAt, channel }),
+        body: JSON.stringify({ title, delaySeconds, fireAt, channel, timezone: timezone || machineTz }),
       });
       return ok(result);
     } catch (err) {

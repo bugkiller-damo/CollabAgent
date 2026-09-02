@@ -1,13 +1,20 @@
 import type { FastifyInstance } from "fastify";
 import { daemonClients, sendToDaemon } from "../ws/handler.js";
 import { createNotification } from "./notifications.js";
-import { nextFireFromRepeat } from "./reminders.js";
+import { nextFireNoDrift } from "./reminders.js";
 
 // 周期扫描到期提醒：唤醒对应 daemon（agent），周期性的算下一次、一次性的标记完成。
-// 没有 daemon 连接时跳过本轮（提醒保持到期状态，等 daemon 连上再触发）。
+//
+// P1.23 认领门控：只认领「owner daemon 连在本实例上」的到期行——daemon 离线的行
+// 保持到期状态（status 仍 scheduled），等 daemon 连上再触发。此前认领即标 fired，
+// sendToDaemon 对离线 daemon 静默丢弃，一次性提醒永久丢失且不可察觉。
+// SQL 侧用 `a.user_id = ANY(本地 daemon 用户)` 过滤而非认领后 JS 丢弃：
+// 离线行不占用 LIMIT 名额，不会因一批永久离线的 owner 饿死在线 owner 的提醒。
 //
 // 多实例安全：单事务内 `FOR UPDATE SKIP LOCKED` 选出到期行并持锁认领，
-// 并发的多个调度实例不会认领到同一行，因此不会重复 fire。
+// 并发的多个调度实例不会认领到同一行，因此不会重复 fire。各实例只认领自己
+// 本地有 daemon 连接的行（投递走本实例 socket / P1.22 per-user pubsub 均可达），
+// 实例间天然分工、无重复投递。
 //
 // T2 patrol 护栏（设计:docs/2026-08-19/02-t2-agent-patrol-design.md）：
 // - paused 行不认领（D3 独立布尔列，resume 时才回到调度面）；
@@ -25,9 +32,12 @@ interface ClaimedReminder {
   repeat_rule: string | null;
   kind: string;
   instructions: string | null;
+  fire_at: Date | string; // 本次触发的原定时刻（P1.23：消漂移重排的基准）
+  timezone: string | null; // P1.23：daily@HH:MM 的 IANA 时区（null=存量行回退 server 本地）
   last_fired_at: string | null; // 认领前的上一次 fire 时间（首次 fire 为 null）
   consecutive_silent: number;
   max_consecutive_silent: number;
+  owner_user_id: string; // JOIN agents 带出（P1.23：认领门控 + 投递目标，免逐行回查）
   // 事务内判定、提交后使用的扩展字段
   outcome: "posted" | "silent" | null;
   newConsecutiveSilent: number;
@@ -73,16 +83,23 @@ export function startReminderScheduler(app: FastifyInstance, intervalMs = 20000)
       }
       // 原子认领：单事务 SKIP LOCKED 选出到期行（paused 不认领），持锁逐行更新。
       // 沉默判定必须在 UPDATE 之前做——认领会覆盖 last_fired_at，判定依赖旧值。
+      // P1.23：JOIN agents 带出 user_id，并以本地 daemonClients 的用户集合做认领门控
+      // （`FOR UPDATE SKIP LOCKED OF r` 只锁 reminders 行，不与 agents 行锁耦合）。
       const claimed = await app.pg.transaction(async (tx) => {
+        const localDaemonUserIds = [...daemonClients.keys()];
         const due = await tx.query(
-          `SELECT id, owner_id, title, channel_ref, repeat_rule, kind, instructions,
-                  last_fired_at, consecutive_silent, max_consecutive_silent
-             FROM reminders
-            WHERE status = 'scheduled' AND fire_at <= now() AND NOT paused
-              AND EXISTS (SELECT 1 FROM agents a WHERE a.id = reminders.owner_id AND a.duty = 'on')
-            ORDER BY fire_at ASC
+          `SELECT r.id, r.owner_id, r.title, r.channel_ref, r.repeat_rule, r.kind, r.instructions,
+                  r.fire_at, r.timezone, r.last_fired_at, r.consecutive_silent, r.max_consecutive_silent,
+                  a.user_id AS owner_user_id
+             FROM reminders r
+             JOIN agents a ON a.id = r.owner_id
+            WHERE r.status = 'scheduled' AND r.fire_at <= now() AND NOT r.paused
+              AND a.duty = 'on'
+              AND a.user_id = ANY($1::uuid[])
+            ORDER BY r.fire_at ASC
             LIMIT 20
-            FOR UPDATE SKIP LOCKED`,
+            FOR UPDATE OF r SKIP LOCKED`,
+          [localDaemonUserIds],
         );
         const rows = due.rows as unknown as ClaimedReminder[];
         for (const r of rows) {
@@ -115,10 +132,13 @@ export function startReminderScheduler(app: FastifyInstance, intervalMs = 20000)
         }
       }
       for (const r of claimed) {
-        // 解析出这个 agent 的所有者，只通知对应那台 daemon——广播会让别的 daemon
-        // 误把它当成自己托管的 agent 尝试拉起，spawn 阶段 403 "not your agent"。
-        const owner = await app.pg.query<{ user_id: string }>("SELECT user_id FROM agents WHERE id = $1", [r.owner_id]);
-        const ownerUserId = owner.rows[0]?.user_id;
+        // 只通知 owner 那台 daemon——广播会让别的 daemon 误把它当成自己托管的 agent
+        // 尝试拉起，spawn 阶段 403 "not your agent"。owner_user_id 认领时 JOIN 带出。
+        // 立此存照（P1.23 取舍）：认领提交到 socket 发送之间仍存在毫秒级窗口
+        // （daemon 恰好断开/进程崩溃），at-most-once 语义不变；系统性丢失
+        // （离线 daemon 静默丢弃）已由认领门控消除，真两阶段 claimed→delivered
+        // 需 daemon ack 协议，不在本项。
+        const ownerUserId = r.owner_user_id ? String(r.owner_user_id) : null;
         if (ownerUserId) {
           sendToDaemon(String(ownerUserId), {
             type: "reminder.fire",
@@ -133,8 +153,13 @@ export function startReminderScheduler(app: FastifyInstance, intervalMs = 20000)
           });
         }
         // 周期性提醒：认领后立即排下一次（翻回 scheduled）。
+        // P1.23 消漂移：以刚触发的原定 fire_at 为基准（此前用处理时刻，every:1h 实际 >1h），
+        // 并跳过停机积压的槽位；daily@HH:MM 按 reminders.timezone（IANA）计算。
         // 自动暂停的 patrol 不重排——停在 fired+paused，等 resume 时重新排程。
-        const next = r.repeat_rule && !r.autoPaused ? nextFireFromRepeat(r.repeat_rule, new Date()) : null;
+        const next =
+          r.repeat_rule && !r.autoPaused
+            ? nextFireNoDrift(r.repeat_rule, new Date(r.fire_at), new Date(), r.timezone)
+            : null;
         if (next) {
           await app.pg.query(
             "UPDATE reminders SET status = 'scheduled', fire_at = $1, updated_at = now() WHERE id = $2",
