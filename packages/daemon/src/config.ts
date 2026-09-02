@@ -44,6 +44,7 @@ export const DAEMON_ENV_DEFAULTS = {
   contextMaxChars: 8_000,
   progressThrottleMs: 2_000,
   costBudgetUsd: null as number | null,
+  costReport: true,
   agentAllowedTools: DEFAULT_AGENT_ALLOWED_TOOLS,
   agentEffort: "medium" as AgentEffort,
 } as const;
@@ -91,6 +92,8 @@ export type DaemonEnv = {
   progressThrottleMs: number;
   /** `SLOCK_COST_BUDGET_USD`：每 agent 每 UTC 日预算；未设 / 非正数 → 不熔断 */
   costBudgetUsd: number | null;
+  /** `SLOCK_COST_REPORT=0`：关闭 daemon→server 成本上报（P1.24，默认开） */
+  costReport: boolean;
   /** `SLOCK_AGENT_ALLOWED_TOOLS`：覆盖默认 `--allowedTools` */
   agentAllowedTools: string;
   /** `SLOCK_AGENT_EFFORT`：`low` / `medium` / `high`，非法回落 medium */
@@ -152,6 +155,7 @@ export const loadDaemonEnv = (env: NodeJS.ProcessEnv = process.env): DaemonEnv =
     contextMaxChars: parsePositiveInt(env.SLOCK_CONTEXT_MAX_CHARS, DAEMON_ENV_DEFAULTS.contextMaxChars),
     progressThrottleMs: parseNonNegativeInt(env.SLOCK_PROGRESS_THROTTLE_MS, DAEMON_ENV_DEFAULTS.progressThrottleMs),
     costBudgetUsd: parseCostBudgetUsd(env.SLOCK_COST_BUDGET_USD),
+    costReport: env.SLOCK_COST_REPORT !== "0",
     agentAllowedTools: tools.length > 0 ? tools : DEFAULT_AGENT_ALLOWED_TOOLS,
     agentEffort: parseAgentEffort(env.SLOCK_AGENT_EFFORT),
   };

@@ -8,6 +8,7 @@ import { createAgentRuntime, type IAgentRuntime } from "./agent-runtime.js";
 import { createJsonThreadSessionStore, defaultThreadSessionStorePath } from "./agent-thread-sessions.js";
 import { createAgentTokenRegistry } from "./agent-tokens.js";
 import { loadDaemonEnv } from "./config.js";
+import { type CostReporter, createCostReporter } from "./cost-reporter.js";
 import { probeClaude } from "./drivers/probe.js";
 import { errMessage } from "./errors.js";
 import { dispatchDaemonMessage, type HandlerContext, parseWsToDaemonMessage } from "./handlers/index.js";
@@ -25,6 +26,8 @@ export class DaemonCore {
   private reconnectDelay = 1000;
   private authFailed = false;
   private runtime: IAgentRuntime;
+  /** P1.24：成本上报（null = SLOCK_COST_REPORT=0 关闭，tracker 原样透传） */
+  private costReporter: CostReporter | null;
   private agentId = "00000000-0000-0000-0000-000000000001";
   /** 崩溃前处于 starting/running 状态的 agent（autostart 方案 A 用），见 constructor 里的采集顺序说明 */
   private autostartCandidates: { agentId: string; agentName: string }[] = [];
@@ -41,6 +44,12 @@ export class DaemonCore {
     const liveRunRegistry = createLiveRunRegistry();
     const runStore = createJsonRunStore(defaultStorePath());
     const costTracker = createJsonCostTracker(defaultCostStorePath());
+    // P1.24：成本上报——包装 tracker（记账照旧 + 标脏），定时把脏键的当日累计
+    // 绝对值批量 POST /api/agent-costs/sync；server UPSERT GREATEST 单调收敛，
+    // 重试/重放不重复计费。SLOCK_COST_REPORT=0 关闭（tracker 原样透传）。
+    this.costReporter = loadDaemonEnv().costReport
+      ? createCostReporter({ tracker: costTracker, serverUrl: this.serverUrl, apiKey: this.apiKey })
+      : null;
     const threadSessions = createJsonThreadSessionStore(defaultThreadSessionStorePath());
     // 「计划内重启」标记（supervisor watch 重启 / 上次优雅 stop 写入）：
     // 有标记说明上次不是崩溃——run 记录虽然是 stale 的，但那是故意停掉的，
@@ -118,7 +127,7 @@ export class DaemonCore {
           edit: (messageId, content) => this.editAsAgent(agentName, messageId, content, "progress"),
           remove: (messageId) => this.deleteAsAgent(agentName, messageId, "progress"),
         }),
-        costTracker,
+        costTracker: this.costReporter?.tracker ?? costTracker,
         threadSessions,
       },
       tokenRegistry,
@@ -201,6 +210,7 @@ export class DaemonCore {
     await this.runtime.loadExistingAgents();
     this.wireAgentOutput();
     this.startStatusReporter();
+    this.costReporter?.start();
     await this.autostartCrashedAgents();
   }
 
@@ -412,6 +422,21 @@ export class DaemonCore {
       writeFileSync(join(process.cwd(), ".slock", "planned-restart"), String(Date.now()));
     } catch {
       /* best-effort */
+    }
+    // P1.24：退出前补投一轮成本（3s 兜底，失败不阻塞退出——账本仍在本地，
+    // 下次启动按绝对值同步自然补齐）
+    if (this.costReporter) {
+      try {
+        await Promise.race([
+          this.costReporter.stop(),
+          new Promise<void>((resolve) => {
+            const t = setTimeout(resolve, 3000);
+            if (typeof t.unref === "function") t.unref();
+          }),
+        ]);
+      } catch {
+        /* 补投失败不阻塞退出 */
+      }
     }
     if (this.ws) {
       this.ws.close();

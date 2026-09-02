@@ -128,11 +128,32 @@ export async function peopleRoutes(app: FastifyInstance) {
         params,
       );
 
+      // P1.24：成本接真数据——agent 对端=该 agent 窗口内成本合计；human 对端=名下
+      // agents 合计。与消息/任务不同，不做「调用者可见频道」过滤：daemon 账本按
+      // 归一化频道名记账（DM 归并 "dm"、未知 "unknown"）无法可靠回链 channel id，
+      // 且 agent 对端在 resolveVisiblePeer 已有 org 成员门槛。窗口按 UTC 日对齐账本
+      // 口径（daemon utcDay）。无任何成本行时保持 null——web 端 typeof number 才
+      // 显示 $ 徽标，恒 0 会让全员挂上 $0.00 噪音。
+      const costSql =
+        peer.type === "agent"
+          ? `SELECT COALESCE(SUM(cost_usd), 0)::float8 AS usd, COUNT(*)::int AS n
+               FROM agent_cost_daily
+              WHERE agent_id = $1
+                AND day >= (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date - ($2::int - 1)`
+          : `SELECT COALESCE(SUM(c.cost_usd), 0)::float8 AS usd, COUNT(*)::int AS n
+               FROM agent_cost_daily c
+               JOIN agents a ON a.id = c.agent_id
+              WHERE a.user_id = $1
+                AND c.day >= (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date - ($2::int - 1)`;
+      // 专属两参：postgres.js 对「传入但 SQL 未引用」的参数无法推型（42P18 实测），
+      // 不能复用上面 4 参的 params
+      const cost = await app.pg.query<{ usd: number; n: number }>(costSql, [peer.id, days]);
+
       return {
         messages: Number(msg.rows[0]?.n || 0),
         tasksOpen: Number(open.rows[0]?.n || 0),
         tasksDone: Number(done.rows[0]?.n || 0),
-        costUsd: null,
+        costUsd: Number(cost.rows[0]?.n || 0) > 0 ? Number(cost.rows[0]?.usd || 0) : null,
       };
     } catch (err: any) {
       req.log.error({ err }, "people_stats_failed");

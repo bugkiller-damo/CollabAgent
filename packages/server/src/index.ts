@@ -21,6 +21,7 @@ const pubsub = createPubSub(config.VALKEY_URL);
 import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
 import { actionRoutes } from "./routes/actions.js";
+import { agentCostRoutes } from "./routes/agent-costs.js";
 import { agentRoutes } from "./routes/agents.js";
 import { agentCredentialRoutes } from "./routes/agents-credentials.js";
 import { agentDispatchRoutes } from "./routes/agents-dispatch.js";
@@ -258,6 +259,8 @@ await server.register(notificationRoutes);
 await server.register(orgRoutes, { prefix: "/api" });
 await server.register(agentPublicRoutes, { prefix: "/api" });
 await server.register(metricsRoutes, { prefix: "/api" });
+// P1.24：daemon 成本上报（machine token 鉴权，UPSERT GREATEST 幂等单调）
+await server.register(agentCostRoutes, { prefix: "/api/agent-costs" });
 
 // WebSocket
 server.register(async (scope) => {
