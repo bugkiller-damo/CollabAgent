@@ -12,7 +12,8 @@ type CounterName =
   | "logins"
   | "machineAuthBcryptScans"
   | "machineAuthBcryptHits"
-  | "machineAuthBcryptRejected";
+  | "machineAuthBcryptRejected"
+  | "wsSlowConsumerTerminated";
 
 const counters: Record<CounterName, number> = {
   messagesSent: 0,
@@ -28,6 +29,9 @@ const counters: Record<CounterName, number> = {
   // P1.14：被护栏拒绝的 bcrypt 兼容路径进入尝试（速率超限/并发超时）——
   // 持续增长 = 存在 sk_machine_ 假令牌探测流量
   machineAuthBcryptRejected: 0,
+  // P1.22：WS 慢消费者背压 terminate（bufferedAmount 超阈值）——
+  // 持续增长 = 有客户端长期跟不上帧速率（网络/机器问题），配合重连补拉自愈
+  wsSlowConsumerTerminated: 0,
 };
 
 const startedAt = Date.now();

@@ -12,6 +12,7 @@ import { appendEvent } from "../lib/audit.js";
 // JWT 的校验 HTTP/WS 共用同一实现（此前逐行重复两份，修 bug 必改两处；浏览器
 // JWT 此前 jsonwebtoken 直验，与 @fastify/jwt 双库并存靠注释约定同步 secret）。
 import { verifyBrowserToken, verifyMachineToken } from "../lib/auth-token.js";
+import { inc } from "../lib/metrics.js";
 import type { PubSub } from "../lib/pubsub.js";
 import { normalizeRuntimes } from "../lib/runtime-probe.js";
 
@@ -184,6 +185,8 @@ function registerConnection(connection: WebSocket, userId: string, isDaemon: boo
     daemonClients.set(userId, connection);
     daemonMeta.set(userId, { userId, hostname: "unknown", daemonVersion: "?", runtimes: [], connectedAt: Date.now() });
     console.log(`[WS] Daemon connected: user=${userId}`);
+    // P1.22：本实例持有该用户连接期间订阅其定向频道（多实例下按需扇出）
+    refreshUserSubscription(userId);
 
     connection.on("message", (raw) => {
       try {
@@ -301,6 +304,7 @@ function registerConnection(connection: WebSocket, userId: string, isDaemon: boo
       daemonClients.delete(userId);
       daemonMeta.delete(userId);
       console.log(`[WS] Daemon disconnected: user=${userId}`);
+      refreshUserSubscription(userId);
       void import("../lib/agent-duty.js").then(({ broadcastOwnerPresence }) => broadcastOwnerPresence(wsPg, userId));
     });
 
@@ -310,6 +314,8 @@ function registerConnection(connection: WebSocket, userId: string, isDaemon: boo
     // Browser client
     if (!browserClients.has(userId)) browserClients.set(userId, new Set());
     browserClients.get(userId)!.add(connection);
+    // P1.22：本实例持有该用户连接期间订阅其定向频道（同用户多标签页共用一条订阅）
+    refreshUserSubscription(userId);
 
     connection.on("message", (raw) => {
       try {
@@ -335,6 +341,7 @@ function registerConnection(connection: WebSocket, userId: string, isDaemon: boo
     connection.on("close", () => {
       browserClients.get(userId)?.delete(connection);
       removeTerminalWatcherSocket(userId, connection);
+      refreshUserSubscription(userId);
     });
 
     attachHeartbeat(connection);
@@ -420,19 +427,23 @@ function persistComputerReady(
 
 /**
  * 按频道定向广播：
- * - 公开频道：投递给所有浏览器连接 + 所有 daemon。
- * - 私有频道：浏览器端只投递给该频道的人类成员；daemon 端仍全发（agent 是否响应由其按成员/@提及自行判断）。
+ * - 公开频道：投递给所有浏览器连接 + 所有 daemon（@提及自动入圈依赖广播面）。
+ * - 私有频道/DM：浏览器端只投递给该频道的人类成员；daemon 端只投给「其 agent 是
+ *   频道成员」的用户（agent 派发只需要 agent 成员；人类成员的 daemon 不需要频道明文
+ *   ——P1.22 收敛，此前所有用户 daemon 都能收到他人私有频道内容）。
  * channelId 传频道 UUID。
  *
  * P0.2 fail-closed：频道类型/成员解析失败（DB 抖动、频道不存在、类型未知）时放弃广播，
  * 不再退回全发——否则 DB 抖动窗口内私有频道/DM 的明文事件会广播给全部浏览器（内容泄露）。
  * 代价是抖动窗口内丢事件，但消息可经 REST 按 seq 游标补拉恢复，安全优先于送达。
+ * P1.22 起 agent 成员归属查询同属解析环节：查询失败同样整体丢弃（daemon 维度绝不退回全发）。
  *
  * O1：改为跨实例 pub/sub —— 本实例解析完成员后，把「信封」发布到 Valkey channel，
  * 每个实例（含本实例）订阅后按各自的本地 socket 表投递。多实例部署时实例间不再互相看不见。
  */
 export async function broadcast(channelId: string, event: WsChannelBroadcast) {
   let allowedHumanIds: string[] | null = null; // null = 不限制（公开）
+  let allowedDaemonUserIds: string[] | null = null; // null = daemon 不限制（公开频道全发）
   let resolved = false;
   try {
     if (wsPg && channelId) {
@@ -445,6 +456,15 @@ export async function broadcast(channelId: string, event: WsChannelBroadcast) {
           [channelId],
         );
         allowedHumanIds = m.rows.map((r) => String(r.member_id));
+        // daemon 侧收敛（P1.22）：channel_members 的 agent 成员（member_id=agents.id）
+        // JOIN agents 拿 owner user_id——daemonClients 按 owner userId 记账。
+        const owners = await wsPg.query<{ user_id: string }>(
+          `SELECT DISTINCT a.user_id FROM channel_members cm
+           JOIN agents a ON cm.member_id = a.id AND cm.member_type = 'agent'
+           WHERE cm.channel_id = $1`,
+          [channelId],
+        );
+        allowedDaemonUserIds = owners.rows.map((r) => String(r.user_id));
         resolved = true;
       } else if (t === "public") {
         resolved = true;
@@ -461,7 +481,7 @@ export async function broadcast(channelId: string, event: WsChannelBroadcast) {
     return;
   }
 
-  publish({ kind: "channel", channelId, allowedHumanIds, event });
+  publish({ kind: "channel", channelId, allowedHumanIds, allowedDaemonUserIds, event });
 }
 
 /** Send a message to a specific daemon */
@@ -515,33 +535,93 @@ export function sendToUser(userId: string, event: WsToBrowserMessage) {
   publish({ kind: "user", userId, event });
 }
 
-// ---------- 跨实例 pub/sub（O1） ----------
-const PUBSUB_CHANNEL = "slock:ws:v1";
+// ---------- 跨实例 pub/sub（O1；P1.22 按事件形态/userId 分频道） ----------
+// 两个频道族：
+// - 广播面（全局订阅）：频道事件 + all-daemons——目标 socket 可能挂在任何实例上；
+// - 定向面（按 userId 动态订/退）：user / daemon / terminal-frame 只与本实例持有的
+//   连接相关——多实例下高频 terminal-frame 与定向事件不再对全部实例全量扇出。
+const PUBSUB_CHANNEL_BROADCAST = "slock:ws:v1:channel";
+const PUBSUB_CHANNEL_ALL_DAEMONS = "slock:ws:v1:all";
+const userChannelName = (userId: string) => `slock:ws:v1:u:${userId}`;
 
 type WsEnvelope =
-  | { kind: "channel"; channelId: string; allowedHumanIds: string[] | null; event: any }
+  | {
+      kind: "channel";
+      channelId: string;
+      allowedHumanIds: string[] | null;
+      allowedDaemonUserIds: string[] | null;
+      event: any;
+    }
   | { kind: "user"; userId: string; event: any }
   | { kind: "daemon"; userId: string; event: any }
   | { kind: "all-daemons"; event: any }
   | { kind: "terminal-frame"; userId: string; agentName: string; event: any };
 
 let pubsub: PubSub | null = null;
+// 本实例已订阅的定向频道（unsub 句柄按 userId 记账；随本地连接增减动态订/退）
+const userSubs = new Map<string, () => void>();
 
-/** 由 index.ts 启动时注入 pubsub 实例并订阅广播 channel。 */
+function envelopeChannel(env: WsEnvelope): string {
+  switch (env.kind) {
+    case "channel":
+      return PUBSUB_CHANNEL_BROADCAST;
+    case "all-daemons":
+      return PUBSUB_CHANNEL_ALL_DAEMONS;
+    default:
+      return userChannelName(env.userId);
+  }
+}
+
+/** 本实例持有该用户的连接（browser 或 daemon）才需要订阅其定向频道；幂等，连接增减处调用 */
+function refreshUserSubscription(userId: string): void {
+  if (!pubsub) return;
+  const needed = browserClients.has(userId) || daemonClients.has(userId);
+  if (needed && !userSubs.has(userId)) {
+    userSubs.set(
+      userId,
+      pubsub.subscribe(userChannelName(userId), (payload) => handleEnvelope(payload as WsEnvelope)),
+    );
+  } else if (!needed && userSubs.has(userId)) {
+    userSubs.get(userId)!();
+    userSubs.delete(userId);
+  }
+}
+
+/** 由 index.ts 启动时注入 pubsub 实例并订阅广播面频道。 */
 export function setPubSub(p: PubSub): void {
+  // 重复注入（测试）：先摘掉旧实例上的全部定向订阅，避免句柄悬空
+  if (pubsub) for (const unsub of userSubs.values()) unsub();
+  userSubs.clear();
   pubsub = p;
-  p.subscribe(PUBSUB_CHANNEL, (payload) => handleEnvelope(payload as WsEnvelope));
+  p.subscribe(PUBSUB_CHANNEL_BROADCAST, (payload) => handleEnvelope(payload as WsEnvelope));
+  p.subscribe(PUBSUB_CHANNEL_ALL_DAEMONS, (payload) => handleEnvelope(payload as WsEnvelope));
+  // 已在线用户的定向频道补订阅（进程重启后 setPubSub 晚于首条连接 / 测试重复注入）
+  for (const userId of new Set([...browserClients.keys(), ...daemonClients.keys()])) {
+    refreshUserSubscription(userId);
+  }
 }
 
 function publish(env: WsEnvelope): void {
   // pubsub 尚未注入（模块极早期）→ 本地直投兜底，避免消息凭空消失
-  if (pubsub) pubsub.publish(PUBSUB_CHANNEL, env);
+  if (pubsub) pubsub.publish(envelopeChannel(env), env);
   else handleEnvelope(env);
 }
 
-function deliver(sockets: Iterable<WebSocket>, payload: string): void {
+// P1.22 慢消费者背压：裸 send 不看 bufferedAmount，高频帧（terminal-frame）对慢客户端
+// 会无限积压在发送缓冲。超阈值说明对端已跟不上，直接 terminate 逼其重连并按 seq
+// 游标走 REST 补拉——静默跳过会丢消息且不可察觉，断开重连反而是可恢复路径。
+const MAX_WS_BUFFERED_BYTES = 4 * 1024 * 1024;
+
+/** 导出供背压单测（P1.22）：超阈值 terminate，正常 send */
+export function deliver(sockets: Iterable<WebSocket>, payload: string): void {
   for (const ws of sockets) {
     try {
+      if (ws.bufferedAmount > MAX_WS_BUFFERED_BYTES) {
+        inc("wsSlowConsumerTerminated");
+        console.warn(`[WS] slow consumer (buffered=${ws.bufferedAmount}B), terminating to force reconnect+backfill`);
+        ws.terminate();
+        continue;
+      }
       ws.send(payload);
     } catch {
       /* ignore */
@@ -559,12 +639,14 @@ function handleEnvelope(env: WsEnvelope): void {
         if (allowed && !allowed.has(userId)) continue; // 私有频道：非成员浏览器不投递
         deliver(sockets, payload);
       }
-      for (const [, ws] of daemonClients) {
-        try {
-          ws.send(payload);
-        } catch {
-          /* ignore */
-        }
+      // P1.22：daemon 不再无条件全发（此前所有用户 daemon 都能收到他人私有频道明文）——
+      // 公开频道全发（@提及自动入圈依赖广播面）；私有频道/DM 仅投给「其 agent 是频道
+      // 成员」的用户 daemon。成员解析在 broadcast() 完成；解析失败 fail-closed 为空数组
+      // → 不投任何 daemon（与 P0.2 同语义，事件可经 REST 按 seq 游标补拉）。
+      const daemonAllowed = env.allowedDaemonUserIds ? new Set(env.allowedDaemonUserIds) : null;
+      for (const [userId, ws] of daemonClients) {
+        if (daemonAllowed && !daemonAllowed.has(userId)) continue;
+        deliver([ws], payload);
       }
       break;
     }
@@ -575,24 +657,11 @@ function handleEnvelope(env: WsEnvelope): void {
     }
     case "daemon": {
       const daemon = daemonClients.get(env.userId);
-      if (daemon) {
-        try {
-          daemon.send(JSON.stringify(env.event));
-        } catch {
-          /* ignore */
-        }
-      }
+      if (daemon) deliver([daemon], JSON.stringify(env.event));
       break;
     }
     case "all-daemons": {
-      const payload = JSON.stringify(env.event);
-      for (const [, ws] of daemonClients) {
-        try {
-          ws.send(payload);
-        } catch {
-          /* ignore */
-        }
-      }
+      deliver(daemonClients.values(), JSON.stringify(env.event));
       break;
     }
     case "terminal-frame": {

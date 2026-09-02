@@ -9,15 +9,50 @@
  * - 未配置时：退化为进程内 EventEmitter（单实例 / 测试环境，行为与旧版一致）。
  *
  * 关键语义：发布者实例「本地直投 + PUBLISH」，远端实例经 SUBSCRIBE 接收后本地直投。
- * Redis pub/sub 不会回环给发布者自身，所以每个实例恰好收到一次，无重复投递。
+ * Redis PUBLISH 会回环投递给发布者自身订阅的连接（此前注释声称不会，语义不符——
+ * 单实例开发走 InProcess 后端掩盖了这点），因此 P1.22 起给每条消息打上实例源标记
+ * （__mid = instanceId:seq），订阅端收到本实例近期发布过的消息直接跳过，
+ * 保证「本地直投 + 回环」恰好投递一次。本实例标记有界记账（FIFO 淘汰）。
  *
  * 故障降级：Redis 不可用时发布/订阅均静默失败（本地直投仍然生效），
  * 不会因 Valkey 抖动影响单实例的消息投递；错误只打一次日志，避免刷屏。
  */
+import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 
 // ESM 下动态加载 ioredis（与 rate-limit.ts 一致）；未配置 VALKEY_URL 时该依赖不会被实例化。
 const { default: Redis } = await import("ioredis");
+
+// ---------- 回环去重（Redis 后端专用） ----------
+// 本实例发布的消息经 Redis 回环回来时会被 sub 连接再次收到；本地直投 + 回环各投一次。
+// 发布时记下 __mid，回环命中即跳过。有界 FIFO，防无限增长。
+const INSTANCE_MID_PREFIX = randomUUID() + ":";
+let midSeq = 0;
+const RECENT_OWN_LIMIT = 1024;
+const recentOwn = new Map<string, true>();
+
+const nextMid = () => `${INSTANCE_MID_PREFIX}${(midSeq++).toString(36)}`;
+
+function rememberOwn(mid: string): void {
+  recentOwn.set(mid, true);
+  if (recentOwn.size > RECENT_OWN_LIMIT) {
+    const it = recentOwn.keys();
+    for (let i = 0; i < RECENT_OWN_LIMIT / 2; i++) {
+      const k = it.next().value;
+      if (k === undefined) break;
+      recentOwn.delete(k);
+    }
+  }
+}
+
+/** 回环消息解包：本实例近期发布过的 → null（跳过）；远端/旧格式 → 原 payload */
+function unwrapLooped(parsed: unknown): unknown {
+  if (typeof parsed !== "object" || parsed === null) return parsed;
+  const obj = parsed as { __mid?: unknown; payload?: unknown };
+  if (typeof obj.__mid !== "string" || !("payload" in obj)) return parsed;
+  if (obj.__mid.startsWith(INSTANCE_MID_PREFIX) && recentOwn.has(obj.__mid)) return null;
+  return obj.payload ?? parsed;
+}
 
 type Handler = (payload: unknown) => void;
 
@@ -73,9 +108,12 @@ class RedisPubSub implements PubSub {
     this.sub.on("error", (e: Error) => this.warnOnce("subscribe", e));
 
     // 远端消息 → 本地订阅者。JSON 解析失败（脏数据）直接丢弃。
+    // 本实例发布的消息回环回来时按 __mid 去重（本地直投已投过一次）。
     this.sub.on("message", (channel: string, message: string) => {
       try {
-        this.emitter.emit(channel, JSON.parse(message));
+        const payload = unwrapLooped(JSON.parse(message));
+        if (payload === null) return; // 回环去重：本实例已本地直投
+        this.emitter.emit(channel, payload);
       } catch {
         /* ignore malformed payload */
       }
@@ -97,8 +135,10 @@ class RedisPubSub implements PubSub {
   publish(channel: string, payload: unknown): void {
     // 本地直投（发布者自身也订阅了该 channel，因此本实例的 socket 在这里收到）
     this.emitter.emit(channel, payload);
-    // 广播给其它实例
-    this.pub.publish(channel, JSON.stringify(payload)).catch(() => {});
+    // 广播给其它实例；带实例源标记，回环回来时去重（见 unwrapLooped）
+    const mid = nextMid();
+    rememberOwn(mid);
+    this.pub.publish(channel, JSON.stringify({ __mid: mid, payload })).catch(() => {});
   }
 
   subscribe(channel: string, handler: Handler): () => void {
