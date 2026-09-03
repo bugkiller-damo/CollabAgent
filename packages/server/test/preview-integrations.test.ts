@@ -1,12 +1,20 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { decodeEntities, isBlockedHost, metaContent } from "../src/routes/preview.js";
+import {
+  decodeEntities,
+  fetchWithSsrfGuard,
+  isBlockedHost,
+  isBlockedIp,
+  metaContent,
+  SsrfBlockedError,
+} from "../src/routes/preview.js";
 import { api, cleanupTestData, closeSql, registerUser, sql, type TestUser } from "./helpers.js";
 
 // P1.28：preview（SSRF 面，评估零覆盖清单 ②）+ integrations（纯 stub）测试。
 // preview 的抓取侧：确定性分支（参数/协议/黑名单）走真路由；元信息提取与黑名单矩阵
 // 走纯函数（preview.ts 的 helpers 已导出）；真外网抓取不进测试面（离线不可跑/网络抖动）。
-// redirect 逐跳复查 + 最终 IP 段校验是 SSRF 的残余缺口，归 P1.29（本文件黑名单矩阵
-// 即为其回归基线）。
+// P1.29：redirect 逐跳复查 + 最终 IP 段校验已落地——fetchWithSsrfGuard 以注入假
+// fetch/lookup 的方式离线直测（路由级只测字面量分支：本机/内网全被黑名单挡，无法构造
+// 路由内可达的跳转 fixture）。
 
 let user: TestUser;
 
@@ -51,6 +59,25 @@ describe("preview 路由：确定性分支", () => {
     expect(new URL("http://2130706433/").hostname).toBe("127.0.0.1");
     const r = await api(`/api/preview?url=${encodeURIComponent("http://2130706433/")}`, { cookie: user.cookie });
     expect(r.status).toBe(400);
+  });
+
+  it("400 P1.29 解析层字面量：IPv4-mapped IPv6 / 尾点 FQDN / CGNAT / v6 链路本地+ULA", async () => {
+    const blocked = [
+      "http://[::ffff:127.0.0.1]/", // URL 归一化为 [::ffff:7f00:1]，抽出内嵌 v4 判段
+      "http://[::ffff:7f00:1]/",
+      "http://[::ffff:a00:1]/", // ::ffff:10.0.0.1
+      "http://[fe80::1]/", // v6 链路本地
+      "http://[fd00::1]/", // v6 ULA
+      "http://localhost./", // 尾点 FQDN（不剥尾点绕过 localhost 字面值判定）
+      "http://foo.local./",
+      "http://100.64.0.1/", // CGNAT 100.64.0.0/10
+      "http://0.0.0.1/", // 0.0.0.0/8（P1.28 仅拦精确 0.0.0.0）
+    ];
+    for (const url of blocked) {
+      const r = await api(`/api/preview?url=${encodeURIComponent(url)}`, { cookie: user.cookie });
+      expect(r.status, url).toBe(400);
+      expect(r.data.error).toBe("blocked host");
+    }
   });
 
   it("502 不可解析主机（RFC 6761 .invalid 保证 NXDOMAIN → fetch 抛错）", async () => {
@@ -103,6 +130,233 @@ describe("preview 纯函数：黑名单矩阵 + 元信息提取", () => {
   it("decodeEntities：实体变体", () => {
     expect(decodeEntities("&amp;&lt;&gt;&quot;&#39;&#x27;")).toBe(`&<>"''`);
     expect(decodeEntities("plain")).toBe("plain");
+  });
+});
+
+describe("preview 纯函数：isBlockedIp 段矩阵（P1.29）", () => {
+  it("IPv4：内网/回环/链路本地/CGNAT/协议保留/文档段/组播/保留段全命中；公网与段外放行", () => {
+    const blocked = [
+      "0.0.0.0",
+      "0.1.2.3", // 0/8 整段（P1.28 仅拦精确 0.0.0.0）
+      "10.0.0.1",
+      "10.255.255.255",
+      "100.64.0.0",
+      "100.127.255.255", // CGNAT /10 边界
+      "127.0.0.1",
+      "127.53.0.1",
+      "169.254.0.1",
+      "172.16.0.1",
+      "172.31.255.255",
+      "192.0.0.1", // IETF 协议分配
+      "192.0.2.1", // TEST-NET-1
+      "192.168.0.1",
+      "198.18.0.1",
+      "198.19.255.1", // 基准测试 /15 边界
+      "198.51.100.1", // TEST-NET-2
+      "203.0.113.9", // TEST-NET-3
+      "224.0.0.1", // 组播
+      "240.0.0.1", // 保留
+      "255.255.255.255",
+    ];
+    for (const ip of blocked) expect(isBlockedIp(ip), ip).toBe(true);
+    const allowed = [
+      "1.1.1.1",
+      "8.8.8.8",
+      "100.63.255.255", // CGNAT 下界之外
+      "100.128.0.0", // CGNAT 上界之外
+      "172.15.0.1",
+      "172.32.0.1",
+      "192.0.1.1",
+      "192.0.3.1",
+      "198.17.0.1",
+      "198.20.0.1",
+      "223.255.255.255",
+    ];
+    for (const ip of allowed) expect(isBlockedIp(ip), ip).toBe(false);
+  });
+
+  it("IPv6：回环/未指定/ULA/链路本地/组播/NAT64/文档段命中；IPv4-mapped 按内嵌 v4 判定", () => {
+    const blocked = [
+      "::1",
+      "::",
+      "0:0:0:0:0:0:0:1",
+      "fc00::1",
+      "fd12:3456::1",
+      "fe80::1",
+      "febf::ffff", // fe80::/10 上界
+      "ff02::1",
+      "64:ff9b::7f00:1", // NAT64 WKP 内嵌 127.0.0.1
+      "2001:db8::1", // 文档段
+      "::ffff:127.0.0.1", // IPv4-mapped（点分尾部写法）
+      "::ffff:7f00:1", // 同上，纯十六进制（WHATWG URL 归一化后形态）
+      "::ffff:10.0.0.1",
+      "::ffff:169.254.169.254", // mapped 云 metadata
+      "::127.0.0.1", // IPv4-compatible（已废弃写法）
+    ];
+    for (const ip of blocked) expect(isBlockedIp(ip), ip).toBe(true);
+    const allowed = [
+      "2606:4700:4700::1111",
+      "2001:4860:4860::8888",
+      "::ffff:8.8.8.8", // mapped 公网放行
+      "2001:db9::1", // 文档段之外
+      "fe7f::1", // fe80::/10 下界之外
+    ];
+    for (const ip of allowed) expect(isBlockedIp(ip), ip).toBe(false);
+  });
+
+  it("非法字符串保守拦截（fail-closed：判不出即不可信）", () => {
+    expect(isBlockedIp("not-an-ip")).toBe(true);
+    expect(isBlockedIp("999.1.1.1")).toBe(true);
+    expect(isBlockedIp("1:2:3:4:5:6:7:8:9")).toBe(true); // 9 组 v6 非法
+    expect(isBlockedIp("")).toBe(true);
+  });
+
+  it("isBlockedHost 扩展：IPv4-mapped/尾点 FQDN/大小写/CGNAT", () => {
+    expect(isBlockedHost("::ffff:127.0.0.1")).toBe(true);
+    expect(isBlockedHost("[::ffff:7f00:1]")).toBe(true); // 方括号 + mapped
+    expect(isBlockedHost("LOCALHOST.")).toBe(true); // 尾点 + 大小写
+    expect(isBlockedHost("foo.local.")).toBe(true);
+    expect(isBlockedHost("100.64.0.1")).toBe(true);
+    expect(isBlockedHost("100.63.0.1")).toBe(false);
+    expect(isBlockedHost("example.com.")).toBe(false);
+    expect(isBlockedHost("[2606:4700:4700::1111]")).toBe(false);
+  });
+});
+
+// fetchWithSsrfGuard 离线直测：注入假 fetch/lookup（真外网抓取不进测试面——
+// 本机/内网全被黑名单挡，无法构造路由内可达的跳转 fixture；假注入反而更确定）。
+describe("fetchWithSsrfGuard：redirect 逐跳复查 + DNS 判段（P1.29）", () => {
+  const okLookup = async (_h: string) => [{ address: "93.184.216.34" }];
+  const htmlResponse = () =>
+    new Response("<html><title>ok</title></html>", { status: 200, headers: { "content-type": "text/html" } });
+  const redirectTo = (location: string) => new Response(null, { status: 302, headers: { location } });
+  const fakeFetch = (impl: (url: string) => Response | Promise<Response>) =>
+    (async (u: string | URL | Request) => impl(String(u))) as unknown as typeof fetch;
+
+  it("直连 200：域名先过 DNS 判段再发请求，finalUrl 不变", async () => {
+    const looked: string[] = [];
+    const fetched: string[] = [];
+    const { res, finalUrl } = await fetchWithSsrfGuard(new URL("https://example.com/page"), {
+      lookupImpl: async (h) => {
+        looked.push(h);
+        return okLookup(h);
+      },
+      fetchImpl: fakeFetch((u) => {
+        fetched.push(u);
+        return htmlResponse();
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect(finalUrl.toString()).toBe("https://example.com/page");
+    expect(looked).toEqual(["example.com"]);
+    expect(fetched).toEqual(["https://example.com/page"]);
+  });
+
+  it("302 跳内网字面量 → SsrfBlockedError，第二跳请求未发出（redirect:follow 时代的核心绕过）", async () => {
+    const fetched: string[] = [];
+    await expect(
+      fetchWithSsrfGuard(new URL("https://short.example/"), {
+        lookupImpl: okLookup,
+        fetchImpl: fakeFetch((u) => {
+          fetched.push(u);
+          return redirectTo("http://169.254.169.254/latest/meta-data");
+        }),
+      }),
+    ).rejects.toBeInstanceOf(SsrfBlockedError);
+    expect(fetched).toEqual(["https://short.example/"]);
+  });
+
+  it("302 跳域名：第二跳 DNS 解析命中内网 IP → SsrfBlockedError（域名指向内网的 rebinding 静态形态）", async () => {
+    let hop = 0;
+    await expect(
+      fetchWithSsrfGuard(new URL("https://a.example/"), {
+        lookupImpl: async (h) => (h === "evil.example" ? [{ address: "10.0.0.9" }] : okLookup(h)),
+        fetchImpl: fakeFetch(() => (hop++ === 0 ? redirectTo("https://evil.example/x") : htmlResponse())),
+      }),
+    ).rejects.toBeInstanceOf(SsrfBlockedError);
+  });
+
+  it("公网两跳链：逐跳复查通过，相对 Location 按当前跳解析，finalUrl 为最终跳", async () => {
+    const fetched: string[] = [];
+    const { res, finalUrl } = await fetchWithSsrfGuard(new URL("https://a.example/"), {
+      lookupImpl: okLookup,
+      fetchImpl: fakeFetch((u) => {
+        fetched.push(u);
+        return u === "https://a.example/" ? redirectTo("/step2") : htmlResponse();
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect(finalUrl.toString()).toBe("https://a.example/step2");
+    expect(fetched).toEqual(["https://a.example/", "https://a.example/step2"]);
+  });
+
+  it("302 → file: 协议 → SsrfBlockedError（协议白名单逐跳复查）", async () => {
+    await expect(
+      fetchWithSsrfGuard(new URL("https://a.example/"), {
+        lookupImpl: okLookup,
+        fetchImpl: fakeFetch(() => redirectTo("file:///etc/passwd")),
+      }),
+    ).rejects.toBeInstanceOf(SsrfBlockedError);
+  });
+
+  it("超过 maxRedirects → too many redirects（非 SsrfBlockedError，路由层归 502）", async () => {
+    let calls = 0;
+    await expect(
+      fetchWithSsrfGuard(new URL("https://loop.example/"), {
+        lookupImpl: okLookup,
+        maxRedirects: 3,
+        fetchImpl: fakeFetch((u) => {
+          calls++;
+          return redirectTo(u); // 自跳转死循环
+        }),
+      }),
+    ).rejects.toThrow("too many redirects");
+    expect(calls).toBe(4); // 首跳 + 3 次跟随，第 5 跳不再发出
+  });
+
+  it("DNS 多地址任一命中内网即整域拦截（fail-closed，fetch 可能取任一地址）", async () => {
+    let fetchCalled = false;
+    await expect(
+      fetchWithSsrfGuard(new URL("https://dual.example/"), {
+        lookupImpl: async () => [{ address: "8.8.8.8" }, { address: "127.0.0.1" }],
+        fetchImpl: fakeFetch(() => {
+          fetchCalled = true;
+          return htmlResponse();
+        }),
+      }),
+    ).rejects.toBeInstanceOf(SsrfBlockedError);
+    expect(fetchCalled).toBe(false);
+  });
+
+  it("IP 字面量起始 URL：跳过 DNS（lookup 不被调用），公网字面量放行", async () => {
+    let lookupCalled = false;
+    const { res } = await fetchWithSsrfGuard(new URL("http://8.8.8.8/"), {
+      lookupImpl: async () => {
+        lookupCalled = true;
+        return [];
+      },
+      fetchImpl: fakeFetch(() => htmlResponse()),
+    });
+    expect(res.status).toBe(200);
+    expect(lookupCalled).toBe(false);
+  });
+
+  it("3xx 无 Location → 作为最终响应返回（不视为跳转）", async () => {
+    const { res, finalUrl } = await fetchWithSsrfGuard(new URL("https://a.example/"), {
+      lookupImpl: okLookup,
+      fetchImpl: fakeFetch(() => new Response(null, { status: 304 })),
+    });
+    expect(res.status).toBe(304);
+    expect(finalUrl.toString()).toBe("https://a.example/");
+  });
+
+  it("畸形 Location（URL 构造失败）→ 抛非 SsrfBlockedError（路由层归 502）", async () => {
+    await expect(
+      fetchWithSsrfGuard(new URL("https://a.example/"), {
+        lookupImpl: okLookup,
+        fetchImpl: fakeFetch(() => redirectTo("http://[broken")),
+      }),
+    ).rejects.toThrow(TypeError);
   });
 });
 
