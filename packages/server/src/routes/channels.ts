@@ -29,7 +29,10 @@ export async function channelRoutes(app: FastifyInstance) {
 
   app.post("/", { preHandler: [app.authenticate] }, async (req, reply) => {
     const { serverId, name, description, type, visibility } = req.body as Record<string, unknown>;
-    if (!name) return reply.status(400).send({ error: "name required" });
+    // P1.32：name 规范化（trim + VARCHAR(100) 上限）——超长/非字符串给 400 而非放行至 PG 22001 500
+    const cleanName = typeof name === "string" ? name.trim() : "";
+    if (!cleanName) return reply.status(400).send({ error: "name required" });
+    if (cleanName.length > 100) return reply.status(400).send({ error: "channel name too long (max 100)" });
     const tenant = await resolveTenant(app, req, { serverId: serverId as string | undefined });
     if (tenant.explicit && !(await isServerMember(app, tenant.serverId, req.user.sub))) {
       return reply.status(403).send({ error: "not a member of that server" });
@@ -37,28 +40,41 @@ export async function channelRoutes(app: FastifyInstance) {
     const resolvedServerId = tenant.serverId;
     if (!resolvedServerId) return reply.status(400).send({ error: "no server available" });
     const vis = visibility || type || "public";
+    // P1.32：type 枚举校验——用户可建 public/private；dm 只能由 dm 链路（getOrCreateDmChannel）创建，
+    // 任意字符串入库会让 canAccessChannel/列表谓词（type<>'dm'、type<>'private'）判定失真
+    if (vis !== "public" && vis !== "private") {
+      return reply.status(400).send({ error: "invalid channel type" });
+    }
     const userId = req.user.sub;
-    const exists = await app.pg.query("SELECT 1 FROM channels WHERE server_id = $1 AND name = $2", [
+    // P1.32：重名检查改 lower(name) 口径，与唯一索引 idx_channels_server_name (server_id, lower(name))
+    // 一致——原值口径下 "General"/"general" 双过检查后撞唯一索引 500（应为 409）
+    const exists = await app.pg.query("SELECT 1 FROM channels WHERE server_id = $1 AND lower(name) = lower($2)", [
       resolvedServerId,
-      name,
+      cleanName,
     ]);
     if (exists.rows.length > 0) return reply.status(409).send({ error: "channel already exists" });
     // 频道创建 + 创建者入圈 必须同事务，否则第二步失败会留下无 owner 的频道
-    const channel = await app.pg.transaction(async (tx) => {
-      const result = await tx.query(
-        `INSERT INTO channels (server_id, name, description, type, created_by)
-         VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-        [resolvedServerId, name, description || null, vis, userId],
-      );
-      const ch = result.rows[0] as any;
-      await tx.query(
-        `INSERT INTO channel_members (channel_id, member_id, member_type, role)
-         VALUES ($1, $2, 'human', 'owner') ON CONFLICT DO NOTHING`,
-        [ch.id, userId],
-      );
-      return ch;
-    });
-    return { channel };
+    try {
+      const channel = await app.pg.transaction(async (tx) => {
+        const result = await tx.query(
+          `INSERT INTO channels (server_id, name, description, type, created_by)
+           VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+          [resolvedServerId, cleanName, description || null, vis, userId],
+        );
+        const ch = result.rows[0] as any;
+        await tx.query(
+          `INSERT INTO channel_members (channel_id, member_id, member_type, role)
+           VALUES ($1, $2, 'human', 'owner') ON CONFLICT DO NOTHING`,
+          [ch.id, userId],
+        );
+        return ch;
+      });
+      return { channel };
+    } catch (err: any) {
+      // 并发双过 SELECT 查重时由 (server_id, lower(name)) 唯一索引兜底，映射 409 而非 500
+      if (err?.code === "23505") return reply.status(409).send({ error: "channel already exists" });
+      throw err;
+    }
   });
 
   app.patch("/:channelId", { preHandler: [app.authenticate] }, async (req, reply) => {
@@ -76,6 +92,10 @@ export async function channelRoutes(app: FastifyInstance) {
     }
     const vis = visibility ?? type;
     if (vis !== undefined) {
+      // P1.32：与创建同口径枚举校验——dm 不可由管理端点改出/改入（dm 只由 dm 链路创建）
+      if (vis !== "public" && vis !== "private") {
+        return reply.status(400).send({ error: "invalid channel type" });
+      }
       sets.push(`type = $${p++}`);
       params.push(vis);
     }
@@ -131,7 +151,6 @@ export async function channelRoutes(app: FastifyInstance) {
 
   app.post("/:channelId/join", { preHandler: [app.authenticate] }, async (req, reply) => {
     const { channelId } = req.params as Record<string, string>;
-    const { memberType } = (req.body as { memberType?: string }) || {};
     // 私有频道 / DM 不允许自主加入：必须由管理员通过 /invite 拉人，否则拿到
     // 频道 UUID 即可绕过邀请制直接成为成员。
     const ch = await app.pg.query<{ type: string }>("SELECT type FROM channels WHERE id = $1", [channelId]);
@@ -139,10 +158,13 @@ export async function channelRoutes(app: FastifyInstance) {
     if (ch.rows[0].type !== "public") {
       return reply.status(403).send({ error: "private channels require an invite" });
     }
+    // P1.32：memberType 服务端定死——本端点认证主体恒为人类用户（req.user.sub），
+    // agent 入圈走 /internal/agent/:agentId/channels/:name/join；采信 body.memberType
+    // 会让人类把自己登记成 'agent'，污染 canAccessChannel/成员列表的 member_type 类型假设
     await app.pg.query(
       `INSERT INTO channel_members (channel_id, member_id, member_type)
-       VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
-      [channelId, req.user.sub, memberType || "human"],
+       VALUES ($1, $2, 'human') ON CONFLICT DO NOTHING`,
+      [channelId, req.user.sub],
     );
     invalidateMember(channelId, req.user.sub); // O7：新成员角色立即生效
     return { ok: true };
