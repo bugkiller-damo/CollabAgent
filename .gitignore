@@ -22,3 +22,10 @@ docs/test_heredoc.md
 .claude/goal-progress.json
 .claude/scheduled_tasks.*
 .claude/settings.local.json
+
+# Agent skills install artifacts (symlinks + fetched SKILL.md; lockfile stays tracked)
+.agents/
+.claude/skills/
+
+# DB dumps (contain real user data + bcrypt hashes)
+backups/
