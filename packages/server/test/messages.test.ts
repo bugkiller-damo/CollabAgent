@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { api, cleanupTestData, closeSql, registerUser } from "./helpers.js";
+import { api, cleanupTestData, closeSql, registerUser, uniqHandle } from "./helpers.js";
 
 afterAll(async () => {
   await cleanupTestData();
@@ -225,5 +225,111 @@ describe("messages: 发送 / 列取 / 编辑 / 搜索 / 反应 / 删除", () => 
 
   it("不存在的线程 404", async () => {
     expect((await api("/api/messages/thread/00000000-0000-0000-0000-000000000000", { cookie: ck })).status).toBe(404);
+  });
+});
+
+describe("P1.33: threadId 校验 / content 上限 / 移出私有频道后禁改删", () => {
+  it("/send threadId：非 UUID / 不存在 / 跨频道 400，本频道合法 200", async () => {
+    const a = await registerUser();
+    const chA = "th_a_" + uniqHandle();
+    const chB = "th_b_" + uniqHandle();
+    await api("/api/channels", { method: "POST", cookie: a.cookie, body: { name: chA } });
+    await api("/api/channels", { method: "POST", cookie: a.cookie, body: { name: chB } });
+    const parent = await api("/api/messages/send", {
+      method: "POST",
+      cookie: a.cookie,
+      body: { target: "#" + chA, content: "parent" },
+    });
+    expect(parent.status).toBe(200);
+    const pid = parent.data.messageId;
+    const send = (target: string, threadId: string) =>
+      api("/api/messages/send", { method: "POST", cookie: a.cookie, body: { target, content: "r", threadId } });
+    // 非 UUID（此前 22P02 cast 500）
+    expect((await send("#" + chA, "not-a-uuid")).status).toBe(400);
+    // 不存在的合法 UUID（此前撞 thread_id FK 500）
+    expect((await send("#" + chA, "00000000-0000-0000-0000-000000000000")).status).toBe(400);
+    // 跨频道（拿 chA 的父消息去 chB 回——此前跨频道线程错乱）
+    expect((await send("#" + chB, pid)).status).toBe(400);
+    // 本频道合法
+    expect((await send("#" + chA, pid)).status).toBe(200);
+  });
+
+  it("content 超长 400（send 与 edit 同口径）", async () => {
+    const a = await registerUser();
+    const over = "x".repeat(10_001);
+    expect(
+      (
+        await api("/api/messages/send", {
+          method: "POST",
+          cookie: a.cookie,
+          body: { target: "#general", content: over },
+        })
+      ).status,
+    ).toBe(400);
+    const s = await api("/api/messages/send", {
+      method: "POST",
+      cookie: a.cookie,
+      body: { target: "#general", content: "ok" },
+    });
+    expect(s.status).toBe(200);
+    expect(
+      (await api(`/api/messages/${s.data.messageId}`, { method: "PUT", cookie: a.cookie, body: { content: over } }))
+        .status,
+    ).toBe(400);
+  });
+
+  it("被移出私有频道后不得编辑/删除自己的旧消息；公开频道不受影响", async () => {
+    const owner = await registerUser();
+    const member = await registerUser();
+    const chName = "kick_" + uniqHandle();
+    const ch = (
+      await api("/api/channels", { method: "POST", cookie: owner.cookie, body: { name: chName, type: "private" } })
+    ).data.channel;
+    // 邀请 member → member 发一条 → owner 把 member 移出
+    expect(
+      (
+        await api(`/api/channels/${ch.id}/invite`, {
+          method: "POST",
+          cookie: owner.cookie,
+          body: { handle: member.handle },
+        })
+      ).status,
+    ).toBe(200);
+    const s = await api("/api/messages/send", {
+      method: "POST",
+      cookie: member.cookie,
+      body: { target: "#" + chName, content: "mine" },
+    });
+    expect(s.status).toBe(200);
+    expect(
+      (await api(`/api/channels/${ch.id}/members/${member.userId}`, { method: "DELETE", cookie: owner.cookie })).status,
+    ).toBe(200);
+    // 移出后：改/删自己的旧消息均 403（此前只查 sender 归属，仍可改删并触发广播）
+    expect(
+      (await api(`/api/messages/${s.data.messageId}`, { method: "PUT", cookie: member.cookie, body: { content: "x" } }))
+        .status,
+    ).toBe(403);
+    expect((await api(`/api/messages/${s.data.messageId}`, { method: "DELETE", cookie: member.cookie })).status).toBe(
+      403,
+    );
+    // 回归：公开频道消息不受私有频道成员资格影响，仍可改删
+    const pub = await api("/api/messages/send", {
+      method: "POST",
+      cookie: member.cookie,
+      body: { target: "#general", content: "pub" },
+    });
+    expect(pub.status).toBe(200);
+    expect(
+      (
+        await api(`/api/messages/${pub.data.messageId}`, {
+          method: "PUT",
+          cookie: member.cookie,
+          body: { content: "pub2" },
+        })
+      ).status,
+    ).toBe(200);
+    expect((await api(`/api/messages/${pub.data.messageId}`, { method: "DELETE", cookie: member.cookie })).status).toBe(
+      200,
+    );
   });
 });

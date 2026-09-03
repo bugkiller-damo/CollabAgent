@@ -117,10 +117,16 @@ export async function agentTaskRoutes(app: FastifyInstance) {
     const ch = await resolveChannelByName(app, channel);
     if (!ch) return reply.status(404).send({ error: "channel not found" });
     if (!(await agentCanAccessChannel(app, ch.id, agentId))) return reply.status(403).send({ error: "no access" });
-    const before = await app.pg.query<{ id: string; task_status: string | null }>(
-      "SELECT id, task_status FROM messages WHERE channel_id = $1 AND task_number = $2 AND task_number IS NOT NULL",
+    const before = await app.pg.query<{ id: string; task_status: string | null; task_assignee: string | null }>(
+      "SELECT id, task_status, task_assignee FROM messages WHERE channel_id = $1 AND task_number = $2 AND task_number IS NOT NULL",
       [ch.id, task_number],
     );
+    // P1.33：agent 侧归属校验——只能抢放「认领给自己」或未认领的任务（防 agent 互相破坏任务状态；
+    // 经理验收/撤回走 dispatch 专用端点，不经本路由）
+    const assignee = before.rows[0]?.task_assignee;
+    if (assignee && String(assignee) !== String(agentId)) {
+      return reply.status(403).send({ error: "can only unclaim tasks assigned to you" });
+    }
     await app.pg.query(
       "UPDATE messages SET task_assignee = NULL, task_status = 'todo', updated_at = now() WHERE channel_id = $1 AND task_number = $2",
       [ch.id, task_number],
@@ -147,10 +153,15 @@ export async function agentTaskRoutes(app: FastifyInstance) {
     const ch = await resolveChannelByName(app, channel);
     if (!ch) return reply.status(404).send({ error: "channel not found" });
     if (!(await agentCanAccessChannel(app, ch.id, agentId))) return reply.status(403).send({ error: "no access" });
-    const before = await app.pg.query<{ id: string; task_status: string | null }>(
-      "SELECT id, task_status FROM messages WHERE channel_id = $1 AND task_number = $2 AND task_number IS NOT NULL",
+    const before = await app.pg.query<{ id: string; task_status: string | null; task_assignee: string | null }>(
+      "SELECT id, task_status, task_assignee FROM messages WHERE channel_id = $1 AND task_number = $2 AND task_number IS NOT NULL",
       [ch.id, number],
     );
+    // P1.33：与 unclaim 同口径——只能改「认领给自己」或未认领的任务状态
+    const curAssignee = before.rows[0]?.task_assignee;
+    if (curAssignee && String(curAssignee) !== String(agentId)) {
+      return reply.status(403).send({ error: "can only change status of tasks assigned to you" });
+    }
     const r = await app.pg.query<{ id: string; task_number: number; task_status: string }>(
       "UPDATE messages SET task_status = $1, updated_at = now() WHERE channel_id = $2 AND task_number = $3 RETURNING id, task_number, task_status",
       [status, ch.id, number],

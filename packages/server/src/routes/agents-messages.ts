@@ -4,6 +4,8 @@ import { agentCanAccessChannel, getAgent, requireOwnAgent, resolveAgentChannelDb
 import { dmOtherMembers, isDmTarget, type Party, resolveDmTarget } from "../lib/dm.js";
 import { attachmentsJson } from "../lib/query-fragments.js";
 import { getStorage, isAllowedMimeType } from "../lib/storage.js";
+import { UUID_RE } from "../lib/tenant.js";
+import { MAX_MESSAGE_CONTENT_LEN } from "../lib/validators.js";
 import { broadcast } from "../ws/handler.js";
 
 export async function agentMessageRoutes(app: FastifyInstance) {
@@ -12,6 +14,10 @@ export async function agentMessageRoutes(app: FastifyInstance) {
     const agentId = (req.params as Record<string, string>).agentId;
     const attIds: string[] = Array.isArray(attachmentIds) ? (attachmentIds as string[]) : [];
     if (!target) return reply.status(400).send({ error: "target required" });
+    // P1.33：与人类侧 /api/messages/send 同口径的 content 上限
+    if (typeof content === "string" && content.length > MAX_MESSAGE_CONTENT_LEN) {
+      return reply.status(400).send({ error: `content too long (max ${MAX_MESSAGE_CONTENT_LEN})` });
+    }
     const agent = await getAgent(app, agentId);
     const tstr = target as string;
     const dm = isDmTarget(tstr);
@@ -36,7 +42,18 @@ export async function agentMessageRoutes(app: FastifyInstance) {
     if (!(await agentCanAccessChannel(app, channelDbId, agentId)))
       return reply.status(403).send({ error: "no access" });
     let resolvedThreadId: string | null = (threadId as string) || null;
-    if (!resolvedThreadId) {
+    if (resolvedThreadId) {
+      // P1.33：显式 threadId 与人类侧同口径——必须存在且属于本频道（此前原样进 INSERT：
+      // 不存在撞 FK 500、异频道跨频道错乱）。target 的 ":shortid" 前缀路径本就按
+      // channel_id 圈定（下分支），无需再验。
+      if (!UUID_RE.test(resolvedThreadId)) return reply.status(400).send({ error: "invalid threadId" });
+      const parent = await app.pg.query<{ channel_id: string }>("SELECT channel_id FROM messages WHERE id = $1", [
+        resolvedThreadId,
+      ]);
+      if (parent.rows.length === 0 || String(parent.rows[0].channel_id) !== String(channelDbId)) {
+        return reply.status(400).send({ error: "thread not found in this channel" });
+      }
+    } else {
       const parts = tstr.split(":");
       const shortid = dm ? parts[2] : parts[1];
       if (shortid) {
@@ -105,6 +122,9 @@ export async function agentMessageRoutes(app: FastifyInstance) {
     const { agentId, messageId } = req.params as Record<string, string>;
     const { content } = req.body as { content?: string };
     if (typeof content !== "string") return reply.status(400).send({ error: "content required" });
+    if (content.length > MAX_MESSAGE_CONTENT_LEN) {
+      return reply.status(400).send({ error: `content too long (max ${MAX_MESSAGE_CONTENT_LEN})` });
+    }
     const m = await app.pg.query<{ sender_id: string; sender_type: string; channel_id: string }>(
       "SELECT sender_id, sender_type, channel_id FROM messages WHERE id = $1",
       [messageId],
@@ -112,6 +132,10 @@ export async function agentMessageRoutes(app: FastifyInstance) {
     if (m.rows.length === 0) return reply.status(404).send({ error: "message not found" });
     if (String(m.rows[0].sender_id) !== String(agentId) || m.rows[0].sender_type !== "agent") {
       return reply.status(403).send({ error: "can only edit your own agent messages" });
+    }
+    // P1.33：被移出私有频道的 agent 不得再改自己的旧消息（与人类侧同口径）
+    if (!(await agentCanAccessChannel(app, String(m.rows[0].channel_id), agentId))) {
+      return reply.status(403).send({ error: "no access" });
     }
     const updated = await app.pg.query<{ id: string; content: string; editedAt: string }>(
       'UPDATE messages SET content = $1, edited_at = now() WHERE id = $2 RETURNING id, content, edited_at as "editedAt"',
@@ -140,6 +164,10 @@ export async function agentMessageRoutes(app: FastifyInstance) {
       if (m.rows.length === 0) return reply.status(404).send({ error: "message not found" });
       if (String(m.rows[0].sender_id) !== String(agentId) || m.rows[0].sender_type !== "agent") {
         return reply.status(403).send({ error: "can only delete your own agent messages" });
+      }
+      // P1.33：与编辑同口径——被移出私有频道后不得再删旧消息并触发广播
+      if (!(await agentCanAccessChannel(app, String(m.rows[0].channel_id), agentId))) {
+        return reply.status(403).send({ error: "no access" });
       }
       const kids = await app.pg.query("SELECT 1 FROM messages WHERE thread_id = $1 LIMIT 1", [messageId]);
       if (kids.rows.length > 0) {

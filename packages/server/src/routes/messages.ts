@@ -7,7 +7,8 @@ import { computeTriageAgents } from "../lib/manager-triage.js";
 import { inc } from "../lib/metrics.js";
 import { createNotification } from "../lib/notifications.js";
 import { attachmentsJson, reactionsJson } from "../lib/query-fragments.js";
-import { resolveTenant, type TenantContext } from "../lib/tenant.js";
+import { resolveTenant, type TenantContext, UUID_RE } from "../lib/tenant.js";
+import { MAX_MESSAGE_CONTENT_LEN } from "../lib/validators.js";
 import { broadcast } from "../ws/handler.js";
 
 export async function messageRoutes(app: FastifyInstance) {
@@ -121,6 +122,10 @@ export async function messageRoutes(app: FastifyInstance) {
     if ((!content || !content.trim()) && ids.length === 0) {
       return reply.status(400).send({ error: "content or attachment required" });
     }
+    // P1.33：content 应用层上限（此前唯一上限是全局 bodyLimit，见 validators.ts）
+    if (typeof content === "string" && content.length > MAX_MESSAGE_CONTENT_LEN) {
+      return reply.status(400).send({ error: `content too long (max ${MAX_MESSAGE_CONTENT_LEN})` });
+    }
     if (!target) return reply.status(400).send({ error: "target required" });
     // clientNonce（O15 幂等去重键）：可选；传了就必须是 8–64 位字母/数字/连字符，
     // 非法直接 400——格式合法的 nonce 才允许进入下面的唯一索引去重路径。
@@ -153,6 +158,18 @@ export async function messageRoutes(app: FastifyInstance) {
     }
     if (!(await canAccessChannel(app, resolvedChannelId, userId, accessOptsOf(tenant)))) {
       return reply.status(403).send({ error: "no access to this channel" });
+    }
+    // P1.33：threadId 必须指向本频道内的真实消息——此前原样进 INSERT：不存在的 id 撞
+    // thread_id FK 500、异频道 id 造成跨频道线程错乱。非 UUID 预检防 22P02 cast 500；
+    // 不存在与异频道统一 400（不回 404/403，避免泄露异频道消息的存在性）。
+    if (threadId) {
+      if (!UUID_RE.test(threadId)) return reply.status(400).send({ error: "invalid threadId" });
+      const parent = await app.pg.query<{ channel_id: string }>("SELECT channel_id FROM messages WHERE id = $1", [
+        threadId,
+      ]);
+      if (parent.rows.length === 0 || String(parent.rows[0].channel_id) !== String(resolvedChannelId)) {
+        return reply.status(400).send({ error: "thread not found in this channel" });
+      }
     }
     if (!resolvedServerId) {
       const sv = await app.pg.query<{ server_id: string }>("SELECT server_id FROM channels WHERE id = $1", [
@@ -500,7 +517,11 @@ export async function messageRoutes(app: FastifyInstance) {
     const { messageId } = req.params as Record<string, string>;
     const { content } = req.body as { content?: string };
     if (!content || !content.trim()) return reply.status(400).send({ error: "content required" });
+    if (content.length > MAX_MESSAGE_CONTENT_LEN) {
+      return reply.status(400).send({ error: `content too long (max ${MAX_MESSAGE_CONTENT_LEN})` });
+    }
     const userId = req.user.sub;
+    const tenant = await resolveTenant(app, req);
     const m = await app.pg.query<{ sender_id: string; channel_id: string; content: string | null }>(
       "SELECT sender_id, channel_id, content FROM messages WHERE id = $1",
       [messageId],
@@ -508,6 +529,11 @@ export async function messageRoutes(app: FastifyInstance) {
     if (m.rows.length === 0) return reply.status(404).send({ error: "message not found" });
     if (String(m.rows[0].sender_id) !== String(userId)) {
       return reply.status(403).send({ error: "can only edit your own messages" });
+    }
+    // P1.33：被移出私有频道/DM 的成员不得再改自己的旧消息（此前只查 sender 归属，
+    // 移出后仍可改内容并触发广播）
+    if (!(await canAccessChannel(app, String(m.rows[0].channel_id), userId, accessOptsOf(tenant)))) {
+      return reply.status(403).send({ error: "no access to this channel" });
     }
     const oldContent = String(m.rows[0].content || "");
     // 编辑历史 + 消息更新 + 审计事件 一个事务提交（O2）
@@ -591,10 +617,15 @@ export async function messageRoutes(app: FastifyInstance) {
   app.delete("/:messageId", { preHandler: [app.authenticate] }, async (req, reply) => {
     const { messageId } = req.params as Record<string, string>;
     const userId = req.user.sub;
+    const tenant = await resolveTenant(app, req);
     const m = await app.pg.query("SELECT sender_id, channel_id FROM messages WHERE id = $1", [messageId]);
     if (m.rows.length === 0) return reply.status(404).send({ error: "message not found" });
     if (String(m.rows[0].sender_id) !== String(userId)) {
       return reply.status(403).send({ error: "can only delete your own messages" });
+    }
+    // P1.33：与编辑同口径——被移出私有频道/DM 后不得再删旧消息并触发广播
+    if (!(await canAccessChannel(app, String(m.rows[0].channel_id), userId, accessOptsOf(tenant)))) {
+      return reply.status(403).send({ error: "no access to this channel" });
     }
     // 先删 reactions / attachments（如果有）防止 FK 悬挂
     // 不级联删 thread replies（保留历史），仅软删父消息内容

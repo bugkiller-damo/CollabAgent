@@ -452,3 +452,201 @@ describe("P0.5: claim 条件更新与取号唯一性", () => {
     expect(c2.data.results[0]).toEqual({ number: num, status: "conflict", error: "already_claimed_by_other" });
   });
 });
+
+describe("P1.33: unclaim/update-status 归属校验", () => {
+  it("已认领任务：旁观者 403；认领人可 unclaim；未认领卡片保持协作式", async () => {
+    const a = await registerUser(); // 频道创建者（owner）
+    const b = await registerUser();
+    const c = await registerUser(); // 旁观者（普通成员）
+    const chName = uniqHandle();
+    await api("/api/channels", { method: "POST", cookie: a.cookie, body: { name: chName } });
+    const chId = (await api("/api/channels/resolve?target=" + encodeURIComponent("#" + chName), { cookie: a.cookie }))
+      .data.id;
+    for (const u of [b, c]) {
+      await api(`/api/channels/${chId}/join`, { method: "POST", cookie: u.cookie });
+    }
+    const mk = await api("/api/tasks", {
+      method: "POST",
+      cookie: a.cookie,
+      body: { channel: "#" + chName, tasks: [{ title: "t1" }, { title: "t2" }] },
+    });
+    const [n1, n2] = mk.data.tasks.map((t: any) => t.task_number);
+    // a 认领 n1
+    const cl = await api("/api/tasks/claim", {
+      method: "POST",
+      cookie: a.cookie,
+      body: { channel: "#" + chName, task_numbers: [n1] },
+    });
+    expect(cl.data.results[0].status).toBe("claimed");
+    // c 对 a 认领的 n1：改状态 / 抢放 均 403
+    expect(
+      (
+        await api("/api/tasks/update-status", {
+          method: "POST",
+          cookie: c.cookie,
+          body: { channel: "#" + chName, number: n1, status: "in_review" },
+        })
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await api("/api/tasks/unclaim", {
+          method: "POST",
+          cookie: c.cookie,
+          body: { channel: "#" + chName, task_number: n1 },
+        })
+      ).status,
+    ).toBe(403);
+    // b 对未认领的 n2：协作式可动
+    expect(
+      (
+        await api("/api/tasks/update-status", {
+          method: "POST",
+          cookie: b.cookie,
+          body: { channel: "#" + chName, number: n2, status: "in_review" },
+        })
+      ).status,
+    ).toBe(200);
+    // 认领人 a unclaim n1 → 200；频道管理（owner a）对 n2 也可动
+    expect(
+      (
+        await api("/api/tasks/unclaim", {
+          method: "POST",
+          cookie: a.cookie,
+          body: { channel: "#" + chName, task_number: n1 },
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await api("/api/tasks/update-status", {
+          method: "POST",
+          cookie: a.cookie,
+          body: { channel: "#" + chName, number: n2, status: "done" },
+        })
+      ).status,
+    ).toBe(200);
+  });
+
+  it("认领人是 agent：其 owner（非频道管理）可动，其他成员 403", async () => {
+    const a = await registerUser(); // 频道 owner
+    const b = await registerUser(); // agent 的 owner，频道普通成员
+    const c = await registerUser();
+    const chName = uniqHandle();
+    await api("/api/channels", { method: "POST", cookie: a.cookie, body: { name: chName } });
+    const chId = (await api("/api/channels/resolve?target=" + encodeURIComponent("#" + chName), { cookie: a.cookie }))
+      .data.id;
+    for (const u of [b, c]) {
+      await api(`/api/channels/${chId}/join`, { method: "POST", cookie: u.cookie });
+    }
+    // b 建 agent 并经 agent 侧 join 入圈（人类侧 invite 找不到他人名下的 agent——
+    // 只查「频道所在 server」与「调用者名下」，join 的候选集含 owner 所属 orgs + 默认社区豁免）
+    const ag = (
+      await api("/api/agents", {
+        method: "POST",
+        cookie: b.cookie,
+        body: { name: "tko_" + uniqHandle(), displayName: "tko" },
+      })
+    ).data.agent;
+    expect(
+      (await api(`/internal/agent/${ag.id}/channels/${chName}/join`, { method: "POST", cookie: b.cookie })).status,
+    ).toBe(200);
+    const mk = await api("/api/tasks", {
+      method: "POST",
+      cookie: a.cookie,
+      body: { channel: "#" + chName, tasks: [{ title: "agent owned" }] },
+    });
+    const num = mk.data.tasks[0].task_number;
+    // b 的 agent 认领（b 调 internal 端点，requireOwnAgent 通过）
+    const cl = await api(`/internal/agent/${ag.id}/tasks/claim`, {
+      method: "POST",
+      cookie: b.cookie,
+      body: { channel: "#" + chName, task_numbers: [num] },
+    });
+    expect(cl.data.results[0].status).toBe("claimed");
+    // c（非认领人、非管理、非 agent owner）→ 403
+    expect(
+      (
+        await api("/api/tasks/update-status", {
+          method: "POST",
+          cookie: c.cookie,
+          body: { channel: "#" + chName, number: num, status: "in_review" },
+        })
+      ).status,
+    ).toBe(403);
+    // b（认领 agent 的 owner，非频道管理）→ 200
+    expect(
+      (
+        await api("/api/tasks/update-status", {
+          method: "POST",
+          cookie: b.cookie,
+          body: { channel: "#" + chName, number: num, status: "in_review" },
+        })
+      ).status,
+    ).toBe(200);
+  });
+
+  it("agent 侧：只能动认领给自己的任务（B 改/放 A 的卡 403，A 自己 200）", async () => {
+    const owner = await registerUser();
+    const chName = uniqHandle();
+    await api("/api/channels", { method: "POST", cookie: owner.cookie, body: { name: chName } });
+    const mk = await api("/api/tasks", {
+      method: "POST",
+      cookie: owner.cookie,
+      body: { channel: "#" + chName, tasks: [{ title: "agent guard" }] },
+    });
+    const num = mk.data.tasks[0].task_number;
+    const mkAgent = async (name: string) => {
+      const r = await api("/api/agents", { method: "POST", cookie: owner.cookie, body: { name, displayName: name } });
+      const agent = r.data.agent;
+      await api(`/internal/agent/${agent.id}/channels/${chName}/join`, { method: "POST", cookie: owner.cookie });
+      return agent;
+    };
+    const agA = await mkAgent("tg_a_" + uniqHandle());
+    const agB = await mkAgent("tg_b_" + uniqHandle());
+    const cl = await api(`/internal/agent/${agA.id}/tasks/claim`, {
+      method: "POST",
+      cookie: owner.cookie,
+      body: { channel: "#" + chName, task_numbers: [num] },
+    });
+    expect(cl.data.results[0].status).toBe("claimed");
+    // agB 改状态/抢放 agA 认领的卡 → 403
+    expect(
+      (
+        await api(`/internal/agent/${agB.id}/tasks/update-status`, {
+          method: "POST",
+          cookie: owner.cookie,
+          body: { channel: "#" + chName, number: num, status: "in_review" },
+        })
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await api(`/internal/agent/${agB.id}/tasks/unclaim`, {
+          method: "POST",
+          cookie: owner.cookie,
+          body: { channel: "#" + chName, task_number: num },
+        })
+      ).status,
+    ).toBe(403);
+    // agA 自己改状态/unclaim → 200
+    expect(
+      (
+        await api(`/internal/agent/${agA.id}/tasks/update-status`, {
+          method: "POST",
+          cookie: owner.cookie,
+          body: { channel: "#" + chName, number: num, status: "in_review" },
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await api(`/internal/agent/${agA.id}/tasks/unclaim`, {
+          method: "POST",
+          cookie: owner.cookie,
+          body: { channel: "#" + chName, task_number: num },
+        })
+      ).status,
+    ).toBe(200);
+  });
+});

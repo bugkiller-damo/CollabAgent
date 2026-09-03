@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { canAccessChannel } from "../lib/access.js";
+import { canAccessChannel, canManageChannel } from "../lib/access.js";
 import { resolveChannel } from "../lib/channel.js";
 import { syncDispatchOnCardClose } from "../lib/dispatch-sync.js";
 import { recordTaskEvent, resolveMemberName } from "../lib/task-events.js";
@@ -9,6 +9,21 @@ import { resolveTenant } from "../lib/tenant.js";
 const STATUSES = ["todo", "in_progress", "in_review", "done", "closed"];
 
 export async function taskRoutes(app: FastifyInstance) {
+  /**
+   * P1.33：任务归属校验——任务已有认领人时，仅「认领人本人 / 认领 agent 的 owner /
+   * 频道管理（owner/admin）」可 unclaim/update-status；未认领（assignee NULL）的卡片
+   * 保持协作式语义，任何有频道访问权的成员可动（§5.2 #8 按本规则定稿：保护认领后状态）。
+   */
+  async function canTouchTask(userId: string, assignee: string | null, channelId: string): Promise<boolean> {
+    if (!assignee) return true;
+    if (String(assignee) === String(userId)) return true;
+    if (await canManageChannel(app, channelId, userId)) return true;
+    // 认领方是调用者名下的 agent：owner 操作自己 agent 认领的任务 = 本人操作
+    // （dispatch 卡片的 assignee 是 worker agent，其 owner 在看板拖动属正当流程）
+    const owned = await app.pg.query("SELECT 1 FROM agents WHERE id = $1 AND user_id = $2", [assignee, userId]);
+    return owned.rows.length > 0;
+  }
+
   // 解析频道并校验调用者可见性（公开频道任何人可读；私有/DM 仅成员）。
   // O3：显式租户下频道必须属于租户 server 且调用者是该 server 成员。
   // 返回 null 表示已发 404/403，调用方直接 return。
@@ -208,10 +223,14 @@ export async function taskRoutes(app: FastifyInstance) {
     if (!channel) return reply.status(400).send({ error: "channel required" });
     const ch = await resolveAccessible(req, channel, req.user.sub, reply);
     if (!ch) return;
-    const existing = await app.pg.query<{ id: string; task_status: string | null }>(
-      "SELECT id, task_status FROM messages WHERE channel_id = $1 AND task_number = $2 AND task_number IS NOT NULL",
+    const existing = await app.pg.query<{ id: string; task_status: string | null; task_assignee: string | null }>(
+      "SELECT id, task_status, task_assignee FROM messages WHERE channel_id = $1 AND task_number = $2 AND task_number IS NOT NULL",
       [ch.id, task_number],
     );
+    // P1.33：归属校验——已认领任务仅认领人/认领 agent 的 owner/频道管理可抢放
+    if (existing.rows[0] && !(await canTouchTask(req.user.sub, existing.rows[0].task_assignee, ch.id))) {
+      return reply.status(403).send({ error: "only the assignee or channel admins can unclaim this task" });
+    }
     await app.pg.query(
       "UPDATE messages SET task_assignee = NULL, task_status = 'todo', updated_at = now() WHERE channel_id = $1 AND task_number = $2",
       [ch.id, task_number],
@@ -237,10 +256,14 @@ export async function taskRoutes(app: FastifyInstance) {
     const ch = await resolveAccessible(req, channel, req.user.sub, reply);
     if (!ch) return;
     const chId = ch.id;
-    const before = await app.pg.query<{ id: string; task_status: string | null }>(
-      "SELECT id, task_status FROM messages WHERE channel_id = $1 AND task_number = $2 AND task_number IS NOT NULL",
+    const before = await app.pg.query<{ id: string; task_status: string | null; task_assignee: string | null }>(
+      "SELECT id, task_status, task_assignee FROM messages WHERE channel_id = $1 AND task_number = $2 AND task_number IS NOT NULL",
       [chId, number],
     );
+    // P1.33：归属校验——已认领任务仅认领人/认领 agent 的 owner/频道管理可改状态
+    if (before.rows[0] && !(await canTouchTask(req.user.sub, before.rows[0].task_assignee, chId))) {
+      return reply.status(403).send({ error: "only the assignee or channel admins can change this task's status" });
+    }
     const result = await app.pg.query(
       "UPDATE messages SET task_status = $1, updated_at = now() WHERE channel_id = $2 AND task_number = $3 RETURNING *",
       [status, chId, number],

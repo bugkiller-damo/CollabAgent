@@ -18,7 +18,8 @@ import { getDefaultServerId } from "./server.js";
 
 export const TENANT_HEADER = "x-server-id";
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** UUID 格式预检（P1.33 起导出共用——路由入口对 uuid 参数先过它，防 PG 22P02 cast 500） */
+export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export type TenantSource = "param" | "header" | "host" | "default" | "none";
 

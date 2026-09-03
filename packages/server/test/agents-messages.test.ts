@@ -407,3 +407,132 @@ describe("agent 消息面：upload", () => {
     expect(rejected.status).toBe(415);
   });
 });
+
+describe("P1.33: agent 侧 threadId 校验 / content 上限 / 移出私有频道后禁改删", () => {
+  it("send 显式 threadId：非 UUID / 不存在 / 跨频道 400，本频道合法 200", async () => {
+    const parent = await api(`/internal/agent/${agentId}/send`, {
+      method: "POST",
+      cookie: owner.cookie,
+      csrf: owner.csrf,
+      body: { target: `#${CH}`, content: "thread-parent" },
+    });
+    expect(parent.status).toBe(200);
+    const pid = parent.data.messageId as string;
+    const send = (threadId: string, target = `#${CH}`) =>
+      api(`/internal/agent/${agentId}/send`, {
+        method: "POST",
+        cookie: owner.cookie,
+        csrf: owner.csrf,
+        body: { target, content: "r", threadId },
+      });
+    expect((await send("not-a-uuid")).status).toBe(400);
+    expect((await send("00000000-0000-0000-0000-000000000000")).status).toBe(400);
+    // 跨频道：另建 agent 已入圈的公开频道，拿 CH 的父消息去那边回
+    const CH2 = "zz_msg2_" + uniqHandle().slice(-12);
+    await api("/api/channels", {
+      method: "POST",
+      cookie: owner.cookie,
+      csrf: owner.csrf,
+      body: { name: CH2, serverId: agentServerId },
+    });
+    await api(`/internal/agent/${agentId}/channels/${CH2}/join`, {
+      method: "POST",
+      cookie: owner.cookie,
+      csrf: owner.csrf,
+    });
+    expect((await send(pid, `#${CH2}`)).status).toBe(400);
+    expect((await send(pid)).status).toBe(200);
+  });
+
+  it("send / edit content 超长 400", async () => {
+    const over = "x".repeat(10_001);
+    expect(
+      (
+        await api(`/internal/agent/${agentId}/send`, {
+          method: "POST",
+          cookie: owner.cookie,
+          csrf: owner.csrf,
+          body: { target: `#${CH}`, content: over },
+        })
+      ).status,
+    ).toBe(400);
+    const s = await api(`/internal/agent/${agentId}/send`, {
+      method: "POST",
+      cookie: owner.cookie,
+      csrf: owner.csrf,
+      body: { target: `#${CH}`, content: "cap-ok" },
+    });
+    expect(
+      (
+        await api(`/internal/agent/${agentId}/messages/${s.data.messageId}`, {
+          method: "PUT",
+          cookie: owner.cookie,
+          csrf: owner.csrf,
+          body: { content: over },
+        })
+      ).status,
+    ).toBe(400);
+  });
+
+  it("agent 被移出私有频道后不得编辑/删除自己的旧消息", async () => {
+    // owner 建私有频道并邀请 agent 入圈（邀请按 agent 名查找）
+    const PRIV2 = "zz_msgk_" + uniqHandle().slice(-12);
+    const ch = (
+      await api("/api/channels", {
+        method: "POST",
+        cookie: owner.cookie,
+        csrf: owner.csrf,
+        body: { name: PRIV2, type: "private", serverId: agentServerId },
+      })
+    ).data.channel;
+    const agName = (await sql<{ name: string }[]>`SELECT name FROM agents WHERE id = ${agentId}`)[0].name;
+    expect(
+      (
+        await api(`/api/channels/${ch.id}/invite`, {
+          method: "POST",
+          cookie: owner.cookie,
+          csrf: owner.csrf,
+          body: { handle: agName },
+        })
+      ).status,
+    ).toBe(200);
+    // agent 在私有频道发一条（成员身份，可发）
+    const s = await api(`/internal/agent/${agentId}/send`, {
+      method: "POST",
+      cookie: owner.cookie,
+      csrf: owner.csrf,
+      body: { target: `#${PRIV2}`, content: "priv-msg" },
+    });
+    expect(s.status).toBe(200);
+    // owner 把 agent 移出
+    expect(
+      (
+        await api(`/api/channels/${ch.id}/members/${agentId}`, {
+          method: "DELETE",
+          cookie: owner.cookie,
+          csrf: owner.csrf,
+        })
+      ).status,
+    ).toBe(200);
+    // 移出后：agent 改/删自己的旧消息均 403（此前只查 sender 归属）
+    expect(
+      (
+        await api(`/internal/agent/${agentId}/messages/${s.data.messageId}`, {
+          method: "PUT",
+          cookie: owner.cookie,
+          csrf: owner.csrf,
+          body: { content: "x" },
+        })
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await api(`/internal/agent/${agentId}/messages/${s.data.messageId}`, {
+          method: "DELETE",
+          cookie: owner.cookie,
+          csrf: owner.csrf,
+        })
+      ).status,
+    ).toBe(403);
+  });
+});
