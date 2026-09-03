@@ -53,7 +53,13 @@ export async function messageRoutes(app: FastifyInstance) {
     if (!channel) return reply.status(400).send({ error: "channel required" });
     const userId = req.user.sub;
     const tenant = await resolveTenant(app, req);
-    const scope = tenant.explicit ? tenant.serverId : undefined;
+    // P1.28：legacy 降级的频道名解析也必须圈定在默认 server 内——resolveTenant 的
+    // 降级分支本就返回默认 server id（tenant.ts「降级：单租户部署的默认 server」，
+    // tenant.test「默认降级读默认社区的 #general」即此语义）。此前传 undefined 导致
+    // `WHERE name=$1 LIMIT 1` 跨 server 任取同名频道（无 ORDER BY，命中取决于堆物理
+    // 布局）——同名频道存在时 legacy 读写可能打到别的社区（测试实锤的跨社区串名）。
+    // RBAC 降级豁免是另一条轴，仍走 accessOptsOf 不变。
+    const scope = tenant.serverId ?? undefined;
     let channelId: string;
     if (isDmTarget(channel)) {
       const me: Party = { id: userId, type: "human", handle: req.user.handle ?? "unknown" };
@@ -125,7 +131,8 @@ export async function messageRoutes(app: FastifyInstance) {
     const userId = req.user.sub;
     const senderHandle = String(req.user?.handle || "unknown");
     const tenant = await resolveTenant(app, req);
-    const scope = tenant.explicit ? tenant.serverId : undefined;
+    // P1.28：同 GET /——legacy 降级频道名解析圈定默认 server（跨社区串名实锤，见上）
+    const scope = tenant.serverId ?? undefined;
     let resolvedChannelId = channelId;
     let resolvedServerId: string | undefined;
     let dmPeer: Party | undefined;
@@ -408,7 +415,8 @@ export async function messageRoutes(app: FastifyInstance) {
     if (!channel) return reply.status(400).send({ error: "channel required" });
     const userId = req.user.sub;
     const tenant = await resolveTenant(app, req);
-    const scope = tenant.explicit ? tenant.serverId : undefined;
+    // P1.28：同 GET /——legacy 降级频道名解析圈定默认 server（跨社区串名实锤，见上）
+    const scope = tenant.serverId ?? undefined;
     let resolvedChannelId: string;
     if (isDmTarget(channel)) {
       const me: Party = { id: userId, type: "human", handle: req.user.handle ?? "unknown" };

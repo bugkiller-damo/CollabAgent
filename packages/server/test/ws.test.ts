@@ -223,7 +223,7 @@ describe("WS: daemon ready & status", () => {
     expect((await api("/api/daemon/status", { cookie: u.cookie })).data.connected).toBe(false);
   });
 
-  it("daemon sends agent:status / agent:activity without errors", async () => {
+  it("daemon frames: 合法帧中继到浏览器；畸形/未知 type 帧被丢弃但不断连（P1.28 校验）", async () => {
     const u = await registerUser();
     const tr = await api("/api/profile/machine-token", {
       method: "POST",
@@ -234,13 +234,26 @@ describe("WS: daemon ready & status", () => {
     const { ws, connected } = connectWs({ Authorization: `Bearer ${tr.data.token}` });
     await connected;
 
-    // These should be silently accepted (no crash, no error reply)
+    // 同用户的浏览器连接：合法 agent:status 应被中继
+    const { ws: browser, connected: bc } = connectWs({ Cookie: u.cookie });
+    await bc;
+    const got = nextMessage(browser);
+
+    // ① 合法帧（union 全字段）
+    ws.send(JSON.stringify({ type: "agent:status", agentId: "a1", agentName: "x", status: "running", detail: "" }));
+    const relayed = await got;
+    expect(relayed.type).toBe("agent:status");
+    expect(relayed.status).toBe("running");
+
+    // ② 畸形帧（agent:status 缺 agentId/agentName）——P1.28 起被校验丢弃：不 crash、不中继
     ws.send(JSON.stringify({ type: "agent:status", status: "running" }));
+    // ③ 未知 type 帧——同前丢弃
     ws.send(JSON.stringify({ type: "agent:activity", activity: "processing" }));
-    // Still alive after sending
+    // 连接仍然存活
     expect(ws.readyState).toBe(WebSocket.OPEN);
 
     ws.close();
+    browser.close();
   });
 
   it("two daemons for different users coexist", async () => {

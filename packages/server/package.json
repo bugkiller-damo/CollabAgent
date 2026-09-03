@@ -30,7 +30,8 @@
     "fastify-plugin": "^6.0.0",
     "ioredis": "^5.11.1",
     "postgres": "^3.4.9",
-    "ws": "^8.21.3"
+    "ws": "^8.21.3",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",

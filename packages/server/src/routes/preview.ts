@@ -1,8 +1,12 @@
 import type { FastifyInstance } from "fastify";
 
 // 阻止访问内网/本地地址，降低 SSRF 风险
-function isBlockedHost(hostname: string): boolean {
-  const h = hostname.toLowerCase();
+// P1.28：导出供离线单测（SSRF 黑名单矩阵）；redirect 逐跳复查/IP 段校验归 P1.29
+export function isBlockedHost(hostname: string): boolean {
+  // URL.hostname 对 IPv6 字面量带方括号（new URL("http://[::1]/").hostname === "[::1]"）
+  // ——不剥括号则 `h === "::1"` 永不命中（P1.28 测试实锤的绕过）。IPv4-mapped IPv6
+  // （::ffff:x.y.z.w）等其余解析层绕过归 P1.29 的最终 IP 段校验。
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, "");
   if (h === "localhost" || h.endsWith(".local")) return true;
   if (/^127\./.test(h) || /^10\./.test(h) || /^192\.168\./.test(h)) return true;
   if (/^169\.254\./.test(h)) return true;
@@ -11,7 +15,8 @@ function isBlockedHost(hostname: string): boolean {
   return false;
 }
 
-function metaContent(html: string, ...names: string[]): string | undefined {
+// P1.28：导出供离线单测（og/twitter/title 元信息提取）
+export function metaContent(html: string, ...names: string[]): string | undefined {
   for (const name of names) {
     // 兼容 property= 和 name=，属性顺序任意
     const re = new RegExp(
@@ -27,7 +32,7 @@ function metaContent(html: string, ...names: string[]): string | undefined {
   return undefined;
 }
 
-function decodeEntities(s: string): string {
+export function decodeEntities(s: string): string {
   return s
     .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")

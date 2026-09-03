@@ -63,7 +63,10 @@ const backend = config.VALKEY_URL
     })();
 
 function optsFor(url: string): RateLimitOpts {
-  if (/\/api\/(profile\/deactivate|auth\/deactivate|change-password)/.test(url)) return DEFAULTS.sensitive;
+  // sensitive 桶：改密/注销等高危操作。注意 change-password 的实际路由是
+  // /api/profile/change-password（P1.28 测试实锤：旧正则的裸 `change-password`
+  // 分支要求 /api/ 后紧跟，永远匹配不到，该桶此前对改密从未生效）
+  if (/\/api\/(profile\/(deactivate|change-password)|auth\/deactivate)/.test(url)) return DEFAULTS.sensitive;
   if (/\/api\/auth\/(login|register|refresh)/.test(url)) return DEFAULTS.auth;
   return DEFAULTS.api;
 }

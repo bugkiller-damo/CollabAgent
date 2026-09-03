@@ -1,7 +1,6 @@
 import type {
   RuntimeProbe,
   WsChannelBroadcast,
-  WsFromBrowserMessage,
   WsFromDaemonMessage,
   WsToBrowserMessage,
   WsToDaemonMessage,
@@ -17,6 +16,8 @@ import { inc } from "../lib/metrics.js";
 import { presenceAdd, presenceRemove } from "../lib/presence.js";
 import type { PubSub } from "../lib/pubsub.js";
 import { normalizeRuntimes } from "../lib/runtime-probe.js";
+// P1.28：入站帧运行时校验（此前 JSON.parse as X 零校验）——畸形/未知 type 帧整帧丢弃
+import { parseWsInbound, wsFromBrowserSchema, wsFromDaemonSchema } from "./validate.js";
 
 // Anonymous browser clients (keyed by userId)
 export const browserClients = new Map<string, Set<WebSocket>>();
@@ -193,7 +194,10 @@ function registerConnection(connection: WebSocket, userId: string, isDaemon: boo
 
     connection.on("message", (raw) => {
       try {
-        const msg = JSON.parse(raw.toString()) as WsFromDaemonMessage;
+        // P1.28：运行时校验——非 JSON / 未知 type / 错型字段 → 整帧丢弃（限频 warn），
+        // 校验通过的帧才进入 switch（字段类型得到保证，纵深防御）
+        const msg = parseWsInbound(raw.toString(), wsFromDaemonSchema, "daemon");
+        if (!msg) return;
         switch (msg.type) {
           case "ready": {
             const runtimes = normalizeRuntimes(msg.runtimes);
@@ -323,7 +327,9 @@ function registerConnection(connection: WebSocket, userId: string, isDaemon: boo
 
     connection.on("message", (raw) => {
       try {
-        const msg = JSON.parse(raw.toString()) as WsFromBrowserMessage;
+        // P1.28：运行时校验（同 daemon 分支）
+        const msg = parseWsInbound(raw.toString(), wsFromBrowserSchema, "browser");
+        if (!msg) return;
         if (msg.type === "pong") return;
         // 终端观察（G3）：浏览器请求观看/停止观看某个 agent 的终端
         if (msg.type === "terminal:watch" && typeof msg.agentName === "string") {

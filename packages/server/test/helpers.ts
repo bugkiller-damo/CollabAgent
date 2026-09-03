@@ -41,6 +41,8 @@ function toCookieHeader(setCookie: string[]): string {
 export async function api<T = any>(path: string, opts: ApiOpts = {}): Promise<ApiResult<T>> {
   const headers: Record<string, string> = { ...(opts.headers || {}) };
   if (opts.body !== undefined) headers["content-type"] = "application/json";
+  // P1.28：补上已声明但从未实现的 token 选项（Bearer 机器/scoped 令牌鉴权）
+  if (opts.token) headers["authorization"] = `Bearer ${opts.token}`;
   if (opts.cookie) headers["cookie"] = opts.cookie;
   // 纯 Cookie 鉴权：CSRF token 从 cookie 中自动提取（明确传 false/null 表跳过）
   if (opts.csrf !== false && opts.csrf !== null && !opts.csrf && opts.cookie) {
