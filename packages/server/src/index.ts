@@ -335,6 +335,27 @@ if (serverCount[0].c === 0) {
   server.log.info("[DB] Seed data created: 1 server, 3 channels");
 }
 
+// P1.30 bootstrap：默认社区（最早非个人 server）无主且库中已有用户时，
+// 擢升最早注册用户为 owner——「首个注册用户即管理员」语义（上面播种注释的兑现），
+// 保证 metrics admin 门禁在全新部署上有可达的 admin（025 迁移已覆盖有 created_by
+// 的存量库；本段覆盖自动播种 created_by=NULL 的全新库，首次注册后重启生效）。
+// 幂等：owner_id 非空或 owner 成员行已存在时两句均为 no-op；每次启动都执行。
+// 注意注册路径刻意不做即时擢升——并发首注册与测试时序会引入不确定性（谁抢到谁 admin），
+// 启动期单点执行是确定性的。
+await sql`
+  UPDATE servers SET owner_id = (SELECT id FROM users ORDER BY created_at ASC LIMIT 1)
+   WHERE id = (SELECT id FROM servers WHERE personal = false ORDER BY created_at ASC LIMIT 1)
+     AND owner_id IS NULL
+     AND NOT EXISTS (SELECT 1 FROM server_members sm WHERE sm.server_id = servers.id AND sm.role = 'owner')
+     AND EXISTS (SELECT 1 FROM users)
+`;
+await sql`
+  INSERT INTO server_members (server_id, user_id, role)
+  SELECT s.id, s.owner_id, 'owner' FROM servers s
+   WHERE s.personal = false AND s.owner_id IS NOT NULL
+   ON CONFLICT (server_id, user_id) DO UPDATE SET role = 'owner'
+`;
+
 // Start
 const port = config.PORT;
 const host = config.HOST;

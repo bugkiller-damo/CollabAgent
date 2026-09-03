@@ -1,7 +1,13 @@
 import type { FastifyInstance } from "fastify";
+import { isInstanceAdmin } from "../lib/orgs.js";
 
 export async function metricsRoutes(app: FastifyInstance) {
-  app.get("/metrics", { preHandler: [app.authenticate] }, async () => {
+  // P1.30：metrics 暴露全部 daemon 主机名/OS/版本与实例级计数器，
+  // 加 admin（非个人社区 owner）门禁——此前任意登录用户可读（评估 §2.2 低危）。
+  app.get("/metrics", { preHandler: [app.authenticate] }, async (req: any, reply: any) => {
+    if (!(await isInstanceAdmin(app, req.user.sub))) {
+      return reply.status(403).send({ error: "admin only" });
+    }
     const { metricsSnapshot } = await import("../lib/metrics.js");
     const { onlineUserSnapshot } = await import("../lib/presence.js");
     const { daemonClients, daemonMeta } = await import("../ws/handler.js");
@@ -30,7 +36,10 @@ export async function metricsRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get("/metrics/history", { preHandler: [app.authenticate] }, async (req) => {
+  app.get("/metrics/history", { preHandler: [app.authenticate] }, async (req: any, reply: any) => {
+    if (!(await isInstanceAdmin(app, req.user.sub))) {
+      return reply.status(403).send({ error: "admin only" });
+    }
     const rangeHours: Record<string, number> = { "1h": 1, "6h": 6, "24h": 24, "7d": 168 };
     const hours = rangeHours[String((req.query as Record<string, string>).range || "1h")] || 1;
     // P1.27：samples 带 instance 标识——多实例部署下同表混存各实例采样行，消费方可按实例分组

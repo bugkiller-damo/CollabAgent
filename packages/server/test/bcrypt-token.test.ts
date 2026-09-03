@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import bcrypt from "bcryptjs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
-import { api, BASE, cleanupTestData, closeSql, registerUser, sql, type TestUser } from "./helpers.js";
+import { api, BASE, cleanupTestData, closeSql, makeOrgOwner, registerUser, sql, type TestUser } from "./helpers.js";
 
 /**
  * O8：bcrypt 兼容分支行为回归——旧格式令牌仍能通过 HTTP/WS 认证，
@@ -19,6 +19,8 @@ describe("bcrypt 令牌兼容分支（O8 观测）", () => {
 
   beforeAll(async () => {
     u = await registerUser();
+    // P1.30：metrics 计数器观测用例需 admin（org owner）身份
+    await makeOrgOwner(u);
     legacyToken = "sk_machine_" + randomBytes(16).toString("hex");
     // 模拟历史数据：bcrypt 哈希落库（低 cost 仅为测试速度；语义与存量 $2a$12$ 一致）
     const stored = bcrypt.hashSync(legacyToken, 4);

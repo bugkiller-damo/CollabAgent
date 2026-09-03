@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { instanceId, metricsSnapshot, restoreCounters } from "../src/lib/metrics.js";
-import { api, cleanupTestData, closeSql, registerUser, sql, type TestUser } from "./helpers.js";
+import { api, cleanupTestData, closeSql, makeOrgOwner, registerUser, sql, type TestUser } from "./helpers.js";
 
 /** restoreCounters 只认 { query } 形状——对齐 db/connection pgPlugin 的 { rows } 包装 */
 const pgLike = {
@@ -11,6 +11,8 @@ let user: TestUser;
 
 beforeAll(async () => {
   user = await registerUser();
+  // P1.30：/api/metrics(/history) 已加 admin 门禁——本文件既有用例全部走通过侧
+  await makeOrgOwner(user);
 });
 
 afterAll(async () => {
@@ -79,6 +81,43 @@ describe("metrics persistence", () => {
     expect(r.status).toBe(200);
     const mine = r.data.samples.find((s: Record<string, unknown>) => s.instance === "zz_m_inst");
     expect(mine).toBeDefined();
+  });
+});
+
+describe("P1.30 admin 门禁（org owner）", () => {
+  it("非 admin 用户访问 /api/metrics 与 /history 均 403", async () => {
+    const plain = await registerUser();
+    const r = await api("/api/metrics", { cookie: plain.cookie });
+    expect(r.status).toBe(403);
+    expect(r.data.error).toBe("admin only");
+    const h = await api("/api/metrics/history?range=1h", { cookie: plain.cookie });
+    expect(h.status).toBe(403);
+  });
+
+  it("仅持个人空间的用户不算 admin（个人 org owner 不放行，否则门禁形同虚设）", async () => {
+    const plain = await registerUser();
+    // GET /api/orgs 触发 getOrCreatePersonalOrg——确保其确实持有个人空间 owner 身份
+    const o = await api("/api/orgs", { cookie: plain.cookie });
+    expect(o.status).toBe(200);
+    expect(o.data.orgs.some((x: any) => x.personal && x.role === "owner")).toBe(true);
+    const r = await api("/api/metrics", { cookie: plain.cookie });
+    expect(r.status).toBe(403);
+  });
+
+  it("非个人社区成员（非 owner）403；owner 双口径（owner_id 直列 / owner 成员行）均放行", async () => {
+    const member = await registerUser();
+    const owner = await registerUser();
+    const orgId = await makeOrgOwner(owner);
+    // member 仅作为 member 加入该社区
+    await sql`INSERT INTO server_members (server_id, user_id, role) VALUES (${orgId}, ${member.userId}, 'member') ON CONFLICT DO NOTHING`;
+    const m = await api("/api/metrics", { cookie: member.cookie });
+    expect(m.status).toBe(403);
+    const o = await api("/api/metrics", { cookie: owner.cookie });
+    expect(o.status).toBe(200);
+    // owner 成员行删掉后仍凭 servers.owner_id 直列放行（isOrgOwner 同口径）
+    await sql`DELETE FROM server_members WHERE server_id = ${orgId} AND user_id = ${owner.userId}`;
+    const o2 = await api("/api/metrics", { cookie: owner.cookie });
+    expect(o2.status).toBe(200);
   });
 });
 

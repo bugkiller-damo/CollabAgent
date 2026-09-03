@@ -1,10 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { api, cleanupTestData, registerUser, type TestUser } from "./helpers.js";
+import { api, cleanupTestData, makeOrgOwner, registerUser, type TestUser } from "./helpers.js";
 
 let user: TestUser;
 
 beforeAll(async () => {
   user = await registerUser();
+  // P1.30：metrics 已加 admin 门禁，counters 暴露用例走通过侧
+  await makeOrgOwner(user);
 });
 
 afterAll(async () => {

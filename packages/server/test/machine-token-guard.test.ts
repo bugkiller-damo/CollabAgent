@@ -7,7 +7,7 @@ import {
   BCRYPT_PATH_RATE_WINDOW_MS,
   MachineTokenBcryptGuard,
 } from "../src/lib/machine-token-guard.js";
-import { api, cleanupTestData, closeSql, registerUser, type TestUser } from "./helpers.js";
+import { api, cleanupTestData, closeSql, makeOrgOwner, registerUser, type TestUser } from "./helpers.js";
 
 /**
  * 评估报告 P1.14：sk_machine_ 的 bcrypt 兼容路径全局护栏
@@ -126,6 +126,8 @@ describe("bcrypt 兼容路径护栏（P1.14 集成）", () => {
 
   beforeAll(async () => {
     u = await registerUser();
+    // P1.30：metrics 计数器观测用例需 admin（org owner）身份
+    await makeOrgOwner(u);
   });
 
   afterAll(async () => {
