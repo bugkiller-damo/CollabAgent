@@ -521,7 +521,10 @@ export type WsToBrowserMessage =
       presence: AgentPresence;
     }
   | { type: "agent:delivery-queued"; agentName: string; channelName: string }
-  | { type: "agent:delivery-dead-letter"; agentName: string; channelName: string; error: string }
+  // P1.26：reason 可选——daemon 上报的 A1 死信不带（重试耗尽语义）；server 侧
+  // dispatch 离线告警带 "daemon-offline"（目标 agent 的 owner daemon 未连接，
+  // 消息不会实时送达也不会被唤醒），web 据此区分 toast 文案。
+  | { type: "agent:delivery-dead-letter"; agentName: string; channelName: string; error: string; reason?: string }
   | { type: "terminal:history"; agentName: string; text: string }
   | { type: "terminal:obs-history"; agentName: string; frames: ObservationFrame[] }
   | { type: "terminal:frame"; agentName: string; screen: string; status: string; time: ISO8601 }

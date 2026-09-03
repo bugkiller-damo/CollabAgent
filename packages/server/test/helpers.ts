@@ -107,6 +107,7 @@ export async function cleanupTestData(): Promise<void> {
     await sql`DELETE FROM message_reactions WHERE message_id IN (SELECT id FROM messages WHERE channel_id::text = ANY(${cids}))`;
     await sql`DELETE FROM messages WHERE channel_id::text = ANY(${cids})`;
     await sql`DELETE FROM action_cards WHERE channel_id::text = ANY(${cids})`;
+    await sql`DELETE FROM dispatches WHERE channel_id::text = ANY(${cids})`;
     await sql`DELETE FROM channel_members WHERE channel_id::text = ANY(${cids})`;
     await sql`DELETE FROM channels WHERE id::text = ANY(${cids})`;
   }
@@ -121,6 +122,10 @@ export async function cleanupTestData(): Promise<void> {
   await sql`DELETE FROM user_sessions WHERE user_id::text = ANY(${uids})`;
   await sql`DELETE FROM agent_credentials WHERE agent_id IN (SELECT id FROM agents WHERE user_id::text = ANY(${uids}))`;
   await sql`DELETE FROM agent_logins WHERE agent_id IN (SELECT id FROM agents WHERE user_id::text = ANY(${uids}))`;
+  // P1.26：dispatches 对 agents 无 ON DELETE——挂在种子频道上的 dispatch 会让
+  // agents 删除 FK 失败（评估 §5 清理缺口），按经理/worker 双侧删
+  await sql`DELETE FROM dispatches WHERE from_agent_id IN (SELECT id FROM agents WHERE user_id::text = ANY(${uids}))
+     OR to_agent_id IN (SELECT id FROM agents WHERE user_id::text = ANY(${uids}))`;
   await sql`DELETE FROM agents WHERE user_id::text = ANY(${uids})`;
   await sql`DELETE FROM server_members WHERE user_id::text = ANY(${uids})`;
   await sql`DELETE FROM servers WHERE created_by::text = ANY(${uids}) OR owner_id::text = ANY(${uids})`;

@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { canAccessChannel } from "../lib/access.js";
 import { resolveChannel } from "../lib/channel.js";
+import { syncDispatchOnCardClose } from "../lib/dispatch-sync.js";
 import { recordTaskEvent, resolveMemberName } from "../lib/task-events.js";
 import { acquireTaskNumberLock } from "../lib/task-numbering.js";
 import { resolveTenant } from "../lib/tenant.js";
@@ -254,6 +255,11 @@ export async function taskRoutes(app: FastifyInstance) {
         fromStatus: before.rows[0].task_status,
         toStatus: status,
       });
+      // P1.26：卡片→dispatch 回向同步——人工把 dispatch 关联卡片置 done/closed 时
+      // 联动台账（done→completed、closed→cancelled；非终态 dispatch 才动）
+      if (status === "done" || status === "closed") {
+        await syncDispatchOnCardClose(app, String(before.rows[0].id), status);
+      }
     }
     // 任务完成/关闭时通知创建者（仅人类创建者有通知中心；agent 创建的跳过，
     // 否则 notifications.user_id 外键指向 users 表会因 agent id 违约导致 500。

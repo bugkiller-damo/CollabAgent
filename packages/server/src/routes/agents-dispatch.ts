@@ -1,12 +1,13 @@
 import type { FastifyInstance } from "fastify";
+import { computerOnlineFor } from "../lib/agent-duty.js";
 import { getAgent, isChannelManager, requireOwnAgent } from "../lib/agent-helpers.js";
 import { resolveChannel } from "../lib/channel.js";
 import { resolvePeer } from "../lib/dm.js";
 import { recordTaskEvent } from "../lib/task-events.js";
 import { acquireTaskNumberLock } from "../lib/task-numbering.js";
-import { broadcast } from "../ws/handler.js";
+import { broadcast, sendToUser } from "../ws/handler.js";
 
-const STATUSES = ["open", "reported", "cancelled"];
+const STATUSES = ["open", "reported", "cancelled", "completed"];
 
 /**
  * 频道内经理 agent 派发任务给 worker agent（对应 hive `team-operations.ts`）。
@@ -60,6 +61,36 @@ async function insertAndDeliver(
   return String(msg.id);
 }
 
+/**
+ * P1.26：dispatch 回路的离线黑洞告警（对齐 dead-letter）。
+ *
+ * insertAndDeliver 依赖 agent:deliver 广播实时唤醒目标 agent——目标 agent 的
+ * owner daemon 不在线时（computerOnlineFor = 本实例 daemonClients 连接表），
+ * 广播无人接收，daemon 重连**不会补拉**（daemon 侧 connected 分支为 no-op），
+ * dispatch 将静默挂 open/reported 无人知晓（评估报告「离线黑洞」）。
+ *
+ * 对齐 A1 死信语义：向经理 owner 的浏览器发同款 agent:delivery-dead-letter
+ * 事件（reason="daemon-offline"），web toast 立即可见、零新增事件类型。
+ * best-effort：经理 owner 无浏览器在线时事件自然丢弃（与死信一致）；
+ * 多实例下 computerOnlineFor 只覆盖本实例连接（跨实例 presence 归 P1.27）。
+ */
+function alarmIfDaemonOffline(
+  channelName: string,
+  manager: { user_id?: string; name?: string } | null,
+  target: { name?: string; user_id?: string } | null,
+  what: string,
+): void {
+  if (!manager?.user_id || !target?.name || !target?.user_id) return;
+  if (computerOnlineFor(String(target.user_id))) return;
+  sendToUser(String(manager.user_id), {
+    type: "agent:delivery-dead-letter",
+    agentName: target.name,
+    channelName,
+    error: `${what}未实时送达：对方 daemon 离线，重连后不会自动补拉唤醒（可在台账查看或重新派发）`,
+    reason: "daemon-offline",
+  });
+}
+
 export async function agentDispatchRoutes(app: FastifyInstance) {
   app.post("/:agentId/dispatch", { preHandler: [app.authenticate, requireOwnAgent] }, async (req, reply) => {
     const agentId = (req.params as Record<string, string>).agentId;
@@ -81,7 +112,10 @@ export async function agentDispatchRoutes(app: FastifyInstance) {
     if (member.rows.length === 0)
       return reply.status(400).send({ error: "worker agent is not a member of this channel" });
 
-    const workerDuty = await app.pg.query<{ duty: string }>("SELECT duty FROM agents WHERE id = $1", [peer.id]);
+    const workerDuty = await app.pg.query<{ duty: string; user_id: string; name: string }>(
+      "SELECT duty, user_id, name FROM agents WHERE id = $1",
+      [peer.id],
+    );
     if (workerDuty.rows[0]?.duty === "off") {
       return reply.status(409).send({ error: "worker is off duty" });
     }
@@ -112,6 +146,8 @@ export async function agentDispatchRoutes(app: FastifyInstance) {
       `📋 @${peer.handle} 你收到经理 @${manager?.name || "manager"} 派的任务（dispatch ${dispatch.id}）：${text}`,
       peer.handle,
     );
+    // P1.26：离线黑洞告警——worker daemon 离线时任务消息不会被唤醒消费，经理侧立即 toast
+    alarmIfDaemonOffline(ch.name as string, manager, workerDuty.rows[0] ?? null, `派给 @${peer.handle} 的任务`);
 
     // P1 同步：dispatch 通知消息同时成为看板卡片（in_progress + assignee=worker），
     // 台账记 task_message_id 供 report/cancel 联动
@@ -155,7 +191,7 @@ export async function agentDispatchRoutes(app: FastifyInstance) {
     const asManager = await isChannelManager(app, ch.id, agentId);
     const col = asManager ? "from_agent_id" : "to_agent_id";
     const params: any[] = [ch.id, agentId];
-    let q = `SELECT id, channel_id, from_agent_id, to_agent_id, text, status, report_text, artifacts, created_at, reported_at, cancelled_at
+    let q = `SELECT id, channel_id, from_agent_id, to_agent_id, text, status, report_text, artifacts, created_at, reported_at, cancelled_at, completed_at
               FROM dispatches WHERE channel_id = $1 AND ${col} = $2`;
     if (status && STATUSES.includes(status)) {
       params.push(status);
@@ -229,6 +265,8 @@ export async function agentDispatchRoutes(app: FastifyInstance) {
         `✅ @${manager.name} 你派给 @${worker?.name || "worker"} 的任务已回报（dispatch ${dispatchId}）：${reportText || "(无说明)"}`,
         manager.name,
       );
+      // P1.26：经理 daemon 离线时回报不会被唤醒消费——经理 owner 侧立即 toast
+      alarmIfDaemonOffline(ch.rows[0].name, manager, manager, "worker 的任务回报");
 
       return { ok: true };
     },
@@ -297,6 +335,82 @@ export async function agentDispatchRoutes(app: FastifyInstance) {
         `🚫 @${worker.name} 经理 @${manager?.name || "manager"} 撤回了派给你的任务（dispatch ${dispatchId}）：${reason || "(无说明)"}`,
         worker.name,
       );
+      // P1.26：worker daemon 离线时撤回不会被唤醒消费——经理 owner 侧立即 toast
+      alarmIfDaemonOffline(ch.rows[0].name, manager, worker, "撤回通知");
+
+      return { ok: true };
+    },
+  );
+
+  // P1.26：经理验收（accept）——dispatch 合同的闭环端点。
+  // 仅 dispatch 的经理（from_agent_id）可调用，且只接受 reported（worker 已回报）
+  // 的合同；验收通过 → status='completed'（终态）+ completed_at，看板卡片
+  // in_review → done。单语句条件更新保证状态转换原子（并发双 accept 只有一
+  // 方命中，另一方 404）。
+  app.post(
+    "/:agentId/dispatch/:dispatchId/accept",
+    { preHandler: [app.authenticate, requireOwnAgent] },
+    async (req, reply) => {
+      const agentId = (req.params as Record<string, string>).agentId;
+      const dispatchId = (req.params as Record<string, string>).dispatchId;
+      const { note } = req.body as { note?: string };
+
+      const upd = await app.pg.query<{
+        id: string;
+        channel_id: string;
+        to_agent_id: string;
+        task_message_id: string | null;
+      }>(
+        `UPDATE dispatches SET status = 'completed', completed_at = now()
+          WHERE id = $1 AND from_agent_id = $2 AND status = 'reported'
+          RETURNING id, channel_id, to_agent_id, task_message_id`,
+        [dispatchId, agentId],
+      );
+      if (upd.rows.length === 0) return reply.status(404).send({ error: "no reported dispatch owned by this agent" });
+      const dispatch = upd.rows[0];
+
+      // P1 同步：验收 → 看板卡片 done（closed 留给撤销/人工关闭语义）
+      if (dispatch.task_message_id) {
+        const cardUpd = await app.pg.query<{ task_number: number; old_status: string | null }>(
+          `UPDATE messages m SET task_status = 'done', updated_at = now()
+             FROM (SELECT task_status AS old_status FROM messages WHERE id = $1) old
+           WHERE m.id = $1
+           RETURNING m.task_number, old.old_status`,
+          [dispatch.task_message_id],
+        );
+        if (cardUpd.rows[0]) {
+          await recordTaskEvent(app, {
+            messageId: dispatch.task_message_id,
+            channelId: dispatch.channel_id,
+            taskNumber: cardUpd.rows[0].task_number,
+            actorId: agentId,
+            action: "status_changed",
+            fromStatus: cardUpd.rows[0].old_status,
+            toStatus: "done",
+            detail: `dispatch ${dispatchId} accepted`,
+          });
+        }
+      }
+
+      const manager = await getAgent(app, agentId);
+      const worker = await getAgent(app, dispatch.to_agent_id);
+      if (!worker?.name) return reply.status(500).send({ error: "worker agent no longer exists" });
+      const ch = await app.pg.query<{ id: string; server_id: string; name: string }>(
+        "SELECT id, server_id, name FROM channels WHERE id = $1",
+        [dispatch.channel_id],
+      );
+      await insertAndDeliver(
+        app,
+        dispatch.channel_id,
+        ch.rows[0].server_id,
+        ch.rows[0].name,
+        agentId,
+        manager,
+        `🎉 @${worker.name} 经理 @${manager?.name || "manager"} 验收通过了你的任务回报（dispatch ${dispatchId}）：${note || "(无备注)"}`,
+        worker.name,
+      );
+      // P1.26：worker daemon 离线时验收通知不会被唤醒消费——经理 owner 侧立即 toast
+      alarmIfDaemonOffline(ch.rows[0].name, manager, worker, "验收通知");
 
       return { ok: true };
     },

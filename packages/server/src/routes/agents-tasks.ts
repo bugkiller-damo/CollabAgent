@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { agentCanAccessChannel, requireOwnAgent, resolveChannelByName } from "../lib/agent-helpers.js";
+import { syncDispatchOnCardClose } from "../lib/dispatch-sync.js";
 import { recordTaskEvent } from "../lib/task-events.js";
 import { acquireTaskNumberLock } from "../lib/task-numbering.js";
 
@@ -164,6 +165,11 @@ export async function agentTaskRoutes(app: FastifyInstance) {
         fromStatus: before.rows[0].task_status,
         toStatus: status,
       });
+      // P1.26：卡片→dispatch 回向同步（与 tasks.ts 人类侧同款）——agent 把
+      // dispatch 关联卡片置 done/closed 时联动台账终态
+      if (status === "done" || status === "closed") {
+        await syncDispatchOnCardClose(app, String(r.rows[0].id), status);
+      }
     }
     return { ok: true, task: r.rows[0] };
   });

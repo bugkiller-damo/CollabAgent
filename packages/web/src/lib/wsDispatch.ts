@@ -83,7 +83,14 @@ export function dispatchWsEvent(msg: WsServerEvent): void {
   // A1 派发队列死信：重试多次仍投递失败（或 agent 已停止）——消息确认丢失，需人工介入
   if (type === "agent:delivery-dead-letter") {
     const m = msg as any;
-    toast.error(`❌ 发给 @${m.agentName} 的消息投递失败（已自动重试多次）：${m.error || "未知原因"}，请重新发送`);
+    // P1.26：server 侧 dispatch 离线告警（reason="daemon-offline"）——目标 agent 的
+    // owner daemon 未连接，消息不会实时送达也不会被唤醒（重连不补拉）。与 daemon
+    // 上报的 A1 死信（重试耗尽）区分文案。
+    if (m.reason === "daemon-offline") {
+      toast.warning(`⚠️ 发给 @${m.agentName} 的消息暂未送达（对方 daemon 离线）：${m.error || "对方设备未连接"}`);
+    } else {
+      toast.error(`❌ 发给 @${m.agentName} 的消息投递失败（已自动重试多次）：${m.error || "未知原因"}，请重新发送`);
+    }
   }
   if (type === "message:update" && (msg as any).message) {
     const m = (msg as any).message;
