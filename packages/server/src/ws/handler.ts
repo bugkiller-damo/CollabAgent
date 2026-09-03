@@ -13,6 +13,8 @@ import { appendEvent } from "../lib/audit.js";
 // JWT 此前 jsonwebtoken 直验，与 @fastify/jwt 双库并存靠注释约定同步 secret）。
 import { verifyBrowserToken, verifyMachineToken } from "../lib/auth-token.js";
 import { inc } from "../lib/metrics.js";
+// P1.27：daemon 连接/断开镜像进跨实例在线注册表（Redis SET，其他实例的读路径可见）
+import { presenceAdd, presenceRemove } from "../lib/presence.js";
 import type { PubSub } from "../lib/pubsub.js";
 import { normalizeRuntimes } from "../lib/runtime-probe.js";
 
@@ -183,6 +185,7 @@ async function resolveUserId(token: string | null, isDaemon: boolean, clientIp =
 function registerConnection(connection: WebSocket, userId: string, isDaemon: boolean) {
   if (isDaemon) {
     daemonClients.set(userId, connection);
+    presenceAdd(userId);
     daemonMeta.set(userId, { userId, hostname: "unknown", daemonVersion: "?", runtimes: [], connectedAt: Date.now() });
     console.log(`[WS] Daemon connected: user=${userId}`);
     // P1.22：本实例持有该用户连接期间订阅其定向频道（多实例下按需扇出）
@@ -302,6 +305,7 @@ function registerConnection(connection: WebSocket, userId: string, isDaemon: boo
 
     connection.on("close", () => {
       daemonClients.delete(userId);
+      presenceRemove(userId);
       daemonMeta.delete(userId);
       console.log(`[WS] Daemon disconnected: user=${userId}`);
       refreshUserSubscription(userId);

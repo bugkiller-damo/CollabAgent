@@ -72,7 +72,8 @@ async function insertAndDeliver(
  * 对齐 A1 死信语义：向经理 owner 的浏览器发同款 agent:delivery-dead-letter
  * 事件（reason="daemon-offline"），web toast 立即可见、零新增事件类型。
  * best-effort：经理 owner 无浏览器在线时事件自然丢弃（与死信一致）；
- * 多实例下 computerOnlineFor 只覆盖本实例连接（跨实例 presence 归 P1.27）。
+ * P1.27 起 computerOnlineFor 已跨实例（Redis 在线并集，传播 ≤3s）——
+ * 告警预检的漏报窗口从「永挂」收敛到秒级陈旧。
  */
 function alarmIfDaemonOffline(
   channelName: string,

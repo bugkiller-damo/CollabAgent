@@ -10,20 +10,24 @@ export async function purgeReadNotifications(app: FastifyInstance): Promise<void
 
 // 周期采样进程指标并写入 metrics_samples 表，用于跨重启趋势展示。
 // 镜像 reminder-scheduler.ts 模式：setInterval + try/catch 隔离 + 返回 cleanup。
+// P1.27：每行带 instance 标识（多实例各采样各行，restoreCounters 按本实例行恢复），
+// 并补齐此前未持久化的 7 个计数器列；daemon_count/agent_online 用跨实例在线并集
+// （daemon 连在其他实例也计入，与读路径同一口径）。
 export function startMetricsPersistence(app: FastifyInstance, intervalMs = 60000): () => void {
   const tick = async () => {
     try {
-      const { metricsSnapshot } = await import("./metrics.js");
-      const { daemonClients } = await import("../ws/handler.js");
+      const { metricsSnapshot, instanceId } = await import("./metrics.js");
+      const { onlineUserSnapshot } = await import("./presence.js");
 
       const snap = metricsSnapshot();
+      const onlineUsers = onlineUserSnapshot();
 
       let agentTotal = 0;
       let agentOnline = 0;
       try {
         const r = await app.pg.query<{ user_id: string }>("SELECT user_id FROM agents");
         agentTotal = r.rows.length;
-        agentOnline = r.rows.filter((a) => daemonClients.has(String(a.user_id))).length;
+        agentOnline = r.rows.filter((a) => onlineUsers.has(String(a.user_id))).length;
       } catch {
         /* agents table may not exist during early startup */
       }
@@ -31,21 +35,32 @@ export function startMetricsPersistence(app: FastifyInstance, intervalMs = 60000
       await app.pg.query(
         `INSERT INTO metrics_samples
            (sampled_at, messages_sent, dm_sent, reminders_fired, errors, logins,
+            patrol_posted, patrol_silent, patrol_auto_paused,
+            machine_auth_bcrypt_scans, machine_auth_bcrypt_hits, machine_auth_bcrypt_rejected,
+            ws_slow_consumer_terminated,
             rss_mb, heap_used_mb, heap_total_mb,
-            daemon_count, agent_total, agent_online)
-         VALUES (now(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+            daemon_count, agent_total, agent_online, instance)
+         VALUES (now(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)`,
         [
           snap.counters.messagesSent,
           snap.counters.dmSent,
           snap.counters.remindersFired,
           snap.counters.errors,
           snap.counters.logins,
+          snap.counters.patrolPosted,
+          snap.counters.patrolSilent,
+          snap.counters.patrolAutoPaused,
+          snap.counters.machineAuthBcryptScans,
+          snap.counters.machineAuthBcryptHits,
+          snap.counters.machineAuthBcryptRejected,
+          snap.counters.wsSlowConsumerTerminated,
           snap.memory.rssMb,
           snap.memory.heapUsedMb,
           snap.memory.heapTotalMb,
-          daemonClients.size,
+          onlineUsers.size,
           agentTotal,
           agentOnline,
+          instanceId(),
         ],
       );
 

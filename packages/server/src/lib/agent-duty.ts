@@ -5,13 +5,16 @@ import {
   composePresence,
   parseAgentDuty,
 } from "@collabagent/shared";
-import { daemonClients, sendToDaemon, sendToUser } from "../ws/handler.js";
+import { sendToDaemon, sendToUser } from "../ws/handler.js";
 import { appendEvent } from "./audit.js";
+// P1.27：读路径跨实例化——daemon 可能连在其他实例上，本实例 Map 之外的在线状态
+// 由 lib/presence.ts 的 Redis 并集缓存补齐（未配 VALKEY_URL 时退化为纯本地，行为不变）。
+import { isComputerOnline } from "./presence.js";
 
 export { composePresence, parseAgentDuty };
 
 export function computerOnlineFor(userId: string): boolean {
-  return daemonClients.has(String(userId));
+  return isComputerOnline(String(userId));
 }
 
 export function decorateAgentPresence<T extends { user_id?: unknown; userId?: unknown; duty?: unknown }>(

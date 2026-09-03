@@ -1,11 +1,12 @@
 import { randomBytes } from "node:crypto";
 import type { RuntimeProbe } from "@collabagent/shared";
 import type { FastifyInstance } from "fastify";
+import { computerOnlineFor } from "../lib/agent-duty.js";
 import { MACHINE_TOKEN_TTL_DAYS } from "../lib/machine-token-policy.js";
 import { getOrCreatePersonalOrg, getUserOrgIds } from "../lib/orgs.js";
 import { normalizeRuntimes } from "../lib/runtime-probe.js";
 import { sha256Token } from "../lib/token-hash.js";
-import { daemonClients, daemonMeta } from "../ws/handler.js";
+import { daemonMeta } from "../ws/handler.js";
 
 export interface ComputerRow {
   id: string;
@@ -82,7 +83,9 @@ export function serializeComputer(
 
 export function computerStatusPayload(_app: FastifyInstance, userId: string, row: ComputerRow | null) {
   const meta = daemonMeta.get(userId);
-  const online = daemonClients.has(userId);
+  // P1.27：在线判定走跨实例注册表（daemon 连在其他实例时本实例也能看见）；
+  // meta 明细（hostname/runtimes/connectedAt）仍是本实例视角，跨实例时回退 computers 行。
+  const online = computerOnlineFor(userId);
   const runtimes = meta?.runtimes?.length ? meta.runtimes : normalizeRuntimes(row?.runtimes);
   return {
     connected: online,

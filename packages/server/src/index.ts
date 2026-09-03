@@ -350,6 +350,10 @@ try {
   const { restoreCounters } = await import("./lib/metrics.js");
   await restoreCounters(server.pg);
   server.log.info("[Metrics] persistence started (60s interval)");
+  // P1.27：跨实例 daemon 在线注册表（Redis SET 并集；未配 VALKEY_URL 时纯本地 no-op）
+  const { startPresenceSync } = await import("./lib/presence.js");
+  startPresenceSync();
+  server.log.info("[Presence] cross-instance sync started");
 } catch (err) {
   server.log.error(err);
   process.exit(1);
@@ -375,6 +379,10 @@ async function shutdown(signal: string) {
       }
     }
   }
+  // P1.27：先停在线注册表（close 事件触发的 presenceRemove best-effort 已发出；
+  // 残留键由 45s TTL 自愈），再关 DB 与 pubsub
+  const { shutdownPresence } = await import("./lib/presence.js");
+  await shutdownPresence();
   await closeDb();
   await pubsub.close();
   server.log.info("[Server] Goodbye");
