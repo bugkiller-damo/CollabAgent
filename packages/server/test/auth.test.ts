@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it } from "vitest";
-import { api, cleanupTestData, closeSql, registerUser, uniqHandle } from "./helpers.js";
+import { api, cleanupTestData, closeSql, makeOrgOwner, registerUser, sql, uniqHandle } from "./helpers.js";
 
 afterAll(async () => {
   await cleanupTestData();
@@ -214,5 +214,90 @@ describe("auth: 登录防爆破（O6 账号+IP 双维度）", () => {
       });
     for (let i = 0; i < 5; i++) expect((await fail()).status).toBe(401);
     expect((await fail()).status).toBe(429);
+  });
+});
+
+describe("auth: P1.31 register 加固（email 校验 / 23505→409 / invite 事务消费）", () => {
+  const reg = (h: string, extra: Record<string, unknown> = {}) =>
+    api("/api/auth/register", {
+      method: "POST",
+      body: { email: `${h}@test.local`, handle: h, password: "Test1234", ...extra },
+    });
+  const memberRole = async (orgId: string, userId: string) => {
+    const rows = await sql`SELECT role FROM server_members WHERE server_id = ${orgId} AND user_id = ${userId}`;
+    return rows[0]?.role as string | undefined;
+  };
+  const inviteUses = async (token: string) => {
+    const rows = await sql`SELECT uses FROM invites WHERE token = ${token}`;
+    return Number(rows[0].uses);
+  };
+  async function createInvite(maxUses: number | null, expiresInDays?: number) {
+    const owner = await registerUser();
+    const orgId = await makeOrgOwner(owner);
+    const r = await api(`/api/orgs/${orgId}/invites`, {
+      method: "POST",
+      cookie: owner.cookie,
+      body: { maxUses, expiresInDays },
+    });
+    expect(r.status).toBe(200);
+    return { token: r.data.token as string, orgId, owner };
+  }
+
+  it("非法 email 400（P1.31 新增格式校验）", async () => {
+    const r = await reg(uniqHandle(), { email: "not-an-email" });
+    expect(r.status).toBe(400);
+    expect(r.data.error).toContain("邮箱");
+  });
+
+  it("并发同名注册：恰一个 200、另一个 409（唯一约束兜底，无 500）", async () => {
+    const h = uniqHandle();
+    const [a, b] = await Promise.all([reg(h), reg(h)]);
+    expect([a.status, b.status].sort()).toEqual([200, 409]);
+  });
+
+  it("有效 invite：注册即入圈且 uses+1", async () => {
+    const { token, orgId } = await createInvite(5);
+    const r = await reg(uniqHandle(), { invite: token });
+    expect(r.status).toBe(200);
+    expect(await memberRole(orgId, r.data.user.id)).toBe("member");
+    expect(await inviteUses(token)).toBe(1);
+  });
+
+  it("限额 1 的 invite 并发双注册：恰消费一次，两人均注册成功但仅一人入圈（TOCTOU 关闭）", async () => {
+    const { token, orgId } = await createInvite(1);
+    const [a, b] = await Promise.all([reg(uniqHandle(), { invite: token }), reg(uniqHandle(), { invite: token })]);
+    expect(a.status).toBe(200);
+    expect(b.status).toBe(200);
+    // 条件 UPDATE 行锁串行：后到者 WHERE uses < max_uses 不成立，0 行自然失效
+    expect(await inviteUses(token)).toBe(1);
+    const roles = [await memberRole(orgId, a.data.user.id), await memberRole(orgId, b.data.user.id)];
+    expect(roles.filter(Boolean)).toHaveLength(1);
+  });
+
+  it("限额耗尽的 invite：后续注册成功但不入圈、不再消费", async () => {
+    const { token, orgId } = await createInvite(1);
+    await reg(uniqHandle(), { invite: token });
+    const r2 = await reg(uniqHandle(), { invite: token });
+    expect(r2.status).toBe(200);
+    expect(await memberRole(orgId, r2.data.user.id)).toBeUndefined();
+    expect(await inviteUses(token)).toBe(1);
+  });
+
+  it("过期 invite：注册成功但不入圈、不消费", async () => {
+    const { token, orgId } = await createInvite(5, -1);
+    const r = await reg(uniqHandle(), { invite: token });
+    expect(r.status).toBe(200);
+    expect(await memberRole(orgId, r.data.user.id)).toBeUndefined();
+    expect(await inviteUses(token)).toBe(0);
+  });
+
+  it("已吊销 invite：注册成功但不入圈、不消费", async () => {
+    const { token, orgId, owner } = await createInvite(5);
+    const rev = await api(`/api/orgs/${orgId}/invites/${token}`, { method: "DELETE", cookie: owner.cookie });
+    expect(rev.status).toBe(200);
+    const r = await reg(uniqHandle(), { invite: token });
+    expect(r.status).toBe(200);
+    expect(await memberRole(orgId, r.data.user.id)).toBeUndefined();
+    expect(await inviteUses(token)).toBe(0);
   });
 });

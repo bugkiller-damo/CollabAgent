@@ -44,47 +44,65 @@ export async function authRoutes(app: FastifyInstance) {
     if (typeof handle !== "string" || !/^[a-zA-Z0-9_]{2,20}$/.test(handle)) {
       return reply.status(400).send({ error: "用户名仅支持字母数字下划线，2-20 位" });
     }
+    // P1.31：email 格式校验（与 forgot-password 同一宽松形态——拒明显非法，不做 RFC 全量）
+    const emailStr = String(email).trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailStr)) {
+      return reply.status(400).send({ error: "邮箱格式不正确" });
+    }
     const pwErr = validatePassword(password as string);
     if (pwErr) return reply.status(400).send({ error: pwErr });
 
     const existing = await app.pg.query("SELECT id FROM users WHERE lower(handle) = $1 OR lower(email) = $2", [
       handle.toLowerCase(),
-      (email as string).toLowerCase(),
+      emailStr.toLowerCase(),
     ]);
     if (existing.rows.length > 0) {
       return reply.status(409).send({ error: "用户名或邮箱已被注册" });
     }
 
     const hash = await bcrypt.hash(password as string, 12);
-    const result = await app.pg.query(
-      "INSERT INTO users (email, handle, display_name, password_hash) VALUES ($1, $2, $3, $4) RETURNING id, handle, display_name, email",
-      [email, handle, displayName || handle, hash],
-    );
-    const user = result.rows[0] as Record<string, unknown>;
-
     const inviteToken = (req.body as Record<string, unknown>).invite;
-    if (typeof inviteToken === "string" && inviteToken) {
-      const inv = await app.pg.query<{
-        server_id: string;
-        role: string;
-        max_uses: number | null;
-        uses: number;
-        expires_at: string | null;
-        revoked_at: string | null;
-      }>("SELECT server_id, role, max_uses, uses, expires_at, revoked_at FROM invites WHERE token = $1", [inviteToken]);
-      const row = inv.rows[0];
-      const valid =
-        row &&
-        !row.revoked_at &&
-        (!row.expires_at || new Date(row.expires_at) >= new Date()) &&
-        (row.max_uses == null || row.uses < row.max_uses);
-      if (valid) {
-        await app.pg.query(
-          "INSERT INTO server_members (server_id, user_id, role) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
-          [row.server_id, user.id, row.role],
+
+    // P1.31：用户创建 + 邀请消费 + 入圈并入同一事务——member 写入失败则 uses
+    // 一并回滚，不留「已消费未入圈」半截状态。邀请消费改单条条件 UPDATE
+    // （revoked/expires/max_uses 全部入库判定）：并发注册抢同一张限额邀请时，
+    // 行锁串行后超额方 UPDATE 0 行自然失效，不再出现 SELECT 校验后无条件
+    // UPDATE 的 TOCTOU 超额消费（评估 §2.2）。邀请无效/耗尽不阻断注册（既有语义）。
+    let user: Record<string, unknown>;
+    try {
+      user = await app.pg.transaction(async (tx) => {
+        // RETURNING 补 token_version：注册即签的 access token 此前 tv=undefined，
+        // logout-all/改密的 token_version 轮换对它不生效（tv 缺失跳过校验）——顺带实锤修复
+        const ins = await tx.query(
+          "INSERT INTO users (email, handle, display_name, password_hash) VALUES ($1, $2, $3, $4) RETURNING id, handle, display_name, email, token_version",
+          [emailStr, handle, displayName || handle, hash],
         );
-        await app.pg.query("UPDATE invites SET uses = uses + 1 WHERE token = $1", [inviteToken]);
+        const u = ins.rows[0] as Record<string, unknown>;
+        if (typeof inviteToken === "string" && inviteToken) {
+          const consumed = await tx.query<{ server_id: string; role: string }>(
+            `UPDATE invites SET uses = uses + 1
+              WHERE token = $1 AND revoked_at IS NULL
+                AND (expires_at IS NULL OR expires_at > now())
+                AND (max_uses IS NULL OR uses < max_uses)
+              RETURNING server_id, role`,
+            [inviteToken],
+          );
+          const inv = consumed.rows[0];
+          if (inv) {
+            await tx.query(
+              "INSERT INTO server_members (server_id, user_id, role) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+              [inv.server_id, u.id, inv.role],
+            );
+          }
+        }
+        return u;
+      });
+    } catch (e) {
+      // P1.31：并发注册双过 SELECT 查重时由唯一约束兜底——23505 映射 409 而非 500
+      if ((e as { code?: string })?.code === "23505") {
+        return reply.status(409).send({ error: "用户名或邮箱已被注册" });
       }
+      throw e;
     }
 
     const sid = await recordSession(app, req, String(user.id));

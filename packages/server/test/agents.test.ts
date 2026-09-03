@@ -7,12 +7,13 @@ afterAll(async () => {
 });
 
 describe("agent/profile/org: 综合集成测试", () => {
-  let ck: string, cs: string;
+  let ck: string, cs: string, handle: string;
 
   beforeAll(async () => {
     const u = await registerUser();
     ck = u.cookie;
     cs = u.csrf;
+    handle = u.handle;
   });
 
   it("GET /api/agents — 列取", async () => {
@@ -63,12 +64,24 @@ describe("agent/profile/org: 综合集成测试", () => {
       body: { oldPassword: "Test1234", newPassword: "NewPass5678" },
     });
     expect(r.status).toBe(200);
-    await api("/api/profile/change-password", {
+    // P1.31：注册即签 token 现携带 tv——change-password 轮换 token_version 后旧凭据
+    // 立即失效（此前 register RETURNING 漏 token_version，tv 校验被跳过，旧 cookie 误存活；
+    // 本用例此前正依赖该缺口）。每次改密后需重新登录刷新 cookie/csrf。
+    const relogin = await api("/api/auth/login", { method: "POST", body: { handle, password: "NewPass5678" } });
+    expect(relogin.status).toBe(200);
+    ck = relogin.cookieHeader;
+    cs = relogin.data.csrf;
+    const back = await api("/api/profile/change-password", {
       method: "POST",
       cookie: ck,
       csrf: cs,
       body: { oldPassword: "NewPass5678", newPassword: "Test1234" },
     });
+    expect(back.status).toBe(200);
+    const relogin2 = await api("/api/auth/login", { method: "POST", body: { handle, password: "Test1234" } });
+    expect(relogin2.status).toBe(200);
+    ck = relogin2.cookieHeader;
+    cs = relogin2.data.csrf;
   });
 
   it("改密码旧密码错误 401", async () => {
