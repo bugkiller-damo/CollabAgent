@@ -372,7 +372,7 @@ async function expandChannels() {
         <Avatar :name="displayName" :src="profile.avatarUrl || undefined" size="lg" />
         <div class="min-w-0 flex-1">
           <div class="flex flex-wrap items-center gap-2">
-            <h2 class="truncate text-base font-semibold text-gray-900 dark:text-white">{{ displayName }}</h2>
+            <h2 class="truncate text-base font-semibold text-ink">{{ displayName }}</h2>
             <span
               :class="[
                 'rounded px-1.5 py-0.5 text-[10px] font-medium',
@@ -391,7 +391,7 @@ async function expandChannels() {
               👔 经理
             </span>
           </div>
-          <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+          <p class="mt-0.5 text-xs text-muted">
             @{{ profile.handle }}
             <template v-if="liveStatus">
               · <span :class="liveStatus.cls">{{ liveStatus.text }}</span>
@@ -445,13 +445,13 @@ async function expandChannels() {
         v-if="profile.type === 'agent'"
         :class="embedded && agentTab === 'workspace' ? 'mt-5 flex min-h-0 flex-1 flex-col' : 'mt-5'"
       >
-        <div class="mb-3 flex gap-1 overflow-x-auto border-b border-gray-200 dark:border-gray-700">
+        <div class="mb-3 flex gap-1 overflow-x-auto border-b border-line">
           <button
             type="button"
             :class="[
               'shrink-0 border-b-2 px-3 py-1.5 text-xs',
               agentTab === 'overview'
-                ? 'border-blue-500 font-medium text-gray-900 dark:text-white'
+                ? 'border-blue-500 font-medium text-ink'
                 : 'border-transparent text-gray-500 hover:text-gray-800 dark:hover:text-gray-200',
             ]"
             @click="agentTab = 'overview'"
@@ -463,7 +463,7 @@ async function expandChannels() {
             :class="[
               'shrink-0 border-b-2 px-3 py-1.5 text-xs',
               agentTab === 'channels'
-                ? 'border-blue-500 font-medium text-gray-900 dark:text-white'
+                ? 'border-blue-500 font-medium text-ink'
                 : 'border-transparent text-gray-500 hover:text-gray-800 dark:hover:text-gray-200',
             ]"
             @click="agentTab = 'channels'"
@@ -476,7 +476,7 @@ async function expandChannels() {
             :class="[
               'shrink-0 border-b-2 px-3 py-1.5 text-xs',
               agentTab === 'workspace'
-                ? 'border-blue-500 font-medium text-gray-900 dark:text-white'
+                ? 'border-blue-500 font-medium text-ink'
                 : 'border-transparent text-gray-500 hover:text-gray-800 dark:hover:text-gray-200',
             ]"
             @click="agentTab = 'workspace'"
@@ -489,7 +489,7 @@ async function expandChannels() {
             :class="[
               'shrink-0 border-b-2 px-3 py-1.5 text-xs',
               agentTab === 'patrol'
-                ? 'border-blue-500 font-medium text-gray-900 dark:text-white'
+                ? 'border-blue-500 font-medium text-ink'
                 : 'border-transparent text-gray-500 hover:text-gray-800 dark:hover:text-gray-200',
             ]"
             @click="agentTab = 'patrol'"
@@ -549,7 +549,7 @@ async function expandChannels() {
               <option value="haiku">Haiku</option>
             </select>
           </div>
-          <div v-if="profile.computer" class="text-sm text-gray-500 dark:text-gray-400">
+          <div v-if="profile.computer" class="text-sm text-muted">
             跑在
             <button type="button" class="text-blue-600 hover:underline dark:text-blue-400" @click="goComputer">
               {{ profile.computer.name }}
@@ -627,7 +627,7 @@ async function expandChannels() {
         </section>
         <section v-if="canEditAgent" class="mt-6 border-t border-red-200 pt-4 dark:border-red-900/50">
           <h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-red-500">危险操作</h3>
-          <p class="mb-3 text-xs text-gray-500 dark:text-gray-400">将移除该 Agent 及其频道成员关系，历史消息保留。</p>
+          <p class="mb-3 text-xs text-muted">将移除该 Agent 及其频道成员关系，历史消息保留。</p>
           <Button variant="danger" size="sm" :disabled="deleting" @click="confirmDelete = true">删除此 Agent</Button>
         </section>
         </div>
@@ -653,7 +653,7 @@ async function expandChannels() {
                       </span>
                       <span v-if="c.isManager" class="shrink-0 text-[10px] text-amber-600">👔 经理</span>
                     </div>
-                    <p v-if="c.description?.trim()" class="mt-0.5 line-clamp-2 text-xs text-gray-500 dark:text-gray-400">
+                    <p v-if="c.description?.trim()" class="mt-0.5 line-clamp-2 text-xs text-muted">
                       {{ c.description }}
                     </p>
                     <p v-else-if="c.type === 'dm'" class="mt-0.5 text-xs text-gray-400">一对一私信</p>
@@ -717,7 +717,7 @@ async function expandChannels() {
                     </span>
                     <span v-if="c.isManager" class="shrink-0 text-[10px] text-amber-600">👔 经理</span>
                   </div>
-                  <p v-if="c.description?.trim()" class="mt-0.5 line-clamp-2 text-xs text-gray-500 dark:text-gray-400">
+                  <p v-if="c.description?.trim()" class="mt-0.5 line-clamp-2 text-xs text-muted">
                     {{ c.description }}
                   </p>
                   <p v-else-if="c.type === 'dm'" class="mt-0.5 text-xs text-gray-400">一对一私信</p>

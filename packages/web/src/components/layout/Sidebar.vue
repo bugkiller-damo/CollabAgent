@@ -33,10 +33,10 @@ function goSearch() {
     >
       <div class="flex h-12 w-60 shrink-0 items-center gap-2 border-b border-gray-200 bg-gray-100 px-2 lg:hidden dark:border-gray-700 dark:bg-gray-800">
         <div class="flex h-7 w-7 items-center justify-center rounded-md bg-blue-600 text-xs font-bold text-white">C</div>
-        <span class="min-w-0 flex-1 truncate text-sm font-semibold text-gray-900 dark:text-white">CollabAgent</span>
+        <span class="min-w-0 flex-1 truncate text-sm font-semibold text-ink">CollabAgent</span>
         <button
           type="button"
-          class="rounded-md p-1.5 text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-700"
+          class="rounded-md p-1.5 text-gray-500 hover:bg-raised"
           aria-label="搜索"
           @click="goSearch"
         >

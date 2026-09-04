@@ -1,4 +1,4 @@
-import { useAgentStore, useChannelStore, useMessageStore } from "../stores";
+import { threadBufferKey, useAgentStore, useChannelStore, useMessageStore } from "../stores";
 import type { AgentActivity } from "../stores/agentStore";
 import { useNotificationStore } from "../stores/notificationStore";
 import { useTerminalStore } from "../stores/terminalStore";
@@ -108,11 +108,13 @@ export function dispatchWsEvent(msg: WsServerEvent): void {
     const m = (msg as any).message as any;
     // 乐观行调和（O15）：回执带上发送时的 clientNonce，先清掉本地对应的 pending 乐观行
     if (m.clientNonce) messageStore.ackPendingByNonce(m.clientNonce);
-    const hasThread = m.thread_id || m.threadId;
+    // server 广播统一发 camelCase threadId（messages.ts / agents-messages.ts /
+    // agents-dispatch.ts 三处同口径）；snake 仅作兜底
+    const threadId = (m.threadId || m.thread_id || null) as string | null;
     const chs = channelStore.channels;
     const ch = chs.find((c: any) => c.id === m.channelId);
     const targetKey = ch ? "#" + ch.name : m.channelId;
-    messageStore.receiveMessage({
+    const normalized = {
       id: m.id,
       seq: m.seq,
       channelId: targetKey,
@@ -123,21 +125,16 @@ export function dispatchWsEvent(msg: WsServerEvent): void {
       content: m.content,
       time: m.time || new Date().toISOString(),
       attachments: m.attachments || [],
-    } as any);
-    if (hasThread) {
-      const threadKey = targetKey + ":" + (m.thread_id || m.threadId || "").substring(0, 8);
-      messageStore.receiveMessage({
-        ...m,
-        id: m.id,
-        seq: m.seq,
-        channelId: threadKey,
-        senderId: m.senderId,
-        senderName: m.senderName || "unknown",
-        senderHandle: m.senderHandle,
-        senderType: m.senderType || "human",
-        content: m.content,
-        time: m.time || new Date().toISOString(),
-      } as any);
+      // P0-2 修复①：透传 threadId——receiveMessage 的「threadId 不入主列表」守卫
+      // 据此拦截线程回复（此前显式构造丢弃该字段，线程回复漏进主频道列表，还推进
+      // 主列表 lastSeenSeq，重连 backfill 会跳过其间未到达的顶层消息）
+      threadId,
+    };
+    messageStore.receiveMessage(normalized as any);
+    // P0-2 修复②③：线程回复绕开主列表守卫、直写线程缓冲区；key 与 ThreadView
+    // 路由参数同口径（不带 #，threadBufferKey 统一约定）
+    if (threadId) {
+      messageStore.receiveThreadReply(threadBufferKey(targetKey, threadId), normalized as any);
     }
     if (channelStore.activeChannelName && ch?.name !== channelStore.activeChannelName) {
       channelStore.incrementUnread(targetKey);

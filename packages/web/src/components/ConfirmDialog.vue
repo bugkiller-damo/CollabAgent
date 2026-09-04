@@ -23,8 +23,8 @@ const emit = defineEmits<{
 
 <template>
   <Modal open @close="emit('cancel')">
-    <h3 class="text-base font-bold text-gray-900 dark:text-white">{{ title }}</h3>
-    <p v-if="message" class="text-sm text-gray-600 dark:text-gray-400">{{ message }}</p>
+    <h3 class="text-base font-bold text-ink">{{ title }}</h3>
+    <p v-if="message" class="text-sm text-subtle">{{ message }}</p>
     <div class="flex justify-end gap-2 pt-1">
       <button
         class="rounded-md bg-gray-200 px-4 py-2 text-sm text-gray-700 transition-colors hover:bg-gray-300 active:scale-[0.98] dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"

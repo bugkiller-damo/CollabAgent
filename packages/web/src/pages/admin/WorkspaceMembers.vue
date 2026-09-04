@@ -168,7 +168,7 @@ function selectOrg(e: Event) {
         <div v-for="m in members" :key="m.user_id" class="flex items-center gap-3 p-3">
           <Avatar :name="m.display_name || m.handle" size="md" />
           <div class="min-w-0 flex-1">
-            <p class="truncate text-sm font-medium text-gray-900 dark:text-white">{{ m.display_name || m.handle }}</p>
+            <p class="truncate text-sm font-medium text-ink">{{ m.display_name || m.handle }}</p>
             <p class="text-xs text-gray-500">@{{ m.handle }}</p>
           </div>
           <select
@@ -196,7 +196,7 @@ function selectOrg(e: Event) {
       <Card v-if="isOwner" class="space-y-3 lg:col-span-1">
         <div class="flex items-center justify-between">
           <div>
-            <h3 class="font-semibold text-gray-900 dark:text-white">邀请同事加入</h3>
+            <h3 class="font-semibold text-ink">邀请同事加入</h3>
             <p class="mt-0.5 text-xs text-gray-500">生成链接发给同事，他们用链接注册后自动加入「{{ org?.name }}」。</p>
           </div>
           <Button size="sm" @click="createInvite">生成邀请链接</Button>

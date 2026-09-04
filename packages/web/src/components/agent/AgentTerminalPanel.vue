@@ -187,20 +187,20 @@ const st = computed(() => STATUS_LABEL[status.value] || STATUS_LABEL.offline);
     <div class="flex items-center border-b border-gray-200 text-sm dark:border-gray-700">
       <button
         @click="tab = 'live'"
-        :class="`flex-1 py-1.5 ${tab === 'live' ? 'border-b-2 border-blue-500 font-medium text-gray-900 dark:text-white' : 'text-gray-500'}`"
+        :class="`flex-1 py-1.5 ${tab === 'live' ? 'border-b-2 border-blue-500 font-medium text-ink' : 'text-gray-500'}`"
       >
         实时画面
       </button>
       <button
         v-if="obsList.length > 0"
         @click="tab = 'events'"
-        :class="`flex-1 py-1.5 ${tab === 'events' ? 'border-b-2 border-blue-500 font-medium text-gray-900 dark:text-white' : 'text-gray-500'}`"
+        :class="`flex-1 py-1.5 ${tab === 'events' ? 'border-b-2 border-blue-500 font-medium text-ink' : 'text-gray-500'}`"
       >
         事件流
       </button>
       <button
         @click="tab = 'log'"
-        :class="`flex-1 py-1.5 ${tab === 'log' ? 'border-b-2 border-blue-500 font-medium text-gray-900 dark:text-white' : 'text-gray-500'}`"
+        :class="`flex-1 py-1.5 ${tab === 'log' ? 'border-b-2 border-blue-500 font-medium text-ink' : 'text-gray-500'}`"
       >
         历史日志
       </button>

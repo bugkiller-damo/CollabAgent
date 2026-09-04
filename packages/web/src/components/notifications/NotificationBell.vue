@@ -80,7 +80,7 @@ async function handleMarkAll() {
 <template>
   <div ref="panelRef" class="relative">
     <button
-      class="relative p-2 rounded hover:bg-gray-200 dark:hover:bg-gray-700 transition"
+      class="relative p-2 rounded hover:bg-raised transition"
       title="通知"
       aria-label="通知"
       @click="open = !open"
@@ -95,9 +95,9 @@ async function handleMarkAll() {
     </button>
     <div
       v-if="open"
-      class="absolute right-0 top-full mt-2 w-96 max-h-[480px] bg-white dark:bg-gray-800 rounded-lg shadow-xl border border-gray-200 dark:border-gray-700 z-50 overflow-hidden flex flex-col"
+      class="absolute right-0 top-full mt-2 w-96 max-h-[480px] bg-surface rounded-lg shadow-xl border border-line z-50 overflow-hidden flex flex-col"
     >
-      <div class="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700">
+      <div class="flex items-center justify-between px-4 py-3 border-b border-line">
         <h3 class="font-semibold text-gray-900 dark:text-gray-100">通知</h3>
         <button
           v-if="notificationStore.unreadCount > 0"
@@ -110,13 +110,13 @@ async function handleMarkAll() {
       <div class="overflow-y-auto flex-1">
         <div
           v-if="notificationStore.loading && notificationStore.notifications.length === 0"
-          class="px-4 py-8 text-center text-gray-500 dark:text-gray-400 text-sm"
+          class="px-4 py-8 text-center text-muted text-sm"
         >
           加载中…
         </div>
         <div
           v-else-if="notificationStore.notifications.length === 0"
-          class="px-4 py-8 text-center text-gray-500 dark:text-gray-400 text-sm"
+          class="px-4 py-8 text-center text-muted text-sm"
         >
           暂无通知
         </div>
@@ -136,7 +136,7 @@ async function handleMarkAll() {
                 <p class="font-medium text-sm text-gray-900 dark:text-gray-100 truncate">{{ n.title }}</p>
                 <span v-if="!n.read" class="w-2 h-2 rounded-full bg-blue-500 mt-1 flex-shrink-0" />
               </div>
-              <p v-if="n.body" class="text-xs text-gray-600 dark:text-gray-400 mt-1 line-clamp-2">{{ n.body }}</p>
+              <p v-if="n.body" class="text-xs text-subtle mt-1 line-clamp-2">{{ n.body }}</p>
               <p class="text-xs text-gray-400 dark:text-gray-500 mt-1">{{ timeAgo(n.createdAt) }}</p>
             </div>
           </button>

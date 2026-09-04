@@ -73,7 +73,11 @@ const EVENT_DOT: Record<string, string> = {
   status_changed: "bg-amber-500",
 };
 
-const props = defineProps<{ task: TaskSummary; channel: string }>();
+// canTouch：P1.33 归属校验前端镜像（由 TaskBoard 按列表行 task_assignee 推导）——
+// false 时禁用状态下拉；server 403 仍是唯一强制点（moveTo catch 已本地化文案）。
+const props = withDefaults(defineProps<{ task: TaskSummary; channel: string; canTouch?: boolean }>(), {
+  canTouch: true,
+});
 const emit = defineEmits<{ close: []; changed: [] }>();
 
 const detail = ref<TaskDetail | null>(null);
@@ -148,7 +152,12 @@ async function moveTo(status: string) {
     await loadDetail();
     emit("changed");
   } catch (err: any) {
-    toast.error(err?.message || "移动失败");
+    const msg = String(err?.message || "");
+    toast.error(
+      /only the assignee or channel admins/i.test(msg)
+        ? "仅认领人（或认领 agent 的所有者）与频道管理可改状态"
+        : msg || "移动失败",
+    );
   }
 }
 
@@ -247,8 +256,10 @@ function close() {
             <span class="text-xs text-gray-400 dark:text-gray-500">状态</span>
             <select
               :value="detail.task_status"
+              :disabled="!props.canTouch"
+              :title="props.canTouch ? undefined : '仅认领人（或认领 agent 的所有者）与频道管理可改状态'"
               @change="moveTo(($event.target as HTMLSelectElement).value)"
-              class="rounded-md border border-gray-200 bg-white px-1.5 py-0.5 text-xs font-medium text-gray-600 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-300"
+              class="rounded-md border border-gray-200 bg-white px-1.5 py-0.5 text-xs font-medium text-gray-600 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-300"
             >
               <option v-for="s in STATUS_ORDER" :key="s" :value="s">{{ statusLabel(s) }}</option>
             </select>

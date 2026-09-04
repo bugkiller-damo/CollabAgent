@@ -190,7 +190,7 @@ watch([() => uiStore.terminalAgent, () => channelStore.activeChannelName], ([nam
 </script>
 
 <template>
-  <div class="flex h-screen overflow-hidden bg-gray-50 dark:bg-gray-900">
+  <div class="flex h-screen overflow-hidden bg-canvas">
     <div
       v-if="uiStore.mobileDrawerOpen"
       class="fixed inset-0 z-30 bg-black/40 lg:hidden"
@@ -216,15 +216,15 @@ watch([() => uiStore.terminalAgent, () => channelStore.activeChannelName], ([nam
 
         <div class="min-w-0 flex-1 lg:hidden">
           <div v-if="routeTitle.title" class="flex flex-col">
-            <span class="truncate text-sm font-semibold text-gray-900 dark:text-white">{{ routeTitle.title }}</span>
-            <span v-if="routeTitle.subtitle" class="truncate text-xs text-gray-500 dark:text-gray-400">{{ routeTitle.subtitle }}</span>
+            <span class="truncate text-sm font-semibold text-ink">{{ routeTitle.title }}</span>
+            <span v-if="routeTitle.subtitle" class="truncate text-xs text-muted">{{ routeTitle.subtitle }}</span>
           </div>
         </div>
 
         <div class="hidden lg:flex lg:flex-1 lg:items-center lg:gap-2">
-          <span v-if="routeTitle.subtitle" class="text-sm text-gray-500 dark:text-gray-400">{{ routeTitle.subtitle }}</span>
+          <span v-if="routeTitle.subtitle" class="text-sm text-muted">{{ routeTitle.subtitle }}</span>
           <span v-if="routeTitle.subtitle && routeTitle.title" class="text-gray-300 dark:text-gray-600">/</span>
-          <span class="text-sm font-semibold text-gray-900 dark:text-white">{{ routeTitle.title }}</span>
+          <span class="text-sm font-semibold text-ink">{{ routeTitle.title }}</span>
           <svg
             v-if="isPrivateChannel"
             class="h-3.5 w-3.5 text-amber-500"

@@ -31,11 +31,11 @@ defineOptions({ inheritAttrs: false });
 <template>
   <div
     v-if="hasError"
-    class="flex flex-col items-center justify-center h-full py-16 px-4 text-center bg-gray-50 dark:bg-gray-900"
+    class="flex flex-col items-center justify-center h-full py-16 px-4 text-center bg-canvas"
   >
     <div class="text-5xl mb-4">⚠️</div>
     <h2 class="text-gray-800 dark:text-white font-bold text-lg mb-2">页面遇到问题</h2>
-    <p class="text-gray-500 dark:text-gray-400 text-sm max-w-md mb-1">{{ errorMessage || "未知错误" }}</p>
+    <p class="text-muted text-sm max-w-md mb-1">{{ errorMessage || "未知错误" }}</p>
     <p class="text-gray-400 dark:text-gray-600 text-xs mb-4">刷新或点击下方按钮重试</p>
     <div class="flex gap-2">
       <button class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-500 text-sm" @click="retry">重试</button>

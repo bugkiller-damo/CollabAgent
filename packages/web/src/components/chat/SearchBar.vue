@@ -94,7 +94,7 @@ onUnmounted(() => {
         @focus="onFocus"
         @keydown="onKeydown"
         placeholder="搜索消息..."
-        class="w-full pl-8 pr-3 py-1.5 rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white text-sm border border-transparent focus:outline-none focus:border-blue-500 placeholder-gray-400"
+        class="w-full pl-8 pr-3 py-1.5 rounded-lg bg-gray-100 dark:bg-gray-700 text-ink text-sm border border-transparent focus:outline-none focus:border-blue-500 placeholder-gray-400"
       />
       <span v-if="loading" class="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 text-xs">⏳</span>
     </div>
@@ -102,7 +102,7 @@ onUnmounted(() => {
     <div
       v-if="open && results.length > 0"
       ref="panelRef"
-      class="absolute top-full mt-1 left-0 right-0 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl z-50 max-h-80 overflow-y-auto animate-slide-in-up origin-top"
+      class="absolute top-full mt-1 left-0 right-0 bg-surface border border-line rounded-lg shadow-xl z-50 max-h-80 overflow-y-auto animate-slide-in-up origin-top"
     >
       <p class="text-xs text-gray-400 px-3 py-1.5 border-b border-gray-100 dark:border-gray-700">
         找到 {{ results.length }} 条结果
@@ -118,7 +118,7 @@ onUnmounted(() => {
           <span>·</span>
           <span>{{ formatTime(r.time) }}</span>
         </div>
-        <div class="text-sm text-gray-900 dark:text-white line-clamp-2 [&_*]:!text-sm [&_*]:!leading-snug">
+        <div class="text-sm text-ink line-clamp-2 [&_*]:!text-sm [&_*]:!leading-snug">
           <MarkdownContent :content="r.content" />
         </div>
       </button>
@@ -127,7 +127,7 @@ onUnmounted(() => {
     <div
       v-if="open && query && !loading && results.length === 0"
       ref="panelRef"
-      class="absolute top-full mt-1 left-0 right-0 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl z-50 p-4 text-center text-gray-500 text-sm animate-slide-in-up origin-top"
+      class="absolute top-full mt-1 left-0 right-0 bg-surface border border-line rounded-lg shadow-xl z-50 p-4 text-center text-gray-500 text-sm animate-slide-in-up origin-top"
     >
       没有找到匹配的消息
     </div>

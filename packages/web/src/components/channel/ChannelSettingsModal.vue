@@ -89,11 +89,11 @@ async function handleArchive() {
 
 <template>
   <Modal open @close="onClose">
-    <h3 class="text-lg font-bold text-gray-900 dark:text-white">频道设置 · #{{ channel.name }}</h3>
+    <h3 class="text-lg font-bold text-ink">频道设置 · #{{ channel.name }}</h3>
 
     <div class="space-y-4">
       <div>
-        <label class="mb-1 block text-sm text-gray-600 dark:text-gray-400">描述</label>
+        <label class="mb-1 block text-sm text-subtle">描述</label>
         <Input
           type="text"
           :value="description"
@@ -103,7 +103,7 @@ async function handleArchive() {
       </div>
 
       <div>
-        <label class="mb-1 block text-sm text-gray-600 dark:text-gray-400">可见性</label>
+        <label class="mb-1 block text-sm text-subtle">可见性</label>
         <div class="flex gap-2">
           <button
             type="button"
@@ -133,7 +133,7 @@ async function handleArchive() {
       </div>
 
       <div>
-        <label class="mb-1 flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400">
+        <label class="mb-1 flex items-center gap-2 text-sm text-subtle">
           <input
             type="checkbox"
             class="rounded border-gray-300"

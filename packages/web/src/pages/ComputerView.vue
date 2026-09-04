@@ -386,7 +386,7 @@ watch(
         </div>
         <div class="min-w-0 flex-1">
           <div class="flex flex-wrap items-center gap-2">
-            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">{{ computer?.name || "我的计算机" }}</h2>
+            <h2 class="text-lg font-semibold text-ink">{{ computer?.name || "我的计算机" }}</h2>
             <span :class="['h-2.5 w-2.5 rounded-full', connected ? 'bg-green-500' : 'bg-gray-400']" />
           </div>
           <p class="mt-0.5 text-xs text-gray-400">{{ computer?.hostname || "尚未上报主机名" }}</p>
@@ -504,7 +504,7 @@ watch(
             <span :class="['h-2 w-2 shrink-0 rounded-full', presenceDot(a)]" />
             <Avatar :name="a.display_name || a.name" :src="a.avatar_url" size="sm" />
             <div class="min-w-0 flex-1">
-              <p class="truncate text-sm font-medium text-gray-900 dark:text-white">{{ a.display_name || a.name }}</p>
+              <p class="truncate text-sm font-medium text-ink">{{ a.display_name || a.name }}</p>
               <p class="truncate text-xs text-gray-400">{{ a.runtime || "claude" }} · {{ agentLive(a) }}</p>
             </div>
           </button>
@@ -553,7 +553,7 @@ watch(
     </div>
 
     <Modal :open="showCreate" width-class="max-w-md" @close="showCreate = false">
-      <h3 class="text-base font-bold text-gray-900 dark:text-white">创建 Agent</h3>
+      <h3 class="text-base font-bold text-ink">创建 Agent</h3>
       <p class="mt-1 text-xs text-gray-500">会挂在你这台计算机上。被 @ 时才会拉起。</p>
       <div class="mt-3 space-y-2">
         <Input

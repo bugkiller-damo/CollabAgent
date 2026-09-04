@@ -66,7 +66,7 @@ const preview = computed<Preview | null>(() => {
     :href="preview.url"
     target="_blank"
     rel="noopener noreferrer"
-    class="flex gap-3 mt-1.5 max-w-md border border-gray-200 dark:border-gray-700 rounded overflow-hidden hover:bg-gray-50 dark:hover:bg-gray-800"
+    class="flex gap-3 mt-1.5 max-w-md border border-line rounded overflow-hidden hover:bg-gray-50 dark:hover:bg-gray-800"
   >
     <img
       v-if="preview.image"

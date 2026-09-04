@@ -59,7 +59,7 @@ async function handleReset() {
   <div class="flex min-h-screen items-center justify-center bg-gray-50 p-4 dark:bg-gray-900">
     <Card padding="lg" class="w-full max-w-sm space-y-5">
       <div class="text-center">
-        <h1 class="text-2xl font-bold text-gray-900 dark:text-white">找回密码</h1>
+        <h1 class="text-2xl font-bold text-ink">找回密码</h1>
       </div>
 
       <div v-if="step === 'email'" class="space-y-4">
@@ -90,7 +90,7 @@ async function handleReset() {
 
       <p v-if="msg" class="text-center text-sm text-green-600 dark:text-green-400">{{ msg }}</p>
       <p v-if="err" class="text-center text-sm text-red-500">{{ err }}</p>
-      <p class="text-center text-sm text-gray-500 dark:text-gray-400">
+      <p class="text-center text-sm text-muted">
         <RouterLink to="/login" class="text-blue-500 hover:underline">返回登录</RouterLink>
       </p>
     </Card>

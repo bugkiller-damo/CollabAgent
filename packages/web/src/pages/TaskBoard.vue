@@ -6,7 +6,7 @@ import PageHeader from "../components/layout/PageHeader.vue";
 import TaskDetailModal from "../components/task/TaskDetailModal.vue";
 import Button from "../components/ui/Button.vue";
 import Input from "../components/ui/Input.vue";
-import { useChannelStore } from "../stores";
+import { useAuthStore, useChannelStore } from "../stores";
 import { toast } from "../stores/toastStore";
 
 interface Task {
@@ -42,6 +42,7 @@ const VIEW_MODE_KEY = "slock-task-view";
 const route = useRoute();
 const router = useRouter();
 const channelStore = useChannelStore();
+const authStore = useAuthStore();
 
 const channels = computed(() => channelStore.channels);
 const activeChannelName = computed(() => channelStore.activeChannelName);
@@ -66,6 +67,52 @@ const viewMode = ref<"board" | "list">("board");
 
 // 任务详情抽屉
 const selectedTask = ref<Task | null>(null);
+
+// P1.33 归属校验前端镜像（server tasks.ts canTouchTask）：已认领任务仅
+// 认领人本人 / 认领 agent 的 owner / 频道管理（owner/admin）可移动；未认领协作式。
+// 前端仅作体验层禁用，server 403 仍是唯一强制点（文案见 localizeTaskError）。
+const myAgentIds = ref<Set<string>>(new Set());
+
+const channelId = computed(() => channels.value.find((c) => c.name === channel.value)?.id || "");
+
+const myChannelRole = computed(() => {
+  const members = (channelId.value && channelStore.membersByChannelId[channelId.value]) || [];
+  const me = members.find((m) => m.member_type === "human" && m.member_id === authStore.user?.id);
+  return me?.role;
+});
+
+const canManageChannel = computed(() => myChannelRole.value === "owner" || myChannelRole.value === "admin");
+
+function canTouchTask(t: Task): boolean {
+  if (!t.task_assignee) return true;
+  if (String(t.task_assignee) === String(authStore.user?.id)) return true;
+  if (canManageChannel.value) return true;
+  return myAgentIds.value.has(t.task_assignee);
+}
+
+function localizeTaskError(err: any, fallback: string): string {
+  const msg = String(err?.message || "");
+  if (/only the assignee or channel admins/i.test(msg))
+    return "仅认领人（或认领 agent 的所有者）与频道管理可操作该任务";
+  return msg || fallback;
+}
+
+watch(
+  channelId,
+  (id) => {
+    if (id) channelStore.fetchMembers(id);
+  },
+  { immediate: true },
+);
+
+onMounted(async () => {
+  try {
+    const d = await apiGet<{ agents: { id: string }[] }>("/api/agents", { mine: "1" });
+    myAgentIds.value = new Set((d.agents || []).map((a) => a.id));
+  } catch {
+    /* 拉取失败按「无我名下 agent」降级，server 仍兜底 */
+  }
+});
 
 const creatorOptions = computed(() => {
   const map = new Map<string, string>();
@@ -159,7 +206,7 @@ async function moveTo(num: number, status: string) {
     await apiPost("/api/tasks/update-status", { channel: "#" + channel.value, number: num, status });
     load();
   } catch (err: any) {
-    toast.error(err?.message || "移动失败");
+    toast.error(localizeTaskError(err, "移动失败"));
   }
 }
 
@@ -169,7 +216,11 @@ function onDrop(status: string) {
   const num = dragNum.value;
   const task = tasks.value.find((t) => t.task_number === num);
   dragNum.value = null;
-  if (task && task.task_status !== status) moveTo(num, status);
+  if (task && task.task_status !== status && canTouchTask(task)) moveTo(num, status);
+}
+
+function onCardDragStart(t: Task) {
+  if (canTouchTask(t)) dragNum.value = t.task_number;
 }
 
 function onDragLeave(e: DragEvent) {
@@ -297,11 +348,17 @@ function fmtTime(t: string): string {
           <div
             v-for="t in colTasks(col.status)"
             :key="t.id"
-            draggable="true"
-            @dragstart="dragNum = t.task_number"
+            :draggable="canTouchTask(t)"
+            @dragstart="onCardDragStart(t)"
             @dragend="dragNum = null; dragOverCol = null"
             @click="openTask(t)"
-            class="cursor-grab rounded border border-gray-200 bg-white p-2.5 shadow-sm active:cursor-grabbing hover:border-blue-300 dark:border-gray-600 dark:bg-gray-700 dark:hover:border-blue-500"
+            :title="canTouchTask(t) ? undefined : '仅认领人（或认领 agent 的所有者）与频道管理可移动'"
+            :class="[
+              'rounded border border-gray-200 bg-white p-2.5 shadow-sm dark:border-gray-600 dark:bg-gray-700',
+              canTouchTask(t)
+                ? 'cursor-grab active:cursor-grabbing hover:border-blue-300 dark:hover:border-blue-500'
+                : 'cursor-default opacity-80',
+            ]"
           >
             <div class="flex items-start gap-2">
               <span class="shrink-0 text-xs text-gray-400">#{{ t.task_number }}</span>
@@ -312,9 +369,11 @@ function fmtTime(t: string): string {
               <button v-else @click.stop="claim(t.task_number)" class="text-[11px] text-gray-500 hover:text-blue-500">认领</button>
               <select
                 :value="t.task_status"
+                :disabled="!canTouchTask(t)"
+                :title="canTouchTask(t) ? undefined : '仅认领人（或认领 agent 的所有者）与频道管理可改状态'"
                 @click.stop
                 @change="moveTo(t.task_number, ($event.target as HTMLSelectElement).value)"
-                class="rounded border border-gray-200 bg-transparent px-1 text-[11px] text-gray-500 dark:border-gray-600 dark:text-gray-400"
+                class="rounded border border-gray-200 bg-transparent px-1 text-[11px] text-gray-500 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:text-gray-400"
               >
                 <option v-for="c in COLUMNS" :key="c.status" :value="c.status">{{ c.label }}</option>
                 <option value="closed">已关闭</option>
@@ -330,7 +389,7 @@ function fmtTime(t: string): string {
 
     <!-- 列表视图 -->
     <div v-else class="flex-1 overflow-y-auto p-4">
-      <div class="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700">
+      <div class="overflow-hidden rounded-lg border border-line">
         <div
           class="grid grid-cols-[3.5rem_minmax(0,1fr)_5rem_7rem_7rem_6rem] items-center gap-2 border-b border-gray-200 bg-gray-50 px-3 py-2 text-xs font-semibold text-gray-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400"
         >
@@ -356,7 +415,7 @@ function fmtTime(t: string): string {
           </span>
           <span v-if="t.assignee_handle" class="truncate text-blue-600 dark:text-blue-400">@{{ t.assignee_handle }}</span>
           <span v-else class="text-gray-400">未分配</span>
-          <span class="truncate text-gray-600 dark:text-gray-400">{{ t.creator_name }}</span>
+          <span class="truncate text-subtle">{{ t.creator_name }}</span>
           <span class="text-gray-400">{{ fmtTime(t.created_at) }}</span>
         </div>
         <p v-if="!loading && filteredTasks.length === 0" class="py-8 text-center text-xs text-gray-400">暂无任务</p>
@@ -368,6 +427,7 @@ function fmtTime(t: string): string {
       v-if="selectedTask"
       :task="selectedTask"
       :channel="channel"
+      :can-touch="canTouchTask(selectedTask)"
       @close="selectedTask = null"
       @changed="load()"
     />

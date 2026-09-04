@@ -53,7 +53,7 @@ const summary = computed(() => counts.value[activeFromRoute.value]);
 <template>
   <div class="flex h-full flex-col p-2">
     <div v-if="activeFromRoute" class="mb-3 rounded-md bg-white px-3 py-2 text-xs dark:bg-gray-700">
-      <p class="font-medium text-gray-900 dark:text-white">当前：#{{ activeFromRoute }}</p>
+      <p class="font-medium text-ink">当前：#{{ activeFromRoute }}</p>
       <p class="mt-0.5 text-gray-500">
         待办 {{ summary?.todo ?? "…" }} · 进行中 {{ summary?.in_progress ?? "…" }}
       </p>

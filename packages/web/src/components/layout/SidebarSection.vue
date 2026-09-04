@@ -83,7 +83,7 @@ const countLabel = computed(() => (typeof props.count === "number" ? String(prop
         >
           <path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
         </svg>
-        <span class="truncate text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+        <span class="truncate text-xs font-semibold uppercase tracking-wider text-muted">
           {{ title }}
         </span>
         <span v-if="countLabel" class="shrink-0 text-[10px] tabular-nums text-gray-400">{{ countLabel }}</span>

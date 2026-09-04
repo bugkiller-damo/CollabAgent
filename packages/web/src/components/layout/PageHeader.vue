@@ -41,10 +41,10 @@ withDefaults(
             <Breadcrumb :items="breadcrumb" />
           </div>
           <div class="flex items-center gap-2">
-            <h2 class="shrink-0 text-lg font-bold text-gray-900 dark:text-white">{{ title }}</h2>
+            <h2 class="shrink-0 text-lg font-bold text-ink">{{ title }}</h2>
             <span
               v-if="subtitle"
-              class="max-w-[10rem] truncate text-xs text-gray-500 dark:text-gray-400 sm:max-w-xs md:max-w-sm"
+              class="max-w-[10rem] truncate text-xs text-muted sm:max-w-xs md:max-w-sm"
               :title="subtitle"
             >
               {{ subtitle }}

@@ -83,7 +83,7 @@ function onInviteKeydown(e: KeyboardEvent) {
 <template>
   <div v-if="org" class="bg-gray-100 dark:bg-gray-800 rounded-lg p-4 space-y-3">
     <div>
-      <h3 class="text-gray-900 dark:text-white font-semibold">协作空间「{{ org.name }}」</h3>
+      <h3 class="text-ink font-semibold">协作空间「{{ org.name }}」</h3>
       <p class="text-gray-500 text-xs mt-0.5">加入这里的成员能看到你在此空间创建的 Agent（共 {{ org.agentCount }} 个）。新建 Agent 默认进入这里、仅你可见。</p>
     </div>
     <div class="flex gap-2">
@@ -92,7 +92,7 @@ function onInviteKeydown(e: KeyboardEvent) {
         @input="invite = ($event.target as HTMLInputElement).value"
         @keydown="onInviteKeydown"
         placeholder="输入用户名邀请协作者"
-        class="flex-1 p-2 rounded text-sm bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600"
+        class="flex-1 p-2 rounded text-sm bg-raised text-ink border border-gray-300 dark:border-gray-600"
       />
       <button
         @click="doInvite"
@@ -105,7 +105,7 @@ function onInviteKeydown(e: KeyboardEvent) {
       <span
         v-for="m in members"
         :key="m.user_id"
-        class="group inline-flex items-center gap-1.5 text-sm bg-gray-200 dark:bg-gray-700 rounded-full pl-2.5 pr-1.5 py-1 text-gray-700 dark:text-gray-200"
+        class="group inline-flex items-center gap-1.5 text-sm bg-raised rounded-full pl-2.5 pr-1.5 py-1 text-gray-700 dark:text-gray-200"
       >
         @{{ m.handle }}<span v-if="m.role === 'owner'" class="text-[10px] text-blue-500">(你)</span>
         <button

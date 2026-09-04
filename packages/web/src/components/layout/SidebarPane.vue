@@ -20,7 +20,7 @@ const title = computed(() => TITLES[uiStore.sidebarPane] || "");
     class="flex h-full w-60 shrink-0 flex-col border-r border-gray-200 bg-gray-100 dark:border-gray-700 dark:bg-gray-800"
   >
     <div class="hidden h-12 shrink-0 items-center border-b border-gray-200 px-3 lg:flex dark:border-gray-700">
-      <h2 class="truncate text-sm font-semibold text-gray-900 dark:text-white">{{ title }}</h2>
+      <h2 class="truncate text-sm font-semibold text-ink">{{ title }}</h2>
       <slot name="header-extra" />
     </div>
     <div class="min-h-0 flex-1 overflow-y-auto">

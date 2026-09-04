@@ -10,7 +10,7 @@ vi.mock("../api", () => ({
 }));
 
 import { apiGet, apiPost } from "../api";
-import { useMessageStore } from "./messageStore";
+import { threadBufferKey, useMessageStore } from "./messageStore";
 
 const apiGetMock = vi.mocked(apiGet);
 const apiPostMock = vi.mocked(apiPost);
@@ -45,7 +45,7 @@ function msg(target: string, seq: number, id = `m-${target}-${seq}`): Message {
   } as Message;
 }
 
-function pendingStorage(): Record<string, { nonce: string; status: string }[]> {
+function pendingStorage(): Record<string, { nonce: string; status: string; failReason?: string }[]> {
   return JSON.parse(lsData.get("pending_msgs_v1") || "{}");
 }
 
@@ -164,6 +164,41 @@ describe("backfill 断线增量补拉", () => {
     expect(store.messagesByTarget["#a"].map((m) => m.seq)).toEqual([1, 2]);
     expect(store.messagesByTarget["#b"].map((m) => m.seq)).toEqual([2, 3]);
   });
+
+  it("backfillAll 跳过线程缓冲区 key（P0-2：thread key 会被 server cleanChannelName 清成主频道名，把顶层历史灌进线程）", async () => {
+    const store = useMessageStore();
+    store.receiveMessage(msg("#a", 1));
+    store.receiveThreadReply("a:12345678", msg("#a", 2, "m-reply"));
+    apiGetMock.mockResolvedValue({ messages: [], hasMore: false } as any);
+
+    await store.backfillAll();
+
+    // 只对主频道 key 发 history，thread key 不产生请求
+    expect(apiGetMock).toHaveBeenCalledTimes(1);
+    expect(apiGetMock).toHaveBeenCalledWith("/api/messages/history", {
+      channel: "#a",
+      after: "1",
+      limit: "200",
+    });
+  });
+});
+
+describe("receiveThreadReply 线程缓冲区（P0-2）", () => {
+  it("threadBufferKey：去 # + threadId 前 8 位（与 ThreadView 路由参数同口径）", () => {
+    expect(threadBufferKey("#general", "12345678-1234-1234-1234-123456789abc")).toBe("general:12345678");
+    expect(threadBufferKey("general", "12345678-1234-1234-1234-123456789abc")).toBe("general:12345678");
+    expect(threadBufferKey("dm:uuid-1", "abcdef00-0000-0000-0000-000000000000")).toBe("dm:uuid-1:abcdef00");
+  });
+
+  it("按 id 去重追加；不落 localStorage 缓存、不推进 lastSeenSeq", () => {
+    const store = useMessageStore();
+    store.receiveThreadReply("a:12345678", msg("#a", 5, "m-r1"));
+    store.receiveThreadReply("a:12345678", msg("#a", 6, "m-r2"));
+    store.receiveThreadReply("a:12345678", msg("#a", 5, "m-r1")); // 重复投递
+    expect(store.messagesByTarget["a:12345678"].map((m) => m.id)).toEqual(["m-r1", "m-r2"]);
+    expect(store.lastSeenSeq["a:12345678"]).toBeUndefined();
+    expect(lsData.get("msgs_a:12345678")).toBeUndefined();
+  });
 });
 
 describe("pending 乐观发送队列", () => {
@@ -220,6 +255,41 @@ describe("pending 乐观发送队列", () => {
     const list = store.pendingByTarget["#a"];
     expect(list.map((p) => p.status)).toEqual(["failed", "queued"]); // 失败后剩余保持 queued
     expect(pendingStorage()["#a"].map((p) => p.status)).toEqual(["failed", "queued"]);
+  });
+
+  it("W-A3：flush 失败记录 server 文案 failReason 并持久化；转入 sending 时清除", async () => {
+    const store = useMessageStore();
+    const item = store.enqueuePending("#a", "long");
+    apiPostMock.mockRejectedValueOnce(new Error("content too long (max 10000)"));
+
+    await store.flushPending("#a");
+
+    expect(store.pendingByTarget["#a"][0]).toMatchObject({
+      status: "failed",
+      failReason: "content too long (max 10000)",
+    });
+    // 持久化带 failReason（刷新后原因不丢）
+    expect(pendingStorage()["#a"][0].failReason).toBe("content too long (max 10000)");
+
+    // retry 进入 sending 时清除陈旧原因（setPendingStatus 仅 failed 态留存 failReason）
+    apiPostMock.mockImplementationOnce(async () => {
+      expect(store.pendingByTarget["#a"][0].failReason).toBeUndefined();
+      return { state: "ok" } as any;
+    });
+    await store.retryPending("#a", item.tempId);
+    expect(store.pendingByTarget["#a"]).toBeUndefined(); // 成功移除
+  });
+
+  it("W-A3：retry 再失败更新 failReason 为最新原因", async () => {
+    const store = useMessageStore();
+    const item = store.enqueuePending("#a", "x");
+    apiPostMock.mockRejectedValueOnce(new Error("first"));
+    await store.flushPending("#a");
+    expect(store.pendingByTarget["#a"][0].failReason).toBe("first");
+
+    apiPostMock.mockRejectedValueOnce(new Error("no access"));
+    await store.retryPending("#a", item.tempId);
+    expect(store.pendingByTarget["#a"][0].failReason).toBe("no access");
   });
 
   it("retry 沿用同一 nonce 重发，成功后移除", async () => {

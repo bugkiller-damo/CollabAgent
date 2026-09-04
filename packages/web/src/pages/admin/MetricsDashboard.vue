@@ -125,11 +125,7 @@ const MetricCard = defineComponent({
         },
         [
           h("p", { class: "text-gray-500 text-xs" }, props.label),
-          h(
-            "p",
-            { class: "text-gray-900 dark:text-white text-3xl font-bold mt-1 tabular-nums" },
-            animated.value.toLocaleString(),
-          ),
+          h("p", { class: "text-ink text-3xl font-bold mt-1 tabular-nums" }, animated.value.toLocaleString()),
           props.sub ? h("p", { class: "text-gray-400 text-xs mt-0.5" }, props.sub) : null,
           props.history
             ? h("div", { class: "mt-2 -mx-1" }, [h(Sparkline, { data: props.history, color: props.color })])
@@ -159,11 +155,11 @@ const MemoryBar = defineComponent({
             h("p", { class: "text-gray-500 text-xs" }, "堆内存使用"),
             h("p", { class: "text-gray-400 text-xs tabular-nums" }, `${pct}%`),
           ]),
-          h("p", { class: "text-gray-900 dark:text-white text-2xl font-bold mt-1 tabular-nums" }, [
+          h("p", { class: "text-ink text-2xl font-bold mt-1 tabular-nums" }, [
             String(animatedUsed.value),
             h("span", { class: "text-gray-400 text-base font-normal" }, ` / ${props.total} MB`),
           ]),
-          h("div", { class: "mt-2 h-2 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden" }, [
+          h("div", { class: "mt-2 h-2 rounded-full bg-raised overflow-hidden" }, [
             h("div", {
               class: `h-full rounded-full transition-all duration-700 ease-out ${barColor}`,
               style: { width: `${pct}%` },
@@ -240,6 +236,7 @@ onMounted(() => {
     apiGet<Metrics>("/api/metrics")
       .then((d) => {
         if (!alive) return;
+        err.value = ""; // 瞬断恢复后清除错误态
         m.value = d;
         hist.value = {
           messages: [...hist.value.messages, d.counters.messagesSent].slice(-HISTORY),
@@ -248,7 +245,13 @@ onMounted(() => {
         };
       })
       .catch((e) => {
-        if (alive) err.value = e?.message || "加载失败";
+        if (!alive) return;
+        err.value = e?.message || "加载失败";
+        // W-A4：403（admin 门禁）停轮询——不再每 3s 重试同一失效请求；瞬断仍续试
+        if ((e as any)?.status === 403 && pollTimer) {
+          clearInterval(pollTimer);
+          pollTimer = undefined;
+        }
       });
 
   load();
@@ -265,7 +268,7 @@ onUnmounted(() => {
   <div v-if="err" class="p-6 text-red-400 text-sm">{{ err }}</div>
 
   <div v-else-if="!m" class="p-6 space-y-3 animate-pulse">
-    <div class="h-6 w-32 bg-gray-200 dark:bg-gray-700 rounded" />
+    <div class="h-6 w-32 bg-raised rounded" />
     <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
       <div v-for="i in 4" :key="i" class="h-28 bg-gray-100 dark:bg-gray-800 rounded-xl" />
     </div>
@@ -278,7 +281,7 @@ onUnmounted(() => {
       </div>
     </PageHeader>
 
-    <p class="text-xs text-gray-500 dark:text-gray-400">
+    <p class="text-xs text-muted">
       启动于 {{ new Date(m.startedAt).toLocaleString() }} · 已运行 {{ fmtDuration(m.uptimeSec) }}
     </p>
 
@@ -289,12 +292,12 @@ onUnmounted(() => {
           <LivePulse v-if="m.online.daemons > 0" />
           <p class="text-gray-600 dark:text-gray-300 text-xs">在线 Daemon</p>
         </div>
-        <CountUpText :value="m.online.daemons" class="text-gray-900 dark:text-white text-3xl font-bold mt-1 tabular-nums block" />
+        <CountUpText :value="m.online.daemons" class="text-ink text-3xl font-bold mt-1 tabular-nums block" />
       </div>
       <MetricCard label="在线 Agent" :value="m.online.agentsOnline" :sub="`共 ${m.online.agents} 个注册`" color="#3b82f6" />
       <div class="bg-gray-50 dark:bg-gray-800 rounded-xl p-4 border border-gray-100 dark:border-gray-700/50">
         <p class="text-gray-500 text-xs">运行时长</p>
-        <p class="text-gray-900 dark:text-white text-2xl font-bold mt-1">{{ fmtDuration(m.uptimeSec) }}</p>
+        <p class="text-ink text-2xl font-bold mt-1">{{ fmtDuration(m.uptimeSec) }}</p>
       </div>
       <MemoryBar :used="m.memory.heapUsedMb" :total="m.memory.heapTotalMb" :rss="m.memory.rssMb" />
     </div>
@@ -314,14 +317,14 @@ onUnmounted(() => {
     <!-- 逐个 daemon 明细 -->
     <div>
       <h3 class="text-gray-500 text-xs font-semibold uppercase mb-2">已连接 Daemon</h3>
-      <div v-if="m.daemons.length === 0" class="bg-gray-50 dark:bg-gray-800 rounded-xl p-6 text-center text-gray-400 text-sm border border-dashed border-gray-200 dark:border-gray-700">
+      <div v-if="m.daemons.length === 0" class="bg-gray-50 dark:bg-gray-800 rounded-xl p-6 text-center text-gray-400 text-sm border border-dashed border-line">
         暂无 daemon 连接。在「计算机」页按引导启动本机连接器。
       </div>
       <div v-else class="grid grid-cols-1 md:grid-cols-2 gap-3">
         <div v-for="(d, i) in m.daemons" :key="d.hostname + i" class="bg-gray-50 dark:bg-gray-800 rounded-xl p-4 border border-gray-100 dark:border-gray-700/50 flex items-center gap-3">
           <LivePulse />
           <div class="flex-1 min-w-0">
-            <p class="text-gray-900 dark:text-white text-sm font-medium truncate">💻 {{ d.hostname }}</p>
+            <p class="text-ink text-sm font-medium truncate">💻 {{ d.hostname }}</p>
             <p class="text-gray-400 text-xs mt-0.5">已连接 <ConnectedFor :since="d.connectedAt" /> · v{{ d.daemonVersion }}</p>
           </div>
           <div class="flex flex-wrap gap-1 justify-end">

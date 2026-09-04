@@ -93,7 +93,7 @@ defineExpose({ focus: () => inputRef.value?.focus() });
           <span>·</span>
           <span>{{ formatTime(r.time) }}</span>
         </div>
-        <div class="line-clamp-2 text-sm text-gray-900 dark:text-white [&_*]:!text-sm [&_*]:!leading-snug">
+        <div class="line-clamp-2 text-sm text-ink [&_*]:!text-sm [&_*]:!leading-snug">
           <MarkdownContent :content="r.content" />
         </div>
       </button>

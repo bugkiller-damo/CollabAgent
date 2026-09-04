@@ -200,7 +200,7 @@ const footerLabel = computed(() => `${humans.value.length} 位成员 · ${agents
 
     <div class="flex min-h-0 flex-1">
       <div
-        class="flex min-h-0 w-full flex-col border-gray-200 dark:border-gray-700 lg:w-80 lg:shrink-0 lg:border-r"
+        class="flex min-h-0 w-full flex-col border-line lg:w-80 lg:shrink-0 lg:border-r"
       >
         <div class="border-b border-gray-200 p-2 dark:border-gray-700">
           <Input
@@ -224,7 +224,7 @@ const footerLabel = computed(() => `${humans.value.length} 位成员 · ${agents
           <template v-else>
             <div class="mb-3">
               <div class="mb-1 flex items-center justify-between px-2">
-                <span class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Agent</span>
+                <span class="text-xs font-semibold uppercase tracking-wider text-muted">Agent</span>
                 <span class="text-[10px] tabular-nums text-gray-400">{{ filteredAgents.length }}</span>
               </div>
               <p v-if="filteredAgents.length === 0" class="mb-1 px-2 text-xs text-gray-400">没有匹配的 Agent</p>
@@ -302,7 +302,7 @@ const footerLabel = computed(() => `${humans.value.length} 位成员 · ${agents
       <div v-if="isDesktop" class="hidden min-h-0 min-w-0 flex-1 overflow-hidden p-6 lg:flex lg:flex-col">
         <MemberProfileBody v-if="selectedHandle" :handle="selectedHandle" embedded @deleted="onAgentDeleted" />
         <div v-else class="flex h-full flex-col items-center justify-center text-center">
-          <p class="text-sm text-gray-500 dark:text-gray-400">选一个成员看档案</p>
+          <p class="text-sm text-muted">选一个成员看档案</p>
           <p class="mt-1 text-xs text-gray-400">单击左侧名单即可</p>
         </div>
       </div>

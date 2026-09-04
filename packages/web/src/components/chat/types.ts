@@ -17,6 +17,8 @@ export interface PendingItem {
   content: string;
   status: "sending" | "failed" | "queued";
   attachmentIds?: string[];
+  /** W-A3：失败原因（server 400/403 文案或网络错误），failed 态展示用；离开 failed 时清除 */
+  failReason?: string;
 }
 
 export type ListItem = { kind: "msg"; data: any } | { kind: "pending"; data: PendingItem };

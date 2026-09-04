@@ -119,13 +119,13 @@ function openProfile(m: Member) {
 </script>
 
 <template>
-  <aside class="w-60 shrink-0 border-l border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 flex flex-col">
-    <div class="flex items-center justify-between p-3 border-b border-gray-200 dark:border-gray-700">
+  <aside class="w-60 shrink-0 border-l border-line bg-gray-50 dark:bg-gray-800 flex flex-col">
+    <div class="flex items-center justify-between p-3 border-b border-line">
       <span class="text-gray-700 dark:text-gray-300 text-sm font-semibold">成员（{{ members.length }}）</span>
       <button @click="onClose" class="text-gray-400 hover:text-gray-700 dark:hover:text-white text-sm">✕</button>
     </div>
 
-    <div class="p-3 border-b border-gray-200 dark:border-gray-700 space-y-1">
+    <div class="p-3 border-b border-line space-y-1">
       <div class="flex gap-1">
         <input
           type="text"
@@ -133,7 +133,7 @@ function openProfile(m: Member) {
           @input="inviteHandle = ($event.target as HTMLInputElement).value"
           @keydown="onInviteKeydown"
           placeholder="输入用户名 / Agent名 邀请"
-          class="flex-1 min-w-0 text-sm p-1.5 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600"
+          class="flex-1 min-w-0 text-sm p-1.5 rounded bg-white dark:bg-gray-700 text-ink border border-gray-300 dark:border-gray-600"
         />
         <button
           @click="handleInvite"
@@ -176,7 +176,7 @@ function openProfile(m: Member) {
             v-if="m.member_type === 'human' && m.role !== 'owner'"
             :value="m.role || 'member'"
             @change="handleRole(m, ($event.target as HTMLSelectElement).value)"
-            class="text-[10px] bg-transparent text-gray-500 dark:text-gray-400 border border-gray-200 dark:border-gray-600 rounded px-1 py-0.5 opacity-0 group-hover:opacity-100 focus:opacity-100"
+            class="text-[10px] bg-transparent text-muted border border-gray-200 dark:border-gray-600 rounded px-1 py-0.5 opacity-0 group-hover:opacity-100 focus:opacity-100"
           >
             <option value="member">成员</option>
             <option value="admin">管理员</option>
@@ -239,7 +239,7 @@ function openProfile(m: Member) {
             v-if="m.member_type === 'human' && m.role !== 'owner'"
             :value="m.role || 'member'"
             @change="handleRole(m, ($event.target as HTMLSelectElement).value)"
-            class="text-[10px] bg-transparent text-gray-500 dark:text-gray-400 border border-gray-200 dark:border-gray-600 rounded px-1 py-0.5 opacity-0 group-hover:opacity-100 focus:opacity-100"
+            class="text-[10px] bg-transparent text-muted border border-gray-200 dark:border-gray-600 rounded px-1 py-0.5 opacity-0 group-hover:opacity-100 focus:opacity-100"
           >
             <option value="member">成员</option>
             <option value="admin">管理员</option>

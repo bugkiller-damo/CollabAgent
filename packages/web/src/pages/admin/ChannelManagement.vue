@@ -105,11 +105,11 @@ function handleConfirmDelete() {
     </Card>
 
     <p v-if="loading" class="text-sm text-gray-500">加载中…</p>
-    <Card v-else padding="none" class="divide-y divide-gray-200 dark:divide-gray-700">
+    <Card v-else padding="none" class="divide-y divide-line">
       <div v-for="c in channels" :key="c.id" class="flex items-center gap-3 p-3">
         <span class="text-gray-400">{{ c.type === "private" ? "🔒" : "#" }}</span>
         <div class="min-w-0 flex-1">
-          <p class="truncate text-sm font-medium text-gray-900 dark:text-white">
+          <p class="truncate text-sm font-medium text-ink">
             {{ c.name }}
             <span v-if="c.archived" class="ml-2 text-xs text-gray-400">（已归档）</span>
           </p>

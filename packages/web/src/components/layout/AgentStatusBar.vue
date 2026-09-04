@@ -86,7 +86,7 @@ function openTerminal(name: string) {
 
 <template>
   <div v-if="loaded" class="border-t border-gray-200 p-2 dark:border-gray-700">
-    <div class="px-2 py-1 text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+    <div class="px-2 py-1 text-xs font-semibold uppercase tracking-wider text-muted">
       Agent 状态
     </div>
     <div v-if="agents.length === 0" class="px-2 py-1.5 text-xs text-gray-400 dark:text-gray-500">
@@ -101,7 +101,7 @@ function openTerminal(name: string) {
           'flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-sm transition-colors',
           terminalAgent === a.name
             ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'
-            : 'hover:bg-gray-200 dark:hover:bg-gray-700',
+            : 'hover:bg-raised',
         ]"
         @click="openTerminal(a.name)"
       >

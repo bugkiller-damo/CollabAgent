@@ -57,6 +57,26 @@ async function copyNewToken() {
   toast.success("已复制");
 }
 
+const DAY_MS = 86_400_000;
+
+// P1.12（90 天滚动过期）前端化：展示 expires_at 让用户感知闲置令牌将到期
+function expiryLabel(t: MachineToken): string {
+  if (!t.expires_at) return "永不过期";
+  const exp = new Date(t.expires_at);
+  const date = exp.toLocaleDateString("zh-CN");
+  const days = Math.ceil((exp.getTime() - Date.now()) / DAY_MS);
+  if (days <= 0) return `已于 ${date} 过期`;
+  return `有效期至 ${date}（${days} 天后过期）`;
+}
+
+function expiryClass(t: MachineToken): string {
+  if (!t.expires_at) return "";
+  const days = Math.ceil((new Date(t.expires_at).getTime() - Date.now()) / DAY_MS);
+  if (days <= 0) return "text-red-500";
+  if (days <= 14) return "text-amber-600 dark:text-amber-400";
+  return "";
+}
+
 const activeTokens = computed(() => tokens.value.filter((t) => !t.revoked_at));
 </script>
 
@@ -66,7 +86,7 @@ const activeTokens = computed(() => tokens.value.filter((t) => !t.revoked_at));
     <p class="text-sm text-gray-500">管理 API 令牌，用于连接外部工具和 daemon</p>
 
     <Card class="space-y-3">
-      <h3 class="text-sm font-semibold text-gray-900 dark:text-white">机器令牌</h3>
+      <h3 class="text-sm font-semibold text-ink">机器令牌</h3>
       <p class="text-xs text-gray-500">令牌用于 daemon 鉴权。创建后请立即复制——令牌仅显示一次。</p>
       <Button @click="createToken" size="sm">+ 生成新令牌</Button>
 
@@ -81,13 +101,16 @@ const activeTokens = computed(() => tokens.value.filter((t) => !t.revoked_at));
     </Card>
 
     <div>
-      <h3 class="mb-2 text-sm font-semibold text-gray-900 dark:text-white">当前令牌（{{ activeTokens.length }}）</h3>
+      <h3 class="mb-2 text-sm font-semibold text-ink">当前令牌（{{ activeTokens.length }}）</h3>
       <p v-if="activeTokens.length === 0" class="text-sm text-gray-500">暂无令牌</p>
       <div v-else class="grid grid-cols-1 gap-2 lg:grid-cols-2">
         <Card v-for="t in activeTokens" :key="t.id" padding="sm" class="flex items-center justify-between">
           <div>
-            <code class="font-mono text-sm text-gray-900 dark:text-white">{{ t.prefix }}...****</code>
-            <p class="mt-0.5 text-xs text-gray-500">创建于 {{ new Date(t.created_at).toLocaleDateString("zh-CN") }}</p>
+            <code class="font-mono text-sm text-ink">{{ t.prefix }}...****</code>
+            <p class="mt-0.5 text-xs text-gray-500">
+              创建于 {{ new Date(t.created_at).toLocaleDateString("zh-CN") }} ·
+              <span :class="expiryClass(t)">{{ expiryLabel(t) }}</span>
+            </p>
           </div>
           <Button @click="revokeToken(t.id)" variant="ghost" size="sm" class="text-red-500 hover:text-red-600">撤销</Button>
         </Card>

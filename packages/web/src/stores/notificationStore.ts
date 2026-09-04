@@ -15,6 +15,29 @@ export interface NotificationItem {
   createdAt: string;
 }
 
+/**
+ * W-A1：REST 行 → NotificationItem 归一。
+ * server REST 原样返回蛇形列名（契约债，server 报告已立此存照归后续），
+ * WS 实时推送则是 camelCase（server lib/notifications.ts）；入库前在此收口，
+ * 此前 REST 项 createdAt/channelId 为 undefined → 「NaN天前」+ 点击不跳转。
+ * 对 camelCase 输入兼容透传：server 日后 SELECT 别名收口后本映射无需改动。
+ */
+export function mapApiNotification(row: any): NotificationItem {
+  return {
+    id: row.id,
+    type: row.type,
+    actorId: row.actorId ?? row.actor_id,
+    actorName: row.actorName ?? row.actor_name ?? null,
+    channelId: row.channelId ?? row.channel_id ?? null,
+    messageId: row.messageId ?? row.message_id ?? null,
+    title: row.title,
+    body: row.body ?? null,
+    metadata: row.metadata ?? null,
+    read: Boolean(row.read),
+    createdAt: row.createdAt ?? row.created_at,
+  };
+}
+
 export const useNotificationStore = defineStore("notifications", () => {
   const notifications = ref<NotificationItem[]>([]);
   const unreadCount = ref(0);
@@ -55,7 +78,7 @@ export const useNotificationStore = defineStore("notifications", () => {
         return;
       }
       const data = await res.json();
-      notifications.value = data.notifications || [];
+      notifications.value = (data.notifications || []).map(mapApiNotification);
       unreadCount.value = data.unreadCount || 0;
       hasMore.value = data.hasMore || false;
       loading.value = false;

@@ -30,7 +30,7 @@ const emit = defineEmits<{
           <button @click="emit('discard', item.tempId)" class="ml-2 underline text-gray-400 hover:text-gray-300">删除</button>
         </span>
         <span v-else-if="item.status === 'failed'" class="text-red-500">
-          ⚠️ 发送失败
+          ⚠️ 发送失败<template v-if="item.failReason">：{{ item.failReason }}</template>
           <button @click="emit('retry', item.tempId)" class="ml-2 underline hover:text-red-400">重试</button>
           <button @click="emit('discard', item.tempId)" class="ml-2 underline text-gray-400 hover:text-gray-300">删除</button>
         </span>

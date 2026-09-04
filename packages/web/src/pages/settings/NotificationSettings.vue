@@ -47,7 +47,7 @@ function toggle(key: string) {
         class="flex cursor-pointer items-center justify-between rounded-lg border border-gray-100 bg-gray-50 p-4 transition-colors hover:bg-gray-100 dark:border-gray-700/50 dark:bg-gray-800 dark:hover:bg-gray-700/50"
       >
         <div>
-          <p class="text-sm font-medium text-gray-900 dark:text-white">{{ n.label }}</p>
+          <p class="text-sm font-medium text-ink">{{ n.label }}</p>
           <p class="mt-0.5 text-xs text-gray-500">{{ n.desc }}</p>
         </div>
         <button

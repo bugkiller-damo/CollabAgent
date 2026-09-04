@@ -100,15 +100,15 @@ async function handleChangePassword() {
           </div>
         </div>
         <div>
-          <label class="mb-1 block text-sm text-gray-600 dark:text-gray-400">用户名 (不可修改)</label>
+          <label class="mb-1 block text-sm text-subtle">用户名 (不可修改)</label>
           <Input type="text" :value="authStore.user?.handle || ''" disabled />
         </div>
         <div>
-          <label class="mb-1 block text-sm text-gray-600 dark:text-gray-400">显示名</label>
+          <label class="mb-1 block text-sm text-subtle">显示名</label>
           <Input type="text" :value="displayName" @input="displayName = ($event.target as HTMLInputElement).value" />
         </div>
         <div>
-          <label class="mb-1 block text-sm text-gray-600 dark:text-gray-400">简介</label>
+          <label class="mb-1 block text-sm text-subtle">简介</label>
           <Textarea :value="description" @input="description = ($event.target as HTMLTextAreaElement).value" rows="3" />
         </div>
         <Button @click="handleSaveProfile" size="sm">保存</Button>
@@ -118,7 +118,7 @@ async function handleChangePassword() {
 
     <Card class="w-full">
       <div class="mx-auto max-w-lg space-y-4">
-        <h3 class="font-semibold text-gray-900 dark:text-white">修改密码</h3>
+        <h3 class="font-semibold text-ink">修改密码</h3>
         <Input :type="showPw ? 'text' : 'password'" :value="oldPw" @input="oldPw = ($event.target as HTMLInputElement).value" placeholder="当前密码" />
         <div>
           <div class="relative">

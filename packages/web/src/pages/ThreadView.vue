@@ -10,7 +10,7 @@ import PageHeader from "../components/layout/PageHeader.vue";
 import Avatar from "../components/ui/Avatar.vue";
 import type { MentionScope } from "../composables";
 import { formatTime } from "../lib/formatTime";
-import { useChannelStore, useMessageStore, useUiStore } from "../stores";
+import { threadBufferKey, useChannelStore, useMessageStore, useUiStore } from "../stores";
 
 interface ThreadMsg {
   id: string;
@@ -35,7 +35,8 @@ const threadId = computed(() => route.params.threadId as string);
 
 const threadKey = computed(() => {
   if (!channelName.value || !threadId.value) return "";
-  return `${channelName.value}:${threadId.value.substring(0, 8)}`;
+  // P0-2：与 wsDispatch 写入侧共用同一 key 约定（无 # 前缀），防口径漂移
+  return threadBufferKey(channelName.value, threadId.value);
 });
 
 // React 版 useMessageStore((s) => (threadKey ? s.messagesByTarget[threadKey] : undefined)) || []
@@ -49,6 +50,9 @@ const currentChannel = computed(() => channelStore.channels.find((c: any) => c.n
 const parent = ref<ThreadMsg | null>(null);
 const replies = ref<ThreadMsg[]>([]);
 const error = ref("");
+// W-A3：发送失败独立可见——load error 只在 !parent 时渲染整页错误，
+// 线程已加载时回复失败此前零反馈（仅草稿保留）
+const sendError = ref("");
 let fetchedThreadId: string | null = null;
 
 async function loadThread() {
@@ -102,15 +106,18 @@ watch(liveReplies, (live) => {
 
 async function handleSend(content: string) {
   if (!content.trim() || !channelName.value || !threadId.value) return;
+  sendError.value = "";
   try {
     await apiClient("/api/messages/send", {
       method: "POST",
       body: { target: `#${channelName.value}:${threadId.value}`, content, threadId: threadId.value },
     });
     await loadThread();
-  } catch {
-    error.value = "回复失败";
-    throw new Error("回复失败");
+  } catch (err: any) {
+    // 透出 server 400/403 原因（P1.33：content 上限/异频道 threadId/移出后无权限）；
+    // rethrow 保留——MessageComposer 据此不清空草稿（doSend 侧已吞异常，不会 unhandled）
+    sendError.value = err?.message || "回复失败";
+    throw err;
   }
 }
 
@@ -167,7 +174,7 @@ function openSender(msg: { senderHandle?: string }) {
               {{ parent.senderName || parent.sender_id }}
             </span>
           </button>
-          <span class="text-xs text-gray-500 dark:text-gray-400" :title="localeString(parent.time)">
+          <span class="text-xs text-muted" :title="localeString(parent.time)">
             {{ formatTime(parent.time) }}
           </span>
         </div>
@@ -175,9 +182,9 @@ function openSender(msg: { senderHandle?: string }) {
       </div>
 
       <div v-if="replies.length > 0" class="flex items-center gap-2">
-        <div class="flex-1 border-t border-gray-200 dark:border-gray-700" />
-        <span class="text-xs text-gray-500 dark:text-gray-400">{{ replies.length }} 条回复</span>
-        <div class="flex-1 border-t border-gray-200 dark:border-gray-700" />
+        <div class="flex-1 border-t border-line" />
+        <span class="text-xs text-muted">{{ replies.length }} 条回复</span>
+        <div class="flex-1 border-t border-line" />
       </div>
 
       <div
@@ -198,7 +205,7 @@ function openSender(msg: { senderHandle?: string }) {
             >
               {{ msg.senderName || msg.sender_id }}
             </button>
-            <span class="text-xs text-gray-500 dark:text-gray-400" :title="localeString(msg.time)">
+            <span class="text-xs text-muted" :title="localeString(msg.time)">
               {{ formatTime(msg.time) }}
             </span>
           </div>
@@ -206,12 +213,13 @@ function openSender(msg: { senderHandle?: string }) {
         </div>
       </div>
 
-      <p v-if="replies.length === 0 && parent" class="text-center text-sm text-gray-500 dark:text-gray-400">
+      <p v-if="replies.length === 0 && parent" class="text-center text-sm text-muted">
         还没有回复，说点什么吧
       </p>
     </div>
 
     <div class="border-t border-gray-200 p-4 dark:border-gray-700">
+      <p v-if="sendError" class="mb-2 text-xs text-red-500">回复失败：{{ sendError }}</p>
       <MessageComposer
         placeholder="回复线程... (Enter 发送, Shift+Enter 换行, @ 提及)"
         :on-send="handleSend"

@@ -25,7 +25,7 @@ const diagnostic = computed(() => {
 </script>
 
 <template>
-  <div class="px-3 py-1.5 text-xs text-gray-500 dark:text-gray-400">
+  <div class="px-3 py-1.5 text-xs text-muted">
     <div class="flex items-center gap-2">
       <span :class="['w-2 h-2 rounded-full shrink-0', cfg.dot, cfg.pulse ? 'animate-pulse' : '']" />
       <span class="truncate">

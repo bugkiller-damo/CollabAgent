@@ -28,7 +28,7 @@ function isImage(mime: string): boolean {
         :alt="a.filename"
         loading="lazy"
         @click="lightbox = a"
-        class="max-h-48 max-w-xs rounded border border-gray-200 dark:border-gray-700 cursor-zoom-in object-cover"
+        class="max-h-48 max-w-xs rounded border border-line cursor-zoom-in object-cover"
       />
       <a
         v-else
@@ -36,7 +36,7 @@ function isImage(mime: string): boolean {
         :download="a.filename"
         target="_blank"
         rel="noopener noreferrer"
-        class="flex items-center gap-2 p-2 rounded border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 max-w-xs"
+        class="flex items-center gap-2 p-2 rounded border border-line bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 max-w-xs"
       >
         <span class="text-2xl shrink-0">📄</span>
         <span class="min-w-0">

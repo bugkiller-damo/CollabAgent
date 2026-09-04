@@ -4,6 +4,7 @@ import { computed, nextTick, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { apiClient } from "../../api";
 import { formatTime } from "../../lib/formatTime";
+import { MAX_MESSAGE_CONTENT_LEN } from "../../lib/limits";
 import { useAuthStore, useChannelStore, useMessageStore, useUiStore } from "../../stores";
 import { toast } from "../../stores/toastStore";
 import ConfirmDialog from "../ConfirmDialog.vue";
@@ -112,8 +113,9 @@ async function saveEdit() {
   try {
     await messageStore.editMessage(props.msg.id, text);
     editing.value = false;
-  } catch {
-    // keep editing open on failure
+  } catch (err: any) {
+    // keep editing open on failure（W-A3：补 toast 透出 server 400/403 原因，此前静默）
+    toast.error(err?.message || "保存失败");
   }
 }
 
@@ -249,7 +251,8 @@ function openSenderProfile() {
           ref="editTextareaRef"
           v-model="editText"
           rows="2"
-          class="w-full p-2 rounded bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 text-sm resize-none"
+          :maxlength="MAX_MESSAGE_CONTENT_LEN"
+          class="w-full p-2 rounded bg-gray-100 dark:bg-gray-700 text-ink border border-gray-300 dark:border-gray-600 text-sm resize-none"
           @keydown="onEditKeydown"
         />
         <div class="text-xs text-gray-400 mt-0.5">
@@ -277,7 +280,7 @@ function openSenderProfile() {
               'text-xs px-1.5 py-0.5 rounded border',
               hasMyReaction(r)
                 ? 'bg-blue-100 dark:bg-blue-900/40 border-blue-300 dark:border-blue-700'
-                : 'bg-gray-100 dark:bg-gray-800 border-gray-200 dark:border-gray-700',
+                : 'bg-gray-100 dark:bg-gray-800 border-line',
               'hover:opacity-80',
             ]"
             :title="`${r.userIds.length} 人`"
@@ -289,7 +292,7 @@ function openSenderProfile() {
         <div class="mt-1 flex flex-wrap items-center gap-1">
           <button
             @click="goToThread"
-            class="text-gray-500 hover:text-blue-400 text-xs px-1.5 py-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+            class="text-gray-500 hover:text-blue-400 text-xs px-1.5 py-0.5 rounded hover:bg-raised transition-colors"
           >
             💬 {{ replyCount > 0 ? replyCount + " 条回复" : "回复" }}
           </button>
@@ -305,7 +308,7 @@ function openSenderProfile() {
               v-else
               @click="handleConvertToTask"
               :disabled="converting"
-              class="text-gray-500 hover:text-blue-500 text-xs px-1.5 py-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity disabled:opacity-50"
+              class="text-gray-500 hover:text-blue-500 text-xs px-1.5 py-0.5 rounded hover:bg-raised opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity disabled:opacity-50"
               title="把这条消息转为看板任务"
             >
               {{ converting ? "转换中…" : "📋 转任务" }}
@@ -314,7 +317,7 @@ function openSenderProfile() {
 
           <button
             @click="copyContent"
-            class="text-gray-500 hover:text-gray-900 dark:hover:text-white text-xs px-1.5 py-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity"
+            class="text-gray-500 hover:text-gray-900 dark:hover:text-white text-xs px-1.5 py-0.5 rounded hover:bg-raised opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity"
           >
             复制
           </button>
@@ -322,7 +325,7 @@ function openSenderProfile() {
           <template v-if="isOwn && !deleted">
             <button
               @click="startEdit"
-              class="text-gray-500 hover:text-gray-900 dark:hover:text-white text-xs px-1.5 py-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity"
+              class="text-gray-500 hover:text-gray-900 dark:hover:text-white text-xs px-1.5 py-0.5 rounded hover:bg-raised opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity"
             >
               编辑
             </button>

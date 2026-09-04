@@ -50,7 +50,7 @@ describe("wsDispatch", () => {
       message: {
         id: "m-1",
         seq: 42,
-        channelId: "ch-uuid-1", // 服务端给的是频道 UUID，路由层映射回 #name
+        channelId: "ch-uuid-1", // 命中 channels 映射走 #name 分支（server 实际广播 "#name"，见下方 P0-2 用例）
         senderId: "u-1",
         senderName: "me",
         senderType: "human",
@@ -260,5 +260,90 @@ describe("wsDispatch", () => {
     // 重复广播（其他标签页各标记一次）：幂等，不把计数打成负数
     dispatchWsEvent({ type: "notification.read", ids: null, all: true } as any);
     expect(notificationStore.unreadCount).toBe(0);
+  });
+
+  // P0-2：线程回复链路——①守卫拦截主列表 ②直写线程缓冲区 ③key 无 # 与 ThreadView 同口径
+  it("agent:deliver 线程回复 → 不进主列表、不推进主列表水位，进无 # 线程缓冲区", () => {
+    const messageStore = useMessageStore();
+    const channelStore = useChannelStore();
+    channelStore.channels = [{ id: "ch-uuid-1", name: "general" } as any];
+    // 既有顶层消息：主列表水位 10
+    messageStore.receiveMessage({
+      id: "m-top",
+      seq: 10,
+      channelId: "#general",
+      senderId: "u-1",
+      senderName: "alice",
+      senderType: "human",
+      content: "顶层",
+      time: "t",
+    } as any);
+
+    dispatchWsEvent({
+      type: "agent:deliver",
+      message: {
+        id: "m-r1",
+        seq: 11,
+        channelId: "#general", // server 真实广播形状（messages.ts: "#"+name）
+        senderId: "u-2",
+        senderName: "bob",
+        senderType: "human",
+        content: "线程里聊",
+        time: "2026-09-04T00:00:00Z",
+        threadId: "12345678-1234-1234-1234-123456789abc",
+      },
+    } as any);
+
+    // ① 守卫拦截：线程回复不漏进主列表
+    expect(messageStore.messagesByTarget["#general"].map((m) => m.id)).toEqual(["m-top"]);
+    // ② 主列表水位不被线程回复推进（否则重连 backfill after=11 会跳过其间未到达的顶层消息）
+    expect(messageStore.lastSeenSeq["#general"]).toBe(10);
+    // ③ 线程缓冲区 key 无 #（ThreadView threadKey = general:12345678）
+    const buf = messageStore.messagesByTarget["general:12345678"] ?? [];
+    expect(buf).toHaveLength(1);
+    expect(buf[0].id).toBe("m-r1");
+    expect(buf[0].content).toBe("线程里聊");
+  });
+
+  it("agent:deliver 线程回复重复投递 → 缓冲区按 id 去重", () => {
+    const messageStore = useMessageStore();
+    const payload = {
+      type: "agent:deliver",
+      message: {
+        id: "m-r2",
+        seq: 12,
+        channelId: "#general",
+        senderId: "u-2",
+        senderName: "bob",
+        senderType: "human",
+        content: "dup",
+        time: "t",
+        threadId: "abcdef00-0000-0000-0000-000000000000",
+      },
+    } as any;
+    dispatchWsEvent(payload);
+    dispatchWsEvent(payload);
+    expect(messageStore.messagesByTarget["general:abcdef00"]).toHaveLength(1);
+  });
+
+  it("agent:deliver DM 线程回复 → key 为 dm:<uuid>:<tid8>（MessageRow 的 /channels/dm:uuid/<id> 入口同口径）", () => {
+    const messageStore = useMessageStore();
+    dispatchWsEvent({
+      type: "agent:deliver",
+      message: {
+        id: "m-r3",
+        seq: 13,
+        channelId: "dm:dm-uuid-1",
+        senderId: "a-1",
+        senderName: "agent",
+        senderType: "agent",
+        content: "dm 线程回复",
+        time: "t",
+        threadId: "99999999-0000-0000-0000-000000000000",
+        dm: true,
+      },
+    } as any);
+    expect(messageStore.messagesByTarget["dm:dm-uuid-1"] ?? []).toHaveLength(0);
+    expect(messageStore.messagesByTarget["dm:dm-uuid-1:99999999"]).toHaveLength(1);
   });
 });

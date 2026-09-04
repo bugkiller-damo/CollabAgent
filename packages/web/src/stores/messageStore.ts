@@ -21,6 +21,16 @@ function cacheKey(channel: string) {
   return CACHE_PREFIX + channel;
 }
 
+/**
+ * 线程缓冲区 key 约定：「<频道 key 去 #>:<threadId 前 8 位>」（如 general:abcd1234、
+ * dm:<uuid>:abcd1234）——与 ThreadView 路由参数（无 #）同口径；展示层需要 # 自行添加。
+ * wsDispatch（写）与 ThreadView（读）必须共用此 helper，防口径漂移（P0-2 教训）。
+ */
+export function threadBufferKey(channelKey: string, threadId: string): string {
+  const base = channelKey.startsWith("#") ? channelKey.slice(1) : channelKey;
+  return `${base}:${String(threadId).substring(0, 8)}`;
+}
+
 function loadCache(channel: string): Message[] | null {
   try {
     const raw = localStorage.getItem(cacheKey(channel));
@@ -77,6 +87,10 @@ export const useMessageStore = defineStore("messages", () => {
   // per-target 重入护栏：补拉/flush 进行中对同 target 的重复触发直接返回
   const backfillInflight = new Set<string>();
   const flushInflight = new Set<string>();
+  // 线程缓冲区 key 登记（非响应式）：backfillAll 据此跳过 thread key——它不是可解析
+  // 频道名，硬拉 history 会被 server 端 cleanChannelName 清成主频道名，把顶层历史
+  // 灌进线程缓冲区（ThreadView 只按 id 去重追加，污染会以「回复」形态上屏）
+  const threadKeys = new Set<string>();
 
   async function fetchHistory(channel: string, opts?: { before?: number; limit?: number }): Promise<void> {
     loading.value = true;
@@ -147,6 +161,23 @@ export const useMessageStore = defineStore("messages", () => {
     };
   }
 
+  /**
+   * P0-2：线程回复直写线程缓冲区——receiveMessage 的「threadId 不入主列表」守卫
+   * 对主列表写入是正确的，但线程缓冲区需要绕开它。key 用 threadBufferKey() 约定
+   * （无 #），message.channelId 保留真实频道 target（#name / dm:uuid）。
+   * 不写 localStorage 缓存、不推进 lastSeenSeq：ThreadView 挂载即走 REST loadThread，
+   * 缓存无人消费；线程 seq 与主频道共用序列，推进了也没有补拉端点对应。
+   */
+  function receiveThreadReply(threadKey: string, message: Message): void {
+    threadKeys.add(threadKey);
+    const existing = messagesByTarget.value[threadKey] || [];
+    if (existing.find((m) => m.id === message.id)) return;
+    messagesByTarget.value = {
+      ...messagesByTarget.value,
+      [threadKey]: [...existing, message],
+    };
+  }
+
   // ---- 断线增量补拉（重连后按 lastSeenSeq 分页补齐缺口）----
 
   /**
@@ -187,7 +218,8 @@ export const useMessageStore = defineStore("messages", () => {
 
   /** 全量补拉：对 messagesByTarget 全部 key，worker-pool 有限并发 4 */
   async function backfillAll(): Promise<void> {
-    const targets = Object.keys(messagesByTarget.value);
+    // 跳过线程缓冲区 key（见 threadKeys 注释：history 端点会把 thread key 清成主频道名）
+    const targets = Object.keys(messagesByTarget.value).filter((t) => !threadKeys.has(t));
     let nextIndex = 0;
     const workerCount = Math.min(BACKFILL_CONCURRENCY, targets.length);
     await Promise.all(
@@ -219,12 +251,16 @@ export const useMessageStore = defineStore("messages", () => {
     }
   }
 
-  function setPendingStatus(target: string, tempId: string, status: PendingItem["status"]) {
+  // W-A3：failReason 仅在 failed 态留存（PendingRow 展示 server 400/403 文案）；
+  // 转入 sending/queued 时清除，避免陈旧原因残留
+  function setPendingStatus(target: string, tempId: string, status: PendingItem["status"], failReason?: string) {
     const list = pendingByTarget.value[target];
     if (!list?.some((p) => p.tempId === tempId)) return; // 可能已被 ackPendingByNonce 调和移除
     pendingByTarget.value = {
       ...pendingByTarget.value,
-      [target]: list.map((p) => (p.tempId === tempId ? { ...p, status } : p)),
+      [target]: list.map((p) =>
+        p.tempId === tempId ? { ...p, status, failReason: status === "failed" ? failReason : undefined } : p,
+      ),
     };
     persistPending();
   }
@@ -282,8 +318,8 @@ export const useMessageStore = defineStore("messages", () => {
             toast.info(`${names} 已停班，消息已发出但不会唤醒`);
           }
           removePending(target, next.tempId);
-        } catch {
-          setPendingStatus(target, next.tempId, "failed");
+        } catch (err: any) {
+          setPendingStatus(target, next.tempId, "failed", err?.message || "网络错误");
           return;
         }
       }
@@ -310,8 +346,8 @@ export const useMessageStore = defineStore("messages", () => {
         clientNonce: item.nonce,
       });
       removePending(target, tempId);
-    } catch {
-      setPendingStatus(target, tempId, "failed");
+    } catch (err: any) {
+      setPendingStatus(target, tempId, "failed", err?.message || "网络错误");
     }
   }
 
@@ -426,6 +462,7 @@ export const useMessageStore = defineStore("messages", () => {
     fetchHistory,
     sendMessage,
     receiveMessage,
+    receiveThreadReply,
     backfillTarget,
     backfillAll,
     enqueuePending,

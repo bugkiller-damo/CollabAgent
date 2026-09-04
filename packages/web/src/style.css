@@ -3,28 +3,32 @@
 @tailwind utilities;
 
 @layer base {
+  /* 语义化设计 token：值对齐全站主导的事实配对（light/dark），
+     经 tailwind.config theme.extend.colors 暴露为
+     bg-canvas/bg-surface/bg-raised/text-ink/text-subtle/text-muted/border-line。
+     注意：var() 形式不支持不透明度修饰（bg-surface/50 不会生成）。 */
   :root {
-    --bg-primary: #ffffff;
-    --bg-secondary: #f3f4f6;
-    --bg-tertiary: #e5e7eb;
-    --text-primary: #111827;
-    --text-secondary: #4b5563;
-    --text-muted: #9ca3af;
-    --border: #d1d5db;
+    --bg-primary: #f9fafb; /* gray-50 页面底色 */
+    --bg-secondary: #ffffff; /* white 卡片/面板 */
+    --bg-tertiary: #e5e7eb; /* gray-200 hover/凹陷填充 */
+    --text-primary: #111827; /* gray-900 */
+    --text-secondary: #4b5563; /* gray-600 */
+    --text-muted: #6b7280; /* gray-500 */
+    --border: #e5e7eb; /* gray-200 */
   }
 
   .dark {
-    --bg-primary: #111827;
-    --bg-secondary: #1f2937;
-    --bg-tertiary: #374151;
-    --text-primary: #f9fafb;
-    --text-secondary: #d1d5db;
-    --text-muted: #6b7280;
-    --border: #374151;
+    --bg-primary: #111827; /* gray-900 */
+    --bg-secondary: #1f2937; /* gray-800 */
+    --bg-tertiary: #374151; /* gray-700 */
+    --text-primary: #ffffff; /* white */
+    --text-secondary: #9ca3af; /* gray-400 */
+    --text-muted: #9ca3af; /* gray-400 */
+    --border: #374151; /* gray-700 */
   }
 
   body {
-    @apply bg-gray-50 text-gray-900 dark:bg-gray-900 dark:text-gray-100;
+    @apply bg-canvas text-gray-900 dark:text-gray-100;
   }
 }
 
@@ -35,11 +39,23 @@
   .animate-slide-in-up {
     animation: slideInUp 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
   }
+  .animate-fade-in {
+    animation: fadeIn 0.15s ease-out forwards;
+  }
   .animate-fade-out {
     animation: fadeOut 0.15s ease-out forwards;
   }
+  .animate-scale-in {
+    animation: scaleIn 0.15s ease-out forwards;
+  }
   .animate-scale-out {
     animation: scaleOut 0.15s ease-out forwards;
+  }
+  /* 半透明高光叠在组件自带底色（bg-gray-300 等）上，两模式通用 */
+  .animate-shimmer {
+    background-image: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.35), transparent);
+    background-size: 200% 100%;
+    animation: shimmer 1.5s ease-in-out infinite;
   }
 }
 

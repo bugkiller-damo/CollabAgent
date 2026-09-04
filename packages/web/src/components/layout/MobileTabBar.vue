@@ -81,11 +81,11 @@ function onTab(id: string) {
         type="button"
         :class="[
           'relative flex flex-1 flex-col items-center gap-0.5 py-2 text-xs transition-colors',
-          isActive(t.id) ? 'font-medium text-blue-600 dark:text-blue-400' : 'text-gray-500 dark:text-gray-400',
+          isActive(t.id) ? 'font-medium text-blue-600 dark:text-blue-400' : 'text-muted',
         ]"
         @click="onTab(t.id)"
       >
-        <svg :class="['h-5 w-5', isActive(t.id) ? 'text-blue-500' : 'text-gray-500 dark:text-gray-400']" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <svg :class="['h-5 w-5', isActive(t.id) ? 'text-blue-500' : 'text-muted']" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" :d="t.d" />
         </svg>
         {{ t.label }}

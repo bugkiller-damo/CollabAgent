@@ -72,10 +72,10 @@ function dismiss() {
 <template>
   <div
     v-if="show"
-    class="fixed bottom-4 right-4 z-50 w-72 bg-white dark:bg-gray-800 rounded-lg shadow-xl border border-gray-200 dark:border-gray-700 p-4"
+    class="fixed bottom-4 right-4 z-50 w-72 bg-surface rounded-lg shadow-xl border border-line p-4"
   >
     <div class="flex items-start justify-between mb-2">
-      <h3 class="text-gray-900 dark:text-white text-sm font-semibold">快速开始</h3>
+      <h3 class="text-ink text-sm font-semibold">快速开始</h3>
       <button class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 text-sm" title="不再显示" @click="dismiss">✕</button>
     </div>
     <ul class="space-y-2">

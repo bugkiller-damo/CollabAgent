@@ -30,8 +30,17 @@ function formatChannelName(raw: string): string {
 }
 
 const formatted = computed(() => formatChannelName(name.value));
-const exists = computed(() => channelStore.channels.some((c) => c.name === formatted.value));
+// 对齐 server P1.32 lower(name) 唯一索引口径：大小写变体也算重名
+const exists = computed(() => channelStore.channels.some((c) => c.name.toLowerCase() === formatted.value));
 const canSubmit = computed(() => formatted.value.length > 0 && !exists.value && !saving.value);
+
+// server P1.32 收紧文案本地化（409 重名 / 400 超长）：客户端预检盖不住未加入的私有频道与大小写变体
+function localizeCreateError(err: any): string {
+  const msg = String(err?.message || "");
+  if (err?.status === 409 || /already exists/i.test(msg)) return "同名频道已存在（含大小写变体或你未加入的私有频道）";
+  if (/too long/i.test(msg)) return "频道名过长（上限 100 字符）";
+  return msg || "创建失败";
+}
 
 async function handleSubmit() {
   if (!canSubmit.value) return;
@@ -46,7 +55,7 @@ async function handleSubmit() {
     props.onCreated?.(formatted.value);
     props.onClose();
   } catch (err: any) {
-    error.value = err?.message || "创建失败";
+    error.value = localizeCreateError(err);
     saving.value = false;
   }
 }
@@ -58,14 +67,15 @@ function onKeyDown(e: KeyboardEvent) {
 
 <template>
   <Modal open @close="onClose">
-    <h3 class="text-lg font-bold text-gray-900 dark:text-white">创建频道</h3>
+    <h3 class="text-lg font-bold text-ink">创建频道</h3>
 
     <div class="space-y-4">
       <div>
-        <label class="mb-1 block text-sm text-gray-600 dark:text-gray-400">频道名称</label>
+        <label class="mb-1 block text-sm text-subtle">频道名称</label>
         <Input
           type="text"
           autofocus
+          maxlength="100"
           :value="name"
           @input="name = ($event.target as HTMLInputElement).value"
           @keydown="onKeyDown"
@@ -78,7 +88,7 @@ function onKeyDown(e: KeyboardEvent) {
       </div>
 
       <div>
-        <label class="mb-1 block text-sm text-gray-600 dark:text-gray-400">描述（可选）</label>
+        <label class="mb-1 block text-sm text-subtle">描述（可选）</label>
         <Input
           type="text"
           :value="description"
@@ -88,7 +98,7 @@ function onKeyDown(e: KeyboardEvent) {
       </div>
 
       <div>
-        <label class="mb-1 block text-sm text-gray-600 dark:text-gray-400">可见性</label>
+        <label class="mb-1 block text-sm text-subtle">可见性</label>
         <div class="flex gap-2">
           <button
             type="button"

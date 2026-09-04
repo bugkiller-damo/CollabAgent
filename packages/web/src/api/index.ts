@@ -7,6 +7,19 @@
 
 type FetchOptions = Omit<RequestInit, "body"> & { body?: unknown };
 
+/**
+ * W-A4：带 HTTP 状态码的错误（message 与原 plain Error 完全一致，全站 err?.message 消费方零影响）。
+ * 用于按状态码分流：403 停轮询（MetricsDashboard）、后续 401 拦截登出（§8.2 #2）。
+ */
+export class ApiError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
 // 从可读的 csrf_token cookie 取值，用于 double-submit 校验
 export function readCsrf(): string | null {
   if (typeof document === "undefined") return null;
@@ -37,7 +50,7 @@ export async function apiClient<T = unknown>(url: string, options: FetchOptions 
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error((err as any).error || `HTTP ${res.status}`);
+    throw new ApiError(res.status, (err as any).error || `HTTP ${res.status}`);
   }
   return res.json();
 }
@@ -78,7 +91,7 @@ export async function uploadAttachment(file: File): Promise<UploadedAttachment> 
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error((err as any).error || `HTTP ${res.status}`);
+    throw new ApiError(res.status, (err as any).error || `HTTP ${res.status}`);
   }
   return res.json();
 }

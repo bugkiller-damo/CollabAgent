@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useRouter } from "vue-router";
+import { useInstanceAdmin } from "../../composables";
 import { useAuthStore, useUiStore } from "../../stores";
 import Avatar from "../ui/Avatar.vue";
 import Tooltip from "../ui/Tooltip.vue";
@@ -31,6 +32,8 @@ onUnmounted(() => document.removeEventListener("mousedown", onClickOutside));
 const user = computed(() => authStore.user);
 const theme = computed(() => uiStore.theme);
 const displayName = computed(() => user.value?.displayName || user.value?.handle || "User");
+// W-A4：admin 入口角色感知——非实例 admin 不渲染「管理后台」（null=加载中也不渲染）
+const { isInstanceAdmin } = useInstanceAdmin();
 
 const ringClass = computed(() => {
   if (!uiStore.online) return "ring-2 ring-amber-500";
@@ -59,7 +62,7 @@ function go(path: string) {
     <Tooltip v-if="compact" :label="displayName" position="right">
       <button
         type="button"
-        class="flex h-10 w-10 items-center justify-center rounded-lg transition-colors hover:bg-gray-200 dark:hover:bg-gray-700"
+        class="flex h-10 w-10 items-center justify-center rounded-lg transition-colors hover:bg-raised"
         :aria-label="displayName"
         @click="open = !open"
       >
@@ -71,14 +74,14 @@ function go(path: string) {
     <button
       v-else
       type="button"
-      class="flex w-full items-center gap-2 rounded-md p-2 text-left transition-colors hover:bg-gray-200 dark:hover:bg-gray-700"
+      class="flex w-full items-center gap-2 rounded-md p-2 text-left transition-colors hover:bg-raised"
       @click="open = !open"
     >
       <span :class="['rounded-full', ringClass]">
         <Avatar :name="displayName" :src="(user as any)?.avatarUrl" size="md" />
       </span>
       <div class="min-w-0 flex-1">
-        <p class="truncate text-sm font-medium text-gray-900 dark:text-white">{{ displayName }}</p>
+        <p class="truncate text-sm font-medium text-ink">{{ displayName }}</p>
         <p class="truncate text-xs text-gray-500">@{{ user?.handle || "unknown" }}</p>
       </div>
       <svg class="h-4 w-4 shrink-0 text-gray-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
@@ -114,6 +117,7 @@ function go(path: string) {
         计算机
       </button>
       <button
+        v-if="isInstanceAdmin === true"
         class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 transition-colors hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700"
         @click="go('/admin')"
       >

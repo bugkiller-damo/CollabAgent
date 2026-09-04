@@ -78,7 +78,7 @@ async function handleRegister() {
   <div class="flex min-h-screen items-center justify-center bg-gray-50 p-4 dark:bg-gray-900">
     <Card padding="lg" class="w-full max-w-sm space-y-5">
       <div class="text-center">
-        <h1 class="text-2xl font-bold text-gray-900 dark:text-white">注册</h1>
+        <h1 class="text-2xl font-bold text-ink">注册</h1>
       </div>
 
       <div
@@ -139,7 +139,7 @@ async function handleRegister() {
         <p v-if="error" class="text-center text-sm text-red-500">{{ error }}</p>
       </form>
 
-      <p class="text-center text-sm text-gray-500 dark:text-gray-400">
+      <p class="text-center text-sm text-muted">
         已有账号？<RouterLink to="/login" class="text-blue-500 hover:underline">登录</RouterLink>
       </p>
     </Card>

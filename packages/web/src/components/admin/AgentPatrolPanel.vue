@@ -137,7 +137,7 @@ function eventLabel(e: PatrolEvent): { text: string; cls: string } {
 <template>
   <Card padding="md" class="space-y-4">
     <div class="flex items-center justify-between">
-      <h3 class="font-semibold text-gray-900 dark:text-white">{{ embedded ? "定时巡检" : `定时巡检 — @${agent.name}` }}</h3>
+      <h3 class="font-semibold text-ink">{{ embedded ? "定时巡检" : `定时巡检 — @${agent.name}` }}</h3>
       <div class="flex gap-2">
         <Button size="sm" @click="showCreate = !showCreate">{{ showCreate ? "收起" : "+ 新建巡检" }}</Button>
         <Button v-if="!embedded" variant="ghost" size="sm" @click="emit('close')">关闭</Button>
@@ -165,7 +165,7 @@ function eventLabel(e: PatrolEvent): { text: string; cls: string } {
 
     <div v-for="j in jobs" :key="j.id" class="rounded-md border border-gray-200 p-3 dark:border-gray-700">
       <div class="flex flex-wrap items-center gap-2">
-        <span class="font-medium text-gray-900 dark:text-white">{{ j.title }}</span>
+        <span class="font-medium text-ink">{{ j.title }}</span>
         <span v-if="j.status === 'canceled'" class="rounded bg-gray-200 px-1.5 py-0.5 text-xs text-gray-500 dark:bg-gray-700">已取消</span>
         <span
           v-else-if="j.paused"
@@ -176,7 +176,7 @@ function eventLabel(e: PatrolEvent): { text: string; cls: string } {
         <span v-else class="rounded bg-green-100 px-1.5 py-0.5 text-xs text-green-700 dark:bg-green-900 dark:text-green-300">运行中</span>
         <span class="text-xs text-gray-400">{{ j.repeat || "一次性" }}<template v-if="j.channel"> → {{ j.channel }}</template></span>
       </div>
-      <p class="mt-1 truncate text-sm text-gray-500 dark:text-gray-400">{{ j.instructions }}</p>
+      <p class="mt-1 truncate text-sm text-muted">{{ j.instructions }}</p>
       <p class="mt-1 text-xs text-gray-400">
         已触发 {{ j.fireCount }} 次 · 连续沉默 {{ j.consecutiveSilent }}/{{ j.maxConsecutiveSilent }} · 上次 {{ fmt(j.lastFiredAt) }} · 下次 {{ fmt(j.fireAt) }}
       </p>

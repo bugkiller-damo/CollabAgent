@@ -49,7 +49,7 @@ const current = computed(() => items.find((i) => route.path.startsWith(i.to)));
         v-if="current"
         class="border-b border-gray-200 bg-white px-4 py-3 dark:border-gray-700 dark:bg-gray-800 lg:hidden"
       >
-        <h2 class="text-lg font-bold text-gray-900 dark:text-white">{{ current.label }}</h2>
+        <h2 class="text-lg font-bold text-ink">{{ current.label }}</h2>
       </div>
       <div class="flex-1 overflow-y-auto px-4 py-6 sm:px-6 lg:px-8">
         <router-view />

@@ -15,6 +15,13 @@ const rememberMe = ref(false);
 const error = ref("");
 const loading = ref(false);
 
+/**
+ * dev 后门按钮门禁（P0-4）：生产构建下按钮不渲染。
+ * 注意必须经 setup 绑定使用（模板表达式不允许 import.meta），
+ * 产物中残留的是不可达死代码（esbuild 不做跨闭包常量折叠），行为上已完全移除。
+ */
+const isDev = import.meta.env.DEV;
+
 async function handleLogin() {
   error.value = "";
   loading.value = true;
@@ -55,8 +62,8 @@ function handleDevBypass() {
         <div class="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-lg bg-blue-600 text-white">
           <span class="font-bold">C</span>
         </div>
-        <h1 class="text-2xl font-bold text-gray-900 dark:text-white">CollabAgent</h1>
-        <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">登录到工作区</p>
+        <h1 class="text-2xl font-bold text-ink">CollabAgent</h1>
+        <p class="mt-1 text-sm text-muted">登录到工作区</p>
       </div>
 
       <form class="space-y-4" @submit.prevent="handleLogin">
@@ -74,7 +81,7 @@ function handleDevBypass() {
           @input="password = ($event.target as HTMLInputElement).value"
           autocomplete="current-password"
         />
-        <label class="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400">
+        <label class="flex items-center gap-2 text-sm text-subtle">
           <input
             type="checkbox"
             :checked="rememberMe"
@@ -87,13 +94,13 @@ function handleDevBypass() {
         <p v-if="error" class="text-center text-sm text-red-500">{{ error }}</p>
       </form>
 
-      <p class="text-center text-sm text-gray-500 dark:text-gray-400">
+      <p class="text-center text-sm text-muted">
         <RouterLink to="/forgot-password" class="text-blue-500 hover:underline">忘记密码</RouterLink>
         <span class="mx-2">·</span>
         <RouterLink to="/register" class="text-blue-500 hover:underline">注册</RouterLink>
       </p>
 
-      <Button type="button" variant="secondary" class="w-full" @click="handleDevBypass">
+      <Button v-if="isDev" type="button" variant="secondary" class="w-full" @click="handleDevBypass">
         开发模式：跳过登录
       </Button>
     </Card>

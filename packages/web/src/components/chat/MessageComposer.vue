@@ -18,6 +18,7 @@ export interface ComposerAttachment {
 import { computed, ref, watch } from "vue";
 import { uploadAttachment } from "../../api";
 import { useMentionSuggest, type MentionScope } from "../../composables";
+import { MAX_MESSAGE_CONTENT_LEN } from "../../lib/limits";
 import { useUiStore } from "../../stores";
 import MentionPopup from "./MentionPopup.vue";
 import IconButton from "../ui/IconButton.vue";
@@ -152,6 +153,8 @@ const doSend = async () => {
     setAttachments([]);
     const el = textareaRef.value;
     if (el) el.style.height = "auto";
+  } catch {
+    // 失败由 onSend 侧自行提示（toast/横幅），草稿保留不清空（W-A3：吞掉异常防 unhandled rejection）
   } finally {
     sending.value = false;
   }
@@ -254,6 +257,7 @@ const onDrop = (e: DragEvent) => {
         :placeholder="placeholder"
         :rows="1"
         :disabled="disabled || sending"
+        :maxlength="MAX_MESSAGE_CONTENT_LEN"
         class="min-h-[2.5rem] w-full resize-none rounded-md border border-gray-300 bg-gray-100 px-3 py-2.5 text-sm text-gray-900 placeholder:text-gray-400 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/30 dark:border-gray-600 dark:bg-gray-700 dark:text-white dark:placeholder:text-gray-500 disabled:cursor-not-allowed disabled:opacity-50"
         @input="onChange"
         @keydown="onKeyDown"
@@ -282,9 +286,9 @@ const onDrop = (e: DragEvent) => {
       </button>
     </div>
 
-    <div class="mt-1 flex justify-between text-xs text-gray-500 dark:text-gray-400">
+    <div class="mt-1 flex justify-between text-xs text-muted">
       <span>Enter 发送 · Shift+Enter 换行 · @ 提及 · 支持拖拽/粘贴上传</span>
-      <span v-if="draft.length > 0">{{ draft.length }}/4000</span>
+      <span v-if="draft.length > 0">{{ draft.length }}/{{ MAX_MESSAGE_CONTENT_LEN }}</span>
     </div>
   </div>
 </template>

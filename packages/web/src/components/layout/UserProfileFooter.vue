@@ -37,12 +37,12 @@ function toggleTheme() {
 <template>
   <div ref="rootEl" class="relative border-t border-gray-200 p-2 dark:border-gray-700">
     <button
-      class="flex w-full items-center gap-2 rounded-md p-2 text-left transition-colors hover:bg-gray-200 dark:hover:bg-gray-700"
+      class="flex w-full items-center gap-2 rounded-md p-2 text-left transition-colors hover:bg-raised"
       @click="open = !open"
     >
       <Avatar :name="displayName" :src="(user as any)?.avatarUrl" size="md" />
       <div class="min-w-0 flex-1">
-        <p class="truncate text-sm font-medium text-gray-900 dark:text-white">{{ displayName }}</p>
+        <p class="truncate text-sm font-medium text-ink">{{ displayName }}</p>
         <p class="truncate text-xs text-gray-500">@{{ user?.handle || "unknown" }}</p>
       </div>
       <svg class="h-4 w-4 shrink-0 text-gray-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">

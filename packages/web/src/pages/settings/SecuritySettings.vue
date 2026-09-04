@@ -132,7 +132,7 @@ async function deactivate() {
 
     <section>
       <div class="mb-3 flex items-center justify-between">
-        <h3 class="font-bold text-gray-900 dark:text-white">登录设备</h3>
+        <h3 class="font-bold text-ink">登录设备</h3>
         <Button @click="logoutAll" variant="ghost" size="sm" class="text-red-500 hover:text-red-600">退出所有设备</Button>
       </div>
       <p v-if="loading" class="text-sm text-gray-400">加载中…</p>
@@ -140,7 +140,7 @@ async function deactivate() {
       <div v-else class="space-y-2">
         <Card v-for="s in sessions" :key="s.id" padding="sm" class="flex items-center justify-between">
           <div class="min-w-0">
-            <div class="flex items-center gap-2 text-sm text-gray-900 dark:text-white">
+            <div class="flex items-center gap-2 text-sm text-ink">
               {{ deviceLabel(s.user_agent) }}
               <span v-if="s.current" class="rounded bg-green-100 px-1.5 py-0.5 text-[11px] text-green-600 dark:bg-green-900/40 dark:text-green-300">当前设备</span>
             </div>
@@ -154,7 +154,7 @@ async function deactivate() {
     </section>
 
     <section>
-      <h3 class="mb-3 font-bold text-gray-900 dark:text-white">数据导出</h3>
+      <h3 class="mb-3 font-bold text-ink">数据导出</h3>
       <p class="mb-3 text-sm text-gray-500">导出你的资料、消息、频道成员关系、提醒与会话为 JSON 文件。</p>
       <Button @click="exportData" size="sm">导出我的数据</Button>
     </section>

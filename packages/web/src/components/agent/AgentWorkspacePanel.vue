@@ -101,7 +101,7 @@ watch(
     <p v-else-if="empty" class="text-sm text-gray-400">工作区已存在，但还没有可展示的笔记。</p>
     <div
       v-else-if="files.length"
-      class="flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border border-gray-200 dark:border-gray-700"
+      class="flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border border-line"
     >
       <div class="flex min-h-0 flex-1 overflow-hidden">
         <ul class="w-40 shrink-0 overflow-y-auto border-r border-gray-200 bg-gray-50 text-xs dark:border-gray-700 dark:bg-gray-900/40">
