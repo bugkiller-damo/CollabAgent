@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Lock, Menu, TriangleAlert } from "@lucide/vue";
 import { computed, onMounted, onUnmounted, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { LG_QUERY, useMediaQuery } from "../../composables";
@@ -209,9 +210,7 @@ watch([() => uiStore.terminalAgent, () => channelStore.activeChannelName], ([nam
     <main class="flex min-w-0 flex-1 flex-col pb-16 lg:pb-0">
       <header class="flex h-12 items-center gap-3 border-b border-gray-200 bg-white px-4 dark:border-gray-700 dark:bg-gray-800">
         <IconButton label="打开菜单" tooltip="菜单" class="lg:hidden" @click="uiStore.openMobileDrawer()">
-          <svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
-          </svg>
+          <Menu class="h-5 w-5" />
         </IconButton>
 
         <div class="min-w-0 flex-1 lg:hidden">
@@ -225,20 +224,14 @@ watch([() => uiStore.terminalAgent, () => channelStore.activeChannelName], ([nam
           <span v-if="routeTitle.subtitle" class="text-sm text-muted">{{ routeTitle.subtitle }}</span>
           <span v-if="routeTitle.subtitle && routeTitle.title" class="text-gray-300 dark:text-gray-600">/</span>
           <span class="text-sm font-semibold text-ink">{{ routeTitle.title }}</span>
-          <svg
-            v-if="isPrivateChannel"
-            class="h-3.5 w-3.5 text-amber-500"
-            fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"
-            aria-label="私有频道"
-          >
-            <title>私有频道</title>
-            <path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 1 0-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 0 0 2.25-2.25v-6.75a2.25 2.25 0 0 0-2.25-2.25H6.75a2.25 2.25 0 0 0-2.25 2.25v6.75a2.25 2.25 0 0 0 2.25 2.25Z" />
-          </svg>
+          <span v-if="isPrivateChannel" class="text-amber-500" aria-label="私有频道">
+            <Lock class="h-3.5 w-3.5" />
+          </span>
         </div>
       </header>
 
       <div v-if="!uiStore.online" class="bg-amber-500 px-4 py-1.5 text-center text-sm text-gray-900">
-        ⚠️ 你当前处于离线状态，新消息可能无法收发
+        <TriangleAlert class="mr-1 inline h-4 w-4" aria-hidden="true" /> 你当前处于离线状态，新消息可能无法收发
       </div>
 
       <ErrorBoundary>

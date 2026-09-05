@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ChevronDown, LogOut, Moon, Settings, Sun } from "@lucide/vue";
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { useAuthStore, useUiStore } from "../../stores";
@@ -45,9 +46,7 @@ function toggleTheme() {
         <p class="truncate text-sm font-medium text-ink">{{ displayName }}</p>
         <p class="truncate text-xs text-gray-500">@{{ user?.handle || "unknown" }}</p>
       </div>
-      <svg class="h-4 w-4 shrink-0 text-muted" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
-      </svg>
+      <ChevronDown class="h-4 w-4 shrink-0 text-muted" />
     </button>
 
     <div
@@ -59,9 +58,7 @@ function toggleTheme() {
         @click="open = false; router.push('/settings/profile')"
       >
         <span class="shrink-0">
-          <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M9.53 16.122a3 3 0 0 0-5.78 1.128 2.25 2.25 0 0 1-2.4 2.245 4.5 4.5 0 0 0-2.206.037A9.968 9.968 0 0 0 12 21a9.969 9.969 0 0 0 7.855-3.476 4.5 4.5 0 0 0-2.206-.037 2.25 2.25 0 0 1-2.4-2.245 3 3 0 0 0-5.78-1.121Zm7.806-9.124a2.25 2.25 0 0 1 2.25 2.25v.75h1.125a2.25 2.25 0 0 1 2.25 2.25v2.25a2.25 2.25 0 0 1-2.25 2.25h-.75v.75a2.25 2.25 0 0 1-2.25 2.25h-2.25a2.25 2.25 0 0 1-2.25-2.25v-.75h-1.125a2.25 2.25 0 0 1-2.25-2.25v-2.25a2.25 2.25 0 0 1 2.25-2.25h.75v-.75a2.25 2.25 0 0 1 2.25-2.25h2.25Z" />
-          </svg>
+          <Settings class="h-4 w-4" />
         </span>
         设置
       </button>
@@ -70,12 +67,8 @@ function toggleTheme() {
         @click="toggleTheme"
       >
         <span class="shrink-0">
-          <svg v-if="theme === 'dark'" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v2.25m6.364.386-1.591 1.591M21 12h-2.25m-.386 6.364-1.591-1.591M12 18.75V21m-4.773-4.227-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0Z" />
-          </svg>
-          <svg v-else class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M21.752 15.002A9.72 9.72 0 0 1 18 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 0 0 3 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 0 0 9.002-5.998Z" />
-          </svg>
+          <Sun v-if="theme === 'dark'" class="h-4 w-4" />
+          <Moon v-else class="h-4 w-4" />
         </span>
         {{ theme === "dark" ? "浅色模式" : "深色模式" }}
       </button>
@@ -85,9 +78,7 @@ function toggleTheme() {
         @click="handleLogout"
       >
         <span class="shrink-0">
-          <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0 0 13.5 3h-6a2.25 2.25 0 0 0-2.25 2.25v13.5A2.25 2.25 0 0 0 7.5 21h6a2.25 2.25 0 0 0 2.25-2.25V15m3 0 3-3m0 0-3-3m3 3H9" />
-          </svg>
+          <LogOut class="h-4 w-4" />
         </span>
         退出登录
       </button>

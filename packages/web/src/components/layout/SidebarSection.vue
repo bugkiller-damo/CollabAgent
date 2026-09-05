@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ChevronDown } from "@lucide/vue";
 import { computed, ref, watch } from "vue";
 
 const STORAGE_KEY = "slock.sidebar.sections";
@@ -72,17 +73,11 @@ const countLabel = computed(() => (typeof props.count === "number" ? String(prop
         :aria-expanded="!collapsed"
         @click="toggle"
       >
-        <svg
+        <ChevronDown
           class="h-3 w-3 shrink-0 text-muted transition-transform"
           :class="collapsed ? '-rotate-90' : ''"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2.2"
-          viewBox="0 0 24 24"
           aria-hidden="true"
-        >
-          <path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
-        </svg>
+        />
         <span class="truncate text-xs font-semibold uppercase tracking-wider text-muted">
           {{ title }}
         </span>

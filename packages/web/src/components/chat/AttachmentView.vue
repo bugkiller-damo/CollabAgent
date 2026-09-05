@@ -38,7 +38,7 @@ function isImage(mime: string): boolean {
         rel="noopener noreferrer"
         class="flex items-center gap-2 p-2 rounded-lg border border-line bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 max-w-xs"
       >
-        <span class="text-2xl shrink-0">📄</span>
+        <FileText class="h-6 w-6 shrink-0" />
         <span class="min-w-0">
           <span class="block text-sm text-gray-800 dark:text-gray-200 truncate">{{ a.filename }}</span>
           <span class="block text-xs text-muted">{{ formatSize(a.sizeBytes) }} · 下载</span>
@@ -53,10 +53,11 @@ function isImage(mime: string): boolean {
     >
       <img :src="lightbox.url" :alt="lightbox.filename" class="max-h-full max-w-full rounded shadow-lg" />
       <button
+        class="absolute top-4 right-4 text-white/80 hover:text-white"
+        aria-label="关闭预览"
         @click="lightbox = null"
-        class="absolute top-4 right-4 text-white/80 hover:text-white text-2xl"
       >
-        ✕
+        <X class="h-5 w-5" />
       </button>
     </div>
   </div>

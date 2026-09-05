@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { Message } from "@collabagent/shared";
+import { ClipboardList, Lock, Settings, SquareTerminal, Users } from "@lucide/vue";
 import { computed, nextTick, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { apiClient, apiGet } from "../api";
@@ -326,22 +327,9 @@ function goGeneral() {
 
       <PageHeader :title="'#' + (channelName || '')" :subtitle="currentChannel?.description">
         <template #leading>
-          <svg
-            v-if="isPrivate"
-            class="h-4 w-4 text-amber-500"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            viewBox="0 0 24 24"
-            aria-label="私有频道"
-          >
-            <title>私有频道</title>
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              d="M16.5 10.5V6.75a4.5 4.5 0 1 0-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 0 0 2.25-2.25v-6.75a2.25 2.25 0 0 0-2.25-2.25H6.75a2.25 2.25 0 0 0-2.25 2.25v6.75a2.25 2.25 0 0 0 2.25 2.25Z"
-            />
-          </svg>
+          <span v-if="isPrivate" class="text-amber-500" aria-label="私有频道">
+            <Lock class="h-4 w-4" />
+          </span>
         </template>
 
         <div class="flex items-center gap-1">
@@ -351,22 +339,10 @@ function goGeneral() {
             :class="terminalAgent ? 'text-blue-500' : ''"
             @click="openAgentTerminal"
           >
-            <svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24">
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                d="m6.75 7.5 3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0 0 21 18V6a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 6v12a2.25 2.25 0 0 0 2.25 2.25Z"
-              />
-            </svg>
+            <SquareTerminal class="h-5 w-5" />
           </IconButton>
           <IconButton label="看板" tooltip="任务看板" @click="router.push('/tasks/' + channelName)">
-            <svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24">
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                d="M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 0 0 2.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 0 0-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 0 0 .75-.75 2.25 2.25 0 0 0-.1-.664m-5.8 0A2.251 2.251 0 0 1 13.5 2.25H15c1.012 0 1.867.668 2.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m0 0H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25ZM6.75 12h.008v.008H6.75V12Zm0 3h.008v.008H6.75V15Zm0 3h.008v.008H6.75V18Z"
-              />
-            </svg>
+            <ClipboardList class="h-5 w-5" />
           </IconButton>
           <IconButton
             label="成员"
@@ -374,22 +350,10 @@ function goGeneral() {
             :class="showMembers ? 'text-blue-500' : ''"
             @click="showMembers = !showMembers"
           >
-            <svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24">
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                d="M15 19.128a9.38 9.38 0 0 0 2.625.372 9.337 9.337 0 0 0 4.121-.952 4.125 4.125 0 0 0-7.533-2.493M15 19.128v-.003c0-1.113-.295-2.228-.837-3.244M15 19.128c.956.6 2.04.872 3.124.872M7.5 14.251c.956.6 2.04.872 3.124.872 1.085 0 2.169-.273 3.124-.872M7.5 14.251c.63.394 1.343.6 2.076.6h.017c.734 0 1.446-.206 2.076-.6m-4.17-.6a4.125 4.125 0 0 1-7.532 2.493 9.337 9.337 0 0 1 4.121-.952 9.38 9.38 0 0 1 2.625.372m9.94 3.198-1.807-1.626a4.125 4.125 0 0 0-5.512 0l-1.806 1.626M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"
-              />
-            </svg>
+            <Users class="h-5 w-5" />
           </IconButton>
           <IconButton v-if="currentChannel" label="频道设置" tooltip="频道设置" @click="showSettings = true">
-            <svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24">
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                d="M9.53 16.122a3 3 0 0 0-5.78 1.128 2.25 2.25 0 0 1-2.4 2.245 4.5 4.5 0 0 0-2.206.037A9.968 9.968 0 0 0 12 21a9.969 9.969 0 0 0 7.855-3.476 4.5 4.5 0 0 0-2.206-.037 2.25 2.25 0 0 1-2.4-2.245 3 3 0 0 0-5.78-1.121Zm7.806-9.124a2.25 2.25 0 0 1 2.25 2.25v.75h1.125a2.25 2.25 0 0 1 2.25 2.25v2.25a2.25 2.25 0 0 1-2.25 2.25h-9.75c-.621 0-1.125.504-1.125 1.125v2.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25ZM6.75 12h.008v.008H6.75V12Zm0 3h.008v.008H6.75V15Zm0 3h.008v.008H6.75V18Z"
-              />
-            </svg>
+            <Settings class="h-5 w-5" />
           </IconButton>
         </div>
       </PageHeader>
@@ -401,13 +365,13 @@ function goGeneral() {
         <!-- P1-11：加载失败显示错误态 + 重试，不再伪装成「还没有消息」 -->
         <EmptyState
           v-else-if="loadError"
-          icon="⚠️"
+          icon="alert"
           title="消息加载失败"
           :description="loadError"
           action-label="重新加载"
           @action="retryLoadHistory"
         />
-        <EmptyState v-else icon="💬" title="还没有消息" description="发送第一条消息，开启这个频道的对话吧" />
+        <EmptyState v-else icon="message" title="还没有消息" description="发送第一条消息，开启这个频道的对话吧" />
       </div>
       <VirtualMessageList
         v-else-if="useVirtual"

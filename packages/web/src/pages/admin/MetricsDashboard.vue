@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Monitor } from "@lucide/vue";
 import { defineComponent, h, onMounted, onUnmounted, type PropType, type Ref, ref, watch } from "vue";
 import { apiGet } from "../../api";
 import PageHeader from "../../components/layout/PageHeader.vue";
@@ -324,7 +325,9 @@ onUnmounted(() => {
         <div v-for="(d, i) in m.daemons" :key="d.hostname + i" class="bg-gray-50 dark:bg-gray-800 rounded-xl p-4 border border-gray-100 dark:border-gray-700/50 flex items-center gap-3">
           <LivePulse />
           <div class="flex-1 min-w-0">
-            <p class="text-ink text-sm font-medium truncate">💻 {{ d.hostname }}</p>
+            <p class="text-ink text-sm font-medium truncate">
+              <Monitor class="mr-0.5 inline h-4 w-4" aria-hidden="true" /> {{ d.hostname }}
+            </p>
             <p class="text-muted text-xs mt-0.5">已连接 <ConnectedFor :since="d.connectedAt" /> · v{{ d.daemonVersion }}</p>
           </div>
           <div class="flex flex-wrap gap-1 justify-end">

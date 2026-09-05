@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Lock } from "@lucide/vue";
 import { onMounted, ref } from "vue";
 import { apiClient, apiGet, apiPatch, apiPost } from "../../api";
 import ConfirmDialog from "../../components/ConfirmDialog.vue";
@@ -107,7 +108,10 @@ function handleConfirmDelete() {
     <p v-if="loading" class="text-sm text-gray-500">加载中…</p>
     <Card v-else padding="none" class="divide-y divide-line">
       <div v-for="c in channels" :key="c.id" class="flex items-center gap-3 p-3">
-        <span class="text-muted">{{ c.type === "private" ? "🔒" : "#" }}</span>
+        <span class="text-muted">
+          <Lock v-if='c.type === "private"' class="h-3.5 w-3.5" />
+          <template v-else>#</template>
+        </span>
         <div class="min-w-0 flex-1">
           <p class="truncate text-sm font-medium text-ink">
             {{ c.name }}

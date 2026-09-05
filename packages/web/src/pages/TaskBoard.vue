@@ -331,7 +331,7 @@ function fmtTime(t: string): string {
     <!-- P1-11：加载失败显示错误态 + 重试，看板/列表不再伪装成「暂无任务/拖到此处」 -->
     <EmptyState
       v-if="loadError && !loading"
-      icon="⚠️"
+      icon="alert"
       title="任务加载失败"
       :description="loadError"
       action-label="重新加载"

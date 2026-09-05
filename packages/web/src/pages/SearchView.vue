@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { LoaderCircle, Search } from "@lucide/vue";
 import { nextTick, onMounted, onUnmounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { apiGet } from "../api";
@@ -71,7 +72,9 @@ onUnmounted(() => {
   <div class="flex min-h-0 flex-1 flex-col">
     <PageHeader title="搜索" subtitle="在频道消息里查找">
       <div class="relative w-full max-w-md">
-        <span class="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-sm text-muted">🔍</span>
+        <span class="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted">
+          <Search class="h-4 w-4" />
+        </span>
         <input
           ref="inputRef"
           type="text"
@@ -80,7 +83,9 @@ onUnmounted(() => {
           class="w-full rounded-lg border border-gray-200 bg-gray-50 py-1.5 pl-8 pr-3 text-sm text-gray-900 placeholder-gray-400 focus:border-blue-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/30 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
           @input="handleInput"
         />
-        <span v-if="loading" class="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-muted">⏳</span>
+        <span v-if="loading" class="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted">
+          <LoaderCircle class="h-4 w-4 animate-spin" />
+        </span>
       </div>
     </PageHeader>
 
@@ -105,7 +110,7 @@ onUnmounted(() => {
       <!-- P1-11：失败显示错误态 + 重试，不再伪装成「没有找到匹配的消息」 -->
       <EmptyState
         v-if="query && !loading && searchError"
-        icon="⚠️"
+        icon="alert"
         title="搜索失败"
         :description="searchError"
         action-label="重试"
@@ -113,11 +118,11 @@ onUnmounted(() => {
       />
       <EmptyState
         v-else-if="query && !loading && results.length === 0"
-        icon="🔍"
+        icon="search"
         title="没有找到匹配的消息"
         description="换个关键词再试"
       />
-      <EmptyState v-if="!query" icon="🔍" title="搜索消息" description="输入关键词，在频道历史里查找" />
+      <EmptyState v-if="!query" icon="search" title="搜索消息" description="输入关键词，在频道历史里查找" />
     </div>
   </div>
 </template>

@@ -160,7 +160,7 @@ function eventLabel(e: PatrolEvent): { text: string; cls: string } {
     </div>
 
     <div v-if="!loading && jobs.length === 0">
-      <EmptyState icon="⏰" title="还没有巡检任务" description="创建后 agent 会按周期自主醒来检查,有异常才报告,无异常保持沉默" />
+      <EmptyState icon="clock" title="还没有巡检任务" description="创建后 agent 会按周期自主醒来检查,有异常才报告,无异常保持沉默" />
     </div>
 
     <div v-for="j in jobs" :key="j.id" class="rounded-md border border-gray-200 p-3 dark:border-gray-700">

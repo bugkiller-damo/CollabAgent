@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { X } from "@lucide/vue";
 import { storeToRefs } from "pinia";
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { apiGet } from "../../api";
@@ -181,7 +182,9 @@ const st = computed(() => STATUS_LABEL[status.value] || STATUS_LABEL.offline);
         </option>
       </select>
       <span :class="`shrink-0 rounded px-1.5 py-0.5 text-xs ${st.cls}`">{{ st.text }}</span>
-      <button @click="onClose" class="shrink-0 text-muted hover:text-gray-600 dark:hover:text-gray-200" aria-label="关闭终端面板">✕</button>
+      <button @click="onClose" class="shrink-0 text-muted hover:text-gray-600 dark:hover:text-gray-200" aria-label="关闭终端面板">
+        <X class="h-4 w-4" />
+      </button>
     </div>
 
     <div class="flex items-center border-b border-gray-200 text-sm dark:border-gray-700">

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { AgentPresence, PersonChannelMembership, PersonProfile, PersonStats } from "@collabagent/shared";
 import { composePresence, PRESENCE_LABEL } from "@collabagent/shared";
+import { Crown } from "@lucide/vue";
 import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { apiClient, apiGet, apiPatch, apiPost } from "../../api";
@@ -388,7 +389,7 @@ async function expandChannels() {
               title="本频道经理，可派单"
               class="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-700 dark:bg-amber-900 dark:text-amber-300"
             >
-              👔 经理
+              <Crown class="mr-0.5 inline h-3 w-3" aria-hidden="true" /> 经理
             </span>
           </div>
           <p class="mt-0.5 text-xs text-muted">
@@ -651,7 +652,7 @@ async function expandChannels() {
                       <span :class="['shrink-0 rounded px-1 py-px text-[10px]', membershipKindBadge(c).cls]">
                         {{ membershipKindBadge(c).text }}
                       </span>
-                      <span v-if="c.isManager" class="shrink-0 text-[10px] text-amber-600">👔 经理</span>
+                      <span v-if="c.isManager" class="shrink-0 text-[10px] text-amber-600"><Crown class="mr-0.5 inline h-3 w-3" aria-hidden="true" /> 经理</span>
                     </div>
                     <p v-if="c.description?.trim()" class="mt-0.5 line-clamp-2 text-xs text-muted">
                       {{ c.description }}
@@ -715,7 +716,7 @@ async function expandChannels() {
                     <span :class="['shrink-0 rounded px-1 py-px text-[10px]', membershipKindBadge(c).cls]">
                       {{ membershipKindBadge(c).text }}
                     </span>
-                    <span v-if="c.isManager" class="shrink-0 text-[10px] text-amber-600">👔 经理</span>
+                    <span v-if="c.isManager" class="shrink-0 text-[10px] text-amber-600"><Crown class="mr-0.5 inline h-3 w-3" aria-hidden="true" /> 经理</span>
                   </div>
                   <p v-if="c.description?.trim()" class="mt-0.5 line-clamp-2 text-xs text-muted">
                     {{ c.description }}

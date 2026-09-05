@@ -1,15 +1,17 @@
 <script setup lang="ts">
+import { CircleCheck, CircleX, Info, TriangleAlert, X } from "@lucide/vue";
+import type { Component } from "vue";
 import { type ToastKind, useToastStore } from "../stores/toastStore";
 
 // React 版导出名为 ToastContainer（见 components/index.ts 桶文件）；模板直接读写 store 保持响应式
 const toastStore = useToastStore();
 
 // fg = 前景文字色。warning 用深字（amber-500 底压白字仅 2.3:1 不达 WCAG AA，深字约 8.6:1）
-const kindStyles: Record<ToastKind, { bg: string; fg: string; icon: string; border: string }> = {
-  info: { bg: "bg-blue-600", fg: "text-white", icon: "ℹ️", border: "border-blue-500" },
-  success: { bg: "bg-green-600", fg: "text-white", icon: "✅", border: "border-green-500" },
-  warning: { bg: "bg-amber-500", fg: "text-gray-900", icon: "⚠️", border: "border-amber-400" },
-  error: { bg: "bg-red-600", fg: "text-white", icon: "❌", border: "border-red-500" },
+const kindStyles: Record<ToastKind, { bg: string; fg: string; icon: Component; border: string }> = {
+  info: { bg: "bg-blue-600", fg: "text-white", icon: Info, border: "border-blue-500" },
+  success: { bg: "bg-green-600", fg: "text-white", icon: CircleCheck, border: "border-green-500" },
+  warning: { bg: "bg-amber-500", fg: "text-gray-900", icon: TriangleAlert, border: "border-amber-400" },
+  error: { bg: "bg-red-600", fg: "text-white", icon: CircleX, border: "border-red-500" },
 };
 </script>
 
@@ -32,14 +34,14 @@ const kindStyles: Record<ToastKind, { bg: string; fg: string; icon: string; bord
         t.exiting ? 'animate-fade-out' : 'animate-slide-in-right',
       ]"
     >
-      <span class="text-lg shrink-0">{{ kindStyles[t.kind].icon }}</span>
+      <component :is="kindStyles[t.kind].icon" class="h-5 w-5 shrink-0" />
       <p class="text-sm flex-1 break-words">{{ t.message }}</p>
       <button
         class="opacity-70 hover:opacity-100 shrink-0"
         aria-label="关闭"
         @click="toastStore.dismiss(t.id)"
       >
-        ✕
+        <X class="h-4 w-4" />
       </button>
     </div>
   </div>

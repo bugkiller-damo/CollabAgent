@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Eye, EyeOff } from "@lucide/vue";
 import { ref } from "vue";
 import { apiPatch, apiPost, uploadAttachment } from "../../api";
 import PageHeader from "../../components/layout/PageHeader.vue";
@@ -152,7 +153,8 @@ async function handleChangePassword() {
               @click="showPw = !showPw"
               class="absolute right-2 top-1/2 -translate-y-1/2 text-muted hover:text-gray-600 dark:hover:text-gray-200"
             >
-              {{ showPw ? "🙈" : "👁" }}
+              <EyeOff v-if="showPw" class="h-4 w-4" />
+              <Eye v-else class="h-4 w-4" />
             </button>
           </div>
           <PasswordStrength :password="newPw" />

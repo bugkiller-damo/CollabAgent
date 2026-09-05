@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Eye, EyeOff } from "@lucide/vue";
 import { onMounted, ref } from "vue";
 import { RouterLink, useRoute, useRouter } from "vue-router";
 import { apiGet, apiPost } from "../api";
@@ -124,7 +125,8 @@ async function handleRegister() {
               class="absolute right-2 top-1/2 -translate-y-1/2 text-muted hover:text-gray-600 dark:hover:text-gray-200"
               @click="showPwd = !showPwd"
             >
-              {{ showPwd ? "🙈" : "👁" }}
+              <EyeOff v-if="showPwd" class="h-4 w-4" />
+              <Eye v-else class="h-4 w-4" />
             </button>
           </div>
           <PasswordStrength :password="password" />

@@ -153,7 +153,7 @@ function openSender(msg: { senderHandle?: string }) {
     />
     <div class="flex flex-1 items-center justify-center p-4">
       <EmptyState
-        icon="⚠️"
+        icon="alert"
         title="加载失败"
         :description="error"
         action-label="返回频道"

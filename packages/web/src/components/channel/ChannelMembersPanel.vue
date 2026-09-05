@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Crown, X } from "@lucide/vue";
 import { computed, onMounted, ref, watch } from "vue";
 import { apiClient, apiGet } from "../../api";
 import { useAuthStore, useChannelStore, useUiStore } from "../../stores";
@@ -123,7 +124,9 @@ function openProfile(m: Member) {
   <aside class="w-60 shrink-0 border-l border-line bg-gray-50 dark:bg-gray-800 flex flex-col">
     <div class="flex items-center justify-between p-3 border-b border-line">
       <span class="text-gray-700 dark:text-gray-300 text-sm font-semibold">成员（{{ members.length }}）</span>
-      <button @click="onClose" class="text-muted hover:text-gray-700 dark:hover:text-white text-sm">✕</button>
+      <button @click="onClose" class="text-muted hover:text-gray-700 dark:hover:text-white text-sm">
+        <X class="h-4 w-4" />
+      </button>
     </div>
 
     <div class="p-3 border-b border-line space-y-1">
@@ -193,7 +196,7 @@ function openProfile(m: Member) {
             title="该频道的经理 agent，可派发任务给其它 agent"
             class="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900 text-amber-700 dark:text-amber-300"
           >
-            👔 经理
+            <Crown class="mr-0.5 inline h-3 w-3" aria-hidden="true" /> 经理
           </span>
           <button
             v-if="m.member_type === 'agent'"
@@ -208,7 +211,7 @@ function openProfile(m: Member) {
             @click="handleRemove(m)"
             :title="m.member_type === 'agent' ? '将 Agent 移出频道' : '移除成员'"
             class="text-muted hover:text-red-500 text-xs opacity-0 group-hover:opacity-100"
-          >✕</button>
+          ><X class="h-3.5 w-3.5" /></button>
         </div>
       </div>
 
@@ -256,7 +259,7 @@ function openProfile(m: Member) {
             title="该频道的经理 agent，可派发任务给其它 agent"
             class="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900 text-amber-700 dark:text-amber-300"
           >
-            👔 经理
+            <Crown class="mr-0.5 inline h-3 w-3" aria-hidden="true" /> 经理
           </span>
           <button
             v-if="m.member_type === 'agent'"
@@ -271,7 +274,7 @@ function openProfile(m: Member) {
             @click="handleRemove(m)"
             :title="m.member_type === 'agent' ? '将 Agent 移出频道' : '移除成员'"
             class="text-muted hover:text-red-500 text-xs opacity-0 group-hover:opacity-100"
-          >✕</button>
+          ><X class="h-3.5 w-3.5" /></button>
         </div>
       </div>
     </div>

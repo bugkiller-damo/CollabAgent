@@ -1,7 +1,9 @@
 <script setup lang="ts">
+import { Bell } from "@lucide/vue";
 import { onMounted, onUnmounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { readCsrf } from "../../api";
+import { NOTIFICATION_FALLBACK_ICON, NOTIFICATION_TYPE_ICONS } from "../../lib/type-icons";
 import { type NotificationItem, useNotificationStore } from "../../stores/notificationStore";
 
 function timeAgo(iso: string): string {
@@ -11,13 +13,6 @@ function timeAgo(iso: string): string {
   if (d < 86400) return `${Math.floor(d / 3600)}小时前`;
   return `${Math.floor(d / 86400)}天前`;
 }
-
-const TYPE_ICON: Record<string, string> = {
-  "@mention": "💬",
-  task_assigned: "✅",
-  dm: "📨",
-  reminder: "⏰",
-};
 
 const notificationStore = useNotificationStore();
 const router = useRouter();
@@ -85,7 +80,7 @@ async function handleMarkAll() {
       aria-label="通知"
       @click="open = !open"
     >
-      <span class="text-xl">🔔</span>
+      <Bell class="h-5 w-5" />
       <span
         v-if="notificationStore.unreadCount > 0"
         class="absolute -top-0.5 -right-0.5 bg-red-500 text-white text-xs rounded-full min-w-[18px] h-[18px] flex items-center justify-center px-1"
@@ -130,7 +125,7 @@ async function handleMarkAll() {
             ]"
             @click="handleClick(n)"
           >
-            <span class="text-2xl flex-shrink-0">{{ TYPE_ICON[n.type] || "📌" }}</span>
+            <component :is="NOTIFICATION_TYPE_ICONS[n.type] || NOTIFICATION_FALLBACK_ICON" class="h-6 w-6 flex-shrink-0 mt-0.5" />
             <div class="flex-1 min-w-0">
               <div class="flex items-start justify-between gap-2">
                 <p class="font-medium text-sm text-gray-900 dark:text-gray-100 truncate">{{ n.title }}</p>

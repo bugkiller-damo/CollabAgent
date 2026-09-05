@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { X } from "@lucide/vue";
 import { computed, onBeforeUnmount, onMounted } from "vue";
 import { useUiStore } from "../../stores";
 import MemberProfileBody from "./MemberProfileBody.vue";
@@ -33,7 +34,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
     <div class="flex items-center justify-between border-b border-gray-200 px-4 py-3 dark:border-gray-700">
       <span class="text-sm font-semibold text-gray-800 dark:text-gray-200">档案</span>
       <button type="button" class="text-sm text-muted hover:text-gray-700 dark:hover:text-white" @click="close">
-        ✕
+        <X class="h-4 w-4" />
       </button>
     </div>
 

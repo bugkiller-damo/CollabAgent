@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { type AgentPresence, composePresence, PRESENCE_LABEL } from "@collabagent/shared";
+import { Check, Monitor } from "@lucide/vue";
 import { computed, onMounted, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { apiClient, apiGet, apiPatch, apiPost } from "../api";
@@ -381,8 +382,8 @@ watch(
       </div>
 
       <Card class="flex items-start gap-4">
-        <div class="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl bg-gray-200 text-2xl dark:bg-gray-700">
-          💻
+        <div class="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl bg-gray-200 dark:bg-gray-700">
+          <Monitor class="h-7 w-7" aria-hidden="true" />
         </div>
         <div class="min-w-0 flex-1">
           <div class="flex flex-wrap items-center gap-2">
@@ -469,7 +470,10 @@ watch(
         <div v-if="tokenCommand" class="space-y-2">
           <div class="break-all rounded bg-gray-900 p-3 font-mono text-xs text-green-400 dark:bg-black">{{ tokenCommand }}</div>
           <div class="flex items-center gap-2">
-            <Button size="sm" variant="secondary" @click="copyCommand">{{ copied ? "已复制 ✓" : "复制命令" }}</Button>
+            <Button size="sm" variant="secondary" @click="copyCommand">
+              <Check v-if="copied" class="mr-0.5 inline h-3.5 w-3.5" aria-hidden="true" />
+              {{ copied ? "已复制" : "复制命令" }}
+            </Button>
           </div>
           <p class="text-xs text-muted">令牌只显示这一次。密钥不会回放。</p>
           <div v-if="!connected" class="flex items-center gap-2 text-sm text-gray-500">

@@ -12,7 +12,7 @@ function onAction() {
 <template>
   <div class="flex items-center justify-center min-h-[80vh]">
     <EmptyState
-      icon="🔍"
+      icon="search"
       title="页面未找到"
       description="你访问的页面不存在或已被移动。"
       action-label="返回主聊天"

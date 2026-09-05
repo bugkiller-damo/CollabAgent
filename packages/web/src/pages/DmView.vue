@@ -179,7 +179,7 @@ function setAttachments(next: ComposerAttachment[]) {
     <AgentProgressBar :channel-name="'dm:@' + (peer?.handle || peerName)" :agent-name="isAgent ? peer?.handle || peerName : undefined" />
 
     <div v-if="error" class="flex flex-1 items-center justify-center p-4">
-      <EmptyState icon="⚠️" title="无法打开私信" :description="error" />
+      <EmptyState icon="alert" title="无法打开私信" :description="error" />
     </div>
 
     <div v-else-if="messages.length === 0 && pending.length === 0" class="min-h-0 flex-1 overflow-y-auto p-4">
@@ -187,7 +187,7 @@ function setAttachments(next: ComposerAttachment[]) {
       <!-- P1-11：加载失败显示错误态 + 重试，不再伪装成「还没有私信」 -->
       <EmptyState
         v-else-if="loadError"
-        icon="⚠️"
+        icon="alert"
         title="私信加载失败"
         :description="loadError"
         action-label="重新加载"
@@ -195,7 +195,7 @@ function setAttachments(next: ComposerAttachment[]) {
       />
       <EmptyState
         v-else
-        icon="✉️"
+        icon="mail"
         title="还没有私信"
         :description="`发送第一条消息，开始和 ${title} 的私聊`"
       />

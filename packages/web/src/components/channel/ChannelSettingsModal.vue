@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Lock } from "@lucide/vue";
 import { computed, onMounted, ref } from "vue";
 import { apiClient, apiGet } from "../../api";
 import { useChannelStore } from "../../stores";
@@ -127,7 +128,7 @@ async function handleArchive() {
             ]"
             @click="visibility = 'private'"
           >
-            🔒 私有
+            <Lock class="mr-0.5 inline h-3.5 w-3.5" aria-hidden="true" /> 私有
           </button>
         </div>
       </div>

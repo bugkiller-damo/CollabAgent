@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { isProgressContent } from "@collabagent/shared";
+import { ClipboardList, MessageCircle, Smile, Trash2 } from "@lucide/vue";
 import { computed, nextTick, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { apiClient } from "../../api";
@@ -294,7 +295,8 @@ function openSenderProfile() {
             @click="goToThread"
             class="text-gray-500 hover:text-blue-400 text-xs px-1.5 py-0.5 rounded hover:bg-raised transition-colors"
           >
-            💬 {{ replyCount > 0 ? replyCount + " 条回复" : "回复" }}
+            <MessageCircle class="mr-0.5 inline h-3.5 w-3.5" aria-hidden="true" />
+            {{ replyCount > 0 ? replyCount + " 条回复" : "回复" }}
           </button>
 
           <template v-if="isChannel && !deleted">
@@ -302,7 +304,7 @@ function openSenderProfile() {
               v-if="msg.task_number != null"
               class="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300"
             >
-              📋 任务 #{{ msg.task_number }}
+              <ClipboardList class="mr-0.5 inline h-3 w-3" aria-hidden="true" /> 任务 #{{ msg.task_number }}
             </span>
             <button
               v-else
@@ -311,7 +313,8 @@ function openSenderProfile() {
               class="text-gray-500 hover:text-blue-500 text-xs px-1.5 py-0.5 rounded hover:bg-raised opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity disabled:opacity-50"
               title="把这条消息转为看板任务"
             >
-              {{ converting ? "转换中…" : "📋 转任务" }}
+              <ClipboardList class="mr-0.5 inline h-3 w-3" aria-hidden="true" />
+              {{ converting ? "转换中…" : "转任务" }}
             </button>
           </template>
 
@@ -334,7 +337,7 @@ function openSenderProfile() {
               class="text-red-500 hover:text-red-600 text-xs px-1.5 py-0.5 rounded hover:bg-red-50 dark:hover:bg-red-900/30 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity"
               title="删除消息"
             >
-              🗑 删除
+              <Trash2 class="mr-0.5 inline h-3.5 w-3.5" aria-hidden="true" /> 删除
             </button>
           </template>
 
@@ -345,7 +348,7 @@ function openSenderProfile() {
                 class="rounded px-1.5 py-0.5 text-xs text-gray-500 opacity-100 transition-opacity hover:bg-gray-200 hover:text-amber-400 lg:opacity-0 lg:group-hover:opacity-100 dark:hover:bg-gray-700"
                 @click="emojiPickerOpen = !emojiPickerOpen"
               >
-                😀
+                <Smile class="h-4 w-4" />
               </button>
               <div
                 v-if="emojiPickerOpen"

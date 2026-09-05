@@ -4,6 +4,7 @@ import { useRouter } from "vue-router";
 import { readCsrf } from "../api";
 import EmptyState from "../components/EmptyState.vue";
 import PageHeader from "../components/layout/PageHeader.vue";
+import { NOTIFICATION_FALLBACK_ICON, NOTIFICATION_TYPE_ICONS } from "../lib/type-icons";
 import { useUiStore } from "../stores";
 import { type NotificationItem, useNotificationStore } from "../stores/notificationStore";
 
@@ -14,13 +15,6 @@ function timeAgo(iso: string): string {
   if (d < 86400) return `${Math.floor(d / 3600)}小时前`;
   return `${Math.floor(d / 86400)}天前`;
 }
-
-const TYPE_ICON: Record<string, string> = {
-  "@mention": "💬",
-  task_assigned: "✅",
-  dm: "📨",
-  reminder: "⏰",
-};
 
 const notificationStore = useNotificationStore();
 const uiStore = useUiStore();
@@ -118,7 +112,7 @@ async function handleMarkAll() {
       >
         加载中…
       </div>
-      <EmptyState v-else-if="list.length === 0" icon="⚡" title="暂无动态" description="提及、任务指派和提醒会显示在这里" />
+      <EmptyState v-else-if="list.length === 0" icon="zap" title="暂无动态" description="提及、任务指派和提醒会显示在这里" />
       <button
         v-for="n in list"
         :key="n.id"
@@ -129,7 +123,7 @@ async function handleMarkAll() {
         ]"
         @click="handleClick(n)"
       >
-        <span class="shrink-0 text-lg">{{ TYPE_ICON[n.type] || "📌" }}</span>
+        <component :is="NOTIFICATION_TYPE_ICONS[n.type] || NOTIFICATION_FALLBACK_ICON" class="h-5 w-5 shrink-0 mt-0.5" />
         <div class="min-w-0 flex-1">
           <div class="flex items-start justify-between gap-2">
             <p class="truncate text-sm font-medium text-gray-900 dark:text-gray-100">{{ n.title }}</p>

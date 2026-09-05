@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ChevronDown } from "@lucide/vue";
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { useInstanceAdmin } from "../../composables";
@@ -84,9 +85,7 @@ function go(path: string) {
         <p class="truncate text-sm font-medium text-ink">{{ displayName }}</p>
         <p class="truncate text-xs text-gray-500">@{{ user?.handle || "unknown" }}</p>
       </div>
-      <svg class="h-4 w-4 shrink-0 text-muted" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
-      </svg>
+      <ChevronDown class="h-4 w-4 shrink-0 text-muted" />
     </button>
 
     <div

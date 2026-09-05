@@ -238,7 +238,7 @@ const footerLabel = computed(() => `${humans.value.length} 位成员 · ${agents
           <!-- P1-11：加载失败显示错误态 + 重试，不再伪装成「还没有成员」 -->
           <EmptyState
             v-else-if="loadFailed"
-            icon="⚠️"
+            icon="alert"
             title="成员加载失败"
             :description="anyError"
             action-label="重试"
@@ -246,7 +246,7 @@ const footerLabel = computed(() => `${humans.value.length} 位成员 · ${agents
           />
           <EmptyState
             v-else-if="empty"
-            icon="👥"
+            icon="users"
             title="还没有成员"
             description="连接计算机创建 Agent，或邀请同事后，会显示在这里"
           />

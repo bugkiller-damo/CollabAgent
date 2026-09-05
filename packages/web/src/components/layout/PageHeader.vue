@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ChevronLeft } from "@lucide/vue";
 import { RouterLink } from "vue-router";
 import Breadcrumb from "../ui/Breadcrumb.vue";
 
@@ -31,9 +32,7 @@ withDefaults(
           class="mr-1 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-700 dark:hover:text-white"
           aria-label="返回"
         >
-          <svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" />
-          </svg>
+          <ChevronLeft class="h-5 w-5" />
         </RouterLink>
         <div v-if="$slots.leading" class="shrink-0"><slot name="leading" /></div>
         <div class="min-w-0">

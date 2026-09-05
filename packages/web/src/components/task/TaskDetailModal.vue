@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { X } from "@lucide/vue";
 import { ref, watch } from "vue";
 import { apiGet, apiPost } from "../../api";
 import { toast } from "../../stores/toastStore";
@@ -217,7 +218,7 @@ function close() {
         aria-label="关闭"
         @click="close"
       >
-        ✕
+        <X class="h-4 w-4" />
       </button>
     </div>
 

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Plus } from "@lucide/vue";
 import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { apiGet } from "../../../api";
@@ -109,9 +110,7 @@ function onCreated(name: string) {
       <SidebarSection title="频道" persist-key="chat.public" :count="publicChannels.length">
         <template #action>
           <IconButton label="创建频道" tooltip="创建频道" class="h-6 w-6" @click="showCreateChannel = true">
-            <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-            </svg>
+            <Plus class="h-4 w-4" />
           </IconButton>
         </template>
         <button

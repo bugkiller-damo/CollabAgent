@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { TriangleAlert } from "@lucide/vue";
 import { onErrorCaptured, ref } from "vue";
 import Button from "./ui/Button.vue";
 
@@ -34,7 +35,7 @@ defineOptions({ inheritAttrs: false });
     v-if="hasError"
     class="flex flex-col items-center justify-center h-full py-16 px-4 text-center bg-canvas"
   >
-    <div class="text-5xl mb-4">⚠️</div>
+    <TriangleAlert class="mb-4 h-12 w-12 opacity-60" aria-hidden="true" />
     <h2 class="text-gray-800 dark:text-white font-bold text-lg mb-2">页面遇到问题</h2>
     <p class="text-muted text-sm max-w-md mb-1">{{ errorMessage || "未知错误" }}</p>
     <p class="text-muted text-xs mb-4">刷新或点击下方按钮重试</p>

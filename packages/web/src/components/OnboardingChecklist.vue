@@ -76,11 +76,16 @@ function dismiss() {
   >
     <div class="flex items-start justify-between mb-2">
       <h3 class="text-ink text-sm font-semibold">快速开始</h3>
-      <button class="text-muted hover:text-gray-600 dark:hover:text-gray-200 text-sm" title="不再显示" @click="dismiss">✕</button>
+      <button class="text-muted hover:text-gray-600 dark:hover:text-gray-200 text-sm" title="不再显示" @click="dismiss">
+        <X class="h-4 w-4" />
+      </button>
     </div>
     <ul class="space-y-2">
       <li v-for="s in steps" :key="s.label" class="flex items-center gap-2 text-sm">
-        <span :class="s.done ? 'text-green-500' : 'text-muted'">{{ s.done ? "✓" : "○" }}</span>
+        <span :class="s.done ? 'text-green-500' : 'text-muted'">
+          <Check v-if="s.done" class="h-3.5 w-3.5" />
+          <Circle v-else class="h-3 w-3" />
+        </span>
         <span :class="s.done ? 'text-muted line-through' : 'text-gray-700 dark:text-gray-200'">{{ s.label }}</span>
       </li>
     </ul>

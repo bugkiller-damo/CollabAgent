@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Check, X } from "@lucide/vue";
 import { computed, onMounted, ref, watch } from "vue";
 import { apiClient, apiGet, apiPost } from "../../api";
 import OrgMembersPanel from "../../components/admin/OrgMembersPanel.vue";
@@ -220,7 +221,7 @@ function selectOrg(e: Event) {
             class="text-red-500 hover:text-red-600"
             title="移除"
             @click="removeTarget = m"
-          >✕</Button>
+          ><X class="h-3.5 w-3.5" /></Button>
         </div>
         <!-- P1-11：members 加载失败不再伪装成「暂无成员」 -->
         <p v-if="membersError && members.length === 0" class="p-4 text-sm text-red-500">
@@ -247,8 +248,13 @@ function selectOrg(e: Event) {
           <span class="shrink-0 text-xs text-muted">
             已用 {{ inv.uses }}{{ inv.max_uses != null ? "/" + inv.max_uses : "" }} 次<template v-if="inv.expires_at"> · {{ new Date(inv.expires_at).toLocaleDateString() }} 过期</template>
           </span>
-          <Button variant="ghost" size="sm" class="shrink-0" @click="copyInvite(inv.token)">{{ copied === inv.token ? "已复制 ✓" : "复制" }}</Button>
-          <Button variant="ghost" size="sm" class="shrink-0 text-red-500 hover:text-red-600" title="吊销" @click="revokeInvite(inv.token)">✕</Button>
+          <Button variant="ghost" size="sm" class="shrink-0" @click="copyInvite(inv.token)">
+            <Check v-if="copied === inv.token" class="mr-0.5 inline h-3.5 w-3.5" aria-hidden="true" />
+            {{ copied === inv.token ? "已复制" : "复制" }}
+          </Button>
+          <Button variant="ghost" size="sm" class="shrink-0 text-red-500 hover:text-red-600" title="吊销" @click="revokeInvite(inv.token)">
+            <X class="h-3.5 w-3.5" />
+          </Button>
         </div>
         <p v-if="activeInvites.length === 0" class="text-xs text-gray-500">还没有有效的邀请链接。</p>
       </Card>

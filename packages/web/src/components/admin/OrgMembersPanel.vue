@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { X } from "@lucide/vue";
 import { onMounted, ref } from "vue";
 import { apiClient, apiGet } from "../../api";
 import { toast } from "../../stores/toastStore";
@@ -114,7 +115,7 @@ function onInviteKeydown(e: KeyboardEvent) {
           @click="removeMember(m)"
           title="移除"
           class="text-muted hover:text-red-500 opacity-0 group-hover:opacity-100"
-        >✕</button>
+        ><X class="h-3.5 w-3.5" /></button>
       </span>
     </div>
   </div>

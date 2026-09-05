@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { labelTool, summarizeProgress } from "@collabagent/shared";
+import { Check, Hourglass, Sparkles, TriangleAlert } from "@lucide/vue";
 import { computed } from "vue";
 import type { ObsFrame } from "../../stores/terminalStore";
 
@@ -107,13 +108,13 @@ const fmtTime = (ts: number): string => new Date(ts).toLocaleTimeString("zh-CN",
         v-else-if="item.kind === 'thinking'"
         class="rounded border-l-2 border-gray-600 bg-gray-900/60 px-2 py-1 text-gray-400 italic whitespace-pre-wrap"
       >
-        💭 {{ item.text }}
+        <Sparkles class="mr-0.5 inline h-3.5 w-3.5" aria-hidden="true" /> {{ item.text }}
       </div>
 
       <!-- 工具调用卡片（点击展开输入/结果） -->
       <details v-else-if="item.kind === 'tool'" class="group rounded border border-gray-700 bg-gray-900 text-[12px]">
         <summary class="flex cursor-pointer items-center gap-2 px-2 py-1 select-none hover:bg-gray-800/60">
-          <span>{{ item.done ? "✅" : "⏳" }}</span>
+          <span><Check v-if="item.done" class="inline h-3.5 w-3.5" /><Hourglass v-else class="inline h-3.5 w-3.5" /></span>
           <span class="font-medium text-purple-300">{{ item.label }}</span>
           <span class="min-w-0 flex-1 truncate text-gray-500">{{ item.inputText }}</span>
           <span class="shrink-0 text-[10px] text-gray-600">{{ fmtTime(item.time) }}</span>
@@ -130,7 +131,7 @@ const fmtTime = (ts: number): string => new Date(ts).toLocaleTimeString("zh-CN",
 
       <!-- 错误块 -->
       <div v-else-if="item.kind === 'error'" class="rounded border-l-2 border-red-500 bg-red-950/40 px-2 py-1 text-red-300 whitespace-pre-wrap">
-        ⚠️ {{ item.text }}
+        <TriangleAlert class="mr-0.5 inline h-3.5 w-3.5" aria-hidden="true" /> {{ item.text }}
       </div>
 
       <!-- 正文 -->

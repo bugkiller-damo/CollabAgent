@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Copy, TriangleAlert } from "@lucide/vue";
 import { computed, onMounted, ref } from "vue";
 import { apiClient, apiGet } from "../../api";
 import ConfirmDialog from "../../components/ConfirmDialog.vue";
@@ -103,10 +104,14 @@ function handleConfirmRevoke() {
       <Button @click="createToken" size="sm">+ 生成新令牌</Button>
 
       <div v-if="newToken" class="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-900/20">
-        <p class="mb-1 text-xs font-bold text-amber-800 dark:text-amber-300">⚠️ 新令牌（仅显示一次）</p>
+        <p class="mb-1 text-xs font-bold text-amber-800 dark:text-amber-300">
+          <TriangleAlert class="mr-0.5 inline h-3.5 w-3.5" aria-hidden="true" /> 新令牌（仅显示一次）
+        </p>
         <code class="block break-all rounded bg-white p-2 font-mono text-sm text-gray-900 dark:bg-gray-900 dark:text-white">{{ newToken }}</code>
         <div class="mt-2 flex gap-2">
-          <Button @click="copyNewToken" size="sm" variant="secondary">📋 复制</Button>
+          <Button @click="copyNewToken" size="sm" variant="secondary">
+            <Copy class="mr-0.5 inline h-3 w-3" aria-hidden="true" /> 复制
+          </Button>
           <Button @click="newToken = null" size="sm" variant="ghost">关闭</Button>
         </div>
       </div>

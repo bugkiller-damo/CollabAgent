@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Hourglass, TriangleAlert } from "@lucide/vue";
 import type { PendingItem } from "./types";
 
 defineProps<{
@@ -26,11 +27,11 @@ const emit = defineEmits<{
       <div class="text-xs mt-0.5">
         <span v-if="item.status === 'sending'" class="text-muted">发送中…</span>
         <span v-else-if="item.status === 'queued'" class="text-amber-500">
-          ⏳ 离线，恢复网络后自动发送
+          <Hourglass class="mr-0.5 inline h-3.5 w-3.5" aria-hidden="true" /> 离线，恢复网络后自动发送
           <button @click="emit('discard', item.tempId)" class="ml-2 underline text-muted hover:text-gray-300">删除</button>
         </span>
         <span v-else-if="item.status === 'failed'" class="text-red-500">
-          ⚠️ 发送失败<template v-if="item.failReason">：{{ item.failReason }}</template>
+          <TriangleAlert class="mr-0.5 inline h-3.5 w-3.5" aria-hidden="true" /> 发送失败<template v-if="item.failReason">：{{ item.failReason }}</template>
           <button @click="emit('retry', item.tempId)" class="ml-2 underline hover:text-red-400">重试</button>
           <button @click="emit('discard', item.tempId)" class="ml-2 underline text-muted hover:text-gray-300">删除</button>
         </span>

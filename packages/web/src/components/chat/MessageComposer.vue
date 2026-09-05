@@ -15,6 +15,7 @@ export interface ComposerAttachment {
 </script>
 
 <script setup lang="ts">
+import { Paperclip, Send, X } from "@lucide/vue";
 import { computed, ref, watch } from "vue";
 import { uploadAttachment } from "../../api";
 import { useMentionSuggest, type MentionScope } from "../../composables";
@@ -233,7 +234,7 @@ const onDrop = (e: DragEvent) => {
           aria-label="移除附件"
           @click="removeAttachment(a.tempId)"
         >
-          ✕
+          <X class="h-3.5 w-3.5" />
         </button>
       </div>
     </div>
@@ -242,13 +243,7 @@ const onDrop = (e: DragEvent) => {
       <input ref="fileInputRef" type="file" multiple class="hidden" @change="onFileChange" />
 
       <IconButton label="上传文件" tooltip="上传文件" :disabled="disabled || sending" @click="openFilePicker">
-        <svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24">
-          <path
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            d="m15.75 10.5 4.72-4.72a.75.75 0 0 1 1.28.53v11.38a.75.75 0 0 1-1.28.53l-4.72-4.72M12 18.75H4.5a2.25 2.25 0 0 1-2.25-2.25V9m12.841 2.091a2.25 2.25 0 0 1 3.18 0l2.87 2.87"
-          />
-        </svg>
+        <Paperclip class="h-5 w-5" />
       </IconButton>
 
       <textarea
@@ -276,13 +271,7 @@ const onDrop = (e: DragEvent) => {
         "
         @click="doSend"
       >
-        <svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-          <path
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5"
-          />
-        </svg>
+        <Send class="h-5 w-5" />
       </button>
     </div>
 
