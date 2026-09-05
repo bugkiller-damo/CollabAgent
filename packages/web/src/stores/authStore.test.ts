@@ -13,6 +13,10 @@ function makeStorage() {
     getItem: (k: string) => (m.has(k) ? m.get(k)! : null),
     setItem: (k: string, v: string) => void m.set(k, v),
     removeItem: (k: string) => void m.delete(k),
+    key: (i: number) => [...m.keys()][i] ?? null, // #19 清盘遍历需要
+    get length() {
+      return m.size;
+    },
   } as unknown as Storage;
 }
 
@@ -93,6 +97,22 @@ describe("authStore.logout / updateUser", () => {
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect((init.headers as Record<string, string>)["X-CSRF-Token"]).toBeUndefined();
     expect(store.user).toBeNull();
+  });
+
+  it("logout 清消息缓存（#19）：msgs_* 与 pending_msgs_v1 移除，UI 偏好键不误伤", () => {
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => okResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    localStorage.setItem("msgs_#general", "[]");
+    localStorage.setItem("pending_msgs_v1", "{}");
+    localStorage.setItem("theme", "dark");
+
+    const store = useAuthStore();
+    store.logout();
+
+    expect(localStorage.getItem("msgs_#general")).toBeNull();
+    expect(localStorage.getItem("pending_msgs_v1")).toBeNull();
+    expect(localStorage.getItem("theme")).toBe("dark"); // UI 偏好键不在清盘口径内
   });
 
   it("updateUser：浅合并既有字段并持久化", () => {

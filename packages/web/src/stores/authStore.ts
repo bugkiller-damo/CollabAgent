@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
 import { readCsrf } from "../api";
+import { clearMessageCaches } from "../lib/message-cache";
 
 interface User {
   id: string;
@@ -39,6 +40,11 @@ export const useAuthStore = defineStore("auth", () => {
   }
 
   function logout(): void {
+    // #19 口径：明文缓存=切频道/刷新不丢的 UX 权衡，但跨账号残留不属权衡内——
+    // 登出即清 localStorage 消息缓存与离线队列，并联动清 messageStore 内存态
+    //（SPA 登出不整页刷新，内存态不清则 in-flight flush 失败会把旧账号草稿
+    // 重写回 localStorage，旧缓存消息也会在新账号频道闪现）
+    clearMessageCaches();
     const csrf = readCsrf();
     fetch("/api/auth/logout", {
       method: "POST",

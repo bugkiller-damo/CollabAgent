@@ -10,6 +10,7 @@ vi.mock("../api", () => ({
 }));
 
 import { apiGet, apiPost } from "../api";
+import { clearMessageCaches } from "../lib/message-cache";
 import { threadBufferKey, useMessageStore } from "./messageStore";
 
 const apiGetMock = vi.mocked(apiGet);
@@ -25,7 +26,8 @@ function stubLocalStorage() {
     setItem: (k: string, v: string) => void lsData.set(k, String(v)),
     removeItem: (k: string) => void lsData.delete(k),
     clear: () => lsData.clear(),
-    key: () => null,
+    // #19 清盘遍历依赖 key(i)：stub 必须对齐真实 Storage 语义（此前恒 null 是 harness 缺欠）
+    key: (i: number) => [...lsData.keys()][i] ?? null,
     get length() {
       return lsData.size;
     },
@@ -419,5 +421,39 @@ describe("pending 乐观发送队列", () => {
 
     expect(apiPostMock).toHaveBeenCalledTimes(2);
     expect(store.pendingByTarget).toEqual({});
+  });
+});
+
+// #19 登出清盘联动：clearMessageCaches()（lib）→ store 创建时注册的回调同步清内存态。
+// SPA 登出不整页刷新，内存态不清则 in-flight flush 失败会把旧账号草稿重写回 localStorage。
+describe("登出清盘联动（#19）", () => {
+  it("clearMessageCaches 联动复位内存态：消息/水位/loadError/pending 全清 + localStorage 移除", async () => {
+    const store = useMessageStore();
+    // 造状态：一条 live 消息（写缓存+水位）、一条离线草稿、一次失败（写 loadError）
+    apiGetMock.mockRejectedValueOnce(new Error("boom"));
+    await store.fetchHistory("#a");
+    store.receiveMessage(msg("#a", 1));
+    store.enqueuePending("#a", "draft");
+    expect(Object.keys(store.messagesByTarget).length).toBeGreaterThan(0);
+    expect(store.lastSeenSeq["#a"]).toBeTruthy();
+    expect(store.loadError["#a"]).toBe("boom");
+    expect(store.pendingByTarget["#a"]).toHaveLength(1);
+
+    clearMessageCaches();
+
+    expect(store.messagesByTarget).toEqual({});
+    expect(store.lastSeenSeq).toEqual({});
+    expect(store.loadError).toEqual({});
+    expect(store.pendingByTarget).toEqual({});
+    expect(lsData.get("msgs_#a")).toBeUndefined();
+    expect(lsData.get("pending_msgs_v1")).toBeUndefined();
+  });
+
+  it("重复 clearMessageCaches 幂等：无状态时再清不抛错", () => {
+    const store = useMessageStore();
+    store.receiveMessage(msg("#a", 1));
+    clearMessageCaches();
+    expect(() => clearMessageCaches()).not.toThrow();
+    expect(store.messagesByTarget).toEqual({});
   });
 });

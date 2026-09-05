@@ -3,9 +3,10 @@ import { defineStore } from "pinia";
 import { ref } from "vue";
 import { apiClient, apiGet, apiPost } from "../api";
 import type { PendingItem } from "../components/chat/types";
+// #19：缓存 key 单点（clearMessageCaches 清盘与联动注册同 lib，防口径漂移）
+import { CACHE_PREFIX, onMessageCachesCleared, PENDING_CACHE_KEY } from "../lib/message-cache";
 import { toast } from "./toastStore";
 
-const CACHE_PREFIX = "msgs_";
 const CACHE_LIMIT = 50;
 
 // 断线补拉参数：页大小 200、单 target 上限 10 页防失控、backfillAll 并发 4
@@ -13,9 +14,6 @@ const CACHE_LIMIT = 50;
 const BACKFILL_PAGE_LIMIT = 200;
 const BACKFILL_MAX_PAGES = 10;
 const BACKFILL_CONCURRENCY = 4;
-
-// 离线发送队列持久化 key（单 key 存全 target；只落 queued/failed，sending 落盘时归 queued）
-const PENDING_CACHE_KEY = "pending_msgs_v1";
 
 function cacheKey(channel: string) {
   return CACHE_PREFIX + channel;
@@ -86,6 +84,17 @@ export const useMessageStore = defineStore("messages", () => {
   const loadError = ref<Record<string, string>>({});
   // 离线发送队列（按 target 分组，持久化到 localStorage，切频道/刷新不丢）
   const pendingByTarget = ref<Record<string, PendingItem[]>>(loadPending());
+
+  // #19 登出清盘联动：authStore.logout() → clearMessageCaches()（清 localStorage）→
+  // 本回调清内存态。SPA 登出不整页刷新，store 单例跨登录存活——内存态不清，
+  // in-flight flush 失败会经 persistPending 把旧账号草稿重写回 localStorage
+  //（清了等于没清），旧缓存消息也会在新账号的频道闪现。
+  onMessageCachesCleared(() => {
+    messagesByTarget.value = {};
+    lastSeenSeq.value = {};
+    loadError.value = {};
+    pendingByTarget.value = {};
+  });
 
   // per-target 重入护栏：补拉/flush 进行中对同 target 的重复触发直接返回
   const backfillInflight = new Set<string>();
