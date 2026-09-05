@@ -154,25 +154,6 @@ export const useMessageStore = defineStore("messages", () => {
     }
   }
 
-  async function sendMessage(channel: string, content: string, attachments?: string[]): Promise<void> {
-    const data = await apiPost<{ messageId: string; messageSeq: number }>("/api/messages/send", {
-      target: channel,
-      content,
-      attachmentIds: attachments,
-    });
-    const newMsg = {
-      id: data.messageId,
-      channelId: channel,
-      seq: data.messageSeq,
-      senderId: "me",
-      senderName: "Me",
-      senderType: "human" as const,
-      content,
-      time: new Date().toISOString(),
-    } as Message;
-    receiveMessage(newMsg);
-  }
-
   function receiveMessage(message: Message): void {
     const target = message.channelId;
     const existing = messagesByTarget.value[target] || [];
@@ -491,7 +472,6 @@ export const useMessageStore = defineStore("messages", () => {
     loadError,
     pendingByTarget,
     fetchHistory,
-    sendMessage,
     receiveMessage,
     receiveThreadReply,
     backfillTarget,

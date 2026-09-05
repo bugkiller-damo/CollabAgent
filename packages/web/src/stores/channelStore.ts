@@ -70,20 +70,6 @@ export const useChannelStore = defineStore("channels", () => {
     await fetchChannels();
   }
 
-  async function joinChannel(name: string): Promise<void> {
-    await apiPost(`/api/channels/${name}/join`);
-    const next = new Set(joinedChannels.value);
-    next.add(name);
-    joinedChannels.value = next;
-  }
-
-  async function leaveChannel(name: string): Promise<void> {
-    await apiPost(`/api/channels/${name}/leave`);
-    const next = new Set(joinedChannels.value);
-    next.delete(name);
-    joinedChannels.value = next;
-  }
-
   function setActiveChannel(name: string): void {
     activeChannelName.value = name;
     clearUnread(name);
@@ -114,8 +100,6 @@ export const useChannelStore = defineStore("channels", () => {
     fetchChannels,
     createChannel,
     updateChannel,
-    joinChannel,
-    leaveChannel,
     setActiveChannel,
     incrementUnread,
     clearUnread,
