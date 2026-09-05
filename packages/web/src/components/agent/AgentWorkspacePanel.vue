@@ -1,8 +1,11 @@
 <script setup lang="ts">
 import type { AgentWorkspaceFile, AgentWorkspaceSnapshot } from "@collabagent/shared";
-import { computed, ref, watch } from "vue";
+import { computed, defineAsyncComponent, ref, watch } from "vue";
 import { apiGet } from "../../api";
-import MarkdownContent from "../chat/MarkdownContent.vue";
+
+// 异步组件：切断 AppLayout→MemberProfileDrawer→本面板→MarkdownContent 的急切链，
+// 使 highlight.js/markdown-it/DOMPurify 不进入口 chunk（审计 §4.4 #17）
+const MarkdownContent = defineAsyncComponent(() => import("../chat/MarkdownContent.vue"));
 
 const props = defineProps<{
   agentId: string;

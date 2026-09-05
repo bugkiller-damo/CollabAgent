@@ -181,9 +181,11 @@
 
 | # | 问题 | 证据 |
 |---|---|---|
-| 17 | **index chunk 1.24 MB**：急切依赖链 router → AppLayout → MemberProfileDrawer → MemberProfileBody → AgentWorkspacePanel → MarkdownContent.vue:3 `import hljs from "highlight.js"`（**全量约 190 语言**）+ markdown-it + DOMPurify 全部进入口 chunk | 构建产物实测；修法：`highlight.js/lib/common` 按需注册 + MarkdownContent 异步组件/manualChunks |
+| 17 | **index chunk 1.24 MB** ✅ 2026-09-05 已修复（1,238→124 kB，gzip 411→39）：急切依赖链 router → AppLayout → MemberProfileDrawer → MemberProfileBody → AgentWorkspacePanel → MarkdownContent.vue:3 `import hljs from "highlight.js"`（**全量约 190 语言**）+ markdown-it + DOMPurify 全部进入口 chunk | 构建产物实测；修法：`highlight.js/lib/common` 按需注册 + MarkdownContent 异步组件/manualChunks |
 | 18 | **测试盲区**：authStore / api(CSRF) / agent·channel·computer·notification·task·terminal 6 个 store / 3 个 composables 全部零测试；消息渲染安全链（DOMPurify+md）无回归网 | 现有 41 用例集中在 ws 链路 |
 | 19 | **消息明文缓存 localStorage**：频道消息与离线队列明文落盘（切频道/刷新不丢的设计权衡） | messageStore.ts:26-35,216；知情风险，建议确认口径或加上限/开关 |
+
+> **P1-17 修复记录（2026-09-05，index chunk 拆包）**：审计修法两叉全部落地。①**hljs 全量 → `highlight.js/lib/common`**（v11.12 自带 `common.d.ts` 类型，API 同 getLanguage/highlight 零代码改动）——36 常用语言子集，产物 grep 实证 `clojure`（仅全量包含）0 命中、`typescript` 1 命中。②**急切链单点切断**——AgentWorkspacePanel（AppLayout→MemberProfileDrawer→MemberProfileBody→本面板→MarkdownContent 的唯一急切链入口）改 `defineAsyncComponent(() => import(...))`，模板用法与 props 不变；MessageRow/ThreadView/SearchView 本就只被懒加载页面静态引入（MessageRow ← ChannelView/DmView/VirtualMessageList），Rollup 自动把 markdown 栈归入共享懒块，无需 manualChunks。③**github-dark.css 从 main.ts 全局迁入 MarkdownContent.vue**——随懒块加载；安全性核实：`.md-content pre` 底色 #0d1117 由 style.css 自带，该 CSS 只贡献 token 配色，且全仓 hljs 标记唯一生产者就是 MarkdownContent。**数字**：index 1,238.34→**124.22 kB**（gzip 411.71→38.78），markdown 栈独立懒块 299.70 kB（gzip 111.58）按需加载，vendor 98.58→100.48（+1.9 kB 为 defineAsyncComponent 运行时），>500kB 构建警告消失；产物 CSS 实证 `MarkdownContent-*.css` 独立含 `hljs-keyword`、入口 CSS 不再携带。验证：vue-tsc 0 错误、biome 0 错误（5 info 均既有基线）、vitest 73/73、`vite build` 成功无警告。取舍立此存照：lib/common 36 语言为审计点名方案，冷门语言代码块走 highlight 回调既有的 `escapeHtml` 降级分支（内容不丢、仅无着色）；AgentWorkspacePanel 首次打开时 markdown 有一次异步块加载间隙（defineAsyncComponent 默认无 loading 组件，本地即时可接受）；SearchBar/SearchPane 死代码的静态 import 不处理（归 §5 P2 删除批）；manualChunks 未加——defineAsyncComponent 后 Rollup 自然成块，手工干预反而破坏共享。
 
 ---
 
@@ -227,7 +229,7 @@
 3. ~~Modal 补 role/focus trap/滚动锁定（一处修复全站受益）~~（✅ 2026-09-04 落地，见 §4.1 P1-5 修复记录——另含初始聚焦/焦点归还/aria-modal，8 个消费方全量受益）；
 4. ~~全站 `focus:` → `focus-visible:` 替换 + 三个搜索框补 ring~~（✅ 2026-09-04 落地，见 §4.1 P1-4 修复记录——outline-none 抑制保持恒在，仅指标迁移）。
 
-**第三梯队（状态与测试，持续）**：~~messageStore 加 error 字段消灭「错误伪装成空态」~~（✅ 2026-09-05 落地，见 §4.3 P1-11 修复记录——messageStore.loadError + ChannelView/DmView/5 页面共 7 个消费面全量接线）；highlight.js 按需注册拆包（index 预计降至约 400 kB）；authStore + api + 6 个 store 补单测；确认 localStorage 消息缓存口径。
+**第三梯队（状态与测试，持续）**：~~messageStore 加 error 字段消灭「错误伪装成空态」~~（✅ 2026-09-05 落地，见 §4.3 P1-11 修复记录——messageStore.loadError + ChannelView/DmView/5 页面共 7 个消费面全量接线）；~~highlight.js 按需注册拆包~~（✅ 2026-09-05 落地，见 §4.4 P1-17 修复记录——index 实测 1,238→124 kB，远优于预估的 400 kB）；authStore + api + 6 个 store 补单测；确认 localStorage 消息缓存口径。
 
 ---
 
@@ -311,6 +313,7 @@
 - 2026-09-05 P1-14（§4.3 #14 密码策略不一致）落地复测：71 → **73 用例**（新增 `lib/passwordPolicy.test.ts` +2），vue-tsc 0 错误、biome 0 错误、`vite build` 成功。新建 `lib/passwordPolicy.ts` 与 server validatePassword 同源同序同文案，三页面收敛单点：ForgotPasswordPage ≥6→≥8+字母+数字（实锤样例本地拦截）、**ProfileSettings 改密同病第三处补齐**（原仅 ≥8 缺字母数字）、RegisterPage 内联迁 helper（规则等价）。全仓客户端密码规则点复扫 3 处无第四处。§4.3 余量 #15~#16。
 - 2026-09-05 P1-15（§4.3 #15 危险操作确认不一致）落地复测：73 用例不变（页面级交互无测试设施），vue-tsc 0 错误、biome 0 错误、`vite build` 成功。三处统一 ConfirmDialog：WorkspaceMembers 移除成员（removeTarget 确认流）、SecuritySettings 退出所有设备（原生 confirm() 删除）、IntegrationSettings 撤销机器令牌（W-A5 预告项归位）。§4.3 余量 #16。
 - 2026-09-05 P1-16（§4.3 #16 ThreadView 无加载态）落地复测：73 用例不变（模板骨架分支无测试面），vue-tsc 0 错误、biome 0 错误、`vite build` 成功。loadThread 加 loading 标志 + 首载显示 MessageSkeleton（stale-while-revalidate 防切换闪空；顺带清 error 残留防误显上线程错误态）。**§4.3 #11~#16 全部清零**，§4 余量仅 §4.4 工程 #17~#19。
+- 2026-09-05 P1-17（§4.4 #17 index chunk 拆包）落地复测：73 用例不变、vue-tsc 0 错误、biome 0 错误（5 info 既有基线）、`vite build` 成功且 **>500kB 警告消失**（§1 工程健康表 build 行的 ⚠️ 随之解除，index 基线由 1.24 MB/gzip 411 kB 刷新为 **124.22 kB/gzip 38.78 kB**）。hljs 全量→lib/common 36 语言 + AgentWorkspacePanel defineAsyncComponent 切断急切链 + github-dark.css 迁入懒块（详见 §4.4 P1-17 修复记录）。§4 余量仅 §4.4 #18（测试盲区）、#19（localStorage 缓存口径）。
 
 ---
 

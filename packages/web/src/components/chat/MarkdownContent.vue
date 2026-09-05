@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import DOMPurify from "dompurify";
-import hljs from "highlight.js";
+// lib/common = 36 常用语言按需子集（全量 ~190 语言曾把入口 chunk 撑到 1.24MB，见审计 §4.4 #17）
+import hljs from "highlight.js/lib/common";
+// 主题随本组件走（原 main.ts 全局引入）；pre 底色由 style.css .md-content 自带，此处只供 token 配色
+import "highlight.js/styles/github-dark.css";
 import MarkdownIt from "markdown-it";
 import { computed } from "vue";
 
