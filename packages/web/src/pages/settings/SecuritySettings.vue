@@ -2,6 +2,7 @@
 import { onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { apiClient, apiGet } from "../../api";
+import ConfirmDialog from "../../components/ConfirmDialog.vue";
 import PageHeader from "../../components/layout/PageHeader.vue";
 import Button from "../../components/ui/Button.vue";
 import Card from "../../components/ui/Card.vue";
@@ -52,6 +53,8 @@ const loading = ref(true);
 const pwd = ref("");
 const confirmText = ref("");
 const busy = ref(false);
+// P1-15：退出所有设备确认弹窗（替换原生 confirm()，对齐全站 ConfirmDialog 惯例）
+const showLogoutAll = ref(false);
 
 function load() {
   loading.value = true;
@@ -78,7 +81,6 @@ async function revoke(id: string) {
 }
 
 async function logoutAll() {
-  if (!confirm("将退出所有设备（包括当前），确定？")) return;
   try {
     await apiClient("/api/auth/logout-all", { method: "POST" });
     authStore.logout();
@@ -133,7 +135,7 @@ async function deactivate() {
     <section>
       <div class="mb-3 flex items-center justify-between">
         <h3 class="font-bold text-ink">登录设备</h3>
-        <Button @click="logoutAll" variant="ghost" size="sm" class="text-red-500 hover:text-red-600">退出所有设备</Button>
+        <Button @click="showLogoutAll = true" variant="ghost" size="sm" class="text-red-500 hover:text-red-600">退出所有设备</Button>
       </div>
       <p v-if="loading" class="text-sm text-muted">加载中…</p>
       <p v-else-if="sessions.length === 0" class="text-sm text-muted">没有活跃会话</p>
@@ -168,5 +170,16 @@ async function deactivate() {
         <Button @click="deactivate" :disabled="busy" variant="danger" size="sm">{{ busy ? "处理中…" : "确认注销账户" }}</Button>
       </div>
     </section>
+
+    <!-- P1-15：退出所有设备前确认（替换原生 confirm()） -->
+    <ConfirmDialog
+      v-if="showLogoutAll"
+      title="退出所有设备？"
+      message="将退出全部会话（包括当前设备），退出后需重新登录。"
+      confirm-label="退出"
+      danger
+      @confirm="logoutAll"
+      @cancel="showLogoutAll = false"
+    />
   </div>
 </template>

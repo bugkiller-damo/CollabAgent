@@ -5,6 +5,7 @@ import { apiPost } from "../api";
 import Button from "../components/ui/Button.vue";
 import Card from "../components/ui/Card.vue";
 import Input from "../components/ui/Input.vue";
+import { validatePasswordPolicy } from "../lib/passwordPolicy";
 
 const email = ref("");
 const code = ref("");
@@ -38,8 +39,10 @@ async function handleSendCode() {
 async function handleReset() {
   err.value = "";
   msg.value = "";
-  if (newPw.value.length < 6) {
-    err.value = "新密码至少 6 位";
+  // P1-14：对齐 server validatePassword（≥8+字母+数字），此前仅 ≥6——「客户端过、server 拒」
+  const pwErr = validatePasswordPolicy(newPw.value);
+  if (pwErr) {
+    err.value = pwErr;
     return;
   }
   loading.value = true;
@@ -81,7 +84,7 @@ async function handleReset() {
         />
         <Input
           type="password"
-          placeholder="新密码（至少6位）"
+          placeholder="新密码（至少8位，含字母和数字）"
           :value="newPw"
           @input="newPw = ($event.target as HTMLInputElement).value"
         />

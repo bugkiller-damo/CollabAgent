@@ -7,6 +7,7 @@ import MarkdownContent from "../components/chat/MarkdownContent.vue";
 import MessageComposer from "../components/chat/MessageComposer.vue";
 import EmptyState from "../components/EmptyState.vue";
 import PageHeader from "../components/layout/PageHeader.vue";
+import MessageSkeleton from "../components/skeleton/MessageSkeleton.vue";
 import Avatar from "../components/ui/Avatar.vue";
 import type { MentionScope } from "../composables";
 import { formatTime } from "../lib/formatTime";
@@ -50,6 +51,9 @@ const currentChannel = computed(() => channelStore.channels.find((c: any) => c.n
 const parent = ref<ThreadMsg | null>(null);
 const replies = ref<ThreadMsg[]>([]);
 const error = ref("");
+// P1-16：加载中标志——首载（parent 为 null）期间显示骨架，不再整块空白；
+// 线程切换期间旧内容保持显示（stale-while-revalidate，防闪空）
+const loading = ref(false);
 // W-A3：发送失败独立可见——load error 只在 !parent 时渲染整页错误，
 // 线程已加载时回复失败此前零反馈（仅草稿保留）
 const sendError = ref("");
@@ -57,6 +61,9 @@ let fetchedThreadId: string | null = null;
 
 async function loadThread() {
   if (!threadId.value) return;
+  // 顺带项：清上次线程的失败残留——否则失败后切线程，加载期间误显上一线程的错误态
+  error.value = "";
+  loading.value = true;
   try {
     const data = await apiClient<{ parent: ThreadMsg; replies: ThreadMsg[] }>(
       `/api/messages/thread/${threadId.value}`,
@@ -66,6 +73,8 @@ async function loadThread() {
     replies.value = data.replies || [];
   } catch {
     error.value = "加载线程失败";
+  } finally {
+    loading.value = false;
   }
 }
 
@@ -163,8 +172,10 @@ function openSender(msg: { senderHandle?: string }) {
     <AgentProgressBar :channel-name="channelName" />
 
     <div class="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
+      <!-- P1-16：加载中显示骨架（首载 parent 为 null 期间），不再整块空白 -->
+      <MessageSkeleton v-if="loading && !parent" />
       <div
-        v-if="parent"
+        v-else-if="parent"
         class="rounded-lg border border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-800"
       >
         <div class="mb-2 flex items-center gap-2">

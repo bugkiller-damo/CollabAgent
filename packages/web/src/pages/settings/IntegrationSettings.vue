@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import { apiClient, apiGet } from "../../api";
+import ConfirmDialog from "../../components/ConfirmDialog.vue";
 import PageHeader from "../../components/layout/PageHeader.vue";
 import Button from "../../components/ui/Button.vue";
 import Card from "../../components/ui/Card.vue";
@@ -18,6 +19,8 @@ const tokens = ref<MachineToken[]>([]);
 const newToken = ref<string | null>(null);
 // P1-11：加载失败原因——失败不再伪装成「暂无令牌」
 const loadError = ref("");
+// P1-15：撤销令牌确认弹窗目标（令牌立即失效，此前 ✕ 直接撤）
+const revokeTarget = ref<MachineToken | null>(null);
 
 async function loadTokens() {
   try {
@@ -81,6 +84,12 @@ function expiryClass(t: MachineToken): string {
 }
 
 const activeTokens = computed(() => tokens.value.filter((t) => !t.revoked_at));
+
+// P1-15：确认后执行撤销
+function handleConfirmRevoke() {
+  if (revokeTarget.value) void revokeToken(revokeTarget.value.id);
+  revokeTarget.value = null;
+}
 </script>
 
 <template>
@@ -120,9 +129,20 @@ const activeTokens = computed(() => tokens.value.filter((t) => !t.revoked_at));
               <span :class="expiryClass(t)">{{ expiryLabel(t) }}</span>
             </p>
           </div>
-          <Button @click="revokeToken(t.id)" variant="ghost" size="sm" class="text-red-500 hover:text-red-600">撤销</Button>
+          <Button @click="revokeTarget = t" variant="ghost" size="sm" class="text-red-500 hover:text-red-600">撤销</Button>
         </Card>
       </div>
     </div>
+
+    <!-- P1-15：撤销令牌前确认（撤销后立即失效，关联 daemon 将掉线） -->
+    <ConfirmDialog
+      v-if="revokeTarget"
+      :title="`撤销机器令牌 ${revokeTarget.prefix}...？`"
+      message="撤销后令牌立即失效，使用该令牌的 daemon 将无法连接，需重新生成并配置。"
+      confirm-label="撤销"
+      danger
+      @confirm="handleConfirmRevoke"
+      @cancel="revokeTarget = null"
+    />
   </div>
 </template>

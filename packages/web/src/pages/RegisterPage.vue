@@ -6,6 +6,7 @@ import PasswordStrength from "../components/PasswordStrength.vue";
 import Button from "../components/ui/Button.vue";
 import Card from "../components/ui/Card.vue";
 import Input from "../components/ui/Input.vue";
+import { validatePasswordPolicy } from "../lib/passwordPolicy";
 import { useAuthStore } from "../stores/authStore";
 
 const authStore = useAuthStore();
@@ -41,12 +42,11 @@ async function handleRegister() {
     error.value = "两次密码不一致";
     return;
   }
-  if (password.value.length < 8) {
-    error.value = "密码至少 8 位";
-    return;
-  }
-  if (!/[a-zA-Z]/.test(password.value) || !/[0-9]/.test(password.value)) {
-    error.value = "密码需包含字母和数字";
+  // P1-14：密码策略收敛到 lib/passwordPolicy 单点（与 server validatePassword 同源），
+  // 此前三处页面各自内联（ForgotPasswordPage ≥6 漂移实锤）
+  const pwErr = validatePasswordPolicy(password.value);
+  if (pwErr) {
+    error.value = pwErr;
     return;
   }
 

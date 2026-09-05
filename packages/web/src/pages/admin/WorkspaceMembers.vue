@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { apiClient, apiGet, apiPost } from "../../api";
 import OrgMembersPanel from "../../components/admin/OrgMembersPanel.vue";
+import ConfirmDialog from "../../components/ConfirmDialog.vue";
 import PageHeader from "../../components/layout/PageHeader.vue";
 import Avatar from "../../components/ui/Avatar.vue";
 import Button from "../../components/ui/Button.vue";
@@ -39,6 +40,8 @@ const copied = ref("");
 // P1-11：加载失败原因——orgs/members 失败不再静默伪装成「暂无成员」
 const orgsError = ref("");
 const membersError = ref("");
+// P1-15：移除成员确认弹窗目标（对齐全站 ConfirmDialog 惯例，此前无确认直接删）
+const removeTarget = ref<Member | null>(null);
 
 const isOwner = computed(() => org.value?.role === "owner");
 
@@ -69,6 +72,12 @@ function loadMembers(orgId: string) {
 
 function retryMembers() {
   if (org.value) loadMembers(org.value.id);
+}
+
+// P1-15：确认后执行移除（removeMember 内部已含 owner 自保护与错误 toast）
+function handleConfirmRemove() {
+  if (removeTarget.value) void removeMember(removeTarget.value);
+  removeTarget.value = null;
 }
 
 function loadInvites(orgId: string) {
@@ -210,7 +219,7 @@ function selectOrg(e: Event) {
             size="sm"
             class="text-red-500 hover:text-red-600"
             title="移除"
-            @click="removeMember(m)"
+            @click="removeTarget = m"
           >✕</Button>
         </div>
         <!-- P1-11：members 加载失败不再伪装成「暂无成员」 -->
@@ -244,5 +253,16 @@ function selectOrg(e: Event) {
         <p v-if="activeInvites.length === 0" class="text-xs text-gray-500">还没有有效的邀请链接。</p>
       </Card>
     </div>
+
+    <!-- P1-15：移除成员前确认（对齐 ChannelManagement 同款确认流，此前 ✕ 直接删） -->
+    <ConfirmDialog
+      v-if="removeTarget"
+      :title="`移除成员 @${removeTarget.handle}？`"
+      message="移除后该成员将失去此工作区的访问权限。"
+      confirm-label="移除"
+      danger
+      @confirm="handleConfirmRemove"
+      @cancel="removeTarget = null"
+    />
   </div>
 </template>

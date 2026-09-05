@@ -8,6 +8,7 @@ import Button from "../../components/ui/Button.vue";
 import Card from "../../components/ui/Card.vue";
 import Input from "../../components/ui/Input.vue";
 import Textarea from "../../components/ui/Textarea.vue";
+import { validatePasswordPolicy } from "../../lib/passwordPolicy";
 import { useAuthStore } from "../../stores/authStore";
 
 const authStore = useAuthStore();
@@ -71,8 +72,10 @@ async function handleSaveProfile() {
 }
 
 async function handleChangePassword() {
-  if (newPw.value.length < 8) {
-    pwMsg.value = "新密码至少 8 位";
+  // P1-14：对齐 server validatePassword（≥8+字母+数字），此前仅 ≥8——「abcdefgh」过客户端被 server 400
+  const pwErr = validatePasswordPolicy(newPw.value);
+  if (pwErr) {
+    pwMsg.value = pwErr;
     pwOk.value = false;
     return;
   }
@@ -141,7 +144,7 @@ async function handleChangePassword() {
               :type="showPw ? 'text' : 'password'"
               :value="newPw"
               @input="newPw = ($event.target as HTMLInputElement).value"
-              placeholder="新密码 (至少 8 位)"
+              placeholder="新密码 (至少 8 位，含字母和数字)"
               class="pr-10"
             />
             <button
