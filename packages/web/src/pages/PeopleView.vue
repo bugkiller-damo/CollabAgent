@@ -58,22 +58,39 @@ function openFromQuery() {
   if (m) uiStore.openProfile({ handle: m.replace(/^@/, "") });
 }
 
+// P1-11：两个列表独立加载、失败原因分别记录——失败不再伪装成「还没有成员」
+const agentsError = ref("");
+const humansError = ref("");
+
+async function load() {
+  agentsError.value = "";
+  humansError.value = "";
+  const agentsReq = apiGet<{ agents: Agent[] }>("/api/agents")
+    .then((a) => {
+      agents.value = a.agents || [];
+    })
+    .catch((err: any) => {
+      agentsError.value = err?.message || "网络错误";
+    });
+  const humansReq = apiGet<{ humans?: Human[] }>("/api/server/info")
+    .then((s) => {
+      humans.value = (s.humans || []).filter((h) => h.handle !== authStore.user?.handle);
+    })
+    .catch((err: any) => {
+      humansError.value = err?.message || "网络错误";
+    });
+  await Promise.all([agentsReq, humansReq]);
+}
+
 onMounted(async () => {
-  try {
-    const a = await apiGet<{ agents: Agent[] }>("/api/agents");
-    agents.value = a.agents || [];
-  } catch {
-    /* ignore */
-  }
-  try {
-    const s = await apiGet<{ humans?: Human[] }>("/api/server/info");
-    humans.value = (s.humans || []).filter((h) => h.handle !== authStore.user?.handle);
-  } catch {
-    /* ignore */
-  }
+  await load();
   loaded.value = true;
   openFromQuery();
 });
+
+function retryLoad() {
+  void load();
+}
 
 watch(
   () => route.query.member,
@@ -135,7 +152,12 @@ const agentComputerGroups = computed<AgentComputerGroup[]>(() => {
   });
 });
 
-const empty = computed(() => loaded.value && agents.value.length === 0 && humans.value.length === 0);
+// P1-11：有失败记录时「全空」不算真空——错误态优先于「还没有成员」
+const anyError = computed(() => agentsError.value || humansError.value);
+const loadFailed = computed(
+  () => loaded.value && !!anyError.value && agents.value.length === 0 && humans.value.length === 0,
+);
+const empty = computed(() => loaded.value && agents.value.length === 0 && humans.value.length === 0 && !anyError.value);
 const filterEmpty = computed(
   () => loaded.value && !empty.value && filteredAgents.value.length === 0 && filteredHumans.value.length === 0,
 );
@@ -213,6 +235,15 @@ const footerLabel = computed(() => `${humans.value.length} 位成员 · ${agents
 
         <div class="min-h-0 flex-1 overflow-y-auto p-2">
           <p v-if="!loaded" class="py-8 text-center text-sm text-muted">加载中…</p>
+          <!-- P1-11：加载失败显示错误态 + 重试，不再伪装成「还没有成员」 -->
+          <EmptyState
+            v-else-if="loadFailed"
+            icon="⚠️"
+            title="成员加载失败"
+            :description="anyError"
+            action-label="重试"
+            @action="retryLoad"
+          />
           <EmptyState
             v-else-if="empty"
             icon="👥"
@@ -222,6 +253,14 @@ const footerLabel = computed(() => `${humans.value.length} 位成员 · ${agents
           <p v-else-if="filterEmpty" class="px-2 py-6 text-center text-sm text-muted">没有匹配的成员</p>
 
           <template v-else>
+            <!-- P1-11：部分列表失败（另一列表有数据）时顶部警告，不静默缺一块 -->
+            <p
+              v-if="anyError"
+              class="mb-2 rounded-md bg-amber-50 px-2 py-1.5 text-xs text-amber-700 dark:bg-amber-900/20 dark:text-amber-300"
+            >
+              {{ agentsError ? "Agent 列表" : "" }}{{ agentsError && humansError ? "、" : "" }}{{ humansError ? "成员列表" : "" }}
+              加载失败（{{ anyError }}），当前显示可能不完整
+            </p>
             <div class="mb-3">
               <div class="mb-1 flex items-center justify-between px-2">
                 <span class="text-xs font-semibold uppercase tracking-wider text-muted">Agent</span>

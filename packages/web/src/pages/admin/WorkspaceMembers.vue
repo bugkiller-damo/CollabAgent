@@ -36,15 +36,39 @@ const members = ref<Member[]>([]);
 const invites = ref<Invite[]>([]);
 const msg = ref("");
 const copied = ref("");
+// P1-11：加载失败原因——orgs/members 失败不再静默伪装成「暂无成员」
+const orgsError = ref("");
+const membersError = ref("");
 
 const isOwner = computed(() => org.value?.role === "owner");
 
+function loadOrgs() {
+  orgsError.value = "";
+  apiGet<{ orgs: Org[] }>("/api/orgs")
+    .then((d) => {
+      const list = d.orgs || [];
+      orgs.value = list;
+      const def = list.find((o) => !o.personal) || list[0] || null;
+      org.value = def;
+    })
+    .catch((err: any) => {
+      orgsError.value = err?.message || "网络错误";
+    });
+}
+
 function loadMembers(orgId: string) {
+  membersError.value = "";
   apiGet<{ members: Member[] }>(`/api/orgs/${orgId}/members`)
     .then((d) => {
       members.value = d.members || [];
     })
-    .catch(() => {});
+    .catch((err: any) => {
+      membersError.value = err?.message || "网络错误";
+    });
+}
+
+function retryMembers() {
+  if (org.value) loadMembers(org.value.id);
 }
 
 function loadInvites(orgId: string) {
@@ -58,14 +82,7 @@ function loadInvites(orgId: string) {
 }
 
 onMounted(() => {
-  apiGet<{ orgs: Org[] }>("/api/orgs")
-    .then((d) => {
-      const list = d.orgs || [];
-      orgs.value = list;
-      const def = list.find((o) => !o.personal) || list[0] || null;
-      org.value = def;
-    })
-    .catch(() => {});
+  loadOrgs();
 });
 
 // 对齐 React 第二个 useEffect([org])：org 变化时加载成员/邀请（org 为 null 时跳过）
@@ -163,6 +180,12 @@ function selectOrg(e: Event) {
 
     <p v-if="msg" class="text-sm text-red-500">{{ msg }}</p>
 
+    <!-- P1-11：orgs 加载失败不再静默（org 为 null 时整页假空） -->
+    <p v-if="orgsError" class="text-sm text-red-500">
+      组织加载失败：{{ orgsError }}
+      <button type="button" class="ml-1 text-blue-600 hover:underline dark:text-blue-400" @click="loadOrgs">重试</button>
+    </p>
+
     <div class="grid grid-cols-1 items-start gap-6 lg:grid-cols-3">
       <Card padding="none" class="divide-y divide-gray-200 lg:col-span-2 dark:divide-gray-700">
         <div v-for="m in members" :key="m.user_id" class="flex items-center gap-3 p-3">
@@ -190,7 +213,16 @@ function selectOrg(e: Event) {
             @click="removeMember(m)"
           >✕</Button>
         </div>
-        <p v-if="members.length === 0" class="p-4 text-sm text-gray-500">暂无成员</p>
+        <!-- P1-11：members 加载失败不再伪装成「暂无成员」 -->
+        <p v-if="membersError && members.length === 0" class="p-4 text-sm text-red-500">
+          成员加载失败：{{ membersError }}
+          <button
+            type="button"
+            class="ml-1 text-blue-600 hover:underline dark:text-blue-400"
+            @click="retryMembers"
+          >重试</button>
+        </p>
+        <p v-else-if="members.length === 0" class="p-4 text-sm text-gray-500">暂无成员</p>
       </Card>
 
       <Card v-if="isOwner" class="space-y-3 lg:col-span-1">

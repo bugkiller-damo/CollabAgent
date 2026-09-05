@@ -16,13 +16,16 @@ interface MachineToken {
 
 const tokens = ref<MachineToken[]>([]);
 const newToken = ref<string | null>(null);
+// P1-11：加载失败原因——失败不再伪装成「暂无令牌」
+const loadError = ref("");
 
 async function loadTokens() {
   try {
     const data = await apiGet<{ tokens: MachineToken[] }>("/api/profile/tokens");
     tokens.value = data.tokens || [];
-  } catch {
-    /* silent */
+    loadError.value = "";
+  } catch (err: any) {
+    loadError.value = err?.message || "网络错误";
   }
 }
 onMounted(loadTokens);
@@ -102,7 +105,12 @@ const activeTokens = computed(() => tokens.value.filter((t) => !t.revoked_at));
 
     <div>
       <h3 class="mb-2 text-sm font-semibold text-ink">当前令牌（{{ activeTokens.length }}）</h3>
-      <p v-if="activeTokens.length === 0" class="text-sm text-gray-500">暂无令牌</p>
+      <!-- P1-11：加载失败显示错误态 + 重试，不再伪装成「暂无令牌」 -->
+      <p v-if="loadError && activeTokens.length === 0" class="text-sm text-red-500">
+        令牌加载失败：{{ loadError }}
+        <button type="button" class="ml-1 text-blue-600 hover:underline dark:text-blue-400" @click="loadTokens">重试</button>
+      </p>
+      <p v-else-if="activeTokens.length === 0" class="text-sm text-gray-500">暂无令牌</p>
       <div v-else class="grid grid-cols-1 gap-2 lg:grid-cols-2">
         <Card v-for="t in activeTokens" :key="t.id" padding="sm" class="flex items-center justify-between">
           <div>

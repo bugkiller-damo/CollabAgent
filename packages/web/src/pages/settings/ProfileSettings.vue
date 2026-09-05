@@ -15,6 +15,8 @@ const authStore = useAuthStore();
 const displayName = ref(authStore.user?.displayName || "");
 const description = ref(authStore.user?.description || "");
 const msg = ref("");
+// P1-13：消息分性（true=成功绿 / false=失败红）——「保存失败」等不再恒绿渲染
+const msgOk = ref(false);
 
 const avatarUrl = ref((authStore.user as any)?.avatarUrl || "");
 const avatarUploading = ref(false);
@@ -24,6 +26,8 @@ const oldPw = ref("");
 const newPw = ref("");
 const showPw = ref(false);
 const pwMsg = ref("");
+// P1-13：同上，密码卡消息分性
+const pwOk = ref(false);
 
 function onAvatarFileChange(e: Event) {
   const input = e.target as HTMLInputElement;
@@ -34,6 +38,7 @@ function onAvatarFileChange(e: Event) {
 async function handleAvatar(file: File) {
   if (file.size > 10 * 1024 * 1024) {
     msg.value = "头像不能超过 10MB";
+    msgOk.value = false;
     return;
   }
   avatarUploading.value = true;
@@ -44,8 +49,10 @@ async function handleAvatar(file: File) {
     avatarUrl.value = up.url;
     authStore.updateUser({ avatarUrl: up.url } as any);
     msg.value = "头像已更新";
+    msgOk.value = true;
   } catch {
     msg.value = "头像上传失败";
+    msgOk.value = false;
   } finally {
     avatarUploading.value = false;
   }
@@ -55,24 +62,29 @@ async function handleSaveProfile() {
   try {
     await apiPatch("/api/profile", { displayName: displayName.value, description: description.value });
     msg.value = "已保存";
+    msgOk.value = true;
     authStore.updateUser({ displayName: displayName.value, description: description.value });
   } catch {
     msg.value = "保存失败";
+    msgOk.value = false;
   }
 }
 
 async function handleChangePassword() {
   if (newPw.value.length < 8) {
     pwMsg.value = "新密码至少 8 位";
+    pwOk.value = false;
     return;
   }
   try {
     await apiPost("/api/profile/change-password", { oldPassword: oldPw.value, newPassword: newPw.value });
     pwMsg.value = "密码已修改，其他设备需重新登录";
+    pwOk.value = true;
     oldPw.value = "";
     newPw.value = "";
   } catch (err: any) {
     pwMsg.value = err.message || "修改失败";
+    pwOk.value = false;
   }
 }
 </script>
@@ -112,7 +124,10 @@ async function handleChangePassword() {
           <Textarea :value="description" @input="description = ($event.target as HTMLTextAreaElement).value" rows="3" />
         </div>
         <Button @click="handleSaveProfile" size="sm">保存</Button>
-        <p v-if="msg" class="text-sm text-green-600 dark:text-green-400">{{ msg }}</p>
+        <!-- P1-13：按消息性质配色（成功 green / 失败 red），失败不再恒绿 -->
+        <p v-if="msg" :class="['text-sm', msgOk ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400']">
+          {{ msg }}
+        </p>
       </div>
     </Card>
 
@@ -140,7 +155,9 @@ async function handleChangePassword() {
           <PasswordStrength :password="newPw" />
         </div>
         <Button @click="handleChangePassword" size="sm">修改密码</Button>
-        <p v-if="pwMsg" class="text-sm text-green-600 dark:text-green-400">{{ pwMsg }}</p>
+        <p v-if="pwMsg" :class="['text-sm', pwOk ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400']">
+          {{ pwMsg }}
+        </p>
       </div>
     </Card>
   </div>

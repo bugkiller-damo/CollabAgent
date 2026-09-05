@@ -111,9 +111,10 @@ export function dispatchWsEvent(msg: WsServerEvent): void {
     // server 广播统一发 camelCase threadId（messages.ts / agents-messages.ts /
     // agents-dispatch.ts 三处同口径）；snake 仅作兜底
     const threadId = (m.threadId || m.thread_id || null) as string | null;
-    const chs = channelStore.channels;
-    const ch = chs.find((c: any) => c.id === m.channelId);
-    const targetKey = ch ? "#" + ch.name : m.channelId;
+    // server 三处广播（messages.ts / agents-messages.ts / agents-dispatch.ts）的 channelId
+    // 统一为 "#name" / "dm:<uuid>"，直接作 targetKey——此前按 c.id === m.channelId 反查
+    // channels 的分支在生产恒不命中（server 从不发裸 UUID），已删除（P1-9）
+    const targetKey = m.channelId as string;
     const normalized = {
       id: m.id,
       seq: m.seq,
@@ -136,8 +137,15 @@ export function dispatchWsEvent(msg: WsServerEvent): void {
     if (threadId) {
       messageStore.receiveThreadReply(threadBufferKey(targetKey, threadId), normalized as any);
     }
-    if (channelStore.activeChannelName && ch?.name !== channelStore.activeChannelName) {
-      channelStore.incrementUnread(targetKey);
+    // P1-9 未读计数：仅频道消息（# 前缀）计入，key 传裸名（channelStore 入口亦归一化，
+    // 双保险）。守卫按裸名与 activeChannelName 比较——此前 ch 反查恒 undefined（server
+    // 发 #name 非 UUID），`ch?.name !== activeChannelName` 恒真，正在看的频道也累计进
+    // 聚合徽标（SidebarRail 单调增长）。DM 不计：全站无 per-DM 未读徽标消费方，计入
+    // 只推高聚合值且无任何清除路径；DM 提醒由独立通知链路覆盖（server 发 type:"dm"
+    // 通知 → notificationStore → 动态/铃铛徽标）
+    if (typeof targetKey === "string" && targetKey.startsWith("#")) {
+      const name = targetKey.slice(1);
+      if (name !== channelStore.activeChannelName) channelStore.incrementUnread(name);
     }
   }
 }

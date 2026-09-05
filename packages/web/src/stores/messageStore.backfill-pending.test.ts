@@ -149,6 +149,65 @@ describe("backfill 断线增量补拉", () => {
     expect(store.lastSeenSeq["#a"]).toBe(10); // 旧页 max=5，不回退
   });
 
+  // P1-10：fetchHistory 竞态归并（整体置换 → 按 id 归并）
+  it("await 期间到达的 live 消息不被抹掉（按 id 归并 + seq 升序），水位不回退", async () => {
+    const store = useMessageStore();
+    let release!: (v: unknown) => void;
+    apiGetMock.mockImplementationOnce(() => new Promise((resolve) => (release = resolve)));
+
+    const p = store.fetchHistory("#a");
+    // 请求在途：live 投递到达（receiveMessage 推进水位至 11）
+    store.receiveMessage(msg("#a", 11, "m-live"));
+    release({ messages: [msg("#a", 9), msg("#a", 10)] });
+    await p;
+
+    // 修复前：整体置换成 [9,10]，m-live 从 UI 消失且 backfill after=11 补不回
+    expect(store.messagesByTarget["#a"].map((m) => m.seq)).toEqual([9, 10, 11]);
+    expect(store.lastSeenSeq["#a"]).toBe(11); // live 水位不被 fetched max=10 回退
+    // localStorage 缓存存归并结果（下次进频道即时渲染含 live 消息）
+    const cached = JSON.parse(lsData.get("msgs_#a") || "[]") as Message[];
+    expect(cached.map((m) => m.id)).toContain("m-live");
+  });
+
+  it("before 翻旧页与现有列表归并（不再整体置换成旧窗口）", async () => {
+    const store = useMessageStore();
+    store.receiveMessage(msg("#a", 9));
+    store.receiveMessage(msg("#a", 10));
+    apiGetMock.mockResolvedValueOnce({ messages: [msg("#a", 6), msg("#a", 7)] } as any);
+
+    await store.fetchHistory("#a", { before: 8, limit: 50 });
+
+    // ChannelView highlight 回填场景：旧窗口并入，现有新消息保留
+    expect(store.messagesByTarget["#a"].map((m) => m.seq)).toEqual([6, 7, 9, 10]);
+  });
+
+  it("同 id 冲突以 server fetched 为准（权威覆盖本地陈旧字段）", async () => {
+    const store = useMessageStore();
+    store.receiveMessage({ ...msg("#a", 3, "m-x"), content: "local-stale" });
+    apiGetMock.mockResolvedValueOnce({ messages: [{ ...msg("#a", 3, "m-x"), content: "server-truth" }] } as any);
+
+    await store.fetchHistory("#a");
+
+    const list = store.messagesByTarget["#a"];
+    expect(list).toHaveLength(1); // 按 id 去重不双份
+    expect(list[0].content).toBe("server-truth");
+  });
+
+  // P1-11：fetchHistory 失败记录 loadError，UI 据此区分「空频道」与「加载失败」
+  it("P1-11：失败写入 loadError 且保留已渲染消息；成功后清除", async () => {
+    const store = useMessageStore();
+    store.receiveMessage(msg("#a", 1));
+    apiGetMock.mockRejectedValueOnce(new Error("network down"));
+    await store.fetchHistory("#a");
+
+    expect(store.loadError["#a"]).toBe("network down");
+    expect(store.messagesByTarget["#a"]).toHaveLength(1); // 失败不把已渲染消息置换为空
+
+    apiGetMock.mockResolvedValueOnce({ messages: [msg("#a", 2)] } as any);
+    await store.fetchHistory("#a");
+    expect(store.loadError["#a"]).toBeUndefined(); // 重试成功清除错误记录
+  });
+
   it("backfillAll 对全部 target 补拉（worker-pool 并发）", async () => {
     const store = useMessageStore();
     store.receiveMessage(msg("#a", 1));

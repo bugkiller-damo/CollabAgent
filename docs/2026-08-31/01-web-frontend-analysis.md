@@ -147,19 +147,29 @@
 
 | # | 问题 | 证据 |
 |---|---|---|
-| 9 | **未读计数 key 三处不一致**：incrementUnread 写 `#general`/`dm:uuid`（wsDispatch.ts:129-131），ChatPane 读裸名（:132/:158），clearUnread 用裸名（channelStore.ts:97）→ 徽标永不亮、清除不落同 key；且 `ch?.name !== activeChannelName` 中 ch 恒 undefined（server 发 `#name`）→ 正在看的频道也累计进聚合徽标 | SidebarRail.vue:15 单调增长 |
-| 10 | **fetchHistory 覆盖竞态**：await 后无条件整体置换列表，期间到达的 live 消息被从 UI 抹掉（下次重连才补回） | messageStore.ts:93-97 |
+| 9 | **未读计数 key 三处不一致** ✅ 2026-09-05 已修复：incrementUnread 写 `#general`/`dm:uuid`（wsDispatch.ts:129-131），ChatPane 读裸名（:132/:158），clearUnread 用裸名（channelStore.ts:97）→ 徽标永不亮、清除不落同 key；且 `ch?.name !== activeChannelName` 中 ch 恒 undefined（server 发 `#name`）→ 正在看的频道也累计进聚合徽标 | SidebarRail.vue:15 单调增长 |
+| 10 | **fetchHistory 覆盖竞态** ✅ 2026-09-05 已修复：await 后无条件整体置换列表，期间到达的 live 消息被从 UI 抹掉（下次重连才补回） | messageStore.ts:93-97 |
+
+> **P1-9 修复记录（2026-09-05，未读计数 key 三处不一致）**：①**key 约定定稿频道裸名（无 #）**——channelStore 写/清两侧入口单点归一化去 `#`（`unreadKey` helper），与 ChatPane 读侧 `unreadCounts[ch.name]` 及 `activeChannelName` 天然同口径，防三方口径再漂移（P0-2 threadBufferKey 同手法）。②**wsDispatch 删死分支**——`channels.find(c.id === m.channelId)` 反查在生产恒不命中（server 三处广播 messages.ts / agents-messages.ts / agents-dispatch.ts 的 channelId 统一 `#name`/`dm:<uuid>`，从不发裸 UUID），`targetKey` 直取 `m.channelId`；未读守卫改裸名比较 `name !== activeChannelName`，正在看的频道不再累计进聚合徽标（SidebarRail 单调增长修复），且守卫不再以 `activeChannelName` 非空为前提（未打开任何频道也正常累计）。③**DM 不计频道未读（语义定稿）**——全站无 per-DM 未读徽标消费方（ChatPane DM 列表无徽标位），旧代码计入 `dm:uuid` 只推高聚合值且无任何清除路径（永久膨胀）；DM 提醒由独立通知链路覆盖（server messages.ts 发 type:"dm" 通知 → notificationStore → 动态/铃铛徽标）。验证：vitest 59→70（与 P1-10 同批，wsDispatch +5：裸名 key/正在看不计/null active 也累计/DM 不计/线程回复仍计频道未读；新增 channelStore.test.ts +3：写侧归一化/清侧归一化/DM key 不误伤；2 个喂死分支的旧用例改为 server 真实 `#name` 形状）、vue-tsc 0 错误、biome 0 错误（新增代码 0 info，useLiteralKeys 顺手收敛 8 处）。取舍立此存照：DM 不计频道未读是有意语义裁剪（通知链路已覆盖提醒，且旧路径永不清除）；线程回复计所属频道未读为既有语义保留（频道有新活动应亮徽标）。
+
+> **P1-10 修复记录（2026-09-05，fetchHistory 覆盖竞态）**：`messageStore.fetchHistory` await 后整体置换 → **按 id 归并**——fetched 为 server 权威（同 id 覆盖本地陈旧字段），仅存于本地的 live 新到消息保留，按 seq 升序重排（同 seq 稳定排序保持原顺序）；localStorage 缓存存归并结果；水位口径仍取 fetched max（live 消息水位由 receiveMessage 各自推进，max 保护不回退）。实锤比审计所述更严重：被抹的 live 消息 lastSeenSeq 已被 receiveMessage 推进，重连 backfill（after=水位）**也补不回**，且 ChannelView `fetchedRef` 一经设置不再重拉同频道——要等整页刷新才重现。**顺带修复同类问题**：ChannelView highlight 回填（effect 2，`before` 翻旧页）此前会把现有新消息整体置换成旧窗口，归并后旧窗口并入、新消息保留。验证：vitest +3（await 在途 live 消息保留+水位不回退+缓存含归并结果；before 旧页与现有列表归并 [6,7,9,10]；同 id 冲突 server 权威覆盖且不按 id 双份）、vue-tsc 0 错误、biome 0 错误。取舍立此存照：归并不加 per-target inflight 护栏——ChannelView effect 1 首载与 effect 2 highlight 回填本就并发，护栏会丢弃 highlight 拉取，归并天然幂等（按 id 去重）；归并后列表只增不减与 receiveMessage 追加同增长级，不引入新内存量级。
 
 ### 4.3 状态完整性与 UX 一致性
 
 | # | 问题 | 证据 |
 |---|---|---|
-| 11 | **错误伪装成空态**（5+ 页面）：SearchView.vue:36-38（失败显示"没有找到匹配"）、TaskBoard.vue:117-120（失败显示"暂无任务"）、PeopleView.vue:63-73、IntegrationSettings.vue:24-26、WorkspaceMembers 静默；ChannelView.vue:80 `fetchHistory().catch(()=>{})` 静默吞错，断网进频道永远停在"还没有消息" | messageStore 无 error 字段 |
-| 12 | **搜索跳转高亮在小频道失效**：≤100 条频道走普通 div 分支，不传 `highlightMsgId` | ChannelView.vue:361-368 vs 369-384 |
-| 13 | **ProfileSettings 错误消息恒绿色**："保存失败""修改失败"用 `text-green-600` 渲染 | ProfileSettings.vue:115,143 |
+| 11 | **错误伪装成空态**（5+ 页面）✅ 2026-09-05 已修复：SearchView.vue:36-38（失败显示"没有找到匹配"）、TaskBoard.vue:117-120（失败显示"暂无任务"）、PeopleView.vue:63-73、IntegrationSettings.vue:24-26、WorkspaceMembers 静默；ChannelView.vue:80 `fetchHistory().catch(()=>{})` 静默吞错，断网进频道永远停在"还没有消息"（DmView 同链路同病一并修复） | messageStore 无 error 字段 |
+| 12 | **搜索跳转高亮在小频道失效** ✅ 2026-09-05 已修复：≤100 条频道走普通 div 分支，不传 `highlightMsgId` | ChannelView.vue:361-368 vs 369-384 |
+| 13 | **ProfileSettings 错误消息恒绿色** ✅ 2026-09-05 已修复："保存失败""修改失败"用 `text-green-600` 渲染 | ProfileSettings.vue:115,143 |
 | 14 | **密码策略不一致**：ForgotPasswordPage.vue:41 要求 ≥6 位 vs RegisterPage.vue:44-51 ≥8 位+字母数字。⚠️ 2026-09-01 server P1.20 补齐 forgot/reset-password 端点（reset 走 server `validatePassword` ≥8+字母+数字）后，从「文案不一致」升级为实锤的「客户端过、server 拒」——`abc123`（6–7 位）、`abcdefgh`（纯字母）均过客户端被 server 400；失败文案可透传（:51）故非静默断裂，修法仍是对齐 ≥8+字母+数字（§8.2） | — |
 | 15 | **危险操作确认不一致**：WorkspaceMembers.vue:89-97 移除成员无确认（同站 ChannelManagement 有 ConfirmDialog）；SecuritySettings.vue:81 用原生 `confirm()`；IntegrationSettings 撤销令牌无确认 | — |
 | 16 | **ThreadView 无加载态**：加载中呈空白 | ThreadView.vue:54-66 |
+
+> **P1-11 修复记录（2026-09-05，错误伪装成空态）**：①**messageStore 加 `loadError` 字段**（`Record<string, string>` 按 target key，内存态不落盘）——`fetchHistory` 失败写入 `err?.message || "网络错误"`、成功清除该 key；缓存与归并语义不变（失败保留缓存/live 消息，只多记原因）。②**ChannelView/DmView 空态分支三分支化**——loading 骨架 → loadError 错误态（⚠️ + 原因 + EmptyState 自带 `actionLabel="重新加载"` 重试，ChannelView 重试绕过 `fetchedRef` 守卫直拉）→ 原空态；错误仅在列表为空时展示，highlight before 翻旧页 / 附件发送后 refetch 失败不会在非空列表上误报。③**5 页面独立修复**：SearchView `searchError`（错误态替换「没有找到匹配」+ 重试重发当前 query）；TaskBoard `loadError`（错误态替换整个看板/列表内容区，失败不再显示「暂无任务/拖到此处」）；PeopleView 双请求并行化 + `agentsError/humansError`——全空且有失败 → 错误态，有部分数据 → 顶部 amber 警告「加载失败，当前显示可能不完整」（诚实降级不静默缺块）；IntegrationSettings `loadError`（错误行替换「暂无令牌」+ 行内重试）；WorkspaceMembers `orgsError/membersError` 双行内错误 + 重试（orgs 静默失败此前连「暂无成员」都算不上——org 为 null 时整页假空）。**实锤比审计多修一处**：DmView 与 ChannelView 同链路（`fetchHistory` catch 静默 → 「还没有私信」），在「5+ 页面」覆盖面内一并接线。验证：vitest 70→**71**（messageStore.backfill-pending +1：loadError 写入 / 失败保留已渲染消息 / 成功清除）、vue-tsc 0 错误、biome 0 错误（PeopleView 一处行长由 `--write` 归一，numstat 复查无扩散）、`vite build` 成功（页面级模板改动按 W-A7 留痕以 build 为最终验证）。取舍立此存照：loadError 不持久化（刷新即重新拉取，无需跨会话记忆失败原因）；PeopleView 双请求由串行改并行（二者本无依赖）；重试按钮不做退避/防抖（错误态仅在用户主动进页面/频道时出现，无轮询风暴面）；WS 重连 backfill 失败保持既有静默降级语义不变（live-only + 水位不伪造推进，P0-2 已有语义，不并入本项）。
+
+> **P1-12 修复记录（2026-09-05，搜索跳转高亮在小频道失效）**：ChannelView 普通 div 分支（≤100 条）补齐与 VirtualMessageList 同款的高亮机制——①行元素定位：普通分支 MessageRow 传 `:data-msg-id`（fallthrough 至 MessageRow 根 div，单根无 inheritAttrs:false）+ `:is-highlighted="didHighlightPlain === msg.id"`（prop 已存在，打 `animate-highlight` 3s 渐隐类，MessageRow.vue:17-33 自注入样式）；②**滚动居中**：`scrollToHighlight` 用 getBoundingClientRect 差值调 `scrollTop`（容器无 position:relative，offsetTop 依赖 offsetParent 链不可靠），nextTick + rAF 双跑与既有 pinToBottom 同构（图片/markdown 后渲染布局漂移自愈）；③**触发 watch**（post-flush，注册于 pin-to-bottom watch 之后保证同触发源内高亮滚动后执行——nextTick FIFO 覆盖底部钉扎）：`[highlightMsgId, messages, useVirtual]` 三源——虚拟分支早退（VirtualMessageList 自理）、目标不在列早退（Effect 2 回填后 messages 变化自然再触发）、hid 清空时重置 didHighlightPlain（跨频道同 id 复跳可再次高亮，比虚拟分支的 didHighlight 不重置更严一格，虚拟分支不回改）；④选择器注入防护：`CSS.escape(hid)`（route.hash 用户可控，防 querySelector SyntaxError）。验证：vue-tsc 0 错误、biome 0 错误、vitest 71/71、`vite build` 成功（页面级 DOM 交互无测试设施，W-A7 留痕口径以 build 为终验；实锤留痕：初版 watch 引用文件后段声明的 useVirtual 触发 TS2448 used-before-declaration，整块后移至 listItems 派生段后解决）。取舍立此存照：DmView 普通分支不接高亮（SearchView navigateTo 只路由 `/channels/<name>#<id>`，DM 无搜索跳转入口，加了无消费方）；`didHighlightPlain === msg.id` 与虚拟分支 `didHighlight === highlightMsgId` 门控同构——3s 动画结束后类残留于已定位行，无视觉影响（animation forwards 终态透明）。
+
+> **P1-13 修复记录（2026-09-05，ProfileSettings 错误消息恒绿色）**：`msg`/`pwMsg` 各加 ok 标志 ref（`msgOk`/`pwOk`）——两个 ref 均同时承载成功与失败文案（头像「已更新/上传失败/超 10MB」、资料「已保存/保存失败」、密码「已修改/至少 8 位/修改失败」共 8 处赋值点），逐点同步置位；模板两行恒 `text-green-600 dark:text-green-400` 改条件配色：成功 green-600/dark:green-400、失败 red-600/dark:red-400（对齐 P1-2 色族语义表「成功 green」与全站错误红惯例；red-600 浅色端 4.8:1 达 AA，dark 端 red-400 提亮）。验证：vue-tsc 0 错误、biome 0 错误、vitest 71/71、`vite build` 成功（模板条件 class 无测试面）。取舍立此存照：文案内容不动（「保存失败」等无 server 原因透出属 W-A3 同类体验债但未被本项点名，如后续统一补 err.message 透传应另行立卡）；头像上传 catch 静默吞 err 维持原状。
 
 ### 4.4 工程
 
@@ -211,7 +221,7 @@
 3. ~~Modal 补 role/focus trap/滚动锁定（一处修复全站受益）~~（✅ 2026-09-04 落地，见 §4.1 P1-5 修复记录——另含初始聚焦/焦点归还/aria-modal，8 个消费方全量受益）；
 4. ~~全站 `focus:` → `focus-visible:` 替换 + 三个搜索框补 ring~~（✅ 2026-09-04 落地，见 §4.1 P1-4 修复记录——outline-none 抑制保持恒在，仅指标迁移）。
 
-**第三梯队（状态与测试，持续）**：messageStore 加 error 字段消灭「错误伪装成空态」；highlight.js 按需注册拆包（index 预计降至约 400 kB）；authStore + api + 6 个 store 补单测；确认 localStorage 消息缓存口径。
+**第三梯队（状态与测试，持续）**：~~messageStore 加 error 字段消灭「错误伪装成空态」~~（✅ 2026-09-05 落地，见 §4.3 P1-11 修复记录——messageStore.loadError + ChannelView/DmView/5 页面共 7 个消费面全量接线）；highlight.js 按需注册拆包（index 预计降至约 400 kB）；authStore + api + 6 个 store 补单测；确认 localStorage 消息缓存口径。
 
 ---
 
@@ -288,6 +298,10 @@
 - 2026-09-04 P1-6（Button 原语被绕行）落地复测：59 用例不变（组件迁移无测试面）、vue-tsc 0 错误、biome 0 错误、vite build 成功。5 文件 7 处手写按钮迁 ui/Button（使用量 15→20 文件），cancel/刷新/邀请三处含收敛意图内的微调色差（详见 §4.1 P1-6 修复记录清单）；MessageComposer 发送图标按钮与 OnboardingChecklist RouterLink 形态/语义不覆盖立此存照。**§4.1 余 #7~#8**（圆角规则/对比度）。
 - 2026-09-04 P1-7（圆角五档混用）落地复测：59 用例不变、vue-tsc 0 错误、biome 0 错误、vite build 成功。成文规则写入 style.css 顶部注释（小件 rounded / 控件 rounded-md / 容器 rounded-lg / 特大 rounded-xl / 圆形 rounded-full）；67 处裸 rounded 全量分类、约 55 处本符合小件档不动，同档发散修正 8 处（输入框×3→md、侧栏行项+铃铛→md、卡片×3→lg），实测裸 rounded 67→59。**§4.1 余 #8**（对比度）。
 - 2026-09-04 P1-8（对比度）落地复测：59 用例不变、vue-tsc 0 错误、biome 0 错误、vite build 成功。amber-500 底两处改深字（2.3→8.6:1）；text-gray-400 浅色端约 164 处迁 text-muted（反转对 16 + 裸 148，词边界保护 placeholder/hover/dark 前缀变体），AgentObsStream 终端深底与未读红徽标保留立此存照；text-muted 34→200。**§4.1 设计系统纪律 #1~#8 全部清零**，§4 余量转入 §4.2/§4.3/§4.4（实时正确性 #9~#10、状态完整性 #11~#16、工程 #17~#19）。
+- 2026-09-05 P1-9 + P1-10（§4.2 实时/数据正确性两项）同批落地复测：59 → **70 用例**（wsDispatch +5 P1-9 未读语义、新增 channelStore.test.ts +3 key 归一化、messageStore.backfill-pending +3 P1-10 竞态归并；wsDispatch 2 个喂已删 UUID 反查死分支的旧用例改 server 真实 `#name` 形状），vue-tsc 0 错误、biome 0 错误（新增代码 0 info）。P1-9：key 定稿频道裸名、channelStore 写/清入口单点归一化、删恒不命中反查、守卫改裸名比较、DM 不计频道未读（通知链路覆盖）。P1-10：fetchHistory 整体置换改按 id 归并（live 消息不再被抹、highlight 旧页回填不再置换新消息，两处同类一并对清）。**§4.2 #9/#10 清零**，§4 余量转入 §4.3（#11~#16 状态完整性/UX）与 §4.4（#17~#19 工程）。
+- 2026-09-05 P1-11（§4.3 #11 错误伪装成空态）落地复测：70 → **71 用例**（messageStore.backfill-pending +1 loadError 语义），vue-tsc 0 错误、biome 0 错误、`vite build` 成功。messageStore 新增 `loadError`（按 target 内存态，失败写入/成功清除），ChannelView/DmView 空态分支错误态化 + 重试（DmView 为审计「5+」覆盖面内补修）；SearchView/TaskBoard/PeopleView/IntegrationSettings/WorkspaceMembers 五页面错误态接线（PeopleView 双请求并行化 + 部分失败 amber 警告）。§4.3 余量 #12~#16。
+- 2026-09-05 P1-12（§4.3 #12 搜索跳转高亮小频道失效）落地复测：71 用例不变（页面级 DOM 交互无测试设施），vue-tsc 0 错误、biome 0 错误、`vite build` 成功。ChannelView 普通分支（≤100 条）补齐 VirtualMessageList 同款高亮：data-msg-id 定位 + is-highlighted 打 animate-highlight 类 + getBoundingClientRect 滚动居中 + post-flush watch（hid 清空重置，跨频道同 id 复跳可再触发）。§4.3 余量 #13~#16。
+- 2026-09-05 P1-13（§4.3 #13 ProfileSettings 错误消息恒绿）落地复测：71 用例不变（模板条件 class 无测试面），vue-tsc 0 错误、biome 0 错误、`vite build` 成功。msg/pwMsg 加 msgOk/pwOk 标志，8 处赋值点逐点同步置位，两行恒 green-600 改条件配色（成功 green-600/dark:green-400、失败 red-600/dark:red-400，对齐 P1-2 色族语义表）。§4.3 余量 #14~#16。
 
 ---
 

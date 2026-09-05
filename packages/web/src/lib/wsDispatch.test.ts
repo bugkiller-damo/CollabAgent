@@ -38,8 +38,6 @@ beforeEach(() => {
 describe("wsDispatch", () => {
   it("agent:deliver → 消息入列 + clientNonce 调和 pending 乐观行", () => {
     const messageStore = useMessageStore();
-    const channelStore = useChannelStore();
-    channelStore.channels = [{ id: "ch-uuid-1", name: "general" } as any];
 
     // 预置一条 pending（模拟本地乐观发送）
     const pending = messageStore.enqueuePending("#general", "hello", undefined);
@@ -50,7 +48,7 @@ describe("wsDispatch", () => {
       message: {
         id: "m-1",
         seq: 42,
-        channelId: "ch-uuid-1", // 命中 channels 映射走 #name 分支（server 实际广播 "#name"，见下方 P0-2 用例）
+        channelId: "#general", // server 真实广播形状（messages.ts: "#"+name）
         senderId: "u-1",
         senderName: "me",
         senderType: "human",
@@ -70,15 +68,13 @@ describe("wsDispatch", () => {
 
   it("agent:deliver 重复投递同 id → 去重不重复入列", () => {
     const messageStore = useMessageStore();
-    const channelStore = useChannelStore();
-    channelStore.channels = [{ id: "ch-uuid-1", name: "general" } as any];
 
     const payload = {
       type: "agent:deliver",
       message: {
         id: "m-dup",
         seq: 7,
-        channelId: "ch-uuid-1",
+        channelId: "#general",
         senderId: "u-1",
         senderName: "me",
         senderType: "human",
@@ -345,5 +341,68 @@ describe("wsDispatch", () => {
     } as any);
     expect(messageStore.messagesByTarget["dm:dm-uuid-1"] ?? []).toHaveLength(0);
     expect(messageStore.messagesByTarget["dm:dm-uuid-1:99999999"]).toHaveLength(1);
+  });
+
+  // P1-9：未读计数 key 统一裸名 + 正在看的频道不计 + DM 走通知链路不计频道未读
+  function deliver(channelId: string, id: string, threadId?: string) {
+    dispatchWsEvent({
+      type: "agent:deliver",
+      message: {
+        id,
+        seq: 1,
+        channelId,
+        senderId: "u-2",
+        senderName: "bob",
+        senderType: "human",
+        content: "hi",
+        time: "t",
+        ...(threadId ? { threadId } : {}),
+      },
+    } as any);
+  }
+
+  it("非当前频道投递 → 未读 +1 且 key 为裸名（与 ChatPane 读侧 unreadCounts[ch.name] 同口径）", () => {
+    const channelStore = useChannelStore();
+    channelStore.setActiveChannel("general");
+
+    deliver("#random", "m-u1");
+    deliver("#random", "m-u2");
+
+    expect(channelStore.unreadCounts.random).toBe(2);
+    expect(channelStore.unreadCounts["#random"]).toBeUndefined(); // 无 #-前缀 key 残留
+  });
+
+  it("正在看的频道不计未读（此前 ch 反查恒 undefined，active 频道也累计进聚合徽标）", () => {
+    const channelStore = useChannelStore();
+    channelStore.setActiveChannel("general");
+
+    deliver("#general", "m-u3");
+
+    expect(channelStore.unreadCounts.general ?? 0).toBe(0);
+  });
+
+  it("未打开任何频道（activeChannelName=null）也正常累计——守卫不再以 activeChannelName 为前提", () => {
+    const channelStore = useChannelStore();
+
+    deliver("#random", "m-u4");
+
+    expect(channelStore.unreadCounts.random).toBe(1);
+  });
+
+  it("DM 投递不计频道未读（无 per-DM 徽标消费方；DM 提醒走 type:dm 通知链路）", () => {
+    const channelStore = useChannelStore();
+
+    deliver("dm:dm-uuid-9", "m-u5");
+
+    expect(channelStore.unreadCounts).toEqual({});
+  });
+
+  it("线程回复仍计所属频道未读（频道有新活动，语义保留）", () => {
+    const channelStore = useChannelStore();
+    channelStore.setActiveChannel("general");
+
+    deliver("#random", "m-u6", "12345678-1234-1234-1234-123456789abc");
+
+    expect(channelStore.unreadCounts.random).toBe(1);
   });
 });

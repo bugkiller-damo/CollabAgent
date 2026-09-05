@@ -43,6 +43,8 @@ const messages = computed<Message[]>(() => {
   return messageStore.messagesByTarget[target.value] || EMPTY_MSGS;
 });
 const loading = computed(() => messageStore.loading);
+// P1-11：历史加载失败原因（按 target），非空时空态分支显示错误态而非「还没有消息」
+const loadError = computed(() => (target.value ? messageStore.loadError[target.value] : undefined));
 const currentChannel = computed<any>(() => channelStore.channels.find((c) => c.name === channelName.value));
 const online = computed(() => uiStore.online);
 const terminalAgent = computed(() => uiStore.terminalAgent);
@@ -178,6 +180,12 @@ function retrySend(tempId: string) {
   messageStore.retryPending(target.value, tempId).catch(() => {});
 }
 
+// P1-11：错误态重试（绕过 fetchedRef 守卫直接重拉；loading 期间空态分支自动显示骨架）
+function retryLoadHistory() {
+  if (!target.value) return;
+  messageStore.fetchHistory(target.value).catch(() => {});
+}
+
 function discardPending(tempId: string) {
   messageStore.discardPending(target.value, tempId);
 }
@@ -203,6 +211,40 @@ const listItems = computed<ListItem[]>(() =>
         ...pending.value.map((p) => ({ kind: "pending" as const, data: p })),
       ]
     : [],
+);
+
+// ---- P1-12：≤100 条普通分支的搜索跳转高亮——对齐 VirtualMessageList 同款机制：
+// 目标消息在列时滚动居中并给行打 is-highlighted（虚拟分支由 VirtualMessageList 内部自理）----
+const didHighlightPlain = ref<string | undefined>(undefined);
+
+function scrollToHighlight(hid: string) {
+  const container = containerRef.value;
+  const rowEl = container?.querySelector<HTMLElement>(`[data-msg-id="${CSS.escape(hid)}"]`);
+  if (!container || !rowEl) return;
+  // 容器无 position:relative，offsetTop 依赖 offsetParent 链不可靠——用 getBoundingClientRect
+  // 差值直接调 scrollTop，把目标行滚到视口垂直居中
+  const delta = rowEl.getBoundingClientRect().top - container.getBoundingClientRect().top;
+  container.scrollTop += delta - (container.clientHeight - rowEl.offsetHeight) / 2;
+}
+
+watch(
+  [highlightMsgId, messages, useVirtual],
+  ([hid, list, virtual]) => {
+    if (virtual) return;
+    if (!hid) {
+      // 离开带 hash 的路由后重置：跨频道对同一 id 复跳可再次触发
+      if (didHighlightPlain.value) didHighlightPlain.value = undefined;
+      return;
+    }
+    if (didHighlightPlain.value === hid) return;
+    if (!list.some((m) => m.id === hid)) return; // 不在当前页 → Effect 2 回填后 messages 变化再触发
+    didHighlightPlain.value = hid;
+    nextTick(() => {
+      scrollToHighlight(hid);
+      requestAnimationFrame(() => scrollToHighlight(hid));
+    });
+  },
+  { flush: "post" },
 );
 
 // ---- 附件受控列表回写（React: onAttachmentsChange={setAttachments}）----
@@ -356,6 +398,15 @@ function goGeneral() {
 
       <div v-if="isEmpty" class="min-h-0 flex-1 overflow-y-auto p-4">
         <MessageSkeleton v-if="loading" />
+        <!-- P1-11：加载失败显示错误态 + 重试，不再伪装成「还没有消息」 -->
+        <EmptyState
+          v-else-if="loadError"
+          icon="⚠️"
+          title="消息加载失败"
+          :description="loadError"
+          action-label="重新加载"
+          @action="retryLoadHistory"
+        />
         <EmptyState v-else icon="💬" title="还没有消息" description="发送第一条消息，开启这个频道的对话吧" />
       </div>
       <VirtualMessageList
@@ -373,6 +424,8 @@ function goGeneral() {
           :msg="msg"
           :channel-name="channelName"
           :prev-msg="messages[idx - 1]"
+          :is-highlighted="didHighlightPlain === msg.id"
+          :data-msg-id="msg.id"
         />
         <PendingRow
           v-for="m in pending"

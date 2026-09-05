@@ -21,20 +21,25 @@ const uiStore = useUiStore();
 const query = ref("");
 const results = ref<SearchResult[]>([]);
 const loading = ref(false);
+// P1-11：搜索失败原因——失败不再伪装成「没有找到匹配的消息」
+const searchError = ref("");
 const inputRef = ref<HTMLInputElement | null>(null);
 let debounceTimer: ReturnType<typeof setTimeout> | undefined;
 
 async function doSearch(q: string) {
   if (!q.trim()) {
     results.value = [];
+    searchError.value = "";
     return;
   }
   loading.value = true;
   try {
     const data = await apiGet<{ results: SearchResult[] }>("/api/messages/search", { q });
     results.value = data.results || [];
-  } catch {
+    searchError.value = "";
+  } catch (err: any) {
     results.value = [];
+    searchError.value = err?.message || "网络错误";
   } finally {
     loading.value = false;
   }
@@ -97,8 +102,17 @@ onUnmounted(() => {
           <MarkdownContent :content="r.content" />
         </div>
       </button>
+      <!-- P1-11：失败显示错误态 + 重试，不再伪装成「没有找到匹配的消息」 -->
       <EmptyState
-        v-if="query && !loading && results.length === 0"
+        v-if="query && !loading && searchError"
+        icon="⚠️"
+        title="搜索失败"
+        :description="searchError"
+        action-label="重试"
+        @action="doSearch(query)"
+      />
+      <EmptyState
+        v-else-if="query && !loading && results.length === 0"
         icon="🔍"
         title="没有找到匹配的消息"
         description="换个关键词再试"

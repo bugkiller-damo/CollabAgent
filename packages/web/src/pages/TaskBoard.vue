@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { apiGet, apiPost } from "../api";
+import EmptyState from "../components/EmptyState.vue";
 import PageHeader from "../components/layout/PageHeader.vue";
 import TaskDetailModal from "../components/task/TaskDetailModal.vue";
 import Button from "../components/ui/Button.vue";
@@ -54,6 +55,8 @@ const channelName = computed(() => {
 const channel = ref("");
 const tasks = ref<Task[]>([]);
 const loading = ref(false);
+// P1-11：加载失败原因——失败不再伪装成「暂无任务/拖到此处」
+const loadError = ref("");
 const newTitle = ref("");
 const dragNum = ref<number | null>(null);
 const dragOverCol = ref<string | null>(null);
@@ -159,10 +162,12 @@ function load() {
   apiGet<{ tasks: Task[] }>("/api/tasks", { channel: "#" + channel.value })
     .then((d) => {
       tasks.value = d.tasks || [];
+      loadError.value = "";
       loading.value = false;
     })
-    .catch(() => {
+    .catch((err: any) => {
       tasks.value = [];
+      loadError.value = err?.message || "网络错误";
       loading.value = false;
     });
 }
@@ -323,9 +328,18 @@ function fmtTime(t: string): string {
       </div>
     </PageHeader>
 
+    <!-- P1-11：加载失败显示错误态 + 重试，看板/列表不再伪装成「暂无任务/拖到此处」 -->
+    <EmptyState
+      v-if="loadError && !loading"
+      icon="⚠️"
+      title="任务加载失败"
+      :description="loadError"
+      action-label="重新加载"
+      @action="load"
+    />
     <!-- 看板视图 -->
     <div
-      v-if="viewMode === 'board'"
+      v-else-if="viewMode === 'board'"
       class="grid flex-1 grid-cols-1 content-start gap-4 overflow-y-auto p-4 sm:grid-cols-2 xl:grid-cols-4"
     >
       <div

@@ -89,12 +89,20 @@ export const useChannelStore = defineStore("channels", () => {
     clearUnread(name);
   }
 
+  // 未读计数 key 约定：频道 = 裸名（无 #），与 ChatPane 读侧（unreadCounts[ch.name]）及
+  // activeChannelName 同口径。写/清两侧入口统一去 # 归一化（P1-9 教训：wsDispatch 曾写
+  // "#name" 而读/清用裸名，徽标永不亮、清除不落同 key——单点收敛防口径漂移）
+  function unreadKey(name: string): string {
+    return name.startsWith("#") ? name.slice(1) : name;
+  }
+
   function incrementUnread(channelName: string): void {
-    unreadCounts.value = { ...unreadCounts.value, [channelName]: (unreadCounts.value[channelName] || 0) + 1 };
+    const key = unreadKey(channelName);
+    unreadCounts.value = { ...unreadCounts.value, [key]: (unreadCounts.value[key] || 0) + 1 };
   }
 
   function clearUnread(channelName: string): void {
-    unreadCounts.value = { ...unreadCounts.value, [channelName]: 0 };
+    unreadCounts.value = { ...unreadCounts.value, [unreadKey(channelName)]: 0 };
   }
 
   return {

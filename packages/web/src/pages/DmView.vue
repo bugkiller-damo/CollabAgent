@@ -42,6 +42,8 @@ const messages = computed<Message[]>(() => {
 // 离线发送队列归 store 按 target 持久化（对齐 ChannelView）
 const pending = computed(() => (convKey.value ? messageStore.pendingByTarget[convKey.value] : undefined) || []);
 const loading = computed(() => messageStore.loading);
+// P1-11：历史加载失败原因（按 convKey），非空时空态分支显示错误态而非「还没有私信」
+const loadError = computed(() => (convKey.value ? messageStore.loadError[convKey.value] : undefined));
 const online = computed(() => uiStore.online);
 
 const title = computed(() => peer.value?.displayName || peer.value?.handle || peerName.value || "私信");
@@ -137,6 +139,12 @@ function discardPending(tempId: string) {
   messageStore.discardPending(convKey.value, tempId);
 }
 
+// P1-11：错误态重试（直接重拉历史；成功后 store 清 loadError，视图自动退回正常）
+function retryLoadHistory() {
+  if (!convKey.value) return;
+  messageStore.fetchHistory(convKey.value).catch(() => {});
+}
+
 // 恢复在线时补发离线排队消息（对齐 ChannelView 的 online watch）
 watch(
   online,
@@ -176,6 +184,15 @@ function setAttachments(next: ComposerAttachment[]) {
 
     <div v-else-if="messages.length === 0 && pending.length === 0" class="min-h-0 flex-1 overflow-y-auto p-4">
       <MessageSkeleton v-if="loading" />
+      <!-- P1-11：加载失败显示错误态 + 重试，不再伪装成「还没有私信」 -->
+      <EmptyState
+        v-else-if="loadError"
+        icon="⚠️"
+        title="私信加载失败"
+        :description="loadError"
+        action-label="重新加载"
+        @action="retryLoadHistory"
+      />
       <EmptyState
         v-else
         icon="✉️"

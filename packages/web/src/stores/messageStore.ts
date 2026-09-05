@@ -81,6 +81,9 @@ export const useMessageStore = defineStore("messages", () => {
   const messagesByTarget = ref<Record<string, Message[]>>({});
   const lastSeenSeq = ref<Record<string, number>>({});
   const loading = ref(false);
+  // P1-11：按 target 记录 fetchHistory 失败原因——消费方（ChannelView/DmView）据此
+  // 区分「空频道」与「加载失败」，失败不再伪装成「还没有消息」空态
+  const loadError = ref<Record<string, string>>({});
   // 离线发送队列（按 target 分组，持久化到 localStorage，切频道/刷新不丢）
   const pendingByTarget = ref<Record<string, PendingItem[]>>(loadPending());
 
@@ -106,11 +109,22 @@ export const useMessageStore = defineStore("messages", () => {
     if (opts?.limit) params.limit = String(opts.limit);
     try {
       const data = await apiGet<{ messages: Message[] }>("/api/messages", params);
-      const msgs = data.messages || [];
-      saveCache(channel, msgs);
-      messagesByTarget.value = { ...messagesByTarget.value, [channel]: msgs };
-      // 推进已见水位：before 翻旧页时本页 seq 更小，max 保护不回退
-      const maxSeq = msgs.reduce((acc, m) => Math.max(acc, m.seq || 0), 0);
+      const fetched = data.messages || [];
+      // P1-10 竞态归并：await 期间到达的 live 消息已在列表中，整体置换会把它们从 UI
+      // 抹掉——且 lastSeenSeq 已被 receiveMessage 推进过，重连 backfill（after=水位）
+      // 也补不回，要等下次整页拉取才重现。按 id 归并：fetched 为 server 权威（同 id
+      // 覆盖本地陈旧字段），仅存于本地的（live 新到）保留，按 seq 升序重排（同 seq
+      // 稳定保持原顺序）。顺带修复同类问题：highlight before 翻旧页此前会把现有
+      // 新消息整体置换成旧窗口。
+      const existing = messagesByTarget.value[channel] || [];
+      const fetchedIds = new Set(fetched.map((m) => m.id));
+      const liveOnly = existing.filter((m) => !fetchedIds.has(m.id));
+      const merged = [...fetched, ...liveOnly].sort((a, b) => (a.seq || 0) - (b.seq || 0));
+      saveCache(channel, merged);
+      messagesByTarget.value = { ...messagesByTarget.value, [channel]: merged };
+      // 推进已见水位：before 翻旧页时本页 seq 更小，max 保护不回退（水位口径仍取
+      // server fetched——live 消息的水位由 receiveMessage 各自推进，不靠本页）
+      const maxSeq = fetched.reduce((acc, m) => Math.max(acc, m.seq || 0), 0);
       if (maxSeq > 0) {
         lastSeenSeq.value = {
           ...lastSeenSeq.value,
@@ -118,8 +132,15 @@ export const useMessageStore = defineStore("messages", () => {
         };
       }
       loading.value = false;
-    } catch {
-      // 请求失败保留缓存内容
+      // P1-11：成功即清除该 target 的失败记录（重试恢复后错误态自动退回正常视图）
+      if (loadError.value[channel]) {
+        const nextErrors = { ...loadError.value };
+        delete nextErrors[channel];
+        loadError.value = nextErrors;
+      }
+    } catch (err: any) {
+      // 请求失败保留缓存内容；原因落 loadError 供 UI 区分「空频道」与「加载失败」（P1-11）
+      loadError.value = { ...loadError.value, [channel]: err?.message || "网络错误" };
       loading.value = false;
     }
   }
@@ -458,6 +479,7 @@ export const useMessageStore = defineStore("messages", () => {
     messagesByTarget,
     lastSeenSeq,
     loading,
+    loadError,
     pendingByTarget,
     fetchHistory,
     sendMessage,
