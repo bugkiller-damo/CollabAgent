@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from "vue";
 import { apiClient, apiGet } from "../../api";
 import { useAuthStore, useChannelStore, useUiStore } from "../../stores";
 import { toast } from "../../stores/toastStore";
+import Button from "../ui/Button.vue";
 
 interface Member {
   member_id: string;
@@ -122,7 +123,7 @@ function openProfile(m: Member) {
   <aside class="w-60 shrink-0 border-l border-line bg-gray-50 dark:bg-gray-800 flex flex-col">
     <div class="flex items-center justify-between p-3 border-b border-line">
       <span class="text-gray-700 dark:text-gray-300 text-sm font-semibold">成员（{{ members.length }}）</span>
-      <button @click="onClose" class="text-gray-400 hover:text-gray-700 dark:hover:text-white text-sm">✕</button>
+      <button @click="onClose" class="text-muted hover:text-gray-700 dark:hover:text-white text-sm">✕</button>
     </div>
 
     <div class="p-3 border-b border-line space-y-1">
@@ -133,23 +134,23 @@ function openProfile(m: Member) {
           @input="inviteHandle = ($event.target as HTMLInputElement).value"
           @keydown="onInviteKeydown"
           placeholder="输入用户名 / Agent名 邀请"
-          class="flex-1 min-w-0 text-sm p-1.5 rounded bg-white dark:bg-gray-700 text-ink border border-gray-300 dark:border-gray-600"
+          class="flex-1 min-w-0 text-sm p-1.5 rounded-md bg-white dark:bg-gray-700 text-ink border border-gray-300 dark:border-gray-600"
         />
-        <button
-          @click="handleInvite"
+        <Button
+          size="sm"
           :disabled="busy || !inviteHandle.trim()"
-          class="px-2 rounded text-sm bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-50"
-        >邀请</button>
+          @click="handleInvite"
+        >邀请</Button>
       </div>
       <p v-if="inviteMsg" :class="'text-xs ' + (inviteMsg === '已邀请' ? 'text-green-500' : 'text-red-400')">{{ inviteMsg }}</p>
     </div>
 
     <div class="flex-1 overflow-y-auto p-2 space-y-3">
-      <p v-if="loading" class="text-gray-400 text-sm text-center py-4">加载中…</p>
-      <p v-else-if="members.length === 0" class="text-gray-400 text-sm text-center py-4">暂无成员</p>
+      <p v-if="loading" class="text-muted text-sm text-center py-4">加载中…</p>
+      <p v-else-if="members.length === 0" class="text-muted text-sm text-center py-4">暂无成员</p>
 
       <div v-if="agents.length > 0">
-        <div class="text-gray-400 text-xs font-semibold uppercase px-2 mb-1">Agent（{{ agents.length }}）</div>
+        <div class="text-muted text-xs font-semibold uppercase px-2 mb-1">Agent（{{ agents.length }}）</div>
         <div
           v-for="m in agents"
           :key="m.member_id + m.member_type"
@@ -167,16 +168,16 @@ function openProfile(m: Member) {
             </div>
             <div class="flex-1 min-w-0">
               <div class="text-gray-800 dark:text-gray-200 text-sm truncate">
-                {{ m.display_name || m.handle }}<span v-if="m.member_id === currentUserId" class="text-gray-400"> （你）</span>
+                {{ m.display_name || m.handle }}<span v-if="m.member_id === currentUserId" class="text-muted"> （你）</span>
               </div>
-              <div class="text-gray-400 text-xs truncate">@{{ m.handle }}</div>
+              <div class="text-muted text-xs truncate">@{{ m.handle }}</div>
             </div>
           </div>
           <select
             v-if="m.member_type === 'human' && m.role !== 'owner'"
             :value="m.role || 'member'"
             @change="handleRole(m, ($event.target as HTMLSelectElement).value)"
-            class="text-[10px] bg-transparent text-muted border border-gray-200 dark:border-gray-600 rounded px-1 py-0.5 opacity-0 group-hover:opacity-100 focus:opacity-100"
+            class="text-[10px] bg-transparent text-muted border border-gray-200 dark:border-gray-600 rounded px-1 py-0.5 opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
           >
             <option value="member">成员</option>
             <option value="admin">管理员</option>
@@ -198,7 +199,7 @@ function openProfile(m: Member) {
             v-if="m.member_type === 'agent'"
             @click="handleManager(m, !m.is_manager)"
             :title="m.is_manager ? '取消经理身份' : '设为该频道的经理（可派发任务给其它 agent）'"
-            class="text-gray-400 hover:text-amber-500 text-xs opacity-0 group-hover:opacity-100 whitespace-nowrap"
+            class="text-muted hover:text-amber-500 text-xs opacity-0 group-hover:opacity-100 whitespace-nowrap"
           >
             {{ m.is_manager ? "取消经理" : "设为经理" }}
           </button>
@@ -206,13 +207,13 @@ function openProfile(m: Member) {
             v-if="m.member_type === 'agent' || (m.role !== 'owner' && m.member_id !== currentUserId)"
             @click="handleRemove(m)"
             :title="m.member_type === 'agent' ? '将 Agent 移出频道' : '移除成员'"
-            class="text-gray-400 hover:text-red-500 text-xs opacity-0 group-hover:opacity-100"
+            class="text-muted hover:text-red-500 text-xs opacity-0 group-hover:opacity-100"
           >✕</button>
         </div>
       </div>
 
       <div v-if="humans.length > 0">
-        <div class="text-gray-400 text-xs font-semibold uppercase px-2 mb-1">成员（{{ humans.length }}）</div>
+        <div class="text-muted text-xs font-semibold uppercase px-2 mb-1">成员（{{ humans.length }}）</div>
         <div
           v-for="m in humans"
           :key="m.member_id + m.member_type"
@@ -230,16 +231,16 @@ function openProfile(m: Member) {
             </div>
             <div class="flex-1 min-w-0">
               <div class="text-gray-800 dark:text-gray-200 text-sm truncate">
-                {{ m.display_name || m.handle }}<span v-if="m.member_id === currentUserId" class="text-gray-400"> （你）</span>
+                {{ m.display_name || m.handle }}<span v-if="m.member_id === currentUserId" class="text-muted"> （你）</span>
               </div>
-              <div class="text-gray-400 text-xs truncate">@{{ m.handle }}</div>
+              <div class="text-muted text-xs truncate">@{{ m.handle }}</div>
             </div>
           </div>
           <select
             v-if="m.member_type === 'human' && m.role !== 'owner'"
             :value="m.role || 'member'"
             @change="handleRole(m, ($event.target as HTMLSelectElement).value)"
-            class="text-[10px] bg-transparent text-muted border border-gray-200 dark:border-gray-600 rounded px-1 py-0.5 opacity-0 group-hover:opacity-100 focus:opacity-100"
+            class="text-[10px] bg-transparent text-muted border border-gray-200 dark:border-gray-600 rounded px-1 py-0.5 opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
           >
             <option value="member">成员</option>
             <option value="admin">管理员</option>
@@ -261,7 +262,7 @@ function openProfile(m: Member) {
             v-if="m.member_type === 'agent'"
             @click="handleManager(m, !m.is_manager)"
             :title="m.is_manager ? '取消经理身份' : '设为该频道的经理（可派发任务给其它 agent）'"
-            class="text-gray-400 hover:text-amber-500 text-xs opacity-0 group-hover:opacity-100 whitespace-nowrap"
+            class="text-muted hover:text-amber-500 text-xs opacity-0 group-hover:opacity-100 whitespace-nowrap"
           >
             {{ m.is_manager ? "取消经理" : "设为经理" }}
           </button>
@@ -269,7 +270,7 @@ function openProfile(m: Member) {
             v-if="m.member_type === 'agent' || (m.role !== 'owner' && m.member_id !== currentUserId)"
             @click="handleRemove(m)"
             :title="m.member_type === 'agent' ? '将 Agent 移出频道' : '移除成员'"
-            class="text-gray-400 hover:text-red-500 text-xs opacity-0 group-hover:opacity-100"
+            class="text-muted hover:text-red-500 text-xs opacity-0 group-hover:opacity-100"
           >✕</button>
         </div>
       </div>

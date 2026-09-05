@@ -86,7 +86,7 @@ function handleDevBypass() {
             type="checkbox"
             :checked="rememberMe"
             @change="rememberMe = ($event.target as HTMLInputElement).checked"
-            class="rounded border-gray-300 text-blue-600 focus:ring-blue-500 dark:border-gray-600"
+            class="rounded border-gray-300 text-blue-600 focus-visible:ring-blue-500 dark:border-gray-600"
           />
           记住我（30 天免登录）
         </label>

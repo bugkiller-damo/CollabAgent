@@ -68,12 +68,12 @@ const countLabel = computed(() => (typeof props.count === "number" ? String(prop
       <button
         v-if="title"
         type="button"
-        class="flex min-w-0 flex-1 items-center gap-1 rounded px-1 py-1 text-left hover:bg-gray-200/80 dark:hover:bg-gray-700/80"
+        class="flex min-w-0 flex-1 items-center gap-1 rounded-md px-1 py-1 text-left hover:bg-gray-200/80 dark:hover:bg-gray-700/80"
         :aria-expanded="!collapsed"
         @click="toggle"
       >
         <svg
-          class="h-3 w-3 shrink-0 text-gray-400 transition-transform"
+          class="h-3 w-3 shrink-0 text-muted transition-transform"
           :class="collapsed ? '-rotate-90' : ''"
           fill="none"
           stroke="currentColor"
@@ -86,7 +86,7 @@ const countLabel = computed(() => (typeof props.count === "number" ? String(prop
         <span class="truncate text-xs font-semibold uppercase tracking-wider text-muted">
           {{ title }}
         </span>
-        <span v-if="countLabel" class="shrink-0 text-[10px] tabular-nums text-gray-400">{{ countLabel }}</span>
+        <span v-if="countLabel" class="shrink-0 text-[10px] tabular-nums text-muted">{{ countLabel }}</span>
       </button>
       <div v-if="$slots.action" class="flex shrink-0 items-center">
         <slot name="action" />

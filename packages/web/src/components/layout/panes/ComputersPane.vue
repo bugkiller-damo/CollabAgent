@@ -33,7 +33,7 @@ function goComputers() {
           :class="['h-2 w-2 shrink-0 rounded-full', computerStore.connected ? 'bg-green-500' : 'bg-gray-400']"
         />
         <span class="min-w-0 flex-1 truncate">{{ computerStore.computer.name }}</span>
-        <span class="shrink-0 text-[10px] text-gray-400">{{ computerStore.connected ? "在线" : "离线" }}</span>
+        <span class="shrink-0 text-[10px] text-muted">{{ computerStore.connected ? "在线" : "离线" }}</span>
       </button>
       <button
         v-else

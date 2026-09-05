@@ -237,7 +237,7 @@ watch([() => uiStore.terminalAgent, () => channelStore.activeChannelName], ([nam
         </div>
       </header>
 
-      <div v-if="!uiStore.online" class="bg-amber-500 px-4 py-1.5 text-center text-sm text-white">
+      <div v-if="!uiStore.online" class="bg-amber-500 px-4 py-1.5 text-center text-sm text-gray-900">
         ⚠️ 你当前处于离线状态，新消息可能无法收发
       </div>
 

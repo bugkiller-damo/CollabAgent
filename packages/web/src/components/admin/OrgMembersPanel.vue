@@ -2,6 +2,7 @@
 import { onMounted, ref } from "vue";
 import { apiClient, apiGet } from "../../api";
 import { toast } from "../../stores/toastStore";
+import Button from "../ui/Button.vue";
 
 interface Org {
   id: string;
@@ -92,13 +93,13 @@ function onInviteKeydown(e: KeyboardEvent) {
         @input="invite = ($event.target as HTMLInputElement).value"
         @keydown="onInviteKeydown"
         placeholder="输入用户名邀请协作者"
-        class="flex-1 p-2 rounded text-sm bg-raised text-ink border border-gray-300 dark:border-gray-600"
+        class="flex-1 p-2 rounded-md text-sm bg-raised text-ink border border-gray-300 dark:border-gray-600"
       />
-      <button
-        @click="doInvite"
+      <Button
+        size="sm"
         :disabled="busy || !invite.trim()"
-        class="px-3 rounded text-sm bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-50"
-      >邀请</button>
+        @click="doInvite"
+      >邀请</Button>
     </div>
     <p v-if="msg" :class="'text-xs ' + (msg === '已加入' ? 'text-green-500' : 'text-red-400')">{{ msg }}</p>
     <div class="flex flex-wrap gap-2">
@@ -112,7 +113,7 @@ function onInviteKeydown(e: KeyboardEvent) {
           v-if="m.role !== 'owner'"
           @click="removeMember(m)"
           title="移除"
-          class="text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100"
+          class="text-muted hover:text-red-500 opacity-0 group-hover:opacity-100"
         >✕</button>
       </span>
     </div>

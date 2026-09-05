@@ -342,7 +342,7 @@ function fmtTime(t: string): string {
       >
         <h3 class="mb-3 flex items-center justify-between font-semibold text-gray-700 dark:text-gray-300">
           {{ col.label }}
-          <span class="text-xs text-gray-400">{{ colTasks(col.status).length }}</span>
+          <span class="text-xs text-muted">{{ colTasks(col.status).length }}</span>
         </h3>
         <div class="min-h-[40px] space-y-2">
           <div
@@ -354,14 +354,14 @@ function fmtTime(t: string): string {
             @click="openTask(t)"
             :title="canTouchTask(t) ? undefined : '仅认领人（或认领 agent 的所有者）与频道管理可移动'"
             :class="[
-              'rounded border border-gray-200 bg-white p-2.5 shadow-sm dark:border-gray-600 dark:bg-gray-700',
+              'rounded-lg border border-gray-200 bg-white p-2.5 shadow-sm dark:border-gray-600 dark:bg-gray-700',
               canTouchTask(t)
                 ? 'cursor-grab active:cursor-grabbing hover:border-blue-300 dark:hover:border-blue-500'
                 : 'cursor-default opacity-80',
             ]"
           >
             <div class="flex items-start gap-2">
-              <span class="shrink-0 text-xs text-gray-400">#{{ t.task_number }}</span>
+              <span class="shrink-0 text-xs text-muted">#{{ t.task_number }}</span>
               <p class="line-clamp-3 flex-1 break-words text-sm text-gray-800 dark:text-gray-200">{{ t.content }}</p>
             </div>
             <div class="mt-2 flex items-center justify-between">
@@ -380,7 +380,7 @@ function fmtTime(t: string): string {
               </select>
             </div>
           </div>
-          <p v-if="!loading && colTasks(col.status).length === 0" class="py-2 text-center text-xs text-gray-400">
+          <p v-if="!loading && colTasks(col.status).length === 0" class="py-2 text-center text-xs text-muted">
             拖到此处
           </p>
         </div>
@@ -406,7 +406,7 @@ function fmtTime(t: string): string {
           @click="openTask(t)"
           class="grid cursor-pointer grid-cols-[3.5rem_minmax(0,1fr)_5rem_7rem_7rem_6rem] items-center gap-2 border-b border-gray-100 px-3 py-2 text-xs last:border-b-0 hover:bg-gray-50 dark:border-gray-700/60 dark:hover:bg-gray-800"
         >
-          <span class="text-gray-400">#{{ t.task_number }}</span>
+          <span class="text-muted">#{{ t.task_number }}</span>
           <span class="truncate text-sm text-gray-800 dark:text-gray-200" :title="t.content">{{ t.content }}</span>
           <span>
             <span :class="['inline-block rounded-full px-2 py-0.5 text-[11px] font-medium', statusBadge(t.task_status)]">
@@ -414,11 +414,11 @@ function fmtTime(t: string): string {
             </span>
           </span>
           <span v-if="t.assignee_handle" class="truncate text-blue-600 dark:text-blue-400">@{{ t.assignee_handle }}</span>
-          <span v-else class="text-gray-400">未分配</span>
+          <span v-else class="text-muted">未分配</span>
           <span class="truncate text-subtle">{{ t.creator_name }}</span>
-          <span class="text-gray-400">{{ fmtTime(t.created_at) }}</span>
+          <span class="text-muted">{{ fmtTime(t.created_at) }}</span>
         </div>
-        <p v-if="!loading && filteredTasks.length === 0" class="py-8 text-center text-xs text-gray-400">暂无任务</p>
+        <p v-if="!loading && filteredTasks.length === 0" class="py-8 text-center text-xs text-muted">暂无任务</p>
       </div>
     </div>
 

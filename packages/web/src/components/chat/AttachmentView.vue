@@ -36,12 +36,12 @@ function isImage(mime: string): boolean {
         :download="a.filename"
         target="_blank"
         rel="noopener noreferrer"
-        class="flex items-center gap-2 p-2 rounded border border-line bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 max-w-xs"
+        class="flex items-center gap-2 p-2 rounded-lg border border-line bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 max-w-xs"
       >
         <span class="text-2xl shrink-0">📄</span>
         <span class="min-w-0">
           <span class="block text-sm text-gray-800 dark:text-gray-200 truncate">{{ a.filename }}</span>
-          <span class="block text-xs text-gray-400">{{ formatSize(a.sizeBytes) }} · 下载</span>
+          <span class="block text-xs text-muted">{{ formatSize(a.sizeBytes) }} · 下载</span>
         </span>
       </a>
     </template>

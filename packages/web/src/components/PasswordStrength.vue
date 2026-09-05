@@ -8,7 +8,7 @@ const props = defineProps<{
 
 const CONFIG: Record<Strength, { label: string; color: string; bars: number }> = {
   weak: { label: "弱", color: "bg-red-500", bars: 1 },
-  medium: { label: "中", color: "bg-yellow-500", bars: 2 },
+  medium: { label: "中", color: "bg-amber-500", bars: 2 },
   strong: { label: "强", color: "bg-green-500", bars: 3 },
 };
 
@@ -27,10 +27,10 @@ const cfg = computed(() => CONFIG[strength.value]);
       />
     </div>
     <div
-      :class="'text-xs mt-0.5 ' + (strength === 'weak' ? 'text-red-500' : strength === 'medium' ? 'text-yellow-600 dark:text-yellow-500' : 'text-green-600 dark:text-green-500')"
+      :class="'text-xs mt-0.5 ' + (strength === 'weak' ? 'text-red-500' : strength === 'medium' ? 'text-amber-600 dark:text-amber-500' : 'text-green-600 dark:text-green-500')"
     >
       密码强度：{{ cfg.label }}
-      <span v-if="strength === 'weak'" class="text-gray-400"> · 建议至少 8 位且含字母和数字</span>
+      <span v-if="strength === 'weak'" class="text-muted"> · 建议至少 8 位且含字母和数字</span>
     </div>
   </div>
 </template>

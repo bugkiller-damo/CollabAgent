@@ -208,7 +208,7 @@ function openSenderProfile() {
       dispatchKind
         ? 'border-l-2 border-amber-400 dark:border-amber-600 bg-amber-50/40 dark:bg-amber-900/10'
         : '',
-      isProgress ? 'border-l-2 border-sky-400 dark:border-sky-700 bg-sky-50/50 dark:bg-sky-950/20' : '',
+      isProgress ? 'border-l-2 border-purple-400 dark:border-purple-700 bg-purple-50/50 dark:bg-purple-950/20' : '',
     ]"
   >
     <div v-if="compact" class="w-8 shrink-0" />
@@ -236,8 +236,8 @@ function openSenderProfile() {
         <span class="text-gray-500 text-xs" :title="new Date(msg.time || msg.createdAt).toLocaleString()">
           {{ formatTime(msg.time || msg.createdAt) }}
         </span>
-        <span v-if="edited" class="text-gray-400 text-xs">(已编辑)</span>
-        <span v-if="deleted" class="text-gray-400 text-xs italic">(已删除)</span>
+        <span v-if="edited" class="text-muted text-xs">(已编辑)</span>
+        <span v-if="deleted" class="text-muted text-xs italic">(已删除)</span>
         <span
           v-if="dispatchKind"
           class="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900 text-amber-700 dark:text-amber-300"
@@ -252,10 +252,10 @@ function openSenderProfile() {
           v-model="editText"
           rows="2"
           :maxlength="MAX_MESSAGE_CONTENT_LEN"
-          class="w-full p-2 rounded bg-gray-100 dark:bg-gray-700 text-ink border border-gray-300 dark:border-gray-600 text-sm resize-none"
+          class="w-full p-2 rounded-md bg-gray-100 dark:bg-gray-700 text-ink border border-gray-300 dark:border-gray-600 text-sm resize-none"
           @keydown="onEditKeydown"
         />
-        <div class="text-xs text-gray-400 mt-0.5">
+        <div class="text-xs text-muted mt-0.5">
           Enter 保存 · Esc 取消
           <button @click="saveEdit" class="ml-2 text-blue-500 hover:underline">保存</button>
           <button @click="cancelEdit" class="ml-2 hover:underline">取消</button>
@@ -263,7 +263,7 @@ function openSenderProfile() {
       </div>
 
       <template v-else>
-        <p v-if="deleted" class="text-gray-400 italic text-sm mt-0.5">此消息已删除</p>
+        <p v-if="deleted" class="text-muted italic text-sm mt-0.5">此消息已删除</p>
         <template v-else>
           <MarkdownContent v-if="msg.content" :content="msg.content" />
           <AttachmentView v-if="msg.attachments && msg.attachments.length > 0" :attachments="msg.attachments" />
@@ -342,7 +342,7 @@ function openSenderProfile() {
             <div class="relative">
               <button
                 type="button"
-                class="rounded px-1.5 py-0.5 text-xs text-gray-500 opacity-100 transition-opacity hover:bg-gray-200 hover:text-yellow-400 lg:opacity-0 lg:group-hover:opacity-100 dark:hover:bg-gray-700"
+                class="rounded px-1.5 py-0.5 text-xs text-gray-500 opacity-100 transition-opacity hover:bg-gray-200 hover:text-amber-400 lg:opacity-0 lg:group-hover:opacity-100 dark:hover:bg-gray-700"
                 @click="emojiPickerOpen = !emojiPickerOpen"
               >
                 😀

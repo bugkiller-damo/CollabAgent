@@ -80,7 +80,7 @@ async function handleMarkAll() {
 <template>
   <div ref="panelRef" class="relative">
     <button
-      class="relative p-2 rounded hover:bg-raised transition"
+      class="relative p-2 rounded-md hover:bg-raised transition"
       title="通知"
       aria-label="通知"
       @click="open = !open"
@@ -137,7 +137,7 @@ async function handleMarkAll() {
                 <span v-if="!n.read" class="w-2 h-2 rounded-full bg-blue-500 mt-1 flex-shrink-0" />
               </div>
               <p v-if="n.body" class="text-xs text-subtle mt-1 line-clamp-2">{{ n.body }}</p>
-              <p class="text-xs text-gray-400 dark:text-gray-500 mt-1">{{ timeAgo(n.createdAt) }}</p>
+              <p class="text-xs text-muted mt-1">{{ timeAgo(n.createdAt) }}</p>
             </div>
           </button>
         </template>

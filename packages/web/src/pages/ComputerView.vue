@@ -389,7 +389,7 @@ watch(
             <h2 class="text-lg font-semibold text-ink">{{ computer?.name || "我的计算机" }}</h2>
             <span :class="['h-2.5 w-2.5 rounded-full', connected ? 'bg-green-500' : 'bg-gray-400']" />
           </div>
-          <p class="mt-0.5 text-xs text-gray-400">{{ computer?.hostname || "尚未上报主机名" }}</p>
+          <p class="mt-0.5 text-xs text-muted">{{ computer?.hostname || "尚未上报主机名" }}</p>
           <p v-if="!editing" class="mt-2 text-sm text-gray-600 dark:text-gray-300">
             {{ computer?.description || "还没有描述" }}
           </p>
@@ -413,22 +413,22 @@ watch(
       </Card>
 
       <Card>
-        <p class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">信息</p>
+        <p class="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">信息</p>
         <dl class="grid gap-2 text-sm sm:grid-cols-2">
           <div>
-            <dt class="text-xs text-gray-400">系统</dt>
+            <dt class="text-xs text-muted">系统</dt>
             <dd class="text-gray-800 dark:text-gray-200">{{ computer?.os || "—" }} · {{ computer?.arch || "—" }}</dd>
           </div>
           <div>
-            <dt class="text-xs text-gray-400">连接器版本</dt>
+            <dt class="text-xs text-muted">连接器版本</dt>
             <dd class="text-gray-800 dark:text-gray-200">{{ computer?.daemonVersion || computerStore.status?.daemonVersion || "—" }}</dd>
           </div>
           <div>
-            <dt class="text-xs text-gray-400">创建时间</dt>
+            <dt class="text-xs text-muted">创建时间</dt>
             <dd class="text-gray-800 dark:text-gray-200">{{ fmtTime(computer?.createdAt) }}</dd>
           </div>
           <div>
-            <dt class="text-xs text-gray-400">最近就绪</dt>
+            <dt class="text-xs text-muted">最近就绪</dt>
             <dd class="text-gray-800 dark:text-gray-200">{{ fmtTime(computer?.lastReadyAt || computerStore.status?.connectedAt) }}</dd>
           </div>
         </dl>
@@ -436,7 +436,7 @@ watch(
       </Card>
 
       <Card>
-        <p class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">检测到的运行时</p>
+        <p class="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">检测到的运行时</p>
         <div class="grid gap-2 sm:grid-cols-2">
           <div
             v-for="r in runtimes"
@@ -460,18 +460,18 @@ watch(
       </Card>
 
       <Card class="space-y-3">
-        <p class="text-xs font-semibold uppercase tracking-wide text-gray-400">接入</p>
+        <p class="text-xs font-semibold uppercase tracking-wide text-muted">接入</p>
         <p class="text-sm text-gray-600 dark:text-gray-300">
           在你要跑 Agent 的这台电脑上执行（就是你正在用的这台，不是别人的机器）。
         </p>
-        <p class="text-xs text-gray-400">生成新命令会吊销当前机器令牌，现有连接器会断开。</p>
+        <p class="text-xs text-muted">生成新命令会吊销当前机器令牌，现有连接器会断开。</p>
         <Button size="sm" :loading="generating" @click="confirmRotate = true">生成连接命令</Button>
         <div v-if="tokenCommand" class="space-y-2">
           <div class="break-all rounded bg-gray-900 p-3 font-mono text-xs text-green-400 dark:bg-black">{{ tokenCommand }}</div>
           <div class="flex items-center gap-2">
             <Button size="sm" variant="secondary" @click="copyCommand">{{ copied ? "已复制 ✓" : "复制命令" }}</Button>
           </div>
-          <p class="text-xs text-gray-400">令牌只显示这一次。密钥不会回放。</p>
+          <p class="text-xs text-muted">令牌只显示这一次。密钥不会回放。</p>
           <div v-if="!connected" class="flex items-center gap-2 text-sm text-gray-500">
             <span class="inline-block h-4 w-4 animate-spin rounded-full border-2 border-blue-500 border-t-transparent" />
             等待连接器就绪…
@@ -481,16 +481,16 @@ watch(
 
       <Card class="space-y-3">
         <div class="flex items-center justify-between">
-          <p class="text-xs font-semibold uppercase tracking-wide text-gray-400">
+          <p class="text-xs font-semibold uppercase tracking-wide text-muted">
             这台计算机上的 Agent · {{ myAgents.length }}
           </p>
           <Button size="sm" :disabled="!canCreate" @click="openCreate">创建</Button>
         </div>
-        <p v-if="!canCreate" class="text-xs text-gray-400">
+        <p v-if="!canCreate" class="text-xs text-muted">
           {{ connected ? "安装 Claude Code 后才能创建。" : "先连接这台计算机，再创建 Agent。" }}
         </p>
         <p v-if="createdNote" class="text-xs text-blue-600 dark:text-blue-400">{{ createdNote }}</p>
-        <p v-if="myAgents.length === 0" class="text-sm text-gray-400">还没有 Agent</p>
+        <p v-if="myAgents.length === 0" class="text-sm text-muted">还没有 Agent</p>
         <div
           v-for="a in myAgents"
           :key="a.id"
@@ -505,7 +505,7 @@ watch(
             <Avatar :name="a.display_name || a.name" :src="a.avatar_url" size="sm" />
             <div class="min-w-0 flex-1">
               <p class="truncate text-sm font-medium text-ink">{{ a.display_name || a.name }}</p>
-              <p class="truncate text-xs text-gray-400">{{ a.runtime || "claude" }} · {{ agentLive(a) }}</p>
+              <p class="truncate text-xs text-muted">{{ a.runtime || "claude" }} · {{ agentLive(a) }}</p>
             </div>
           </button>
           <button

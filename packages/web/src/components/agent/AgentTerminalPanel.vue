@@ -181,7 +181,7 @@ const st = computed(() => STATUS_LABEL[status.value] || STATUS_LABEL.offline);
         </option>
       </select>
       <span :class="`shrink-0 rounded px-1.5 py-0.5 text-xs ${st.cls}`">{{ st.text }}</span>
-      <button @click="onClose" class="shrink-0 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200" aria-label="关闭终端面板">✕</button>
+      <button @click="onClose" class="shrink-0 text-muted hover:text-gray-600 dark:hover:text-gray-200" aria-label="关闭终端面板">✕</button>
     </div>
 
     <div class="flex items-center border-b border-gray-200 text-sm dark:border-gray-700">
@@ -213,7 +213,7 @@ const st = computed(() => STATUS_LABEL[status.value] || STATUS_LABEL.offline);
         >
           A-
         </button>
-        <span class="w-6 text-center text-[11px] text-gray-400">{{ fontSize }}</span>
+        <span class="w-6 text-center text-[11px] text-muted">{{ fontSize }}</span>
         <button
           @click="changeFontSize(1)"
           class="rounded px-1.5 py-0.5 text-xs text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700"
@@ -252,7 +252,7 @@ const st = computed(() => STATUS_LABEL[status.value] || STATUS_LABEL.offline);
       </button>
     </div>
 
-    <p class="border-t border-gray-200 px-3 py-1.5 text-[11px] text-gray-400 dark:border-gray-700">
+    <p class="border-t border-gray-200 px-3 py-1.5 text-[11px] text-muted dark:border-gray-700">
       <template v-if="tab === 'live'">
         画面每 0.4s 刷新，仅在观看时传输{{ frame?.time ? " · 最近更新 " + new Date(frame.time).toLocaleTimeString("zh-CN") : "" }}
       </template>

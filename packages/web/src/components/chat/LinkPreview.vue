@@ -66,7 +66,7 @@ const preview = computed<Preview | null>(() => {
     :href="preview.url"
     target="_blank"
     rel="noopener noreferrer"
-    class="flex gap-3 mt-1.5 max-w-md border border-line rounded overflow-hidden hover:bg-gray-50 dark:hover:bg-gray-800"
+    class="flex gap-3 mt-1.5 max-w-md border border-line rounded-lg overflow-hidden hover:bg-gray-50 dark:hover:bg-gray-800"
   >
     <img
       v-if="preview.image"
@@ -76,7 +76,7 @@ const preview = computed<Preview | null>(() => {
       class="w-20 h-20 object-cover shrink-0"
     />
     <div class="min-w-0 py-2 pr-2">
-      <div v-if="preview.siteName" class="text-[11px] text-gray-400 truncate">{{ preview.siteName }}</div>
+      <div v-if="preview.siteName" class="text-[11px] text-muted truncate">{{ preview.siteName }}</div>
       <div v-if="preview.title" class="text-sm text-gray-800 dark:text-gray-200 font-medium truncate">{{ preview.title }}</div>
       <div v-if="preview.description" class="text-xs text-gray-500 line-clamp-2">{{ preview.description }}</div>
     </div>

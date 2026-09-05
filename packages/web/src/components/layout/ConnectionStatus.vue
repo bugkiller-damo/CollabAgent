@@ -6,8 +6,8 @@ const uiStore = useUiStore();
 
 const CONFIG: Record<string, { dot: string; text: string; pulse?: boolean }> = {
   connected: { dot: "bg-green-500", text: "已连接" },
-  connecting: { dot: "bg-yellow-500", text: "连接中…", pulse: true },
-  reconnecting: { dot: "bg-yellow-500", text: "重连中…", pulse: true },
+  connecting: { dot: "bg-amber-500", text: "连接中…", pulse: true },
+  reconnecting: { dot: "bg-amber-500", text: "重连中…", pulse: true },
   disconnected: { dot: "bg-red-500", text: "已断开" },
 };
 
@@ -30,7 +30,7 @@ const diagnostic = computed(() => {
       <span :class="['w-2 h-2 rounded-full shrink-0', cfg.dot, cfg.pulse ? 'animate-pulse' : '']" />
       <span class="truncate">
         {{ cfg.text }}
-        <span v-if="status === 'reconnecting' && attempt > 0" class="text-gray-400">（第 {{ attempt }} 次）</span>
+        <span v-if="status === 'reconnecting' && attempt > 0" class="text-muted">（第 {{ attempt }} 次）</span>
       </span>
     </div>
     <div v-if="diagnostic" class="text-[11px] text-amber-500 mt-0.5 pl-4">{{ diagnostic }}</div>

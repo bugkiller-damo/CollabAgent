@@ -201,7 +201,7 @@ function close() {
       class="flex shrink-0 items-center justify-between border-b border-gray-100 px-5 py-3.5 dark:border-gray-700/60"
     >
       <div class="flex items-center gap-2.5">
-        <span class="text-[11px] font-semibold uppercase tracking-widest text-gray-400 dark:text-gray-500">
+        <span class="text-[11px] font-semibold uppercase tracking-widest text-muted">
           任务 #{{ task.task_number }}
         </span>
         <span
@@ -213,7 +213,7 @@ function close() {
       </div>
       <button
         type="button"
-        class="rounded-md p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300"
+        class="rounded-md p-1 text-muted transition-colors hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300"
         aria-label="关闭"
         @click="close"
       >
@@ -223,7 +223,7 @@ function close() {
 
     <!-- 内容区（滚动） -->
     <div class="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-      <p v-if="loading && !detail" class="py-10 text-center text-xs text-gray-400">加载中…</p>
+      <p v-if="loading && !detail" class="py-10 text-center text-xs text-muted">加载中…</p>
       <template v-else-if="detail">
         <!-- 完整内容 -->
         <p class="whitespace-pre-wrap break-words text-[15px] leading-7 text-gray-900 dark:text-gray-100">
@@ -235,25 +235,25 @@ function close() {
           class="mt-4 grid grid-cols-2 gap-x-6 gap-y-2.5 rounded-lg bg-gray-50 px-4 py-3 text-[13px] dark:bg-gray-900/40"
         >
           <div class="flex items-center justify-between gap-2">
-            <span class="text-xs text-gray-400 dark:text-gray-500">创建人</span>
+            <span class="text-xs text-muted">创建人</span>
             <span class="truncate font-medium text-gray-700 dark:text-gray-300">{{ detail.creator_name }}</span>
           </div>
           <div class="flex items-center justify-between gap-2">
-            <span class="text-xs text-gray-400 dark:text-gray-500">负责人</span>
+            <span class="text-xs text-muted">负责人</span>
             <span v-if="detail.assignee_handle" class="truncate font-medium text-blue-600 dark:text-blue-400">
               @{{ detail.assignee_handle }}
             </span>
             <span v-else class="flex items-center gap-1.5">
-              <span class="text-gray-400 dark:text-gray-500">未分配</span>
+              <span class="text-muted">未分配</span>
               <button type="button" class="font-medium text-blue-500 hover:underline" @click="claim">认领</button>
             </span>
           </div>
           <div class="flex items-center justify-between gap-2">
-            <span class="text-xs text-gray-400 dark:text-gray-500">创建时间</span>
+            <span class="text-xs text-muted">创建时间</span>
             <span class="font-medium text-gray-700 dark:text-gray-300">{{ fmtTime(detail.created_at) }}</span>
           </div>
           <div class="flex items-center justify-between gap-2">
-            <span class="text-xs text-gray-400 dark:text-gray-500">状态</span>
+            <span class="text-xs text-muted">状态</span>
             <select
               :value="detail.task_status"
               :disabled="!props.canTouch"
@@ -267,7 +267,7 @@ function close() {
         </div>
 
         <!-- 操作历史 -->
-        <h4 class="mb-2.5 mt-6 text-[11px] font-semibold uppercase tracking-widest text-gray-400 dark:text-gray-500">
+        <h4 class="mb-2.5 mt-6 text-[11px] font-semibold uppercase tracking-widest text-muted">
           操作历史
         </h4>
         <ol v-if="events.length" class="relative space-y-3.5 border-l-2 border-gray-100 pl-4 dark:border-gray-700/60">
@@ -279,27 +279,27 @@ function close() {
               <span class="font-semibold text-gray-900 dark:text-gray-100">{{ e.actor_name || "unknown" }}</span>
               {{ eventText(e) }}
             </p>
-            <p class="mt-0.5 text-[11px] leading-4 text-gray-400 dark:text-gray-500">{{ fmtTime(e.created_at) }}</p>
+            <p class="mt-0.5 text-[11px] leading-4 text-muted">{{ fmtTime(e.created_at) }}</p>
           </li>
         </ol>
-        <p v-else class="text-xs text-gray-400 dark:text-gray-500">暂无操作记录</p>
+        <p v-else class="text-xs text-muted">暂无操作记录</p>
 
         <!-- 批注 -->
-        <h4 class="mb-2.5 mt-6 text-[11px] font-semibold uppercase tracking-widest text-gray-400 dark:text-gray-500">
+        <h4 class="mb-2.5 mt-6 text-[11px] font-semibold uppercase tracking-widest text-muted">
           批注 <span class="font-normal normal-case tracking-normal">({{ comments.length }})</span>
         </h4>
         <div v-if="comments.length" class="space-y-2.5">
           <div v-for="c in comments" :key="c.id" class="rounded-lg bg-gray-50 px-3.5 py-2.5 dark:bg-gray-900/40">
             <div class="mb-1 flex items-baseline justify-between gap-2">
               <span class="text-xs font-semibold text-gray-800 dark:text-gray-200">{{ c.author_name || "unknown" }}</span>
-              <span class="shrink-0 text-[11px] text-gray-400 dark:text-gray-500">{{ fmtTime(c.created_at) }}</span>
+              <span class="shrink-0 text-[11px] text-muted">{{ fmtTime(c.created_at) }}</span>
             </div>
             <p class="whitespace-pre-wrap break-words text-[13px] leading-6 text-gray-700 dark:text-gray-300">
               {{ c.content }}
             </p>
           </div>
         </div>
-        <p v-else class="text-xs text-gray-400 dark:text-gray-500">暂无批注</p>
+        <p v-else class="text-xs text-muted">暂无批注</p>
       </template>
     </div>
 

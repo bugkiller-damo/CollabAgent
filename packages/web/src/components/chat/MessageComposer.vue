@@ -225,11 +225,11 @@ const onDrop = (e: DragEvent) => {
         class="flex items-center gap-1.5 rounded bg-gray-200 px-2 py-1 text-xs dark:bg-gray-700"
       >
         <span class="max-w-[140px] truncate text-gray-700 dark:text-gray-200">{{ a.name }}</span>
-        <span v-if="a.status === 'uploading'" class="text-gray-400">上传中…</span>
+        <span v-if="a.status === 'uploading'" class="text-muted">上传中…</span>
         <span v-if="a.status === 'error'" class="text-red-500">失败</span>
         <button
           type="button"
-          class="text-gray-400 hover:text-red-500"
+          class="text-muted hover:text-red-500"
           aria-label="移除附件"
           @click="removeAttachment(a.tempId)"
         >
@@ -258,7 +258,7 @@ const onDrop = (e: DragEvent) => {
         :rows="1"
         :disabled="disabled || sending"
         :maxlength="MAX_MESSAGE_CONTENT_LEN"
-        class="min-h-[2.5rem] w-full resize-none rounded-md border border-gray-300 bg-gray-100 px-3 py-2.5 text-sm text-gray-900 placeholder:text-gray-400 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/30 dark:border-gray-600 dark:bg-gray-700 dark:text-white dark:placeholder:text-gray-500 disabled:cursor-not-allowed disabled:opacity-50"
+        class="min-h-[2.5rem] w-full resize-none rounded-md border border-gray-300 bg-gray-100 px-3 py-2.5 text-sm text-gray-900 placeholder:text-gray-400 focus:border-blue-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/30 dark:border-gray-600 dark:bg-gray-700 dark:text-white dark:placeholder:text-gray-500 disabled:cursor-not-allowed disabled:opacity-50"
         @input="onChange"
         @keydown="onKeyDown"
         @paste="onPaste"
@@ -272,7 +272,7 @@ const onDrop = (e: DragEvent) => {
         :class="
           canSend
             ? 'bg-blue-600 text-white hover:bg-blue-500'
-            : 'cursor-not-allowed bg-gray-200 text-gray-400 dark:bg-gray-700 dark:text-gray-500'
+            : 'cursor-not-allowed bg-gray-200 text-muted dark:bg-gray-700 dark:text-gray-500'
         "
         @click="doSend"
       >

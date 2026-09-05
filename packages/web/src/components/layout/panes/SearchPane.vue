@@ -67,19 +67,19 @@ defineExpose({ focus: () => inputRef.value?.focus() });
 <template>
   <div class="flex h-full flex-col p-2">
     <div class="relative">
-      <span class="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-sm text-gray-400">🔍</span>
+      <span class="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-sm text-muted">🔍</span>
       <input
         ref="inputRef"
         type="text"
         :value="query"
         placeholder="搜索消息..."
-        class="w-full rounded-lg border border-transparent bg-white py-1.5 pl-8 pr-3 text-sm text-gray-900 placeholder-gray-400 focus:border-blue-500 focus:outline-none dark:bg-gray-700 dark:text-white"
+        class="w-full rounded-lg border border-transparent bg-white py-1.5 pl-8 pr-3 text-sm text-gray-900 placeholder-gray-400 focus:border-blue-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/30 dark:bg-gray-700 dark:text-white"
         @input="handleInput"
       />
-      <span v-if="loading" class="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-gray-400">⏳</span>
+      <span v-if="loading" class="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-muted">⏳</span>
     </div>
 
-    <p v-if="results.length > 0" class="px-1 py-2 text-xs text-gray-400">找到 {{ results.length }} 条结果</p>
+    <p v-if="results.length > 0" class="px-1 py-2 text-xs text-muted">找到 {{ results.length }} 条结果</p>
 
     <div class="min-h-0 flex-1 overflow-y-auto">
       <button
@@ -100,7 +100,7 @@ defineExpose({ focus: () => inputRef.value?.focus() });
       <p v-if="query && !loading && results.length === 0" class="px-2 py-6 text-center text-sm text-gray-500">
         没有找到匹配的消息
       </p>
-      <p v-if="!query" class="px-2 py-6 text-center text-xs text-gray-400">输入关键词搜索频道消息</p>
+      <p v-if="!query" class="px-2 py-6 text-center text-xs text-muted">输入关键词搜索频道消息</p>
     </div>
   </div>
 </template>

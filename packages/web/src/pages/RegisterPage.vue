@@ -121,7 +121,7 @@ async function handleRegister() {
             />
             <button
               type="button"
-              class="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+              class="absolute right-2 top-1/2 -translate-y-1/2 text-muted hover:text-gray-600 dark:hover:text-gray-200"
               @click="showPwd = !showPwd"
             >
               {{ showPwd ? "🙈" : "👁" }}

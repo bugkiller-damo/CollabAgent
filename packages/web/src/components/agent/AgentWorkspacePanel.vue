@@ -91,14 +91,14 @@ watch(
       </button>
     </div>
     <p class="mb-2 shrink-0 text-xs text-gray-500">MEMORY.md 与 notes/（不含密钥与 CLAUDE.md）</p>
-    <p v-if="loading" class="text-sm text-gray-400">加载中…</p>
-    <p v-else-if="offline || listing?.error?.includes('offline')" class="text-sm text-gray-400">
+    <p v-if="loading" class="text-sm text-muted">加载中…</p>
+    <p v-else-if="offline || listing?.error?.includes('offline')" class="text-sm text-muted">
       计算机离线，连上后可查看。
     </p>
-    <p v-else-if="listing && !listing.exists" class="text-sm text-gray-400">
+    <p v-else-if="listing && !listing.exists" class="text-sm text-muted">
       还没有工作区。被 @ 拉起后会种入 MEMORY.md。
     </p>
-    <p v-else-if="empty" class="text-sm text-gray-400">工作区已存在，但还没有可展示的笔记。</p>
+    <p v-else-if="empty" class="text-sm text-muted">工作区已存在，但还没有可展示的笔记。</p>
     <div
       v-else-if="files.length"
       class="flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border border-line"
@@ -122,7 +122,7 @@ watch(
           </li>
         </ul>
         <div class="min-h-0 min-w-0 flex-1 overflow-y-auto p-3">
-          <p v-if="contentLoading" class="text-xs text-gray-400">读取中…</p>
+          <p v-if="contentLoading" class="text-xs text-muted">读取中…</p>
           <p v-else-if="contentError" class="text-xs text-red-400">{{ contentError }}</p>
           <MarkdownContent v-else-if="isMarkdown(selected)" :content="content || '（空）'" />
           <pre v-else class="whitespace-pre-wrap break-all font-mono text-[11px] text-gray-700 dark:text-gray-300">{{

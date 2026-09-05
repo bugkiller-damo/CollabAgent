@@ -2,6 +2,14 @@
 @tailwind components;
 @tailwind utilities;
 
+/* 圆角成文规则（§4.1 P1-7 定稿，按 ui 原语事实标准）：
+   rounded      小件——徽标/标签/行内 code/方形小头像/骨架/媒体图/xs 控件/内容行 hover 容器
+   rounded-md   标准控件——按钮（Button md/lg）、输入框（Input/Textarea）、下拉、Tooltip、导航项（NavItem/IconButton）
+   rounded-lg   容器——卡片（Card）、Modal、面板、嵌入式预览卡（LinkPreview/附件卡/任务卡）
+   rounded-xl   特大容器——dashboard 大卡、大图标块
+   rounded-full 圆形——Avatar、状态灯、徽标圈、loading 圈
+   同档组件必须同档圆角；新组件先查 ui/ 原语口径再落 class。 */
+
 @layer base {
   /* 语义化设计 token：值对齐全站主导的事实配对（light/dark），
      经 tailwind.config theme.extend.colors 暴露为

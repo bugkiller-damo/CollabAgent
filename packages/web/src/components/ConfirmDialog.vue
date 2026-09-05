@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import Button from "./ui/Button.vue";
 import Modal from "./ui/Modal.vue";
 
 withDefaults(
@@ -26,21 +27,12 @@ const emit = defineEmits<{
     <h3 class="text-base font-bold text-ink">{{ title }}</h3>
     <p v-if="message" class="text-sm text-subtle">{{ message }}</p>
     <div class="flex justify-end gap-2 pt-1">
-      <button
-        class="rounded-md bg-gray-200 px-4 py-2 text-sm text-gray-700 transition-colors hover:bg-gray-300 active:scale-[0.98] dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
-        @click="emit('cancel')"
-      >
+      <Button variant="secondary" @click="emit('cancel')">
         {{ cancelLabel }}
-      </button>
-      <button
-        :class="[
-          'rounded-md px-4 py-2 text-sm text-white transition-colors active:scale-[0.98]',
-          danger ? 'bg-red-600 hover:bg-red-500' : 'bg-blue-600 hover:bg-blue-500',
-        ]"
-        @click="emit('confirm')"
-      >
+      </Button>
+      <Button :variant="danger ? 'danger' : 'primary'" @click="emit('confirm')">
         {{ confirmLabel }}
-      </button>
+      </Button>
     </div>
   </Modal>
 </template>

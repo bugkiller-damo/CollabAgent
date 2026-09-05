@@ -32,7 +32,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
   >
     <div class="flex items-center justify-between border-b border-gray-200 px-4 py-3 dark:border-gray-700">
       <span class="text-sm font-semibold text-gray-800 dark:text-gray-200">档案</span>
-      <button type="button" class="text-sm text-gray-400 hover:text-gray-700 dark:hover:text-white" @click="close">
+      <button type="button" class="text-sm text-muted hover:text-gray-700 dark:hover:text-white" @click="close">
         ✕
       </button>
     </div>

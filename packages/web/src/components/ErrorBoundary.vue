@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onErrorCaptured, ref } from "vue";
+import Button from "./ui/Button.vue";
 
 // Vue 没有 class 组件的 getDerivedStateFromError/componentDidCatch；
 // 用 onErrorCaptured 捕获后代组件错误（返回 false 阻止继续向上传播，对齐 React 边界的"捕获即止"语义）。
@@ -36,10 +37,10 @@ defineOptions({ inheritAttrs: false });
     <div class="text-5xl mb-4">⚠️</div>
     <h2 class="text-gray-800 dark:text-white font-bold text-lg mb-2">页面遇到问题</h2>
     <p class="text-muted text-sm max-w-md mb-1">{{ errorMessage || "未知错误" }}</p>
-    <p class="text-gray-400 dark:text-gray-600 text-xs mb-4">刷新或点击下方按钮重试</p>
+    <p class="text-muted text-xs mb-4">刷新或点击下方按钮重试</p>
     <div class="flex gap-2">
-      <button class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-500 text-sm" @click="retry">重试</button>
-      <button class="bg-gray-600 text-white px-4 py-2 rounded hover:bg-gray-500 text-sm" @click="reload">刷新页面</button>
+      <Button @click="retry">重试</Button>
+      <Button variant="secondary" @click="reload">刷新页面</Button>
     </div>
   </div>
   <slot v-else />

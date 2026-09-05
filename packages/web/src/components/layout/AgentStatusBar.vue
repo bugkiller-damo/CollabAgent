@@ -89,7 +89,7 @@ function openTerminal(name: string) {
     <div class="px-2 py-1 text-xs font-semibold uppercase tracking-wider text-muted">
       Agent 状态
     </div>
-    <div v-if="agents.length === 0" class="px-2 py-1.5 text-xs text-gray-400 dark:text-gray-500">
+    <div v-if="agents.length === 0" class="px-2 py-1.5 text-xs text-muted">
       {{ currentChannel || dmPeer ? "本频道还没有 Agent 成员" : "打开一个频道查看 Agent" }}
     </div>
     <template v-else>
@@ -114,7 +114,7 @@ function openTerminal(name: string) {
           </div>
           <p
             v-if="liveAgents[a.name]?.detail"
-            class="truncate text-[10px] text-gray-400 dark:text-gray-500"
+            class="truncate text-[10px] text-muted"
             :title="liveAgents[a.name].detail"
           >
             {{ liveAgents[a.name].detail }}

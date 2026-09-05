@@ -126,7 +126,7 @@ const MetricCard = defineComponent({
         [
           h("p", { class: "text-gray-500 text-xs" }, props.label),
           h("p", { class: "text-ink text-3xl font-bold mt-1 tabular-nums" }, animated.value.toLocaleString()),
-          props.sub ? h("p", { class: "text-gray-400 text-xs mt-0.5" }, props.sub) : null,
+          props.sub ? h("p", { class: "text-muted text-xs mt-0.5" }, props.sub) : null,
           props.history
             ? h("div", { class: "mt-2 -mx-1" }, [h(Sparkline, { data: props.history, color: props.color })])
             : null,
@@ -146,18 +146,18 @@ const MemoryBar = defineComponent({
     const animatedUsed = useCountUp(() => props.used);
     return () => {
       const pct = props.total > 0 ? Math.min(100, Math.round((props.used / props.total) * 100)) : 0;
-      const barColor = pct > 85 ? "bg-red-500" : pct > 60 ? "bg-amber-500" : "bg-emerald-500";
+      const barColor = pct > 85 ? "bg-red-500" : pct > 60 ? "bg-amber-500" : "bg-green-500";
       return h(
         "div",
         { class: "bg-gray-50 dark:bg-gray-800 rounded-xl p-4 border border-gray-100 dark:border-gray-700/50" },
         [
           h("div", { class: "flex items-baseline justify-between" }, [
             h("p", { class: "text-gray-500 text-xs" }, "堆内存使用"),
-            h("p", { class: "text-gray-400 text-xs tabular-nums" }, `${pct}%`),
+            h("p", { class: "text-muted text-xs tabular-nums" }, `${pct}%`),
           ]),
           h("p", { class: "text-ink text-2xl font-bold mt-1 tabular-nums" }, [
             String(animatedUsed.value),
-            h("span", { class: "text-gray-400 text-base font-normal" }, ` / ${props.total} MB`),
+            h("span", { class: "text-muted text-base font-normal" }, ` / ${props.total} MB`),
           ]),
           h("div", { class: "mt-2 h-2 rounded-full bg-raised overflow-hidden" }, [
             h("div", {
@@ -165,7 +165,7 @@ const MemoryBar = defineComponent({
               style: { width: `${pct}%` },
             }),
           ]),
-          h("p", { class: "text-gray-400 text-xs mt-1.5" }, `RSS 常驻 ${props.rss} MB`),
+          h("p", { class: "text-muted text-xs mt-1.5" }, `RSS 常驻 ${props.rss} MB`),
         ],
       );
     };
@@ -177,8 +177,8 @@ const LivePulse = defineComponent({
   setup() {
     return () =>
       h("span", { class: "relative flex h-2.5 w-2.5" }, [
-        h("span", { class: "animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" }),
-        h("span", { class: "relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500" }),
+        h("span", { class: "animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" }),
+        h("span", { class: "relative inline-flex rounded-full h-2.5 w-2.5 bg-green-500" }),
       ]);
   },
 });
@@ -276,7 +276,7 @@ onUnmounted(() => {
 
   <div v-else class="mx-auto w-full max-w-7xl space-y-6 p-4 sm:p-6">
     <PageHeader title="运行指标" back-to="/admin" :breadcrumb="[{ label: '管理后台', to: '/admin' }, { label: '运行指标' }]">
-      <div class="flex items-center gap-2 text-xs text-emerald-600 dark:text-emerald-400">
+      <div class="flex items-center gap-2 text-xs text-green-600 dark:text-green-400">
         <LivePulse /> 实时 · 每 {{ POLL_MS / 1000 }} 秒刷新
       </div>
     </PageHeader>
@@ -287,7 +287,7 @@ onUnmounted(() => {
 
     <!-- 实时概览 -->
     <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
-      <div class="relative bg-gradient-to-br from-emerald-50 to-emerald-100 dark:from-emerald-900/30 dark:to-emerald-800/10 rounded-xl p-4 border border-emerald-100 dark:border-emerald-800/40">
+      <div class="relative bg-gradient-to-br from-green-50 to-green-100 dark:from-green-900/30 dark:to-green-800/10 rounded-xl p-4 border border-green-100 dark:border-green-800/40">
         <div class="flex items-center gap-2">
           <LivePulse v-if="m.online.daemons > 0" />
           <p class="text-gray-600 dark:text-gray-300 text-xs">在线 Daemon</p>
@@ -317,7 +317,7 @@ onUnmounted(() => {
     <!-- 逐个 daemon 明细 -->
     <div>
       <h3 class="text-gray-500 text-xs font-semibold uppercase mb-2">已连接 Daemon</h3>
-      <div v-if="m.daemons.length === 0" class="bg-gray-50 dark:bg-gray-800 rounded-xl p-6 text-center text-gray-400 text-sm border border-dashed border-line">
+      <div v-if="m.daemons.length === 0" class="bg-gray-50 dark:bg-gray-800 rounded-xl p-6 text-center text-muted text-sm border border-dashed border-line">
         暂无 daemon 连接。在「计算机」页按引导启动本机连接器。
       </div>
       <div v-else class="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -325,7 +325,7 @@ onUnmounted(() => {
           <LivePulse />
           <div class="flex-1 min-w-0">
             <p class="text-ink text-sm font-medium truncate">💻 {{ d.hostname }}</p>
-            <p class="text-gray-400 text-xs mt-0.5">已连接 <ConnectedFor :since="d.connectedAt" /> · v{{ d.daemonVersion }}</p>
+            <p class="text-muted text-xs mt-0.5">已连接 <ConnectedFor :since="d.connectedAt" /> · v{{ d.daemonVersion }}</p>
           </div>
           <div class="flex flex-wrap gap-1 justify-end">
             <span v-for="r in d.runtimes" :key="r" class="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300">{{ r }}</span>
@@ -334,6 +334,6 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <p class="text-gray-400 text-xs">注：计数器为单进程内存值，进程重启后归零；多实例部署下各进程独立计数。走势图基于本页打开后的采样。</p>
+    <p class="text-muted text-xs">注：计数器为单进程内存值，进程重启后归零；多实例部署下各进程独立计数。走势图基于本页打开后的采样。</p>
   </div>
 </template>

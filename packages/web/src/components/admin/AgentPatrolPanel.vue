@@ -126,9 +126,9 @@ function fmt(t: string | null) {
 function eventLabel(e: PatrolEvent): { text: string; cls: string } {
   const outcome = e.detail?.outcome;
   if (e.event_type === "fired" && outcome === "posted") return { text: "已报告", cls: "text-green-600" };
-  if (e.event_type === "fired" && outcome === "silent") return { text: "沉默", cls: "text-gray-400" };
+  if (e.event_type === "fired" && outcome === "silent") return { text: "沉默", cls: "text-muted" };
   if (e.event_type === "auto_paused") return { text: "自动暂停", cls: "text-red-500" };
-  if (e.event_type === "paused") return { text: "暂停", cls: "text-yellow-600" };
+  if (e.event_type === "paused") return { text: "暂停", cls: "text-amber-600" };
   if (e.event_type === "resumed") return { text: "恢复", cls: "text-blue-500" };
   return { text: e.event_type, cls: "text-gray-500" };
 }
@@ -169,15 +169,15 @@ function eventLabel(e: PatrolEvent): { text: string; cls: string } {
         <span v-if="j.status === 'canceled'" class="rounded bg-gray-200 px-1.5 py-0.5 text-xs text-gray-500 dark:bg-gray-700">已取消</span>
         <span
           v-else-if="j.paused"
-          class="rounded bg-yellow-100 px-1.5 py-0.5 text-xs text-yellow-700 dark:bg-yellow-900 dark:text-yellow-300"
+          class="rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-700 dark:bg-amber-900 dark:text-amber-300"
         >
           已暂停{{ j.consecutiveSilent >= j.maxConsecutiveSilent ? "(空转自动暂停)" : "" }}
         </span>
         <span v-else class="rounded bg-green-100 px-1.5 py-0.5 text-xs text-green-700 dark:bg-green-900 dark:text-green-300">运行中</span>
-        <span class="text-xs text-gray-400">{{ j.repeat || "一次性" }}<template v-if="j.channel"> → {{ j.channel }}</template></span>
+        <span class="text-xs text-muted">{{ j.repeat || "一次性" }}<template v-if="j.channel"> → {{ j.channel }}</template></span>
       </div>
       <p class="mt-1 truncate text-sm text-muted">{{ j.instructions }}</p>
-      <p class="mt-1 text-xs text-gray-400">
+      <p class="mt-1 text-xs text-muted">
         已触发 {{ j.fireCount }} 次 · 连续沉默 {{ j.consecutiveSilent }}/{{ j.maxConsecutiveSilent }} · 上次 {{ fmt(j.lastFiredAt) }} · 下次 {{ fmt(j.fireAt) }}
       </p>
       <div class="mt-2 flex gap-2" v-if="j.status !== 'canceled'">
@@ -187,9 +187,9 @@ function eventLabel(e: PatrolEvent): { text: string; cls: string } {
         <Button variant="ghost" size="sm" class="text-red-500 hover:text-red-600" @click="cancel(j)">取消</Button>
       </div>
       <div v-if="logFor === j.id" class="mt-2 space-y-1 border-t border-gray-100 pt-2 dark:border-gray-800">
-        <p v-if="events.length === 0" class="text-xs text-gray-400">暂无事件</p>
+        <p v-if="events.length === 0" class="text-xs text-muted">暂无事件</p>
         <p v-for="(e, i) in events" :key="i" class="text-xs">
-          <span class="text-gray-400">{{ fmt(e.created_at) }}</span>
+          <span class="text-muted">{{ fmt(e.created_at) }}</span>
           <span class="ml-2" :class="eventLabel(e).cls">{{ eventLabel(e).text }}</span>
         </p>
       </div>

@@ -96,7 +96,7 @@ async function handleChangePassword() {
             <Button @click="avatarInputRef?.click()" :disabled="avatarUploading" size="sm" variant="secondary">
               {{ avatarUploading ? "上传中…" : "更换头像" }}
             </Button>
-            <p class="mt-1 text-xs text-gray-400">支持 JPG/PNG，最大 10MB</p>
+            <p class="mt-1 text-xs text-muted">支持 JPG/PNG，最大 10MB</p>
           </div>
         </div>
         <div>
@@ -132,7 +132,7 @@ async function handleChangePassword() {
             <button
               type="button"
               @click="showPw = !showPw"
-              class="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+              class="absolute right-2 top-1/2 -translate-y-1/2 text-muted hover:text-gray-600 dark:hover:text-gray-200"
             >
               {{ showPw ? "🙈" : "👁" }}
             </button>

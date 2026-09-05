@@ -90,7 +90,7 @@ const fmtTime = (ts: number): string => new Date(ts).toLocaleTimeString("zh-CN",
   <div class="flex flex-col gap-1.5">
     <div
       v-if="snapshot.headline && items.length > 0"
-      class="sticky top-0 z-10 mb-1 rounded border border-sky-800/60 bg-sky-950/80 px-2 py-1 text-[12px] text-sky-100"
+      class="sticky top-0 z-10 mb-1 rounded border border-purple-800/60 bg-purple-950/80 px-2 py-1 text-[12px] text-purple-100"
     >
       正在{{ snapshot.headline }}…
     </div>
@@ -114,7 +114,7 @@ const fmtTime = (ts: number): string => new Date(ts).toLocaleTimeString("zh-CN",
       <details v-else-if="item.kind === 'tool'" class="group rounded border border-gray-700 bg-gray-900 text-[12px]">
         <summary class="flex cursor-pointer items-center gap-2 px-2 py-1 select-none hover:bg-gray-800/60">
           <span>{{ item.done ? "✅" : "⏳" }}</span>
-          <span class="font-medium text-sky-300">{{ item.label }}</span>
+          <span class="font-medium text-purple-300">{{ item.label }}</span>
           <span class="min-w-0 flex-1 truncate text-gray-500">{{ item.inputText }}</span>
           <span class="shrink-0 text-[10px] text-gray-600">{{ fmtTime(item.time) }}</span>
         </summary>

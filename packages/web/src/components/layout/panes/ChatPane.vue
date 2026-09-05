@@ -126,7 +126,7 @@ function onCreated(name: string) {
           @click="onSelectChannel(ch)"
         >
           <span class="flex items-center gap-2 truncate">
-            <span class="text-gray-400">#</span>
+            <span class="text-muted">#</span>
             <span class="truncate">{{ ch.name }}</span>
           </span>
           <span v-if="(unreadCounts[ch.name] || 0) > 0" class="shrink-0 rounded-full bg-blue-500 px-1.5 py-0.5 text-xs text-white">
@@ -173,7 +173,7 @@ function onCreated(name: string) {
               v-if="showPeople"
               class="absolute right-0 top-7 z-30 w-52 max-h-72 overflow-y-auto rounded-lg border border-gray-200 bg-white py-1 shadow-lg animate-scale-in origin-top-right dark:border-gray-700 dark:bg-gray-800"
             >
-              <div v-if="people.length === 0" class="px-3 py-2 text-xs text-gray-400">没有可私信的对象</div>
+              <div v-if="people.length === 0" class="px-3 py-2 text-xs text-muted">没有可私信的对象</div>
               <button
                 v-for="p in people"
                 :key="p.type + ':' + p.handle"
@@ -182,7 +182,7 @@ function onCreated(name: string) {
               >
                 <Avatar :name="p.displayName" size="sm" />
                 <span class="truncate">{{ p.displayName }}</span>
-                <span class="ml-auto text-xs text-gray-400">@{{ p.handle }}</span>
+                <span class="ml-auto text-xs text-muted">@{{ p.handle }}</span>
               </button>
             </div>
           </div>
@@ -201,7 +201,7 @@ function onCreated(name: string) {
           <Avatar :name="d.peerName || d.peerHandle" size="sm" />
           <span class="truncate">{{ d.peerName || d.peerHandle }}</span>
         </button>
-        <p v-if="dms.length === 0" class="px-2 py-1 text-xs text-gray-400">点 + 发起私信</p>
+        <p v-if="dms.length === 0" class="px-2 py-1 text-xs text-muted">点 + 发起私信</p>
       </SidebarSection>
     </nav>
 

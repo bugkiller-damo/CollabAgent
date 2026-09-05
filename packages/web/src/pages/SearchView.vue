@@ -66,21 +66,21 @@ onUnmounted(() => {
   <div class="flex min-h-0 flex-1 flex-col">
     <PageHeader title="搜索" subtitle="在频道消息里查找">
       <div class="relative w-full max-w-md">
-        <span class="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-sm text-gray-400">🔍</span>
+        <span class="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-sm text-muted">🔍</span>
         <input
           ref="inputRef"
           type="text"
           :value="query"
           placeholder="搜索消息..."
-          class="w-full rounded-lg border border-gray-200 bg-gray-50 py-1.5 pl-8 pr-3 text-sm text-gray-900 placeholder-gray-400 focus:border-blue-500 focus:outline-none dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+          class="w-full rounded-lg border border-gray-200 bg-gray-50 py-1.5 pl-8 pr-3 text-sm text-gray-900 placeholder-gray-400 focus:border-blue-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/30 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
           @input="handleInput"
         />
-        <span v-if="loading" class="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-gray-400">⏳</span>
+        <span v-if="loading" class="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-muted">⏳</span>
       </div>
     </PageHeader>
 
     <div class="min-h-0 flex-1 overflow-y-auto">
-      <p v-if="results.length > 0" class="px-4 py-2 text-xs text-gray-400">找到 {{ results.length }} 条结果</p>
+      <p v-if="results.length > 0" class="px-4 py-2 text-xs text-muted">找到 {{ results.length }} 条结果</p>
       <button
         v-for="r in results"
         :key="r.id"

@@ -136,7 +136,7 @@ async function handleMarkAll() {
             <span v-if="!n.read" class="mt-1 h-2 w-2 shrink-0 rounded-full bg-blue-500" />
           </div>
           <p v-if="n.body" class="mt-0.5 line-clamp-2 text-sm text-subtle">{{ n.body }}</p>
-          <p class="mt-1 text-xs text-gray-400">{{ timeAgo(n.createdAt) }}</p>
+          <p class="mt-1 text-xs text-muted">{{ timeAgo(n.createdAt) }}</p>
         </div>
       </button>
     </div>

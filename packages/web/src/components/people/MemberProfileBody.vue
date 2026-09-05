@@ -363,7 +363,7 @@ async function expandChannels() {
 
 <template>
   <div :class="embedded ? 'flex h-full min-h-0 flex-col overflow-hidden' : ''">
-    <p v-if="loading" class="py-8 text-center text-sm text-gray-400">加载中…</p>
+    <p v-if="loading" class="py-8 text-center text-sm text-muted">加载中…</p>
     <p v-else-if="error" class="py-8 text-center text-sm text-red-400">{{ error }}</p>
 
     <template v-else-if="profile">
@@ -400,9 +400,9 @@ async function expandChannels() {
           <p v-if="profile.type === 'human' && profile.description" class="mt-1 text-sm text-gray-600 dark:text-gray-300">
             {{ profile.description }}
           </p>
-          <p v-if="joinedLabel" class="mt-1 text-xs text-gray-400">{{ joinedLabel }}</p>
-          <p v-if="lastSpokeLabel" class="mt-0.5 text-xs text-gray-400">{{ lastSpokeLabel }}</p>
-          <p v-if="profile.channel?.role" class="mt-0.5 text-xs text-gray-400">
+          <p v-if="joinedLabel" class="mt-1 text-xs text-muted">{{ joinedLabel }}</p>
+          <p v-if="lastSpokeLabel" class="mt-0.5 text-xs text-muted">{{ lastSpokeLabel }}</p>
+          <p v-if="profile.channel?.role" class="mt-0.5 text-xs text-muted">
             本频道角色：{{ ROLE_LABEL[profile.channel.role] || profile.channel.role }}
           </p>
         </div>
@@ -416,12 +416,12 @@ async function expandChannels() {
       </div>
 
       <section v-if="progressHeadline" class="mt-5">
-        <h3 class="mb-1 text-xs font-semibold uppercase tracking-wide text-gray-400">当前状态</h3>
+        <h3 class="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">当前状态</h3>
         <p class="text-sm text-blue-700 dark:text-blue-300">正在{{ progressHeadline }}…</p>
       </section>
 
       <section v-if="showStats" class="mt-5">
-        <h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">近 7 天</h3>
+        <h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">近 7 天</h3>
         <div class="flex flex-wrap gap-2">
           <span class="rounded-md bg-gray-100 px-2 py-1 text-xs text-gray-600 dark:bg-gray-700 dark:text-gray-300">
             {{ stats?.messages ?? 0 }} 条消息
@@ -501,7 +501,7 @@ async function expandChannels() {
         <div v-show="agentTab === 'overview'">
         <div v-if="editing && canEditAgent" class="space-y-3 rounded-md border border-gray-200 p-3 dark:border-gray-700">
           <div class="space-y-1">
-            <label class="text-xs text-gray-400">显示名称</label>
+            <label class="text-xs text-muted">显示名称</label>
             <Input
               type="text"
               placeholder="显示名称"
@@ -510,11 +510,11 @@ async function expandChannels() {
             />
           </div>
           <div class="space-y-1">
-            <label class="text-xs text-gray-400">Agent 名称</label>
+            <label class="text-xs text-muted">Agent 名称</label>
             <p class="break-all font-mono text-sm text-gray-800 dark:text-gray-200">@{{ profile.handle }}</p>
           </div>
           <div class="space-y-1">
-            <label class="text-xs text-gray-400">描述</label>
+            <label class="text-xs text-muted">描述</label>
             <Input
               type="text"
               placeholder="描述（也作为它的角色设定）"
@@ -523,7 +523,7 @@ async function expandChannels() {
             />
           </div>
           <div class="space-y-1">
-            <label class="text-xs text-gray-400">头像 URL</label>
+            <label class="text-xs text-muted">头像 URL</label>
             <Input
               type="text"
               placeholder="头像 URL（可选）"
@@ -565,40 +565,40 @@ async function expandChannels() {
           class="divide-y divide-gray-100 rounded-md border border-gray-200 dark:divide-gray-700 dark:border-gray-700"
         >
           <div class="grid grid-cols-[6.5rem_minmax(0,1fr)] gap-3 px-3 py-2.5">
-            <dt class="text-xs text-gray-400">显示名称</dt>
+            <dt class="text-xs text-muted">显示名称</dt>
             <dd class="min-w-0 text-sm text-gray-800 dark:text-gray-200">{{ fieldValue(profile.displayName, profile.handle) }}</dd>
           </div>
           <div class="grid grid-cols-[6.5rem_minmax(0,1fr)] gap-3 px-3 py-2.5">
-            <dt class="text-xs text-gray-400">Agent 名称</dt>
+            <dt class="text-xs text-muted">Agent 名称</dt>
             <dd class="min-w-0 break-all font-mono text-sm text-gray-800 dark:text-gray-200">@{{ profile.handle }}</dd>
           </div>
           <div class="grid grid-cols-[6.5rem_minmax(0,1fr)] gap-3 px-3 py-2.5">
-            <dt class="text-xs text-gray-400">描述</dt>
+            <dt class="text-xs text-muted">描述</dt>
             <dd
               :class="[
                 'min-w-0 whitespace-pre-wrap text-sm',
-                profile.description?.trim() ? 'text-gray-800 dark:text-gray-200' : 'text-gray-400',
+                profile.description?.trim() ? 'text-gray-800 dark:text-gray-200' : 'text-muted',
               ]"
             >
               {{ fieldValue(profile.description) }}
             </dd>
           </div>
           <div class="grid grid-cols-[6.5rem_minmax(0,1fr)] gap-3 px-3 py-2.5">
-            <dt class="text-xs text-gray-400">运行时 CLI</dt>
+            <dt class="text-xs text-muted">运行时 CLI</dt>
             <dd class="min-w-0 text-sm text-gray-800 dark:text-gray-200">
               {{ runtimeLabel }}
-              <span class="ml-1 text-xs text-gray-400">{{ profile.runtime || "claude" }}</span>
+              <span class="ml-1 text-xs text-muted">{{ profile.runtime || "claude" }}</span>
             </dd>
           </div>
           <div class="grid grid-cols-[6.5rem_minmax(0,1fr)] gap-3 px-3 py-2.5">
-            <dt class="text-xs text-gray-400">模型</dt>
+            <dt class="text-xs text-muted">模型</dt>
             <dd class="min-w-0 text-sm text-gray-800 dark:text-gray-200">
               {{ modelLabel }}
-              <span class="ml-1 text-xs text-gray-400">{{ profile.model || "sonnet" }}</span>
+              <span class="ml-1 text-xs text-muted">{{ profile.model || "sonnet" }}</span>
             </dd>
           </div>
           <div v-if="profile.computer" class="grid grid-cols-[6.5rem_minmax(0,1fr)] gap-3 px-3 py-2.5">
-            <dt class="text-xs text-gray-400">跑在</dt>
+            <dt class="text-xs text-muted">跑在</dt>
             <dd class="min-w-0">
               <button
                 type="button"
@@ -606,7 +606,7 @@ async function expandChannels() {
                 @click="goComputer"
               >
                 {{ profile.computer.name }}
-                <span :class="['ml-1 text-xs', profile.computer.online ? 'text-green-500' : 'text-gray-400']">
+                <span :class="['ml-1 text-xs', profile.computer.online ? 'text-green-500' : 'text-muted']">
                   {{ profile.computer.online ? "在线" : "离线" }}
                 </span>
               </button>
@@ -614,7 +614,7 @@ async function expandChannels() {
           </div>
         </dl>
         <section v-if="canEditAgent" class="mt-5">
-          <h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">值班</h3>
+          <h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">值班</h3>
           <p class="mb-2 text-xs text-gray-500">停班后仍是成员，只是不接 @ / 巡检 / 分诊。进程不会被拉起。</p>
           <div class="flex items-center gap-2">
             <Button size="sm" variant="secondary" :loading="dutyBusy" @click="toggleDuty">
@@ -633,9 +633,9 @@ async function expandChannels() {
         </div>
 
         <div v-show="agentTab === 'channels'" class="space-y-4">
-          <p v-if="profile.channels.length === 0" class="text-sm text-gray-400">暂无可见频道或私信</p>
+          <p v-if="profile.channels.length === 0" class="text-sm text-muted">暂无可见频道或私信</p>
           <div v-for="g in channelsByKind" :key="g.type">
-            <h4 class="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+            <h4 class="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted">
               {{ g.label }} · {{ g.items.length }}
             </h4>
             <ul class="space-y-1">
@@ -656,7 +656,7 @@ async function expandChannels() {
                     <p v-if="c.description?.trim()" class="mt-0.5 line-clamp-2 text-xs text-muted">
                       {{ c.description }}
                     </p>
-                    <p v-else-if="c.type === 'dm'" class="mt-0.5 text-xs text-gray-400">一对一私信</p>
+                    <p v-else-if="c.type === 'dm'" class="mt-0.5 text-xs text-muted">一对一私信</p>
                   </div>
                 </button>
               </li>
@@ -671,7 +671,7 @@ async function expandChannels() {
           >
             {{ expandingChannels ? "加载中…" : "查看全部" }}
           </button>
-          <p v-else-if="profile.channelsCapped" class="text-xs text-gray-400">已显示前 200 个</p>
+          <p v-else-if="profile.channelsCapped" class="text-xs text-muted">已显示前 200 个</p>
         </div>
 
         <AgentWorkspacePanel
@@ -696,10 +696,10 @@ async function expandChannels() {
       </section>
 
       <section v-if="profile.type !== 'agent'" class="mt-5 space-y-4">
-        <h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">所在频道</h3>
-        <p v-if="profile.channels.length === 0" class="text-sm text-gray-400">暂无可见频道或私信</p>
+        <h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">所在频道</h3>
+        <p v-if="profile.channels.length === 0" class="text-sm text-muted">暂无可见频道或私信</p>
         <div v-for="g in channelsByKind" :key="g.type">
-          <h4 class="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+          <h4 class="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted">
             {{ g.label }} · {{ g.items.length }}
           </h4>
           <ul class="space-y-1">
@@ -720,7 +720,7 @@ async function expandChannels() {
                   <p v-if="c.description?.trim()" class="mt-0.5 line-clamp-2 text-xs text-muted">
                     {{ c.description }}
                   </p>
-                  <p v-else-if="c.type === 'dm'" class="mt-0.5 text-xs text-gray-400">一对一私信</p>
+                  <p v-else-if="c.type === 'dm'" class="mt-0.5 text-xs text-muted">一对一私信</p>
                 </div>
               </button>
             </li>
@@ -735,7 +735,7 @@ async function expandChannels() {
         >
           {{ expandingChannels ? "加载中…" : "查看全部" }}
         </button>
-        <p v-else-if="profile.channelsCapped" class="text-xs text-gray-400">已显示前 200 个</p>
+        <p v-else-if="profile.channelsCapped" class="text-xs text-muted">已显示前 200 个</p>
       </section>
 
       <ConfirmDialog

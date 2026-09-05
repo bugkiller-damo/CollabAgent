@@ -135,8 +135,8 @@ async function deactivate() {
         <h3 class="font-bold text-ink">登录设备</h3>
         <Button @click="logoutAll" variant="ghost" size="sm" class="text-red-500 hover:text-red-600">退出所有设备</Button>
       </div>
-      <p v-if="loading" class="text-sm text-gray-400">加载中…</p>
-      <p v-else-if="sessions.length === 0" class="text-sm text-gray-400">没有活跃会话</p>
+      <p v-if="loading" class="text-sm text-muted">加载中…</p>
+      <p v-else-if="sessions.length === 0" class="text-sm text-muted">没有活跃会话</p>
       <div v-else class="space-y-2">
         <Card v-for="s in sessions" :key="s.id" padding="sm" class="flex items-center justify-between">
           <div class="min-w-0">

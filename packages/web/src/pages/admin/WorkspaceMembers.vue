@@ -203,7 +203,7 @@ function selectOrg(e: Event) {
         </div>
         <div v-for="inv in activeInvites" :key="inv.token" class="flex items-center gap-2 rounded bg-gray-100 p-2 dark:bg-gray-900">
           <code class="flex-1 truncate text-xs text-gray-600 dark:text-gray-300">{{ inviteUrl(inv.token) }}</code>
-          <span class="shrink-0 text-xs text-gray-400">
+          <span class="shrink-0 text-xs text-muted">
             已用 {{ inv.uses }}{{ inv.max_uses != null ? "/" + inv.max_uses : "" }} 次<template v-if="inv.expires_at"> · {{ new Date(inv.expires_at).toLocaleDateString() }} 过期</template>
           </span>
           <Button variant="ghost" size="sm" class="shrink-0" @click="copyInvite(inv.token)">{{ copied === inv.token ? "已复制 ✓" : "复制" }}</Button>

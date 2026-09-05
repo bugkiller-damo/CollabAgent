@@ -70,10 +70,10 @@ const summary = computed(() => counts.value[activeFromRoute.value]);
         ]"
         @click="openChannel(ch.name)"
       >
-        <span class="mr-2 text-gray-400">#</span>
+        <span class="mr-2 text-muted">#</span>
         <span class="truncate">{{ ch.name }}</span>
       </button>
-      <p v-if="channels.length === 0" class="px-2 py-4 text-xs text-gray-400">暂无频道</p>
+      <p v-if="channels.length === 0" class="px-2 py-4 text-xs text-muted">暂无频道</p>
     </SidebarSection>
   </div>
 </template>

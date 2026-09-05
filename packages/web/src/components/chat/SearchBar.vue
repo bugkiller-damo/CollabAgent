@@ -85,7 +85,7 @@ onUnmounted(() => {
 <template>
   <div class="relative flex-1 max-w-sm">
     <div class="relative">
-      <span class="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 text-sm">🔍</span>
+      <span class="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted text-sm">🔍</span>
       <input
         ref="inputRef"
         type="text"
@@ -94,9 +94,9 @@ onUnmounted(() => {
         @focus="onFocus"
         @keydown="onKeydown"
         placeholder="搜索消息..."
-        class="w-full pl-8 pr-3 py-1.5 rounded-lg bg-gray-100 dark:bg-gray-700 text-ink text-sm border border-transparent focus:outline-none focus:border-blue-500 placeholder-gray-400"
+        class="w-full pl-8 pr-3 py-1.5 rounded-lg bg-gray-100 dark:bg-gray-700 text-ink text-sm border border-transparent focus:outline-none focus:border-blue-500 focus-visible:ring-2 focus-visible:ring-blue-500/30 placeholder-gray-400"
       />
-      <span v-if="loading" class="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 text-xs">⏳</span>
+      <span v-if="loading" class="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted text-xs">⏳</span>
     </div>
 
     <div
@@ -104,7 +104,7 @@ onUnmounted(() => {
       ref="panelRef"
       class="absolute top-full mt-1 left-0 right-0 bg-surface border border-line rounded-lg shadow-xl z-50 max-h-80 overflow-y-auto animate-slide-in-up origin-top"
     >
-      <p class="text-xs text-gray-400 px-3 py-1.5 border-b border-gray-100 dark:border-gray-700">
+      <p class="text-xs text-muted px-3 py-1.5 border-b border-gray-100 dark:border-gray-700">
         找到 {{ results.length }} 条结果
       </p>
       <button

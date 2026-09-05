@@ -212,22 +212,22 @@ const footerLabel = computed(() => `${humans.value.length} 位成员 · ${agents
         </div>
 
         <div class="min-h-0 flex-1 overflow-y-auto p-2">
-          <p v-if="!loaded" class="py-8 text-center text-sm text-gray-400">加载中…</p>
+          <p v-if="!loaded" class="py-8 text-center text-sm text-muted">加载中…</p>
           <EmptyState
             v-else-if="empty"
             icon="👥"
             title="还没有成员"
             description="连接计算机创建 Agent，或邀请同事后，会显示在这里"
           />
-          <p v-else-if="filterEmpty" class="px-2 py-6 text-center text-sm text-gray-400">没有匹配的成员</p>
+          <p v-else-if="filterEmpty" class="px-2 py-6 text-center text-sm text-muted">没有匹配的成员</p>
 
           <template v-else>
             <div class="mb-3">
               <div class="mb-1 flex items-center justify-between px-2">
                 <span class="text-xs font-semibold uppercase tracking-wider text-muted">Agent</span>
-                <span class="text-[10px] tabular-nums text-gray-400">{{ filteredAgents.length }}</span>
+                <span class="text-[10px] tabular-nums text-muted">{{ filteredAgents.length }}</span>
               </div>
-              <p v-if="filteredAgents.length === 0" class="mb-1 px-2 text-xs text-gray-400">没有匹配的 Agent</p>
+              <p v-if="filteredAgents.length === 0" class="mb-1 px-2 text-xs text-muted">没有匹配的 Agent</p>
               <SidebarSection
                 v-for="g in agentComputerGroups"
                 :key="g.key"
@@ -236,8 +236,8 @@ const footerLabel = computed(() => `${humans.value.length} 位成员 · ${agents
                 :count="g.agents.length"
                 class-name="mb-2"
               >
-                <p class="mb-1 px-2 text-[10px] text-gray-400">
-                  <span :class="g.online ? 'text-green-500' : 'text-gray-400'">{{ g.online ? "在线" : "离线" }}</span>
+                <p class="mb-1 px-2 text-[10px] text-muted">
+                  <span :class="g.online ? 'text-green-500' : 'text-muted'">{{ g.online ? "在线" : "离线" }}</span>
                   · {{ g.subtitle }}
                 </p>
                 <button
@@ -259,16 +259,16 @@ const footerLabel = computed(() => `${humans.value.length} 位成员 · ${agents
                       <span class="truncate font-medium">{{ a.display_name || a.name }}</span>
                       <span :class="['shrink-0 text-[10px]', statusFor(a).cls]">{{ statusFor(a).text }}</span>
                     </div>
-                    <p class="truncate font-mono text-[11px] text-gray-400">@{{ a.name }}</p>
+                    <p class="truncate font-mono text-[11px] text-muted">@{{ a.name }}</p>
                     <p v-if="a.description" class="truncate text-[11px] text-gray-500">{{ a.description }}</p>
-                    <p class="truncate text-[11px] text-gray-400">{{ runtimeLine(a) }}</p>
+                    <p class="truncate text-[11px] text-muted">{{ runtimeLine(a) }}</p>
                   </div>
                 </button>
               </SidebarSection>
             </div>
 
             <SidebarSection title="成员" persist-key="people.page.humans" :count="filteredHumans.length">
-              <p v-if="filteredHumans.length === 0" class="px-2 text-xs text-gray-400">没有匹配的成员</p>
+              <p v-if="filteredHumans.length === 0" class="px-2 text-xs text-muted">没有匹配的成员</p>
               <button
                 v-for="h in filteredHumans"
                 :key="h.handle"
@@ -284,7 +284,7 @@ const footerLabel = computed(() => `${humans.value.length} 位成员 · ${agents
                 <Avatar :name="h.display_name || h.handle" :src="h.avatar_url" size="sm" />
                 <div class="min-w-0 flex-1">
                   <p class="truncate">{{ h.display_name || h.handle }}</p>
-                  <p class="truncate text-[11px] text-gray-400">@{{ h.handle }}</p>
+                  <p class="truncate text-[11px] text-muted">@{{ h.handle }}</p>
                 </div>
               </button>
             </SidebarSection>
@@ -293,7 +293,7 @@ const footerLabel = computed(() => `${humans.value.length} 位成员 · ${agents
 
         <p
           v-if="loaded && !empty"
-          class="border-t border-gray-200 px-3 py-2 text-[11px] text-gray-400 dark:border-gray-700"
+          class="border-t border-gray-200 px-3 py-2 text-[11px] text-muted dark:border-gray-700"
         >
           {{ footerLabel }}
         </p>
@@ -303,7 +303,7 @@ const footerLabel = computed(() => `${humans.value.length} 位成员 · ${agents
         <MemberProfileBody v-if="selectedHandle" :handle="selectedHandle" embedded @deleted="onAgentDeleted" />
         <div v-else class="flex h-full flex-col items-center justify-center text-center">
           <p class="text-sm text-muted">选一个成员看档案</p>
-          <p class="mt-1 text-xs text-gray-400">单击左侧名单即可</p>
+          <p class="mt-1 text-xs text-muted">单击左侧名单即可</p>
         </div>
       </div>
     </div>

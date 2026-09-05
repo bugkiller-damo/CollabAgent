@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import Button from "./ui/Button.vue";
+
 withDefaults(
   defineProps<{
     icon?: string;
@@ -21,12 +23,8 @@ const emit = defineEmits<{
     <div class="mb-4 text-5xl opacity-60">{{ icon }}</div>
     <h3 class="mb-1 text-base font-medium text-gray-700 dark:text-gray-300">{{ title }}</h3>
     <p v-if="description" class="mb-4 max-w-sm text-sm text-gray-500 dark:text-gray-500">{{ description }}</p>
-    <button
-      v-if="actionLabel"
-      class="rounded-md bg-blue-600 px-4 py-2 text-sm text-white transition-colors hover:bg-blue-500"
-      @click="emit('action')"
-    >
+    <Button v-if="actionLabel" @click="emit('action')">
       {{ actionLabel }}
-    </button>
+    </Button>
   </div>
 </template>
