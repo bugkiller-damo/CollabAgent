@@ -3,7 +3,9 @@ import { Bell } from "@lucide/vue";
 import { onMounted, onUnmounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { readCsrf } from "../../api";
+import { resolveNotificationRoute } from "../../lib/notification-jump";
 import { NOTIFICATION_FALLBACK_ICON, NOTIFICATION_TYPE_ICONS } from "../../lib/type-icons";
+import { useChannelStore } from "../../stores";
 import { type NotificationItem, useNotificationStore } from "../../stores/notificationStore";
 
 function timeAgo(iso: string): string {
@@ -15,6 +17,7 @@ function timeAgo(iso: string): string {
 }
 
 const notificationStore = useNotificationStore();
+const channelStore = useChannelStore();
 const router = useRouter();
 
 const open = ref(false);
@@ -45,13 +48,11 @@ async function handleClick(n: NotificationItem) {
       /* ignore */
     }
   }
-  if (n.channelId) {
-    const meta = n.metadata || {};
-    const channelName = meta.channelName;
-    open.value = false;
-    if (channelName) {
-      router.push(`/channels/${channelName}`);
-    }
+  open.value = false;
+  // 与动态页同一解析器：mention 深链到消息、dm 到私信、task 到看板（lib/notification-jump.ts）
+  const to = resolveNotificationRoute(n, channelStore.channels);
+  if (to) {
+    router.push(to);
   }
 }
 
