@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Check, Circle, X } from "@lucide/vue";
 import { computed, onMounted, ref } from "vue";
 import { RouterLink } from "vue-router";
 import { apiGet } from "../api";
