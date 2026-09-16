@@ -8,6 +8,8 @@ export interface Attachment {
   mimeType: string;
   sizeBytes: number;
   url: string;
+  /** F11：缩略图地址（webp，inline）。仅图片且 server 已生成时下发；lightbox 仍用原图 url */
+  thumbnailUrl?: string;
 }
 
 export interface PendingItem {

@@ -1,5 +1,6 @@
+import { Readable } from "node:stream";
 import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
-import type { Storage } from "./storage.js";
+import type { Storage, StorageRange, StorageReadStream } from "./storage.js";
 
 /**
  * O4 对象存储后端：S3 协议兼容对象存储（AWS S3 / MinIO / 兼容网关）。
@@ -96,6 +97,42 @@ export class S3Storage implements Storage {
     }
     if (Buffer.isBuffer(body)) return body;
     throw new Error(`object body missing: ${key}`);
+  }
+
+  /**
+   * F9 流式读取：range 时发 S3 Range 头（bytes=start-end），206 响应的
+   * Content-Range（"bytes start-end/total"）解析出 totalSize；全量时取 ContentLength。
+   */
+  async createReadStream(key: string, range?: StorageRange): Promise<StorageReadStream> {
+    const input: { Bucket: string; Key: string; Range?: string } = {
+      Bucket: this.bucket,
+      Key: this.keyPrefix + key,
+    };
+    if (range) input.Range = `bytes=${range.start}-${range.end}`;
+    let res: any;
+    try {
+      res = await this.client.send(new GetObjectCommand(input));
+    } catch (err) {
+      if (isNotFound(err)) throw new Error(`object not found: ${key}`);
+      throw err;
+    }
+    if (res?.statusCode === 404) throw new Error(`object not found: ${key}`);
+    const body = res?.Body;
+    // 真实 SDK：Body 即 Node Readable，零拷贝直发；fake/网关简装响应兼容 Buffer / transformToByteArray
+    let stream: Readable;
+    if (body instanceof Readable) {
+      stream = body;
+    } else if (Buffer.isBuffer(body)) {
+      stream = Readable.from(body);
+    } else if (typeof body?.transformToByteArray === "function") {
+      stream = Readable.from(Buffer.from(await body.transformToByteArray()));
+    } else {
+      throw new Error(`object body missing: ${key}`);
+    }
+    const totalFromRange = /\/(\d+)\s*$/.exec(String(res?.ContentRange || ""))?.[1];
+    const totalSize = totalFromRange ? Number(totalFromRange) : Number(res?.ContentLength ?? 0);
+    const contentLength = Number(res?.ContentLength ?? totalSize);
+    return { stream, contentLength, totalSize };
   }
 
   async remove(key: string): Promise<void> {

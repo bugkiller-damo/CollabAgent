@@ -6,7 +6,21 @@
 > 离线队列；F6 daemon 透传附件——inbound 解析 + deliver 注入 prompt 摘要；F7 /files/ capability URL 下线——
 > url 全收敛 /api/attachments/<id>（ACL），静态路由改 410 + warn 观察期，?inline=1 直显安全图片；
 > F8 协议对齐——AttachmentRef 更名 filename（对齐线上 wire/web）+ url 收口必填 + thumbnailUrl 占位（F11 用）；
-> server 537/537 绿、web 143/143 绿、daemon 391/391 绿。**MinIO 已落地（2026-09-16）**：对接外部共享桶
+> **批次二启动：F9 流式/Range 已落地（2026-09-16）**——Storage 接口加 createReadStream(key, range?)
+> （local 走 fs.createReadStream+stat，S3 走 GetObjectCommand Range 头 + ContentRange 解析 totalSize）；
+> serveAttachment 不再整文件读内存，Range 解析支持 bytes=start-end/start-/-suffix，恒发 Accept-Ranges，
+> 206 + Content-Range，越界/倒置 416（bytes */total），非 bytes 单位忽略走全量；黑盒 +1 测试（8 断言场景）、
+> storage-s3 +4 单测。**F10 SHA256 去重已落地（2026-09-16）**——migration 026 加 `sha256 CHAR(64)`（NULL 允许）
+> + 部分索引；upload 收编处算 hash 命中即复用首个命中行的 storage_key（跨用户安全：须持有内容才能匹配）；
+> GC sweep 与频道删除的字节清理改按 storage_key 引用计数兜底（共享 key 不误删）；GC tick 顺带
+> backfillSha256 小批量回填老行；黑盒 +1（去重共享 key + 删频道字节存活）、attachment-gc +2
+> （共享 key 保留 + 回填/缺字节跳过）。**F11 缩略图已落地（2026-09-16）**——sharp 依赖入库
+> （makeThumbnail 动态 import + 失败降级 null，不阻塞上传）；migration 027 加 `thumb_key TEXT`；
+> 图片上传生成 ≤400px webp 存 `<key>.thumb.webp`，F10 去重命中时 thumb_key 一并复用；
+> `GET /api/attachments/:id?thumb=1` inline 直出 webp（缺字节回落原图不破图）；attachmentsJson
+> 补发 thumbnailUrl；GC/频道删除连带清派生键（主 key 引用计数覆盖）；web AttachmentView 列表用
+> 缩略图、lightbox 用原图，存量无 thumb 自动回落。黑盒 +1（缩略图生成/尺寸/载荷/去重联动）。
+> server 548/548 绿（STORAGE_BACKEND=local 口径）、web 143/143 绿。**MinIO 已落地（2026-09-16）**：对接外部共享桶
 > skzhbg（192.168.50.104:9000），新增 S3_KEY_PREFIX=slock/ 目录隔离（逻辑 key 与真实对象路径分离，
 > 路由/前端零感知），storage-s3 +2 前缀测试；冒烟（scripts/s3-smoke.ts：save/read/remove 字节比对）与
 > HTTP 端到端（scripts/s3-e2e.ts：注册→建频道→上传→带附件发消息→ACL 下载字节一致→inline 白名单→
@@ -141,9 +155,9 @@
 - [x] `npx tsc --noEmit -p packages/server/tsconfig.json` / `-p packages/web/tsconfig.json` / `-p packages/daemon/tsconfig.json` 全绿（web 实际走 vue-tsc）
 - [x] server/web/daemon 各自 `pnpm vitest run` 全绿；批次一每个 F 项配 1 个回归测试（vitest 需 `node --env-file=.env` 跑 server 测试，残留走 `scripts/cleanup-test-data.mjs`）
 - [ ] 手测链：频道/DM/线程三入口发图发文件 → 删消息 → GC 后 uploads 目录无残留
-- [ ] Range 验证：`curl -H "Range: bytes=0-99"` 回 206
+- [x] Range 验证：`curl -H "Range: bytes=0-99"` 回 206（已由 attachments.test.ts F9 黑盒用例自动化覆盖：206/Content-Range/416/Accept-Ranges）
 - [x] `/files/` 旧链接访问返回 404/410 且日志有迁移提示（F7：410 + warn 观察期日志）
-- [ ] compose 以 MinIO profile 起栈，上传/下载/缩略图全链路通
+- [ ] compose 以 MinIO profile 起栈，上传/下载/缩略图全链路通（缩略图链路本身已由 attachments.test.ts F11 用例自动化覆盖——local 后端口径；compose 起栈手测待做）
 
 ## 7. 风险与备注
 

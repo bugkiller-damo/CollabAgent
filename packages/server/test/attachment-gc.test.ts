@@ -1,7 +1,8 @@
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { runGcSweep } from "../src/lib/attachment-gc.js";
+import { backfillSha256, runGcSweep } from "../src/lib/attachment-gc.js";
 import { getStorage, UPLOAD_DIR } from "../src/lib/storage.js";
 import { closeSql, sql, TEST_PREFIX } from "./helpers.js";
 
@@ -117,6 +118,47 @@ describe("attachment GC sweep", () => {
     const rows = await sql`SELECT 1 FROM attachments WHERE id = ${id}`;
     expect(rows.length).toBe(0);
     expect(r.bytesFailed).toBe(0);
+  });
+
+  it("F10：共享 storage_key 的行被删时字节保留（仍有其它行引用）", async () => {
+    // 模拟去重产物：两行不同 attachment id 指向同一 storage_key
+    const key = `${TAG}/shared-key.txt`;
+    await getStorage().save(key, Buffer.from("gc-test:shared"));
+    const insertWithKey = (name: string, old: boolean) => sql<{ id: string }[]>`
+      INSERT INTO attachments (uploader_id, uploader_type, filename, mime_type, size_bytes, storage_key, storage_url, created_at)
+      VALUES (${uploaderId}, 'human', ${name}, 'text/plain', 10, ${key}, ${"/files/" + key},
+              ${old ? sql`now() - interval '2 hours'` : sql`now()`})
+      RETURNING id`;
+    const oldRow = await insertWithKey("shared-old.txt", true);
+    const freshRow = await insertWithKey("shared-fresh.txt", false);
+
+    // sweep 删掉老孤儿行，但 key 仍被 fresh 行引用 → 字节必须保留
+    const r = await runGcSweep(fakeApp(), { graceHours: 1 });
+    expect(r.rows).toBeGreaterThanOrEqual(1);
+    const gone = await sql`SELECT 1 FROM attachments WHERE id = ${String(oldRow[0].id)}`;
+    expect(gone.length).toBe(0);
+    expect(fileExists(key)).toBe(true);
+
+    // 收尾：把 fresh 行也扫掉后字节才消失
+    await sql`UPDATE attachments SET created_at = now() - interval '2 hours' WHERE id = ${String(freshRow[0].id)}`;
+    await runGcSweep(fakeApp(), { graceHours: 1 });
+    expect(fileExists(key)).toBe(false);
+  });
+
+  it("F10：backfillSha256 给 NULL 老行回填内容哈希；字节缺失行跳过不误杀", async () => {
+    // insertAttachment 落盘内容是 `gc-test:${name}`，expected 须同口径
+    const { id } = await insertAttachment("backfill.txt", { writeBytes: true });
+    const expected = createHash("sha256").update(Buffer.from("gc-test:backfill.txt")).digest("hex");
+
+    // 字节缺失的行：回填失败仅跳过（行留给 sweep 处理）
+    const missing = await insertAttachment("backfill-missing.txt", { writeBytes: false });
+
+    const done = await backfillSha256(fakeApp(), 50);
+    expect(done).toBeGreaterThanOrEqual(1);
+    const rows = await sql<{ sha256: string | null }[]>`SELECT sha256 FROM attachments WHERE id = ${id}`;
+    expect(rows[0]?.sha256).toBe(expected);
+    const miss = await sql<{ sha256: string | null }[]>`SELECT sha256 FROM attachments WHERE id = ${missing.id}`;
+    expect(miss[0]?.sha256).toBeNull();
   });
 
   it("batch 限量生效：3 个老孤儿 batch=2 只删 2 行", async () => {

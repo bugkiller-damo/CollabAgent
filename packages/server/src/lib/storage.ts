@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { createReadStream as createFsReadStream, type ReadStream } from "node:fs";
+import { mkdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
+import { Readable } from "node:stream";
 import { config } from "./config.js";
 
 /**
@@ -12,10 +14,34 @@ import { config } from "./config.js";
  * 按 STORAGE_BACKEND 选择；切换后端后上传/下载/删除全链路路由代码零改动。
  */
 
+/**
+ * F9（批次二）流式读取结果：路由据此回 Content-Length / Content-Range / 206。
+ * stream 只被消费一次；调用方（路由）负责 reply.send(stream)。
+ */
+export interface StorageReadStream {
+  stream: Readable;
+  /** 本次响应实际字节数（range 时为切片长度 end-start+1，全量时等于 totalSize） */
+  contentLength: number;
+  /** 对象总字节数（Accept-Ranges/Content-Range 分母） */
+  totalSize: number;
+}
+
+/** Range 切片：闭区间 [start, end]（与 HTTP Range / fs.createReadStream 语义一致）。 */
+export interface StorageRange {
+  start: number;
+  end: number;
+}
+
 export interface Storage {
   /** 保存对象（key 由 newStorageKey 生成）。 */
   save(key: string, data: Buffer): Promise<void>;
+  /** 全量读入内存——仅小对象/脚本用；路由下载一律走 createReadStream（F9）。 */
   read(key: string): Promise<Buffer>;
+  /**
+   * 流式读取（F9）。range 缺省 = 全量。对象不存在抛错（路由侧转 404）。
+   * 调用方需先用 attachments.size_bytes 校验 range 合法性（越界 416 在路由层判）。
+   */
+  createReadStream(key: string, range?: StorageRange): Promise<StorageReadStream>;
   /** 幂等删除：对象不存在视为成功。 */
   remove(key: string): Promise<void>;
   /**
@@ -77,6 +103,21 @@ class LocalDiskStorage implements Storage {
 
   async read(key: string): Promise<Buffer> {
     return readFile(this.pathFor(key));
+  }
+
+  async createReadStream(key: string, range?: StorageRange): Promise<StorageReadStream> {
+    const full = this.pathFor(key);
+    const st = await stat(full).catch(() => null);
+    if (!st) throw new Error(`object not found: ${key}`);
+    const totalSize = st.size;
+    if (totalSize === 0) {
+      // 空对象：fs.createReadStream 不接受 end=-1，直接给空流
+      return { stream: Readable.from(Buffer.alloc(0)), contentLength: 0, totalSize: 0 };
+    }
+    const start = range?.start ?? 0;
+    const end = Math.min(range?.end ?? totalSize - 1, totalSize - 1);
+    const stream: ReadStream = createFsReadStream(full, { start, end });
+    return { stream, contentLength: end - start + 1, totalSize };
   }
 
   async remove(key: string): Promise<void> {

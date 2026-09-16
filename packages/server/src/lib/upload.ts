@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { config } from "./config.js";
 import { getStorage, isAllowedMimeType, newStorageKey } from "./storage.js";
+import { makeThumbnail, THUMBABLE_MIME, thumbKeyFor } from "./thumbnail.js";
 
 /**
  * 人类/Agent 共用的 multipart 附件上传收编（F2/F3，方案
@@ -58,8 +60,34 @@ export async function handleAttachmentUpload(
   }
   const storage = getStorage();
   const filename = data.filename || "file";
-  const storageKey = newStorageKey(filename);
-  await storage.save(storageKey, buf);
+  // F10 SHA256 去重：同内容（跨用户/跨频道）复用首个命中行的 storage_key，字节只存一份。
+  // 安全性：调用方必须已持有文件内容才能算出/匹配 hash，不构成内容存在性探测面；
+  // 字节删除方（GC/频道删除）按 storage_key 引用计数兜底，共享 key 不会被误删。
+  // 并发同内容首传可能双双未命中各存一份——无害（不腐化，仅该次没去重）。
+  const sha256 = createHash("sha256").update(buf).digest("hex");
+  const dup = await app.pg.query<{ storage_key: string; thumb_key: string | null }>(
+    "SELECT storage_key, thumb_key FROM attachments WHERE sha256 = $1 ORDER BY created_at ASC LIMIT 1",
+    [sha256],
+  );
+  let storageKey: string;
+  let thumbKey: string | null;
+  if (dup.rows.length > 0) {
+    // F10/F11：字节与缩略图一并复用（命中行是 F11 前存量时 thumb_key 为 NULL，不补生成）
+    storageKey = String(dup.rows[0].storage_key);
+    thumbKey = dup.rows[0].thumb_key;
+  } else {
+    storageKey = newStorageKey(filename);
+    await storage.save(storageKey, buf);
+    // F11：图片生成 ≤400px webp 缩略图；失败（坏图/sharp 不可用）降级为无缩略图，不阻塞上传
+    thumbKey = null;
+    if (THUMBABLE_MIME.has(data.mimetype)) {
+      const thumb = await makeThumbnail(buf);
+      if (thumb) {
+        thumbKey = thumbKeyFor(storageKey);
+        await storage.save(thumbKey, thumb);
+      }
+    }
+  }
   const url = storage.publicUrl(storageKey);
   const result = await app.pg.query<{
     id: string;
@@ -68,8 +96,8 @@ export async function handleAttachmentUpload(
     size_bytes: number;
     storage_url: string;
   }>(
-    "INSERT INTO attachments (uploader_id, uploader_type, filename, mime_type, size_bytes, storage_key, storage_url) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, filename, mime_type, size_bytes, storage_key, storage_url",
-    [uploader.id, uploader.type, filename, data.mimetype, buf.length, storageKey, url],
+    "INSERT INTO attachments (uploader_id, uploader_type, filename, mime_type, size_bytes, storage_key, storage_url, sha256, thumb_key) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id, filename, mime_type, size_bytes, storage_key, storage_url",
+    [uploader.id, uploader.type, filename, data.mimetype, buf.length, storageKey, url, sha256, thumbKey],
   );
   const row = result.rows[0];
   return {

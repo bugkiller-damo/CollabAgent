@@ -22,9 +22,15 @@ function isImage(mime: string): boolean {
  * F7：附件 url 已是 /api/attachments/<id>（ACL 端点，默认 Content-Disposition: attachment
  * 强制下载）——<img>/lightbox 直显需要 ?inline=1（server 侧仅对安全图片 MIME 放行 inline）。
  * 下载链接保持裸 url（强制下载 + 带文件名正是想要的行为）。
+ * F11：列表优先用 thumbnailUrl（server 生成的 ≤400px webp，inline 直出，省带宽/弱网友好）；
+ * 无缩略图（非图片/F11 前存量/生成失败降级）回落原图 inline；lightbox 始终用原图。
  */
 function inlineUrl(url: string): string {
   return url + (url.includes("?") ? "&" : "?") + "inline=1";
+}
+
+function listUrl(a: Attachment): string {
+  return a.thumbnailUrl || inlineUrl(a.url);
 }
 </script>
 
@@ -33,7 +39,7 @@ function inlineUrl(url: string): string {
     <template v-for="a in props.attachments" :key="a.id">
       <img
         v-if="isImage(a.mimeType)"
-        :src="inlineUrl(a.url)"
+        :src="listUrl(a)"
         :alt="a.filename"
         loading="lazy"
         @click="lightbox = a"

@@ -4,6 +4,7 @@ import { resolveChannel } from "../lib/channel.js";
 import { getOrCreateDmChannel, type Party, resolvePeer } from "../lib/dm.js";
 import { getStorage } from "../lib/storage.js";
 import { isServerMember, resolveTenant } from "../lib/tenant.js";
+import { thumbKeyFor } from "../lib/thumbnail.js";
 
 export async function channelRoutes(app: FastifyInstance) {
   app.get("/", { preHandler: [app.authenticate] }, async (req, reply) => {
@@ -333,9 +334,16 @@ export async function channelRoutes(app: FastifyInstance) {
       return removedKeys;
     });
     // 事务提交后再删对象字节：引用关系已断；失败仅告警（best-effort），不影响频道删除结果
+    // F10：去重后多行可共享同一 storage_key——只清已无任何 attachments 行引用的 key
     for (const key of orphanedKeys) {
+      const ref = await app.pg.query("SELECT 1 FROM attachments WHERE storage_key = $1 LIMIT 1", [key]);
+      if (ref.rows.length > 0) continue;
       try {
         await getStorage().remove(key);
+        // F11：缩略图与主对象同生命周期（派生键 <key>.thumb.webp，幂等删除）
+        await getStorage()
+          .remove(thumbKeyFor(key))
+          .catch(() => {});
       } catch (err) {
         req.log.warn({ err, key }, "attachment storage cleanup failed");
       }

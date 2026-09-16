@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { canAccessChannel } from "../lib/access.js";
-import { getStorage } from "../lib/storage.js";
+import { getStorage, type StorageRange } from "../lib/storage.js";
 import { handleAttachmentUpload } from "../lib/upload.js";
 
 interface AttachmentRow {
@@ -9,6 +9,8 @@ interface AttachmentRow {
   mime_type: string;
   filename: string;
   uploader_id: string;
+  size_bytes: number;
+  thumb_key: string | null;
 }
 
 /**
@@ -28,9 +30,38 @@ const INLINE_SAFE_MIME = new Set([
 ]);
 
 /**
+ * F9：解析 HTTP Range 头（单区间；多区间/不合法视为无 Range 走全量）。
+ * 支持 bytes=start-end / bytes=start- / bytes=-suffixLen。
+ * 返回越界标记由调用方结合 totalSize 判 416。
+ */
+function parseRangeHeader(header: string | undefined, totalSize: number): StorageRange | "invalid" | null {
+  if (!header) return null;
+  const m = /^\s*bytes=(\d*)-(\d*)\s*$/.exec(header);
+  if (!m) return null; // 非 bytes 单位或多区间：忽略，全量回 200
+  const [, a, b] = m;
+  if (a === "" && b === "") return null;
+  let start: number;
+  let end: number;
+  if (a === "") {
+    // 后缀区间 bytes=-N：最后 N 字节
+    const suffix = Number(b);
+    if (suffix <= 0) return "invalid";
+    start = Math.max(totalSize - suffix, 0);
+    end = totalSize - 1;
+  } else {
+    start = Number(a);
+    end = b === "" ? totalSize - 1 : Math.min(Number(b), totalSize - 1);
+    if (start > end) return "invalid";
+  }
+  return { start, end };
+}
+
+/**
  * 附件读取的统一出口：鉴权（上传者或所挂消息频道成员）→ ?meta 返回元数据行 → 否则出文件字节。
  * GET /:id 与 GET /by-key 共用，保证两条路径的访问控制完全一致。
  * F7：?inline=1 且 MIME 在 INLINE_SAFE_MIME 时回 inline（web <img> 直显用）；默认 attachment 下载。
+ * F9：字节走流式（不再整文件读内存）；支持 Range（206/416），恒发 Accept-Ranges: bytes。
+ * F11：?thumb=1 且有 thumb_key 时出缩略图（webp，恒 inline；无缩略图时回落原图字节）。
  */
 async function serveAttachment(
   app: FastifyInstance,
@@ -39,6 +70,8 @@ async function serveAttachment(
   row: AttachmentRow,
   meta: boolean,
   inline?: boolean,
+  rangeHeader?: string,
+  thumb?: boolean,
 ): Promise<unknown> {
   // 访问控制：上传者本人，或附件所挂消息所在频道的成员。
   // 尚未挂到任何消息的附件（发送前先上传的场景）仅上传者可访问。
@@ -62,12 +95,42 @@ async function serveAttachment(
 
   // ?meta=1 返回元数据；默认直接下载文件字节（供 slock attachment view 使用）
   if (meta) return row;
+
+  // F11：缩略图分支——webp 恒 inline；不走 Range（<img> 不发 Range，且 size_bytes 是原图尺寸）
+  if (thumb && row.thumb_key) {
+    try {
+      const { stream, contentLength } = await getStorage().createReadStream(row.thumb_key);
+      reply.header("Content-Type", "image/webp");
+      reply.header("Content-Disposition", `inline; filename="${encodeURIComponent(row.filename)}.webp"`);
+      reply.header("Content-Length", contentLength);
+      return reply.send(stream);
+    } catch {
+      // 缩略图字节缺失：不 404，继续回落出原图字节（UI 不因此破图）
+    }
+  }
+
+  const totalSize = Number(row.size_bytes) || 0;
+  const range = parseRangeHeader(rangeHeader, totalSize);
+  if (range === "invalid" || (range && (range.start >= totalSize || totalSize === 0))) {
+    return reply.status(416).header("Content-Range", `bytes */${totalSize}`).send({ error: "range not satisfiable" });
+  }
+
   try {
-    const buf = await getStorage().read(row.storage_key);
+    const {
+      stream,
+      contentLength,
+      totalSize: realTotal,
+    } = await getStorage().createReadStream(row.storage_key, range ?? undefined);
     reply.header("Content-Type", row.mime_type || "application/octet-stream");
     const disposition = inline && INLINE_SAFE_MIME.has(row.mime_type) ? "inline" : "attachment";
     reply.header("Content-Disposition", `${disposition}; filename="${encodeURIComponent(row.filename)}"`);
-    return reply.send(buf);
+    reply.header("Accept-Ranges", "bytes");
+    reply.header("Content-Length", contentLength);
+    if (range) {
+      reply.header("Content-Range", `bytes ${range.start}-${range.end}/${realTotal || totalSize}`);
+      reply.status(206);
+    }
+    return reply.send(stream);
   } catch {
     return reply.status(404).send({ error: "file bytes not found" });
   }
@@ -88,7 +151,16 @@ export async function attachmentRoutes(app: FastifyInstance) {
       query.key,
     ]);
     if (result.rows.length === 0) return reply.status(404).send({ error: "not found" });
-    return serveAttachment(app, reply, req.user.sub, result.rows[0], Boolean(query.meta), Boolean(query.inline));
+    return serveAttachment(
+      app,
+      reply,
+      req.user.sub,
+      result.rows[0],
+      Boolean(query.meta),
+      Boolean(query.inline),
+      req.headers.range,
+      Boolean(query.thumb),
+    );
   });
 
   app.get("/:id", { preHandler: [app.authenticate] }, async (req, reply) => {
@@ -97,6 +169,15 @@ export async function attachmentRoutes(app: FastifyInstance) {
     const result = await app.pg.query<AttachmentRow>("SELECT * FROM attachments WHERE id = $1", [attachmentId]);
     if (result.rows.length === 0) return reply.status(404).send({ error: "not found" });
     const q = req.query as Record<string, string>;
-    return serveAttachment(app, reply, userId, result.rows[0], Boolean(q.meta), Boolean(q.inline));
+    return serveAttachment(
+      app,
+      reply,
+      userId,
+      result.rows[0],
+      Boolean(q.meta),
+      Boolean(q.inline),
+      req.headers.range,
+      Boolean(q.thumb),
+    );
   });
 }

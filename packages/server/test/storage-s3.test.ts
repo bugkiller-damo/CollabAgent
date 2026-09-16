@@ -1,3 +1,4 @@
+import { Readable } from "node:stream";
 import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 import { describe, expect, it } from "vitest";
 import { type S3ClientLike, S3Storage } from "../src/lib/storage-s3.js";
@@ -73,6 +74,80 @@ describe("S3Storage", () => {
     await expect(storage.read("k/1.bin")).resolves.toEqual(expected);
     expect(commands[0]).toBeInstanceOf(GetObjectCommand);
     expect((commands[0] as GetObjectCommand).input.Key).toBe("k/1.bin");
+  });
+
+  it("F9 createReadStream 全量：不发 Range 头，contentLength/totalSize 取 ContentLength", async () => {
+    const expected = Buffer.from("0123456789");
+    const commands: unknown[] = [];
+    const client: S3ClientLike = {
+      async send(command: unknown) {
+        commands.push(command);
+        return { statusCode: 200, Body: Readable.from(expected), ContentLength: expected.length };
+      },
+    };
+    const storage = new S3Storage(OPTS, client);
+
+    const { stream, contentLength, totalSize } = await storage.createReadStream("k/f.bin");
+    expect((commands[0] as GetObjectCommand).input.Range).toBeUndefined();
+    expect(contentLength).toBe(10);
+    expect(totalSize).toBe(10);
+    const chunks: Buffer[] = [];
+    for await (const c of stream) chunks.push(Buffer.from(c as Buffer));
+    expect(Buffer.concat(chunks)).toEqual(expected);
+  });
+
+  it("F9 createReadStream range：发 bytes=start-end 头，totalSize 从 ContentRange 解析", async () => {
+    const full = Buffer.from("0123456789");
+    const commands: unknown[] = [];
+    const client: S3ClientLike = {
+      async send(command: unknown) {
+        commands.push(command);
+        const range = (command as GetObjectCommand).input.Range || "";
+        const m = /^bytes=(\d+)-(\d+)$/.exec(range);
+        expect(m).toBeTruthy();
+        const [start, end] = [Number(m?.[1]), Number(m?.[2])];
+        const slice = full.subarray(start, end + 1);
+        return {
+          statusCode: 206,
+          Body: Readable.from(slice),
+          ContentLength: slice.length,
+          ContentRange: `bytes ${start}-${end}/${full.length}`,
+        };
+      },
+    };
+    const storage = new S3Storage({ ...OPTS, keyPrefix: "slock" }, client);
+
+    const { stream, contentLength, totalSize } = await storage.createReadStream("u/f.bin", { start: 2, end: 5 });
+    const cmd = commands[0] as GetObjectCommand;
+    expect(cmd.input.Key).toBe("slock/u/f.bin"); // 前缀拼接与 read/remove 一致
+    expect(cmd.input.Range).toBe("bytes=2-5");
+    expect(contentLength).toBe(4);
+    expect(totalSize).toBe(10);
+    const chunks: Buffer[] = [];
+    for await (const c of stream) chunks.push(Buffer.from(c as Buffer));
+    expect(Buffer.concat(chunks).toString()).toBe("2345");
+  });
+
+  it("F9 createReadStream 兼容 Body 为 Buffer 的简装响应（fake/网关）", async () => {
+    const expected = Buffer.from("raw");
+    const client: S3ClientLike = {
+      async send() {
+        return { statusCode: 200, Body: expected, ContentLength: 3 };
+      },
+    };
+    const storage = new S3Storage(OPTS, client);
+    const { stream, contentLength, totalSize } = await storage.createReadStream("k/raw");
+    expect(contentLength).toBe(3);
+    expect(totalSize).toBe(3);
+    const chunks: Buffer[] = [];
+    for await (const c of stream) chunks.push(Buffer.from(c as Buffer));
+    expect(Buffer.concat(chunks)).toEqual(expected);
+  });
+
+  it("F9 createReadStream 对象不存在抛 not found", async () => {
+    const { client } = makeFake({}, { gone: noSuchKey() });
+    const storage = new S3Storage(OPTS, client);
+    await expect(storage.createReadStream("gone")).rejects.toThrow(/not found/i);
   });
 
   it("read 兼容 Body 直接是 Buffer 的响应", async () => {

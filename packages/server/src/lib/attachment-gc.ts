@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import { config } from "./config.js";
 import { getStorage } from "./storage.js";
+import { thumbKeyFor } from "./thumbnail.js";
 
 /**
  * F1 附件孤儿 GC（方案：docs/2026-09-16/01-file-upload-refactor-plan.md 批次一）。
@@ -67,11 +69,19 @@ export async function runGcSweep(
     [graceHours, batch],
   );
   const keys = removed.rows.map((r) => String((r as { storage_key: string }).storage_key));
+  // F10：去重后多行可共享同一 storage_key——行删了不等于字节能删，
+  // 只清「删除后已无任何 attachments 行引用」的 key，其余保留字节。
   let bytes = 0;
   let bytesFailed = 0;
   for (const key of keys) {
+    const ref = await app.pg.query("SELECT 1 FROM attachments WHERE storage_key = $1 LIMIT 1", [key]);
+    if (ref.rows.length > 0) continue;
     try {
       await getStorage().remove(key);
+      // F11：缩略图与主对象同生命周期（派生键 <key>.thumb.webp，幂等删除）
+      await getStorage()
+        .remove(thumbKeyFor(key))
+        .catch(() => {});
       bytes++;
     } catch (err) {
       bytesFailed++;
@@ -82,12 +92,39 @@ export async function runGcSweep(
 }
 
 /**
+ * F10 老数据回填：sha256 为 NULL 的行（026 迁移前的存量）读字节算 hash 回写。
+ * best-effort：字节缺失/读取失败仅告警跳过（GC sweep 迟早会把孤儿行清掉）；
+ * 每 tick 小批量，避免大文件集中读内存。返回本轮回填行数。
+ */
+export async function backfillSha256(app: GcApp, batch = 20): Promise<number> {
+  const rows = await app.pg.query(
+    "SELECT id, storage_key FROM attachments WHERE sha256 IS NULL ORDER BY created_at ASC LIMIT $1",
+    [batch],
+  );
+  let done = 0;
+  for (const r of rows.rows as { id: string; storage_key: string }[]) {
+    try {
+      const buf = await getStorage().read(r.storage_key);
+      const sha256 = createHash("sha256").update(buf).digest("hex");
+      await app.pg.query("UPDATE attachments SET sha256 = $1 WHERE id = $2", [sha256, r.id]);
+      done++;
+    } catch (err) {
+      app.log.warn({ err, id: r.id }, "[AttachmentGC] sha256 backfill failed");
+    }
+  }
+  return done;
+}
+
+/**
  * 启动周期 GC：listen 后立即跑一轮（覆盖停机期积压），之后按 intervalMs 周期执行。
  * 返回停止函数（优雅关闭/测试用）。
  */
 export function startAttachmentGc(app: GcApp, intervalMs = config.ATTACHMENT_GC_INTERVAL_MS): () => void {
   const tick = async () => {
     try {
+      // F10：sweep 前顺带小批量回填老行 sha256（回填后这些行才参与去重匹配）
+      const backfilled = await backfillSha256(app);
+      if (backfilled > 0) app.log.info(`[AttachmentGC] sha256 backfilled ${backfilled} rows`);
       const r = await runGcSweep(app);
       if (r.rows > 0) {
         const { inc } = await import("./metrics.js");
