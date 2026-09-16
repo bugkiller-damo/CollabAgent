@@ -117,7 +117,10 @@ export const useMessageStore = defineStore("messages", () => {
     if (opts?.before) params.before = String(opts.before);
     if (opts?.limit) params.limit = String(opts.limit);
     try {
-      const data = await apiGet<{ messages: Message[] }>("/api/messages", params);
+      // before 翻旧页必须走 /history：根端点 GET /api/messages 不读 before 参数
+      // （只回最新一页），此前 highlight 回填打它等于重拉最新页，目标消息永远不进列表
+      const url = opts?.before !== undefined ? "/api/messages/history" : "/api/messages";
+      const data = await apiGet<{ messages: Message[] }>(url, params);
       const fetched = data.messages || [];
       // P1-10 竞态归并：await 期间到达的 live 消息已在列表中，整体置换会把它们从 UI
       // 抹掉——且 lastSeenSeq 已被 receiveMessage 推进过，重连 backfill（after=水位）

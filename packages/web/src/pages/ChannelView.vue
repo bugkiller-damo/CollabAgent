@@ -60,8 +60,12 @@ const droppedFiles = ref<File[] | null>(null);
 const dragOver = ref(false);
 const containerRef = ref<HTMLDivElement | null>(null);
 const fetchedRef = ref<string | null>(null);
-const highlightLoadedRef = ref(false);
+// 搜索跳转定位跟踪（按消息 id 记）：loaded = 已尝试过回填（防重复请求）；giveUp = 定位失败放弃
+const highlightLoadedId = ref<string | undefined>(undefined);
+const highlightGiveUpId = ref<string | undefined>(undefined);
 const stickToBottom = ref(true);
+// P1-12 普通分支已居中定位完成的高亮 id（声明提前：钉底 watcher 的抑制判断要用）
+const didHighlightPlain = ref<string | undefined>(undefined);
 
 const isPrivate = computed(() => {
   const c = currentChannel.value;
@@ -94,26 +98,43 @@ watch(
   { immediate: true },
 );
 
-// ---- Effect 2：hash 高亮消息不在当前页时，按 id 前缀搜索并回填历史（React useEffect([highlightMsgId, messages, target, fetchHistory])）----
+// ---- Effect 2：hash 高亮消息不在当前页时，locate 拿 seq 回填目标窗口（React useEffect([highlightMsgId, messages, target, fetchHistory])）----
+// 修复前这里拿消息 id 前缀当关键词调 /api/messages/search——全文索引只覆盖 content，
+// id 永不命中，回填实质是死代码，旧消息跳转永远停在最新位置。
 watch([highlightMsgId, messages, target], () => {
   const hid = highlightMsgId.value;
-  if (!hid || highlightLoadedRef.value) return;
+  if (!hid || highlightLoadedId.value === hid) return;
   if (messages.value.length === 0) return;
-  const inPage = messages.value.find((m: any) => m.id === hid);
-  if (inPage) {
-    highlightLoadedRef.value = true;
+  if (messages.value.some((m) => m.id === hid)) {
+    highlightLoadedId.value = hid;
     return;
   }
-  apiGet<{ results: { id: string; seq: number }[] }>("/api/messages/search", { q: hid.slice(0, 8) })
-    .then((r) => {
-      const hit = r.results.find((x) => x.id === hid);
-      if (hit) {
-        messageStore.fetchHistory(target.value, { before: hit.seq + 1, limit: 50 }).catch(() => {});
-        highlightLoadedRef.value = true;
-      }
+  highlightLoadedId.value = hid; // 每个 id 只尝试一次：失败走 give-up 落底，不自动重试
+  const targetAtCall = target.value;
+  apiGet<{ seq: number; threadId: string | null }>(`/api/messages/${encodeURIComponent(hid)}/locate`)
+    .then(async (r) => {
+      // 线程回复不在主列表，无法定位——放弃，落底（与修复前行为一致）
+      if (r.threadId) return giveUpHighlight(hid);
+      // locate 在途时用户切了频道：seq 属于旧频道，不回填
+      if (target.value !== targetAtCall) return;
+      await messageStore.fetchHistory(targetAtCall, { before: r.seq + 1, limit: 50 }).catch(() => {});
+      if (target.value !== targetAtCall) return;
+      if (!(messageStore.messagesByTarget[targetAtCall] || []).some((m) => m.id === hid)) giveUpHighlight(hid);
     })
-    .catch(() => {});
+    .catch(() => giveUpHighlight(hid));
 });
+
+// 定位失败兜底：清掉 hash（高亮 watcher 随之复位、虚拟列表抑制解除）并钉底落最新——
+// 与修复前「跳频道停最新」的行为一致，只是不再假装能定位
+function giveUpHighlight(hid: string) {
+  highlightGiveUpId.value = hid;
+  if (route.hash === `#${hid}`) void router.replace({ path: route.path, query: route.query, hash: "" }).catch(() => {});
+  stickToBottom.value = true;
+  nextTick(() => {
+    pinToBottom();
+    requestAnimationFrame(pinToBottom);
+  });
+}
 
 function pinToBottom() {
   const el = containerRef.value;
@@ -135,6 +156,9 @@ watch(
   [messages, pending],
   () => {
     if (!stickToBottom.value) return;
+    // 高亮待定（目标未定位且未 give-up）时让位：否则这里的 rAF 钉底会盖掉随后的居中滚动
+    const hid = highlightMsgId.value;
+    if (hid && didHighlightPlain.value !== hid && highlightGiveUpId.value !== hid) return;
     nextTick(() => {
       pinToBottom();
       requestAnimationFrame(pinToBottom);
@@ -216,7 +240,13 @@ const listItems = computed<ListItem[]>(() =>
 
 // ---- P1-12：≤100 条普通分支的搜索跳转高亮——对齐 VirtualMessageList 同款机制：
 // 目标消息在列时滚动居中并给行打 is-highlighted（虚拟分支由 VirtualMessageList 内部自理）----
-const didHighlightPlain = ref<string | undefined>(undefined);
+// （didHighlightPlain 已随上方 refs 提前声明——钉底 watcher 的抑制判断要用）
+
+// hash 变化（新跳转 / give-up 清空）时重置定位跟踪——允许用户对同一 id 重试
+watch(highlightMsgId, () => {
+  highlightLoadedId.value = undefined;
+  highlightGiveUpId.value = undefined;
+});
 
 function scrollToHighlight(hid: string) {
   const container = containerRef.value;
@@ -240,6 +270,8 @@ watch(
     if (didHighlightPlain.value === hid) return;
     if (!list.some((m) => m.id === hid)) return; // 不在当前页 → Effect 2 回填后 messages 变化再触发
     didHighlightPlain.value = hid;
+    // 定位在历史位置：解除钉底——否则下一条新消息到达时钉底 watcher 会把视图拽回最新
+    stickToBottom.value = false;
     nextTick(() => {
       scrollToHighlight(hid);
       requestAnimationFrame(() => scrollToHighlight(hid));

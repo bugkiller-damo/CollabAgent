@@ -136,11 +136,15 @@ describe("backfill 断线增量补拉", () => {
     expect(apiGetMock).toHaveBeenCalledTimes(2);
   });
 
-  it("fetchHistory 推进 lastSeenSeq；before 翻旧页不回退", async () => {
+  it("fetchHistory 推进 lastSeenSeq；before 翻旧页不回退（且改走 /history——根端点不读 before）", async () => {
     const store = useMessageStore();
     apiGetMock.mockImplementation(async (url: string, params?: Record<string, string>) => {
+      if (params?.before) {
+        // 搜索跳转回填路径：before 翻旧页打 /api/messages/history（根端点会静默丢弃 before）
+        expect(url).toBe("/api/messages/history");
+        return { messages: [msg("#a", 4), msg("#a", 5)] } as any;
+      }
       expect(url).toBe("/api/messages");
-      if (params?.before) return { messages: [msg("#a", 4), msg("#a", 5)] } as any;
       return { messages: [msg("#a", 9), msg("#a", 10)] } as any;
     });
 

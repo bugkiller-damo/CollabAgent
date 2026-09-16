@@ -145,6 +145,60 @@ describe("messages: 发送 / 列取 / 编辑 / 搜索 / 反应 / 删除", () => 
     if (r.data.results.length) expect(r.data.results[0]).toHaveProperty("channelId");
   });
 
+  // 搜索跳转定位（P1-12 修复）：客户端拿 id → locate 换 seq → /history?before=seq+1 回填居中
+  it("locate：返回频道与 seq；非 UUID 400；不存在 404；私有频道非成员 403", async () => {
+    const s = await api("/api/messages/send", {
+      method: "POST",
+      cookie: ck,
+      body: { target: "#general", content: "locate me" },
+    });
+    expect(s.status).toBe(200);
+    const r = await api(`/api/messages/${s.data.messageId}/locate`, { cookie: ck });
+    expect(r.status).toBe(200);
+    expect(r.data.channel).toBe("#general");
+    expect(typeof r.data.seq).toBe("number");
+    expect(r.data.threadId).toBeNull();
+    // seq 可直接用于 /history?before=seq+1 回填出含目标消息的一页
+    const h = await api(
+      `/api/messages/history?channel=${encodeURIComponent("#general")}&before=${r.data.seq + 1}&limit=50`,
+      { cookie: ck },
+    );
+    expect(h.status).toBe(200);
+    expect(h.data.messages.some((m: any) => m.id === s.data.messageId)).toBe(true);
+
+    expect((await api("/api/messages/not-a-uuid/locate", { cookie: ck })).status).toBe(400);
+    expect((await api("/api/messages/00000000-0000-0000-0000-000000000000/locate", { cookie: ck })).status).toBe(404);
+
+    // 私有频道：非成员 locate 403（不泄露消息存在性与位置）
+    const owner = await registerUser();
+    const chName = "loc_" + uniqHandle();
+    await api("/api/channels", { method: "POST", cookie: owner.cookie, body: { name: chName, type: "private" } });
+    const ps = await api("/api/messages/send", {
+      method: "POST",
+      cookie: owner.cookie,
+      body: { target: "#" + chName, content: "secret" },
+    });
+    expect(ps.status).toBe(200);
+    expect((await api(`/api/messages/${ps.data.messageId}/locate`, { cookie: ck })).status).toBe(403);
+  });
+
+  it("locate：线程回复返回 threadId（客户端据此放弃主列表定位）", async () => {
+    const parent = await api("/api/messages/send", {
+      method: "POST",
+      cookie: ck,
+      body: { target: "#general", content: "thread parent" },
+    });
+    const replyMsg = await api("/api/messages/send", {
+      method: "POST",
+      cookie: ck,
+      body: { target: "#general", content: "thread child", threadId: parent.data.messageId },
+    });
+    expect(replyMsg.status).toBe(200);
+    const r = await api(`/api/messages/${replyMsg.data.messageId}/locate`, { cookie: ck });
+    expect(r.status).toBe(200);
+    expect(r.data.threadId).toBe(parent.data.messageId);
+  });
+
   it("添加表情反应", async () => {
     const s = await api("/api/messages/send", {
       method: "POST",

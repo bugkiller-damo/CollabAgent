@@ -512,6 +512,38 @@ export async function messageRoutes(app: FastifyInstance) {
     return { results: result.rows, total: result.rows.length };
   });
 
+  // 搜索跳转定位（P1-12 修复）：按消息 id 拿回 channel/seq/threadId，客户端据此
+  // 用 /history?before=seq+1 回填目标窗口并滚动居中。此前前端拿 id 前缀当关键词
+  // 调 /search（全文索引只覆盖 content，id 永不命中），回填路径实质是死代码。
+  app.get("/:messageId/locate", { preHandler: [app.authenticate] }, async (req, reply) => {
+    const { messageId } = req.params as Record<string, string>;
+    if (!UUID_RE.test(messageId)) return reply.status(400).send({ error: "invalid messageId" });
+    const tenant = await resolveTenant(app, req);
+    const r = await app.pg.query<{
+      id: string;
+      channelId: string;
+      channelName: string;
+      seq: string;
+      threadId: string | null;
+    }>(
+      `SELECT m.id, m.channel_id AS "channelId", c.name AS "channelName", m.seq, m.thread_id AS "threadId"
+         FROM messages m JOIN channels c ON c.id = m.channel_id WHERE m.id = $1`,
+      [messageId],
+    );
+    if (r.rows.length === 0) return reply.status(404).send({ error: "message not found" });
+    const row = r.rows[0];
+    if (!(await canAccessChannel(app, String(row.channelId), req.user.sub, accessOptsOf(tenant)))) {
+      return reply.status(403).send({ error: "no access to this channel" });
+    }
+    return {
+      id: row.id,
+      channelId: row.channelId,
+      channel: "#" + row.channelName,
+      seq: Number(row.seq),
+      threadId: row.threadId,
+    };
+  });
+
   // 编辑消息（仅本人，保留旧内容至 message_edits）
   app.put("/:messageId", { preHandler: [app.authenticate] }, async (req, reply) => {
     const { messageId } = req.params as Record<string, string>;
