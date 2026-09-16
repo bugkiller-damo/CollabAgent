@@ -375,6 +375,10 @@ try {
   const { startPresenceSync } = await import("./lib/presence.js");
   startPresenceSync();
   server.log.info("[Presence] cross-instance sync started");
+  // F1：附件孤儿 GC（删消息/放弃发送留下的无引用附件，默认每小时一轮、24h 宽限）
+  const { startAttachmentGc } = await import("./lib/attachment-gc.js");
+  startAttachmentGc(server);
+  server.log.info("[AttachmentGC] scheduler started");
 } catch (err) {
   server.log.error(err);
   process.exit(1);

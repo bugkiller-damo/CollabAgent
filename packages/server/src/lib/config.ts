@@ -77,6 +77,10 @@ export const config = {
   JWT_SECRET: env("JWT_SECRET", INSECURE_DEV_DEFAULTS.JWT_SECRET),
   REFRESH_SECRET: env("REFRESH_SECRET", INSECURE_DEV_DEFAULTS.REFRESH_SECRET),
   MAX_UPLOAD_SIZE: Number(process.env.MAX_UPLOAD_SIZE) || 10 * 1024 * 1024,
+  // F1 附件孤儿 GC（lib/attachment-gc.ts）：周期 / 孤儿宽限期 / 单轮批量上限
+  ATTACHMENT_GC_INTERVAL_MS: Number(process.env.ATTACHMENT_GC_INTERVAL_MS) || 60 * 60 * 1000,
+  ATTACHMENT_GC_GRACE_HOURS: Number(process.env.ATTACHMENT_GC_GRACE_HOURS) || 24,
+  ATTACHMENT_GC_BATCH: Number(process.env.ATTACHMENT_GC_BATCH) || 100,
   ALLOWED_MIME_TYPES: (
     process.env.ALLOWED_MIME_TYPES ||
     "image/jpeg,image/png,image/gif,image/webp,application/pdf,text/plain,application/zip,application/json"

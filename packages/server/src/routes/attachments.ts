@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { canAccessChannel } from "../lib/access.js";
-import { config } from "../lib/config.js";
-import { getStorage, isAllowedMimeType, newStorageKey } from "../lib/storage.js";
+import { getStorage } from "../lib/storage.js";
+import { handleAttachmentUpload } from "../lib/upload.js";
 
 interface AttachmentRow {
   id: string;
@@ -10,8 +10,6 @@ interface AttachmentRow {
   filename: string;
   uploader_id: string;
 }
-
-const maxUploadMb = Math.floor(config.MAX_UPLOAD_SIZE / 1024 / 1024);
 
 /**
  * 附件读取的统一出口：鉴权（上传者或所挂消息频道成员）→ ?meta 返回元数据行 → 否则出文件字节。
@@ -57,43 +55,9 @@ async function serveAttachment(
 }
 
 export async function attachmentRoutes(app: FastifyInstance) {
+  // F2/F3：上传全流程收编到 lib/upload.ts（人类/Agent 同一校验链，漂移不可能再发生）
   app.post("/upload", { preHandler: [app.authenticate] }, async (req, reply) => {
-    const data = await req.file();
-    if (!data) return reply.status(400).send({ error: "file required" });
-    let buf: Buffer;
-    try {
-      buf = await data.toBuffer();
-    } catch {
-      // 超过 multipart fileSize 限制
-      return reply.status(413).send({ error: `file too large (max ${maxUploadMb}MB)` });
-    }
-    if (data.file?.truncated) {
-      return reply.status(413).send({ error: `file too large (max ${maxUploadMb}MB)` });
-    }
-    if (!isAllowedMimeType(data.mimetype)) {
-      return reply.status(415).send({ error: `file type ${data.mimetype} not allowed` });
-    }
-    // 显式 per-file 大小校验（防御纵深：multipart 限制变更/绕过时仍兜底）
-    if (buf.length > config.MAX_UPLOAD_SIZE) {
-      return reply.status(413).send({ error: `file too large (max ${maxUploadMb}MB)` });
-    }
-    const storage = getStorage();
-    const filename = data.filename || "file";
-    const storageKey = newStorageKey(filename);
-    await storage.save(storageKey, buf);
-    const url = storage.publicUrl(storageKey);
-    const result = await app.pg.query(
-      "INSERT INTO attachments (uploader_id, uploader_type, filename, mime_type, size_bytes, storage_key, storage_url) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, filename, mime_type, size_bytes, storage_url",
-      [req.user.sub, "human", filename, data.mimetype, buf.length, storageKey, url],
-    );
-    const row = result.rows[0];
-    return {
-      attachmentId: row.id,
-      filename: row.filename,
-      mimeType: row.mime_type,
-      sizeBytes: row.size_bytes,
-      url: row.storage_url,
-    };
+    return handleAttachmentUpload(app, req, reply, { id: req.user.sub, type: "human" });
   });
 
   // 注意：/by-key 必须注册在 /:id 之前，否则 "by-key" 会被当作 :id。

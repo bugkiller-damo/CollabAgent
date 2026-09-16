@@ -1,10 +1,9 @@
-import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { agentCanAccessChannel, getAgent, requireOwnAgent, resolveAgentChannelDbId } from "../lib/agent-helpers.js";
 import { dmOtherMembers, isDmTarget, type Party, resolveDmTarget } from "../lib/dm.js";
 import { attachmentsJson } from "../lib/query-fragments.js";
-import { getStorage, isAllowedMimeType } from "../lib/storage.js";
 import { UUID_RE } from "../lib/tenant.js";
+import { handleAttachmentUpload } from "../lib/upload.js";
 import { MAX_MESSAGE_CONTENT_LEN } from "../lib/validators.js";
 import { broadcast } from "../ws/handler.js";
 
@@ -264,39 +263,9 @@ export async function agentMessageRoutes(app: FastifyInstance) {
   });
 
   app.post("/:agentId/upload", { preHandler: [app.authenticate, requireOwnAgent] }, async (req, reply) => {
+    // F2/F3：与人类侧同一校验链（文件名净化 + per-file 大小兜底收编后天然对齐）
     const agentId = (req.params as Record<string, string>).agentId;
-    const data = await req.file();
-    if (!data) return reply.status(400).send({ error: "file required" });
-    let buf: Buffer;
-    try {
-      buf = await data.toBuffer();
-    } catch {
-      return reply.status(413).send({ error: "file too large (max 10MB)" });
-    }
-    if (data.file?.truncated) return reply.status(413).send({ error: "file too large (max 10MB)" });
-    if (!isAllowedMimeType(data.mimetype))
-      return reply.status(415).send({ error: `file type ${data.mimetype} not allowed` });
-    const storage = getStorage();
-    const storageKey = randomUUID() + "/" + (data.filename || "file");
-    await storage.save(storageKey, buf);
-    const r = await app.pg.query<{
-      id: number;
-      filename: string;
-      mime_type: string;
-      size_bytes: number;
-      storage_url: string;
-    }>(
-      "INSERT INTO attachments (uploader_id, uploader_type, filename, mime_type, size_bytes, storage_key, storage_url) VALUES ($1, 'agent', $2, $3, $4, $5, $6) RETURNING id, filename, mime_type, size_bytes, storage_url",
-      [agentId, data.filename || "file", data.mimetype, buf.length, storageKey, storage.publicUrl(storageKey)],
-    );
-    const row = r.rows[0];
-    return {
-      attachmentId: row.id,
-      filename: row.filename,
-      mimeType: row.mime_type,
-      sizeBytes: row.size_bytes,
-      url: row.storage_url,
-    };
+    return handleAttachmentUpload(app, req, reply, { id: agentId, type: "agent" });
   });
 
   app.post(

@@ -406,6 +406,26 @@ describe("agent 消息面：upload", () => {
     });
     expect(rejected.status).toBe(415);
   });
+
+  // F2：agent 上传与人类侧同一校验链——路径穿越文件名必须走 sanitizeFilename
+  // （收编前 agent 侧直接拼原始文件名，`uuid/../x` 会逃出 uuid 前缀目录，
+  //  落盘位置与 storage_key 不符 → 下载 404 的静默残件）
+  it("路径穿越文件名被净化：storage_key 无 .. 段，字节落点与 key 一致", async () => {
+    const fd = new FormData();
+    fd.append("file", new Blob(["agent traversal"], { type: "text/plain" }), "../zz-msg-traversal.txt");
+    const up = await fetch(`http://localhost:3001/internal/agent/${agentId}/upload`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: fd,
+    });
+    expect(up.status).toBe(200);
+    const body = (await up.json()) as { attachmentId: string };
+    const rows = await sql`SELECT storage_key FROM attachments WHERE id = ${body.attachmentId}`;
+    const key = String(rows[0]?.storage_key || "");
+    expect(key.length).toBeGreaterThan(0);
+    expect(key.split("/").some((seg) => seg === ".." || seg === ".")).toBe(false);
+    expect(key.includes("/../")).toBe(false);
+  });
 });
 
 describe("P1.33: agent 侧 threadId 校验 / content 上限 / 移出私有频道后禁改删", () => {

@@ -14,7 +14,9 @@ type CounterName =
   | "machineAuthBcryptScans"
   | "machineAuthBcryptHits"
   | "machineAuthBcryptRejected"
-  | "wsSlowConsumerTerminated";
+  | "wsSlowConsumerTerminated"
+  | "attachmentsGcRows"
+  | "attachmentsGcBytesFailed";
 
 const counters: Record<CounterName, number> = {
   messagesSent: 0,
@@ -33,6 +35,10 @@ const counters: Record<CounterName, number> = {
   // P1.22：WS 慢消费者背压 terminate（bufferedAmount 超阈值）——
   // 持续增长 = 有客户端长期跟不上帧速率（网络/机器问题），配合重连补拉自愈
   wsSlowConsumerTerminated: 0,
+  // F1：附件孤儿 GC 累计删行数 / 对象字节删除失败数——
+  // 失败持续增长 = storage 后端不可用或权限问题（残留字节需人工巡检）
+  attachmentsGcRows: 0,
+  attachmentsGcBytesFailed: 0,
 };
 
 const startedAt = Date.now();
