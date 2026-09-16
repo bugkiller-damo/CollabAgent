@@ -59,7 +59,8 @@ export function useMentionSuggest(
             displayName: m.display_name || m.handle,
             type: m.member_type === "agent" ? "agent" : "user",
             id: m.member_id,
-            duty: m.duty,
+            // members 端点 duty 只有 agent 行有值，人类行为 NULL——归一成 undefined
+            duty: m.duty || undefined,
           });
         }
       } catch {}
@@ -79,6 +80,25 @@ export function useMentionSuggest(
         });
       }
     } catch {}
+    // 公开频道：并入「已加入本频道」的 agent 成员。/api/agents 按调用者 org 过滤，
+    // 会漏掉被邀请入圈的他人 agent（落在主人私有空间）；服务端公开频道唤醒口径
+    // 同样认频道成员（messages.ts 公开分支），两端对齐，看见即可叫醒。
+    if (scopeChannelId.value) {
+      try {
+        const data = await apiGet<{ members: any[] }>(`/api/channels/${scopeChannelId.value}/members`);
+        for (const m of data.members || []) {
+          if (m.member_type !== "agent" || !m.handle) continue;
+          if (list.some((c) => c.type === "agent" && c.id === m.member_id)) continue; // /api/agents 已覆盖（含 duty）
+          list.push({
+            handle: m.handle,
+            displayName: m.display_name || m.handle,
+            type: "agent",
+            id: m.member_id,
+            duty: m.duty || undefined,
+          });
+        }
+      } catch {}
+    }
     // Fetch server info (has humans) —— 需带鉴权
     try {
       const data = await apiGet<any>("/api/server/info");

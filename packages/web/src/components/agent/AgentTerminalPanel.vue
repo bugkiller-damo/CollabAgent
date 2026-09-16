@@ -2,7 +2,6 @@
 import { X } from "@lucide/vue";
 import { storeToRefs } from "pinia";
 import { computed, nextTick, onMounted, ref, watch } from "vue";
-import { apiGet } from "../../api";
 import { wsSend } from "../../lib/wsManager";
 import { useChannelStore } from "../../stores";
 import { useTerminalStore } from "../../stores/terminalStore";
@@ -43,13 +42,15 @@ const obsTailSeq = computed(() => obsList.value[obsList.value.length - 1]?.seq ?
 
 const tab = ref<"live" | "log" | "events">("live");
 const channelStore = useChannelStore();
-const allAgents = ref<AgentOption[]>([]);
 const agents = computed<AgentOption[]>(() => {
   const ch = channelStore.channels.find((c) => c.name === channelStore.activeChannelName);
   const members = ch?.id ? channelStore.membersByChannelId[ch.id] : undefined;
   if (members) {
-    const names = new Set(members.filter((m) => m.member_type === "agent").map((m) => m.handle));
-    return allAgents.value.filter((a) => names.has(a.name));
+    // 频道成员口径（成员行自带 isOnline/display_name）——/api/agents 按 org 过滤，
+    // 看不到被邀请入圈的他人 agent（同 AgentStatusBar 的修法，频道同事也要能切换观察）
+    return members
+      .filter((m) => m.member_type === "agent")
+      .map((m) => ({ name: m.handle, display_name: m.display_name, isOnline: !!m.isOnline }));
   }
   return [];
 });
@@ -134,14 +135,7 @@ onMounted(() => {
   scheduleResize();
 });
 
-// 面板顶部的 agent 选择器数据
-onMounted(() => {
-  apiGet<{ agents: AgentOption[] }>("/api/agents")
-    .then((d) => {
-      allAgents.value = d.agents || [];
-    })
-    .catch(() => {});
-});
+// 选择器数据已从 /api/agents 移到频道成员行（见上方 agents computed），此面板不再有 REST 依赖
 
 // 新帧/新日志到达时滚到底部。必须 post+nextTick：默认 pre flush 会在 DOM
 // 插入新卡片之前读旧 scrollHeight，第一轮内容还能落在视口里，第二轮追问

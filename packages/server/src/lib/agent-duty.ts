@@ -4,6 +4,7 @@ import {
   agentListFields,
   composePresence,
   parseAgentDuty,
+  type WsToBrowserMessage,
 } from "@collabagent/shared";
 import { sendToDaemon, sendToUser } from "../ws/handler.js";
 import { appendEvent } from "./audit.js";
@@ -70,24 +71,69 @@ export async function broadcastAgentPresence(
   },
 ): Promise<void> {
   const event = presencePayload(input);
-  sendToUser(String(input.ownerUserId), event);
+  const recipients = new Set<string>([String(input.ownerUserId)]);
   let serverId = input.serverId;
   if (!serverId) {
     const r = await pg.query<{ server_id: string }>("SELECT server_id FROM agents WHERE id = $1", [input.agentId]);
     serverId = r.rows[0]?.server_id;
   }
-  if (!serverId) return;
   try {
-    const members = await pg.query<{ user_id: string }>("SELECT user_id FROM server_members WHERE server_id = $1", [
-      serverId,
-    ]);
-    for (const m of members.rows) {
-      const uid = String(m.user_id);
-      if (uid === String(input.ownerUserId)) continue;
-      sendToUser(uid, event);
+    if (serverId) {
+      const members = await pg.query<{ user_id: string }>("SELECT user_id FROM server_members WHERE server_id = $1", [
+        serverId,
+      ]);
+      for (const m of members.rows) recipients.add(String(m.user_id));
     }
+    // 频道同事补投：agent 被邀请进频道后，频道内其他用户通常不在 agent 所在 org（默认落在
+    // 主人私有空间），org 广播到不了他们——按 channel_members 共频道人类成员补投，
+    // AgentStatusBar（members 快照 + agent:presence 实时覆盖）才能随停班/回班/离线刷新。
+    const coMembers = await pg.query<{ member_id: string }>(
+      `SELECT DISTINCT cm2.member_id FROM channel_members cm1
+         JOIN channel_members cm2 ON cm2.channel_id = cm1.channel_id AND cm2.member_type = 'human'
+        WHERE cm1.member_id = $1 AND cm1.member_type = 'agent'`,
+      [input.agentId],
+    );
+    for (const r of coMembers.rows) recipients.add(String(r.member_id));
   } catch {
     /* 广播失败不挡写路径 */
+  }
+  for (const uid of recipients) sendToUser(uid, event);
+}
+
+/**
+ * daemon 上报的 agent:status 向「频道同事」（与 agent 共频道的人类成员）补投。
+ * 此前只投 owner 浏览器（ws/handler.ts），非主人的频道状态栏只能停在 members 快照层
+ * （空闲/停班），看不到「工作中」实时跳动。
+ *
+ * 两条边界：
+ * - owner 维度收口（a.user_id = ownerUserId）：daemon 帧里的 agentId/agentName 不可信，
+ *   不许借 status 事件把状态扇出到他人 agent 的频道；
+ * - detail 是最后一行输出片段，可能含其它频道/DM 的内容——非 owner 收件人剥掉，
+ *   状态共享、内容不共享。
+ */
+export async function sendAgentStatusToChannelPeers(
+  pg: Queryable | null | undefined,
+  ownerUserId: string,
+  msg: Extract<WsToBrowserMessage, { type: "agent:status" }>,
+): Promise<void> {
+  if (!pg) return;
+  try {
+    const rows = await pg.query<{ uid: string }>(
+      `SELECT DISTINCT cm2.member_id AS uid
+         FROM agents a
+         JOIN channel_members cm1 ON cm1.member_id = a.id AND cm1.member_type = 'agent'
+         JOIN channel_members cm2 ON cm2.channel_id = cm1.channel_id AND cm2.member_type = 'human'
+        WHERE a.user_id::text = $1 AND (a.id::text = $2 OR a.name = $3)`,
+      [String(ownerUserId), String(msg.agentId || ""), String(msg.agentName || "")],
+    );
+    const stripped: typeof msg = { ...msg, detail: "" };
+    for (const r of rows.rows) {
+      const uid = String(r.uid);
+      if (uid === String(ownerUserId)) continue; // owner 已拿全量帧
+      sendToUser(uid, stripped);
+    }
+  } catch {
+    /* 状态扇出失败不挡 daemon 链路 */
   }
 }
 

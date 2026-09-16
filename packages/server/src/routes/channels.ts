@@ -1,10 +1,12 @@
 import type { FastifyInstance } from "fastify";
 import { canAccessChannel, canManageChannel, invalidateChannel, invalidateMember } from "../lib/access.js";
+import { decorateAgentPresence } from "../lib/agent-duty.js";
 import { resolveChannel } from "../lib/channel.js";
 import { getOrCreateDmChannel, type Party, resolvePeer } from "../lib/dm.js";
 import { getStorage } from "../lib/storage.js";
 import { isServerMember, resolveTenant } from "../lib/tenant.js";
 import { thumbKeyFor } from "../lib/thumbnail.js";
+import { getLastAgentRuntime } from "../ws/handler.js";
 
 export async function channelRoutes(app: FastifyInstance) {
   app.get("/", { preHandler: [app.authenticate] }, async (req, reply) => {
@@ -140,14 +142,29 @@ export async function channelRoutes(app: FastifyInstance) {
     const result = await app.pg.query(
       `SELECT cm.member_id, cm.member_type, cm.role, cm.is_manager, cm.joined_at,
               COALESCE(u.handle, a.name) as handle,
-              COALESCE(u.display_name, a.display_name) as display_name
+              COALESCE(u.display_name, a.display_name) as display_name,
+              COALESCE(u.avatar_url, a.avatar_url) as avatar_url,
+              a.duty, a.user_id as agent_owner_id
        FROM channel_members cm
        LEFT JOIN users u ON cm.member_type = 'human' AND cm.member_id = u.id
        LEFT JOIN agents a ON cm.member_type = 'agent' AND cm.member_id = a.id
        WHERE cm.channel_id = $1`,
       [channelId],
     );
-    return { members: result.rows };
+    // agent 成员补齐产品合成态（duty × 主人计算机在线 × 最近上报的运行态，
+    // decorateAgentPresence 与 /api/agents 同口径）：agent 默认落在主人私有空间，
+    // org 过滤的 /api/agents 对频道内其他用户不可见——频道状态栏（AgentStatusBar）
+    // 改从本端点取数后，任何频道成员都能看到「空闲/停班/离线」。运行态取自 daemon
+    // 最近上报的内存缓存（getLastAgentRuntime）：刚打开页面立刻看到「工作中」，
+    // 不必等下一次状态变化事件。实时推送侧由 broadcastAgentPresence 的频道同事补投配套。
+    const members = result.rows.map((m: any) => {
+      if (m.member_type !== "agent") return m;
+      const { agent_owner_id, ...rest } = m;
+      const runtime = getLastAgentRuntime(String(agent_owner_id), m.handle) ?? undefined;
+      const { duty, presence, isOnline } = decorateAgentPresence({ user_id: agent_owner_id, duty: m.duty }, runtime);
+      return { ...rest, duty, presence, isOnline };
+    });
+    return { members };
   });
 
   app.post("/:channelId/join", { preHandler: [app.authenticate] }, async (req, reply) => {

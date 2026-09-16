@@ -242,17 +242,22 @@ export async function messageRoutes(app: FastifyInstance) {
       if (!dm && content && content.includes("@")) {
         if (channelType === "public") {
           // 候选集：频道所在 server 的 agent + 发送者自己名下的 agent（与 /invite 回退一致）
+          // + 已是本频道成员的 agent：agent 默认落在主人私有空间，前两个条件对频道内其他
+          // 用户都不成立——只看组织归属的话，被邀请入圈的他人 agent 对别人既不可见也唤不醒，
+          // 「邀请入圈」形同虚设。成员口径与私有频道分支一致（那边本来就只认 channel_members）。
           const candidates = await tx.query<{ name: string }>(
-            "SELECT name FROM agents WHERE duty = 'on' AND (server_id = $1 OR user_id = $2)",
-            [resolvedServerId, userId],
+            `SELECT name FROM agents WHERE duty = 'on' AND (server_id = $1 OR user_id = $2
+               OR id IN (SELECT member_id FROM channel_members WHERE channel_id = $3 AND member_type = 'agent'))`,
+            [resolvedServerId, userId, resolvedChannelId],
           );
           const mentionedNames = candidates.rows.map((r) => r.name).filter((n) => n && contentMentions(content, n));
           if (mentionedNames.length > 0) {
-            // 公开频道：自动入圈，入圈后即可被唤醒
+            // 公开频道：自动入圈，入圈后即可被唤醒（已是成员的命中行靠 ON CONFLICT 跳过）
             await tx.query(
               `INSERT INTO channel_members (channel_id, member_id, member_type, role)
                SELECT $1, a.id, 'agent', 'member' FROM agents a
-               WHERE a.duty = 'on' AND a.name = ANY($2) AND (a.server_id = $3 OR a.user_id = $4)
+               WHERE a.duty = 'on' AND a.name = ANY($2) AND (a.server_id = $3 OR a.user_id = $4
+                 OR a.id IN (SELECT member_id FROM channel_members WHERE channel_id = $1 AND member_type = 'agent'))
                ON CONFLICT DO NOTHING`,
               [resolvedChannelId, mentionedNames, resolvedServerId, userId],
             );
@@ -320,6 +325,8 @@ export async function messageRoutes(app: FastifyInstance) {
               messageId: String(msg.id),
               title: `${senderHandle} 在消息中提到了你`,
               body: (content || "").slice(0, 200),
+              // 动态页/通知铃铛点击跳转要用（旧行无此字段，web 侧按 channelId 兜底解析）
+              metadata: { channelName: cleanChannelName(target) },
             });
           }
         }

@@ -1,4 +1,4 @@
-import type { Channel } from "@collabagent/shared";
+import type { AgentDuty, AgentPresence, Channel } from "@collabagent/shared";
 import { defineStore } from "pinia";
 import { ref } from "vue";
 import { apiGet, apiPatch, apiPost } from "../api";
@@ -11,6 +11,12 @@ export interface ChannelMember {
   is_manager?: boolean;
   handle: string;
   display_name?: string;
+  // agent 成员的产品合成态（服务端按 duty × 主人计算机在线算好；人类成员缺省）——
+  // 频道状态栏靠它让非主人也看到「空闲/停班/离线」（/api/agents 的 org 口径看不到他人 agent）
+  duty?: AgentDuty;
+  presence?: AgentPresence;
+  isOnline?: boolean;
+  avatar_url?: string | null;
 }
 
 export const useChannelStore = defineStore("channels", () => {

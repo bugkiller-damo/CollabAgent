@@ -61,8 +61,20 @@ const agents = computed(() => {
   if (ch?.id) {
     const members = channelStore.membersByChannelId[ch.id];
     if (members) {
-      const names = new Set(members.filter((m) => m.member_type === "agent").map((m) => m.handle));
-      return allAgents.value.filter((a) => names.has(a.name));
+      // 频道成员口径：成员端点已带 agent 合成态（duty/presence/isOnline）。此前用
+      // /api/agents（org 过滤）∩ 频道成员名取交集——被邀请入圈的他人 agent 落在主人
+      // 私有空间，org 口径对非主人恒空，频道里明明有 agent 状态栏却显示「还没有 Agent」。
+      return members
+        .filter((m) => m.member_type === "agent")
+        .map((m) => ({
+          id: m.member_id,
+          name: m.handle,
+          display_name: m.display_name || m.handle,
+          isOnline: !!m.isOnline,
+          duty: m.duty,
+          presence: m.presence,
+          avatar_url: m.avatar_url || undefined,
+        }));
     }
     return [];
   }

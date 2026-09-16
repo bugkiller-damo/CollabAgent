@@ -286,14 +286,27 @@ describe("daemon-core 消息路由", () => {
       }
     });
 
-    it("重复 watch 不叠加定时器", async () => {
+    it("重复 watch 不叠加定时器（但给新观众强制补一帧当前屏）", async () => {
       vi.useFakeTimers();
       try {
         await call({ type: "terminal:watch", agentName: AGENT });
         await call({ type: "terminal:watch", agentName: AGENT });
         vi.advanceTimersByTime(400);
         const frames = sent.filter((m) => m.type === "terminal:frame" && m.status === "offline");
-        expect(frames).toHaveLength(1); // 只有首次 watch 的 immediate tick
+        // 两次 watch 各强制推一帧（后者是后到观众的同步帧）；400ms 节拍因内容未变被去重
+        expect(frames).toHaveLength(2);
+        // 鉴别是否叠加了第二个 interval：内容变化后一个节拍应只出一帧
+        sent.length = 0;
+        obsBus.publish({
+          agentName: AGENT,
+          seq: 9,
+          kind: "text",
+          turnId: null,
+          payload: { text: "新内容" },
+          timestamp: Date.now(),
+        } as any);
+        vi.advanceTimersByTime(400);
+        expect(sent.filter((m) => m.type === "terminal:frame")).toHaveLength(1);
       } finally {
         await call({ type: "terminal:unwatch", agentName: AGENT });
       }

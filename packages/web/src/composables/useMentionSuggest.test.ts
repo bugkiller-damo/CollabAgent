@@ -188,4 +188,33 @@ describe("useMentionSuggest scope 语义", () => {
     await vi.waitFor(() => expect(apiGetMock).toHaveBeenCalledTimes(2));
     expect(apiGetMock).toHaveBeenLastCalledWith("/api/channels/c2/members");
   });
+
+  it("公开频道带 channelId：并入频道成员里的 agent（/api/agents 按 org 过滤会漏掉被邀请入圈的他人 agent）", async () => {
+    apiGetMock.mockImplementation(async (url: string) => {
+      if (url === "/api/agents") return { agents: [{ name: "alice", display_name: "Alice", id: "a1" }] } as any;
+      if (url === "/api/server/info") return { humans: [] } as any;
+      if (url === "/api/channels/c9/members") {
+        return {
+          members: [
+            { member_id: "a1", member_type: "agent", handle: "alice", display_name: "Alice" }, // 与 /api/agents 重叠 → 去重
+            { member_id: "a2", member_type: "agent", handle: "visitorbot", display_name: "来访 Bot", duty: "on" },
+            { member_id: "h9", member_type: "human", handle: "dave", duty: null }, // 人类成员不从此处并入
+          ],
+        } as any;
+      }
+      throw new Error(`unexpected url ${url}`);
+    });
+
+    const scope = ref({ channelId: "c9", channelType: "public" });
+    const ta = ref(stubTextarea("@", 1));
+    const sug = useMentionSuggest(ta, scope);
+
+    sug.handleInput(inputEvent("@"));
+    await vi.waitFor(() => expect(sug.visible.value).toBe(true));
+    expect(apiGetMock).toHaveBeenCalledWith("/api/channels/c9/members");
+    const handles = sug.filtered.value.map((c) => c.handle);
+    expect(handles).toContain("visitorbot"); // org 外但已入圈 → 可见
+    expect(handles.filter((h) => h === "alice")).toHaveLength(1); // 重叠去重
+    expect(handles).not.toContain("dave"); // 公开分支人类仍只来自 server/info
+  });
 });

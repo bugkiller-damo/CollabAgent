@@ -35,47 +35,101 @@ export interface DaemonMeta {
 }
 export const daemonMeta = new Map<string, DaemonMeta>();
 
-// 终端观察（G3）：userId -> agentName -> 观众 socket 集合。
+// 终端观察（G3）：ownerUserId -> agentName -> 观众 socket 集合。
+// 观众可以是「频道同事」（非 owner，见 resolveTerminalWatchTarget 的鉴权口径）——
+// socket 一律挂在被观察 agent 的 owner 键下，daemon 帧按 owner userId 发布天然到达。
 // 引用计数：第一个观众出现才通知 daemon 开始推帧，最后一个断开才停止——
 // 无人观看时这条链路零开销。
 const terminalWatchers = new Map<string, Map<string, Set<WebSocket>>>();
+// 反向索引：观众 socket -> 它挂着的 (owner, agentName) 集合——非 owner 观众的 socket
+// 不在「自己的 userId」键下，断连/unwatch 时靠它 O(1) 找回，不用全表扫描。
+const socketWatches = new Map<WebSocket, Array<{ owner: string; agentName: string }>>();
 
-function addTerminalWatcher(userId: string, agentName: string, ws: WebSocket): void {
-  let byAgent = terminalWatchers.get(userId);
+function addTerminalWatcher(owner: string, agentName: string, ws: WebSocket): void {
+  let byAgent = terminalWatchers.get(owner);
   if (!byAgent) {
     byAgent = new Map();
-    terminalWatchers.set(userId, byAgent);
+    terminalWatchers.set(owner, byAgent);
   }
   let set = byAgent.get(agentName);
   if (!set) {
     set = new Set();
     byAgent.set(agentName, set);
   }
-  const wasEmpty = set.size === 0;
   set.add(ws);
-  if (wasEmpty) sendToDaemon(userId, { type: "terminal:watch", agentName });
+  socketWatches.set(ws, [...(socketWatches.get(ws) ?? []), { owner, agentName }]);
+  // 每个观众上线都转发一次 watch：daemon 对重复 watch 只补发回放（obs-history/history），
+  // 不重启推帧节拍（daemon handlers/terminal.ts）——后到的观众也能看到打开面板前的内容。
+  sendToDaemon(owner, { type: "terminal:watch", agentName });
 }
 
-function removeTerminalWatcher(userId: string, agentName: string, ws: WebSocket): void {
-  const set = terminalWatchers.get(userId)?.get(agentName);
+function removeWatcherFrom(owner: string, agentName: string, ws: WebSocket): void {
+  const set = terminalWatchers.get(owner)?.get(agentName);
   if (!set) return;
   set.delete(ws);
   if (set.size === 0) {
-    terminalWatchers.get(userId)?.delete(agentName);
-    sendToDaemon(userId, { type: "terminal:unwatch", agentName });
+    terminalWatchers.get(owner)?.delete(agentName);
+    sendToDaemon(owner, { type: "terminal:unwatch", agentName });
   }
 }
 
-/** socket 断开时，把它从该用户所有观看集合里清掉 */
-function removeTerminalWatcherSocket(userId: string, ws: WebSocket): void {
-  const byAgent = terminalWatchers.get(userId);
-  if (!byAgent) return;
-  for (const [agentName, set] of [...byAgent.entries()]) {
-    set.delete(ws);
-    if (set.size === 0) {
-      byAgent.delete(agentName);
-      sendToDaemon(userId, { type: "terminal:unwatch", agentName });
-    }
+function removeTerminalWatcher(owner: string, agentName: string, ws: WebSocket): void {
+  removeWatcherFrom(owner, agentName, ws);
+  const list = socketWatches.get(ws);
+  if (!list) return;
+  const next = list.filter((w) => !(w.owner === owner && w.agentName === agentName));
+  if (next.length > 0) socketWatches.set(ws, next);
+  else socketWatches.delete(ws);
+}
+
+/** socket 断开时，把它从所有观看集合里清掉（含挂在他人 owner 键下的频道同事观众） */
+function removeTerminalWatcherSocket(ws: WebSocket): void {
+  const list = socketWatches.get(ws);
+  if (!list) return;
+  socketWatches.delete(ws);
+  for (const { owner, agentName } of list) removeWatcherFrom(owner, agentName, ws);
+}
+
+/**
+ * daemon 最近一次上报的 agent:status 内存缓存（owner -> agentName -> 运行态）：
+ * members 快照（routes/channels.ts）用它作 presence 的运行时提示——刚打开页面的人
+ * 立刻看到「工作中」，不必等 daemon 3s 上报器的下一次变化事件。
+ * 不进库、重启即丢，由下一次上报重建；daemon 断连不清理——presence 合成有
+ * computerOnline 否决（离线压过陈旧 working），多实例下只覆盖本实例所连 daemon。
+ */
+const lastAgentStatus = new Map<string, Map<string, string>>();
+
+/** members 快照等读路径用：daemon 最近上报的运行态（无记录 → null） */
+export function getLastAgentRuntime(ownerUserId: string, agentName: string): string | null {
+  return lastAgentStatus.get(String(ownerUserId))?.get(agentName) ?? null;
+}
+
+/**
+ * 终端观察目标解析 + 鉴权：返回被观察 agent 的 owner userId。
+ * 口径与状态可见性一致——owner 本人，或与 agent 共频道的人类成员（频道同事）；
+ * 无权/不存在/解析失败 → null（fail-closed，观察通道不放大权限）。
+ * 同名冲突时自己的 agent 优先（ORDER BY 自有置顶）。
+ */
+async function resolveTerminalWatchTarget(watcherUserId: string, agentName: string): Promise<string | null> {
+  if (!wsPg) return null;
+  try {
+    const r = await wsPg.query<{ user_id: string }>(
+      `SELECT a.user_id FROM agents a
+        WHERE a.name = $1 AND (
+          a.user_id::text = $2
+          OR EXISTS (
+            SELECT 1 FROM channel_members cm1
+            JOIN channel_members cm2 ON cm2.channel_id = cm1.channel_id
+            WHERE cm1.member_id = a.id AND cm1.member_type = 'agent'
+              AND cm2.member_id::text = $2 AND cm2.member_type = 'human')
+        )
+        ORDER BY (a.user_id::text = $2) DESC
+        LIMIT 1`,
+      [agentName, watcherUserId],
+    );
+    return r.rows[0] ? String(r.rows[0].user_id) : null;
+  } catch {
+    return null;
   }
 }
 
@@ -225,6 +279,21 @@ function registerConnection(connection: WebSocket, userId: string, isDaemon: boo
           case "agent:status":
             // 转发给该用户的浏览器（Agent 状态栏实时显示，G7 last_pty_line）
             sendToUser(userId, msg);
+            // 落内存缓存：members 快照的 presence 运行时提示（getLastAgentRuntime）
+            {
+              let byAgent = lastAgentStatus.get(userId);
+              if (!byAgent) {
+                byAgent = new Map();
+                lastAgentStatus.set(userId, byAgent);
+              }
+              byAgent.set(msg.agentName, msg.status);
+            }
+            // 频道同事补投：频道内其他成员的状态栏也实时反映「工作中/空闲」（此前只投
+            // owner，非主人只能停在 members 快照层）。detail 是最后一行输出片段，可能
+            // 含其它频道/DM 内容——非 owner 收件人在 sendAgentStatusToChannelPeers 内剥掉。
+            void import("../lib/agent-duty.js").then(({ sendAgentStatusToChannelPeers }) =>
+              sendAgentStatusToChannelPeers(wsPg, userId, msg),
+            );
             break;
           case "agent:delivery-queued":
             // 门控投递反馈：daemon 把忙碌期消息排队了 → 浏览器 toast"已缓冲，空闲后投递"
@@ -287,13 +356,14 @@ function registerConnection(connection: WebSocket, userId: string, isDaemon: boo
             break;
           }
           case "terminal:obs-history":
-            // B1 观察帧 replay buffer（打开事件流面板时补历史）——同 terminal:history 的低频路径
-            sendToUser(userId, msg);
-            break;
           case "terminal:history": {
-            // daemon 回传的历史日志 → 发给该用户所有浏览器连接（请求方面板消费，
-            // 负载小且频次低，不值得再维护请求级路由）
-            sendToUser(userId, msg);
+            // daemon 回传的历史日志 / 观察帧 replay buffer → 发给该 agent 的观众集合
+            // （观众含频道同事，socket 统一挂在 owner 键下；低频小负载，整集合投放）。
+            // 无观众时退回 owner 全端兜底（面板已关但响应在途的旧行为）。
+            const agentName = (msg as Record<string, unknown>).agentName as string | undefined;
+            const set = agentName ? terminalWatchers.get(userId)?.get(agentName) : undefined;
+            if (set && set.size > 0) deliver(set, JSON.stringify(msg));
+            else sendToUser(userId, msg);
             break;
           }
           case "workspace:result":
@@ -333,15 +403,36 @@ function registerConnection(connection: WebSocket, userId: string, isDaemon: boo
         if (msg.type === "pong") return;
         // 终端观察（G3）：浏览器请求观看/停止观看某个 agent 的终端
         if (msg.type === "terminal:watch" && typeof msg.agentName === "string") {
-          addTerminalWatcher(userId, msg.agentName, connection);
+          // 终端观察（G3）：鉴权解析到被观察 agent 的 owner，观众 socket 挂 owner 键下、
+          // watch 转发给 owner 的 daemon——此前挂自己键下发给自己的 daemon，频道同事
+          // 永远看不到他人 agent 的终端
+          void resolveTerminalWatchTarget(userId, msg.agentName).then((owner) => {
+            if (owner) addTerminalWatcher(owner, msg.agentName, connection);
+          });
         } else if (msg.type === "terminal:unwatch" && typeof msg.agentName === "string") {
-          removeTerminalWatcher(userId, msg.agentName, connection);
+          // 观众 socket 可能挂在他人 owner 键下——按反向索引找，不假定是自己名下
+          for (const w of socketWatches.get(connection) ?? []) {
+            if (w.agentName === msg.agentName) removeTerminalWatcher(w.owner, w.agentName, connection);
+          }
         } else if (msg.type === "terminal:history" && typeof msg.agentName === "string") {
-          // 历史日志请求：一次性转发给 daemon（响应经下方 daemon 分支 sendToUser 回来）
-          sendToDaemon(userId, { type: "terminal:history", agentName: msg.agentName });
+          // 历史日志请求：鉴权后转发给 owner 的 daemon（响应发给该 agent 的观众集合，
+          // 见 daemon 分支 terminal:history 的观众定向）
+          void resolveTerminalWatchTarget(userId, msg.agentName).then((owner) => {
+            if (owner) sendToDaemon(owner, { type: "terminal:history", agentName: msg.agentName });
+          });
         } else if (msg.type === "terminal:resize" && typeof msg.agentName === "string") {
-          // 面板尺寸协商：浏览器把期望的 cols/rows 转发给 daemon（实时 resize PTY）
-          sendToDaemon(userId, { type: "terminal:resize", agentName: msg.agentName, cols: msg.cols, rows: msg.rows });
+          // 面板尺寸协商：浏览器把期望的 cols/rows 转发给 daemon（实时 resize PTY）。
+          // resize 是主动控制（改对方 PTY 尺寸 + 记偏好尺寸），仅限 owner——观察只读
+          void resolveTerminalWatchTarget(userId, msg.agentName).then((owner) => {
+            if (owner === userId) {
+              sendToDaemon(owner, {
+                type: "terminal:resize",
+                agentName: msg.agentName,
+                cols: msg.cols,
+                rows: msg.rows,
+              });
+            }
+          });
         }
       } catch {
         /* ignore */
@@ -350,7 +441,7 @@ function registerConnection(connection: WebSocket, userId: string, isDaemon: boo
 
     connection.on("close", () => {
       browserClients.get(userId)?.delete(connection);
-      removeTerminalWatcherSocket(userId, connection);
+      removeTerminalWatcherSocket(connection);
       refreshUserSubscription(userId);
     });
 

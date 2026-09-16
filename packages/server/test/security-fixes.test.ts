@@ -284,4 +284,206 @@ describe("security fixes 2026-07-17", () => {
     expect(msg.message.mentionAgents).toContain("716测试机");
     ws.close();
   });
+
+  it("公开频道 @他人邀请入圈的 agent：频道成员可唤醒（成员口径，不再只看 org 归属）", async () => {
+    // alice 的 agent 落在 alice 个人私有空间——对 bob 而言 server_id/user_id 两条旧口径都不成立
+    const ag = await api("/api/agents", {
+      method: "POST",
+      cookie: alice.cookie,
+      body: { name: "teambot", runtime: "claude", model: "sonnet" },
+    });
+    expect(ag.status).toBe(200);
+
+    await api("/api/channels", {
+      method: "POST",
+      cookie: alice.cookie,
+      body: { name: "sec-fix-pub4", visibility: "public" },
+    });
+    const ch = await api("/api/channels/resolve?target=" + encodeURIComponent("#sec-fix-pub4"), {
+      cookie: alice.cookie,
+    });
+    const invite = await api(`/api/channels/${ch.data.id}/invite`, {
+      method: "POST",
+      cookie: alice.cookie,
+      body: { handle: "teambot" },
+    });
+    expect(invite.status).toBe(200);
+    const join = await api(`/api/channels/${ch.data.id}/join`, { method: "POST", cookie: bob.cookie, body: {} });
+    expect(join.status).toBe(200);
+
+    // bob（非 agent 主人）@teambot：只有「已是频道成员」这条能命中
+    const { WebSocket } = await import("ws");
+    const ws = new WebSocket(WS_BASE, { headers: { Cookie: bob.cookie } });
+    await new Promise((res) => ws.once("message", res));
+    const deliver = new Promise<any>((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error("deliver timeout")), 8000);
+      ws.on("message", (raw) => {
+        const msg = JSON.parse(raw.toString());
+        if (msg.type === "agent:deliver" && msg.message?.content?.includes("@teambot")) {
+          clearTimeout(t);
+          resolve(msg);
+        }
+      });
+    });
+
+    const send = await api("/api/messages/send", {
+      method: "POST",
+      cookie: bob.cookie,
+      body: { target: "#sec-fix-pub4", content: "@teambot 帮忙看下" },
+    });
+    expect(send.status).toBe(200);
+
+    const msg = await deliver;
+    expect(msg.message.mentionAgents).toContain("teambot");
+
+    // 成员端点对非主人（bob）返回 agent 合成态——频道状态栏（AgentStatusBar）的数据源
+    const members = await api(`/api/channels/${ch.data.id}/members`, { cookie: bob.cookie });
+    const tm = (members.data.members as any[]).find((m) => m.member_type === "agent" && m.handle === "teambot");
+    expect(tm, "bob 应在成员列表看到 teambot").toBeTruthy();
+    expect(tm.duty).toBe("on");
+    expect(["idle", "starting", "working", "off_duty", "computer_offline"]).toContain(tm.presence);
+    expect(typeof tm.isOnline).toBe("boolean");
+
+    // presence 广播到频道同事：alice 停班 → bob 的浏览器实时收到 agent:presence
+    // （teambot 落在 alice 私有空间，org 广播口径永远到不了 bob——靠频道共成员补投）
+    const presenceP = new Promise<any>((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error("presence timeout")), 8000);
+      ws.on("message", (raw) => {
+        const m2 = JSON.parse(raw.toString());
+        if (m2.type === "agent:presence" && m2.agentName === "teambot" && m2.duty === "off") {
+          clearTimeout(t);
+          resolve(m2);
+        }
+      });
+    });
+    const off = await api(`/api/agents/${ag.data.agent.id}/duty`, {
+      method: "POST",
+      cookie: alice.cookie,
+      body: { duty: "off" },
+    });
+    expect(off.status).toBe(200);
+    const ev = await presenceP;
+    expect(ev.presence).toBe("off_duty");
+
+    // agent:status 实时态补投频道同事：模拟 alice 的 daemon 上报 teambot「工作中」——
+    // bob 收到状态帧且 detail 被剥离（最后一行输出可能含其它频道/DM 内容，非 owner 不共享）
+    const mint = await api("/api/profile/machine-token", { method: "POST", cookie: alice.cookie, body: {} });
+    expect(mint.status).toBe(200);
+    const daemonWs = new WebSocket(WS_BASE, { headers: { Authorization: `Bearer ${mint.data.token}` } });
+    await new Promise((res, rej) => {
+      daemonWs.once("open", res);
+      daemonWs.once("error", rej);
+    });
+    const statusP = new Promise<any>((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error("status timeout")), 8000);
+      ws.on("message", (raw) => {
+        const m3 = JSON.parse(raw.toString());
+        if (m3.type === "agent:status" && m3.agentName === "teambot" && m3.status === "working") {
+          clearTimeout(t);
+          resolve(m3);
+        }
+      });
+    });
+    daemonWs.send(
+      JSON.stringify({
+        type: "agent:status",
+        agentId: ag.data.agent.id,
+        agentName: "teambot",
+        status: "working",
+        detail: "SECRET_LAST_LINE",
+      }),
+    );
+    const st = await statusP;
+    expect(st.detail).toBe("");
+
+    // 运行态进 members 快照：daemon 上报过 working 后，bob 重拉成员端点应立即看到
+    // presence=working——不必等下一次状态变化事件（消除「打开页面先显示空闲 ~10s」）。
+    // 前置：上面停过班，先切回 on（duty 优先于运行时，off 会压成 off_duty）
+    await api(`/api/agents/${ag.data.agent.id}/duty`, { method: "POST", cookie: alice.cookie, body: { duty: "on" } });
+    const members2 = await api(`/api/channels/${ch.data.id}/members`, { cookie: bob.cookie });
+    const tm2 = (members2.data.members as any[]).find((m) => m.member_type === "agent" && m.handle === "teambot");
+    expect(tm2.presence).toBe("working");
+
+    // 终端观察（G3）频道同事化：bob（频道成员、非 owner）watch teambot——
+    // server 鉴权后应把 watch 转发给 alice 的 daemon，daemon 推帧 bob 能收到
+    const daemonGotWatch = new Promise<any>((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error("daemon watch timeout")), 8000);
+      daemonWs.on("message", (raw) => {
+        const m4 = JSON.parse(raw.toString());
+        if (m4.type === "terminal:watch" && m4.agentName === "teambot") {
+          clearTimeout(t);
+          resolve(m4);
+        }
+      });
+    });
+    ws.send(JSON.stringify({ type: "terminal:watch", agentName: "teambot" }));
+    await daemonGotWatch;
+
+    const bobGotFrame = new Promise<any>((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error("frame timeout")), 8000);
+      ws.on("message", (raw) => {
+        const m5 = JSON.parse(raw.toString());
+        if (m5.type === "terminal:frame" && m5.agentName === "teambot") {
+          clearTimeout(t);
+          resolve(m5);
+        }
+      });
+    });
+    daemonWs.send(
+      JSON.stringify({
+        type: "terminal:frame",
+        agentName: "teambot",
+        screen: "SCREEN_CONTENT",
+        status: "working",
+        time: new Date().toISOString(), // wsFromDaemonSchema 必填，缺了整帧丢弃
+      }),
+    );
+    const frameMsg = await bobGotFrame;
+    expect(frameMsg.screen).toBe("SCREEN_CONTENT");
+
+    // 历史请求同理：bob 请求 → owner daemon 收到 → 响应回到观众集合（bob）
+    const daemonGotHistory = new Promise<any>((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error("daemon history timeout")), 8000);
+      daemonWs.on("message", (raw) => {
+        const m6 = JSON.parse(raw.toString());
+        if (m6.type === "terminal:history" && m6.agentName === "teambot") {
+          clearTimeout(t);
+          resolve(m6);
+        }
+      });
+    });
+    ws.send(JSON.stringify({ type: "terminal:history", agentName: "teambot" }));
+    await daemonGotHistory;
+    const bobGotHistory = new Promise<any>((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error("history timeout")), 8000);
+      ws.on("message", (raw) => {
+        const m7 = JSON.parse(raw.toString());
+        if (m7.type === "terminal:history" && m7.agentName === "teambot") {
+          clearTimeout(t);
+          resolve(m7);
+        }
+      });
+    });
+    daemonWs.send(JSON.stringify({ type: "terminal:history", agentName: "teambot", text: "LOG_TAIL" }));
+    expect((await bobGotHistory).text).toBe("LOG_TAIL");
+
+    // 负向：eve 与 teambot 无任何共频道——watch 不应转发给 daemon（fail-closed）
+    const eve = await registerUser();
+    const eveWs = new WebSocket(WS_BASE, { headers: { Cookie: eve.cookie } });
+    await new Promise((res) => eveWs.once("message", res));
+    let leaked = false;
+    const leakListener = (raw: any) => {
+      const m8 = JSON.parse(raw.toString());
+      if (m8.type === "terminal:watch") leaked = true;
+    };
+    daemonWs.on("message", leakListener);
+    eveWs.send(JSON.stringify({ type: "terminal:watch", agentName: "teambot" }));
+    await new Promise((r) => setTimeout(r, 1500));
+    daemonWs.off("message", leakListener);
+    expect(leaked).toBe(false);
+    eveWs.close();
+
+    daemonWs.close();
+    ws.close();
+  });
 });
