@@ -94,8 +94,12 @@ export async function messageRoutes(app: FastifyInstance) {
   app.get("/thread/:messageId", { preHandler: [app.authenticate] }, async (req, reply) => {
     const { messageId } = req.params as Record<string, string>;
     const tenant = await resolveTenant(app, req);
+    // F4：parent/replies 都带 attachments 聚合（与频道 /history 共用 query-fragments 片段），
+    // 否则线程里发的附件消息在 ThreadView 渲染不出（只见到空 content）。
     const parent = await app.pg.query(
-      'SELECT m.id, m.channel_id, m.content, m.sender_id as "senderId", m.sender_type as "senderType", COALESCE(u.display_name, u.handle, ag.display_name, ag.name, \'User\') as "senderName", COALESCE(u.handle, ag.name) as "senderHandle", m.created_at as "time" FROM messages m LEFT JOIN users u ON m.sender_id = u.id LEFT JOIN agents ag ON m.sender_id = ag.id WHERE m.id = $1',
+      'SELECT m.id, m.channel_id, m.content, m.sender_id as "senderId", m.sender_type as "senderType", COALESCE(u.display_name, u.handle, ag.display_name, ag.name, \'User\') as "senderName", COALESCE(u.handle, ag.name) as "senderHandle", m.created_at as "time", ' +
+        attachmentsJson() +
+        " FROM messages m LEFT JOIN users u ON m.sender_id = u.id LEFT JOIN agents ag ON m.sender_id = ag.id WHERE m.id = $1",
       [messageId],
     );
     if (parent.rows.length === 0) return reply.status(404).send({ error: "message not found" });
@@ -103,7 +107,9 @@ export async function messageRoutes(app: FastifyInstance) {
       return reply.status(403).send({ error: "no access to this channel" });
     }
     const replies = await app.pg.query(
-      'SELECT m.id, m.channel_id, m.sender_id as "senderId", m.sender_type as "senderType", COALESCE(u.display_name, u.handle, ag.display_name, ag.name, \'User\') as "senderName", COALESCE(u.handle, ag.name) as "senderHandle", m.content, m.seq, m.created_at as "time" FROM messages m LEFT JOIN users u ON m.sender_id = u.id LEFT JOIN agents ag ON m.sender_id = ag.id WHERE m.thread_id = $1 ORDER BY m.seq ASC',
+      'SELECT m.id, m.channel_id, m.sender_id as "senderId", m.sender_type as "senderType", COALESCE(u.display_name, u.handle, ag.display_name, ag.name, \'User\') as "senderName", COALESCE(u.handle, ag.name) as "senderHandle", m.content, m.seq, m.created_at as "time", ' +
+        attachmentsJson() +
+        " FROM messages m LEFT JOIN users u ON m.sender_id = u.id LEFT JOIN agents ag ON m.sender_id = ag.id WHERE m.thread_id = $1 ORDER BY m.seq ASC",
       [messageId],
     );
     return { parent: parent.rows[0], replies: replies.rows };
@@ -274,7 +280,8 @@ export async function messageRoutes(app: FastifyInstance) {
           [msg.id, ...ids],
         );
         const att = await tx.query<{ id: string; filename: string; mimeType: string; sizeBytes: number; url: string }>(
-          'SELECT id, filename, mime_type as "mimeType", size_bytes as "sizeBytes", storage_url as url FROM attachments WHERE id = ANY($1)',
+          // F7：url 发 /api/attachments/<id>（ACL 端点），不发 storage_url capability URL
+          `SELECT id, filename, mime_type as "mimeType", size_bytes as "sizeBytes", ('/api/attachments/' || id) as url FROM attachments WHERE id = ANY($1)`,
           [ids],
         );
         attachments = att.rows;

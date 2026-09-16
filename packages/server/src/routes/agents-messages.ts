@@ -76,7 +76,8 @@ export async function agentMessageRoutes(app: FastifyInstance) {
           [msg.id, aid],
         );
       const att = await app.pg.query(
-        'SELECT id, filename, mime_type as "mimeType", size_bytes as "sizeBytes", storage_url as url FROM attachments WHERE id = ANY($1)',
+        // F7：url 发 /api/attachments/<id>（ACL 端点），不发 storage_url capability URL
+        `SELECT id, filename, mime_type as "mimeType", size_bytes as "sizeBytes", ('/api/attachments/' || id) as url FROM attachments WHERE id = ANY($1)`,
         [attIds],
       );
       attachments = att.rows;

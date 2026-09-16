@@ -95,6 +95,8 @@ export const config = {
   S3_ACCESS_KEY: env("S3_ACCESS_KEY", ""),
   S3_SECRET_KEY: env("S3_SECRET_KEY", ""),
   S3_FORCE_PATH_STYLE: env("S3_FORCE_PATH_STYLE", ""),
+  // 可选：对象 key 前缀（多系统共享桶的目录隔离，如 "slock/"；构造时归一化为带尾斜杠）
+  S3_KEY_PREFIX: env("S3_KEY_PREFIX", ""),
   // 可选：公共桶/CDN 直链基地址（https://cdn.example.com）；不配置则经 /api/attachments/by-key 代理
   S3_PUBLIC_BASE_URL: env("S3_PUBLIC_BASE_URL", ""),
   // O14：web 前端 dist 目录（生产静态托管）。空 = 按源码布局自动定位 ../web/dist；

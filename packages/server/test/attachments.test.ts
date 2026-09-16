@@ -4,11 +4,12 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { api, BASE, cleanupTestData, closeSql, registerUser, sql, type TestUser, uniqHandle } from "./helpers.js";
 
 // O4 存储路由加固的黑盒回归测试：
-// 1. 上传返回 attachmentId + /files/ url，带 cookie 可直接下载同字节
+// 1. 上传返回 attachmentId + /api/attachments/<id> url（F7 收敛后为 ACL 端点），带 cookie 可直接下载同字节
 // 2. 路径穿越文件名被净化（storage_key 无 .. 段）
 // 3. 超过 MAX_UPLOAD_SIZE 的文件 413
 // 4. 访问控制：非上传者 403；/by-key 与 /:id 走同一鉴权代理
 // 5. 删除频道连带清理不再被引用的附件行与对象字节
+// 6. F7：旧 /files/ capability 链接 410；?inline=1 仅对安全图片 MIME 放行 inline 直显
 
 let alice: TestUser;
 let bob: TestUser;
@@ -58,14 +59,41 @@ afterAll(async () => {
 });
 
 describe("attachments: O4 存储路由加固", () => {
-  it("上传小文件返回 attachmentId 与 /files/ url，带 cookie 下载字节一致", async () => {
+  it("上传小文件返回 attachmentId 与 /api/attachments/<id> url（F7），带 cookie 下载字节一致", async () => {
     const up = await uploadFile(alice, "hello.txt", "hello attachment");
     expect(up.status).toBe(200);
     expect(up.data.attachmentId).toBeTruthy();
-    expect(up.data.url).toMatch(/^\/files\//);
+    expect(up.data.url).toBe("/api/attachments/" + up.data.attachmentId);
     const dl = await downloadBytes(alice, up.data.url);
     expect(dl.status).toBe(200);
     expect(dl.text).toBe("hello attachment");
+  });
+
+  it("F7：旧 /files/ capability 链接 410（观察期），不再出字节", async () => {
+    const up = await uploadFile(alice, "legacy.txt", "legacy bytes");
+    expect(up.status).toBe(200);
+    const key = await storageKeyOf(up.data.attachmentId);
+    expect(key.length).toBeGreaterThan(0);
+    // 即使持有效 cookie + 知道完整 storage_key，/files/ 也不再出字节
+    const res = await fetch(`${BASE}/files/${key}`, { headers: { cookie: alice.cookie } });
+    expect(res.status).toBe(410);
+  });
+
+  it("F7：?inline=1 仅对安全图片 MIME 放行 inline 直显，其余仍 attachment 下载", async () => {
+    const img = await uploadFile(alice, "pic.png", Buffer.from([0x89, 0x50, 0x4e, 0x47]), "image/png");
+    expect(img.status).toBe(200);
+    const imgInline = await fetch(`${BASE}${img.data.url}?inline=1`, { headers: { cookie: alice.cookie } });
+    expect(imgInline.status).toBe(200);
+    expect(imgInline.headers.get("content-disposition")).toMatch(/^inline;/);
+    // 裸 url（不带 inline）仍是强制下载
+    const imgDl = await fetch(`${BASE}${img.data.url}`, { headers: { cookie: alice.cookie } });
+    expect(imgDl.headers.get("content-disposition")).toMatch(/^attachment;/);
+
+    // PDF 即使带 inline=1 也强制下载（不在 INLINE_SAFE_MIME；防非图片内容在站内嵌渲染）
+    const pdf = await uploadFile(alice, "doc.pdf", "%PDF-1.4 fake", "application/pdf");
+    expect(pdf.status).toBe(200);
+    const pdfInline = await fetch(`${BASE}${pdf.data.url}?inline=1`, { headers: { cookie: alice.cookie } });
+    expect(pdfInline.headers.get("content-disposition")).toMatch(/^attachment;/);
   });
 
   it("路径穿越文件名被净化：storage_key 无 .. 段", async () => {

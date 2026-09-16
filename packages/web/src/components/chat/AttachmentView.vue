@@ -17,6 +17,15 @@ function formatSize(bytes: number): string {
 function isImage(mime: string): boolean {
   return mime?.startsWith("image/");
 }
+
+/**
+ * F7：附件 url 已是 /api/attachments/<id>（ACL 端点，默认 Content-Disposition: attachment
+ * 强制下载）——<img>/lightbox 直显需要 ?inline=1（server 侧仅对安全图片 MIME 放行 inline）。
+ * 下载链接保持裸 url（强制下载 + 带文件名正是想要的行为）。
+ */
+function inlineUrl(url: string): string {
+  return url + (url.includes("?") ? "&" : "?") + "inline=1";
+}
 </script>
 
 <template>
@@ -24,7 +33,7 @@ function isImage(mime: string): boolean {
     <template v-for="a in props.attachments" :key="a.id">
       <img
         v-if="isImage(a.mimeType)"
-        :src="a.url"
+        :src="inlineUrl(a.url)"
         :alt="a.filename"
         loading="lazy"
         @click="lightbox = a"
@@ -51,7 +60,7 @@ function isImage(mime: string): boolean {
       class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
       @click="lightbox = null"
     >
-      <img :src="lightbox.url" :alt="lightbox.filename" class="max-h-full max-w-full rounded shadow-lg" />
+      <img :src="inlineUrl(lightbox.url)" :alt="lightbox.filename" class="max-h-full max-w-full rounded shadow-lg" />
       <button
         class="absolute top-4 right-4 text-white/80 hover:text-white"
         aria-label="关闭预览"

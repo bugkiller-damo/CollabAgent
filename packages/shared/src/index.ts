@@ -57,9 +57,14 @@ export interface Reaction {
 
 export interface AttachmentRef {
   id: UUID;
-  name: string;
+  /** 线上 wire 字段名（server attachmentsJson / send 载荷、web chat/types 同口径）。F8 由 name 更名对齐 */
+  filename: string;
   mimeType: string;
   sizeBytes: number;
+  /** 下载地址：/api/attachments/<id>（ACL 端点）。F7 起 server 恒下发，F8 收口为必填 */
+  url: string;
+  /** 缩略图 URL（批次二 F11 占位；未生成时不下发） */
+  thumbnailUrl?: string;
 }
 
 // ---- 频道 ----

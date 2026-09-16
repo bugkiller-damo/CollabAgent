@@ -1,9 +1,30 @@
-import type { WsToDaemonMessage } from "@collabagent/shared";
+import type { AttachmentRef, WsToDaemonMessage } from "@collabagent/shared";
 import { pickLocalTriageAgent } from "../agent-runtime-dispatch.js";
 import { errMessage } from "../errors.js";
 import type { HandlerContext } from "./types.js";
 
 type DeliverMsg = Extract<WsToDaemonMessage, { type: "agent:deliver" }>;
+
+function formatBytes(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return "0 B";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/**
+ * F6：把 deliver 消息携带的附件折成 prompt 摘要（每附件一行：文件名/MIME/大小/URL）。
+ * agent 需要字节或更多细节时走 read_history（/history 同样下发 attachments）。
+ */
+export function formatAttachmentSummary(attachments: AttachmentRef[] | undefined): string {
+  if (!attachments?.length) return "";
+  return attachments
+    .map(
+      (a, i) =>
+        `[附件 ${i + 1}] ${a.filename}（${a.mimeType}，${formatBytes(a.sizeBytes)}）${a.url ? `：${a.url}` : ""}`,
+    )
+    .join("\n");
+}
 
 function parseDeliverChannel(m: DeliverMsg["message"]): {
   channelName: string;
@@ -22,8 +43,11 @@ function parseDeliverChannel(m: DeliverMsg["message"]): {
 export async function handleAgentDeliver(ctx: HandlerContext, msg: DeliverMsg): Promise<void> {
   const m = msg.message;
   const content = m.content;
-  if (!content) return;
-  if (content.startsWith("🤖 ")) return;
+  // F6：附件-only 消息 content 为空但不能丢——摘要注入后再判空（早期 return 会把附件消息整吞）
+  const attachmentNote = formatAttachmentSummary(m.attachments);
+  const contentForAgent = attachmentNote ? (content ? `${content}\n${attachmentNote}` : attachmentNote) : content;
+  if (!contentForAgent) return;
+  if (contentForAgent.startsWith("🤖 ")) return;
 
   // 经理/worker 任务派发通知（agents-dispatch.ts 插入的消息）：sender_type
   // 本来就是 'agent'，会被下面的防自环判断挡掉——用一个显式的 forceDeliverTo
@@ -33,14 +57,14 @@ export async function handleAgentDeliver(ctx: HandlerContext, msg: DeliverMsg): 
   if (forceTarget) {
     if (ctx.runtime.hasAgent(forceTarget)) {
       const { channelName, threadId, replyTarget, senderName } = parseDeliverChannel(m);
-      console.log(`[Daemon] Dispatch message for @${forceTarget} in ${replyTarget}: ${content.slice(0, 50)}`);
+      console.log(`[Daemon] Dispatch message for @${forceTarget} in ${replyTarget}: ${contentForAgent.slice(0, 50)}`);
       try {
         await ctx.runtime.runAgent(
           forceTarget,
           channelName,
           replyTarget,
           senderName,
-          content,
+          contentForAgent,
           threadId || undefined,
           m.id || undefined,
         );
@@ -61,7 +85,7 @@ export async function handleAgentDeliver(ctx: HandlerContext, msg: DeliverMsg): 
       if (!ctx.runtime.hasAgent(name)) continue;
       console.log(`[Daemon] DM -> @${name} (reply ${replyTarget})`);
       try {
-        await ctx.runtime.runAgentDm(name, replyTarget, senderHandle, content);
+        await ctx.runtime.runAgentDm(name, replyTarget, senderHandle, contentForAgent);
       } catch (err) {
         console.error("[Daemon] DM dispatch failed:", errMessage(err));
       }
@@ -72,6 +96,7 @@ export async function handleAgentDeliver(ctx: HandlerContext, msg: DeliverMsg): 
   // server 下发的「有权回应的 agent」列表（messages.ts /send 按频道权限预过滤）：
   // 有字段（含空数组）→ 只 spawn 列表内 agent，私有频道非成员 agent 不会起 PTY，
   // 避免「起了进程、思考半天、回复被 403」的资源浪费；无字段（旧 server）退回本地文本解析。
+  // 注：mention 检测只吃原始 content——附件摘要里的文件名可能撞 agent 名造成误唤醒。
   const deliverList = m.mentionAgents;
   const target = Array.isArray(deliverList)
     ? deliverList.find((n) => ctx.runtime.hasAgent(n))
@@ -79,7 +104,7 @@ export async function handleAgentDeliver(ctx: HandlerContext, msg: DeliverMsg): 
   const { channelName, threadId, replyTarget, senderName } = parseDeliverChannel(m);
 
   if (target) {
-    console.log(`[Daemon] Message from @${senderName} in ${replyTarget}: ${content.slice(0, 50)}`);
+    console.log(`[Daemon] Message from @${senderName} in ${replyTarget}: ${contentForAgent.slice(0, 50)}`);
     if (m.senderId === ctx.agentId) return;
     try {
       console.log(`[Daemon] Routing to agent @${target} -> ${replyTarget}`);
@@ -88,7 +113,7 @@ export async function handleAgentDeliver(ctx: HandlerContext, msg: DeliverMsg): 
         channelName,
         replyTarget,
         senderName,
-        content,
+        contentForAgent,
         threadId || undefined,
         m.id || undefined,
       );
@@ -102,14 +127,14 @@ export async function handleAgentDeliver(ctx: HandlerContext, msg: DeliverMsg): 
   // 位于 senderType==='agent' / DM / 🤖 拦截之后，agent 消息天然不触发。
   const triageTarget = pickLocalTriageAgent(m.triageAgents, (n) => ctx.runtime.hasAgent(n));
   if (triageTarget) {
-    console.log(`[Daemon] Triage for @${triageTarget} in ${replyTarget}: ${content.slice(0, 50)}`);
+    console.log(`[Daemon] Triage for @${triageTarget} in ${replyTarget}: ${contentForAgent.slice(0, 50)}`);
     try {
       await ctx.runtime.runAgentTriage(
         triageTarget,
         channelName,
         replyTarget,
         senderName,
-        content,
+        contentForAgent,
         threadId || undefined,
         m.id || undefined,
       );

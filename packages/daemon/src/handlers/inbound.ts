@@ -9,6 +9,7 @@
 
 import type {
   AgentDuty,
+  AttachmentRef,
   WsAgentStartAgent,
   WsAgentStartConfig,
   WsDeliverMessage,
@@ -56,6 +57,34 @@ const readAgentStartConfig = (v: unknown): WsAgentStartConfig | undefined => {
   };
 };
 
+/**
+ * F6/F8：deliver 消息携带的附件数组。线上载荷字段是 `filename`（server 侧
+ * query-fragments.ts / agents-messages.ts 同口径），`name` 仅为旧载荷兼容兜底。
+ * 缺 id/filename/mimeType 的畸形项丢弃；url 缺省填 ""（F7 起 server 恒下发，
+ * 空串只出现在旧 server/畸形载荷）。空数组归一为 undefined（「无附件」与
+ * 「字段缺失」同义，不占下游判断）。
+ */
+const readAttachments = (v: unknown): AttachmentRef[] | undefined => {
+  if (!Array.isArray(v)) return undefined;
+  const out: AttachmentRef[] = [];
+  for (const item of v) {
+    if (!isRecord(item)) continue;
+    const id = asString(item.id);
+    const filename = asString(item.filename) ?? asString(item.name);
+    const mimeType = asString(item.mimeType);
+    if (!id || !filename || !mimeType) continue;
+    out.push({
+      id,
+      filename,
+      mimeType,
+      sizeBytes: asFiniteNumber(item.sizeBytes) ?? 0,
+      url: asString(item.url) ?? "",
+      thumbnailUrl: asString(item.thumbnailUrl),
+    });
+  }
+  return out.length > 0 ? out : undefined;
+};
+
 /** `message` 优先；旧/测试载荷可能把字段摊在顶层。`mentionAgents` 缺省 ≠ 空数组。 */
 export const readDeliverMessage = (raw: Record<string, unknown>): WsDeliverMessage => {
   const src = isRecord(raw.message) ? raw.message : raw;
@@ -71,6 +100,7 @@ export const readDeliverMessage = (raw: Record<string, unknown>): WsDeliverMessa
     content: asString(src.content) ?? "",
     time: asString(src.time) ?? "",
     threadId: asString(src.threadId) ?? asString(src.thread_id) ?? null,
+    attachments: readAttachments(src.attachments),
     mentionAgents: asStringList(src.mentionAgents),
     dm: src.dm === true,
     dmAgentRecipients: asStringList(src.dmAgentRecipients),

@@ -119,6 +119,9 @@ docker compose ps                 # server 显示 healthy 即成功
 - web 生产形态由 server 静态托管（`packages/web` 构建产物，`WEB_DIST_DIR` 指定）；
 - 附件默认落本地卷，可切 MinIO/S3：`docker compose --profile s3 up -d minio` 并设置
   `STORAGE_BACKEND=s3` 等（见 `packages/server/.env.example` 注释）。
+- 已对接外部共享桶 MinIO（2026-09-16）：多系统共用一个 bucket 时用 `S3_KEY_PREFIX=slock/`
+  做目录隔离（DB 存逻辑 key，前缀只在存储层内部拼接，路由/前端零感知）；私有桶不配
+  `S3_PUBLIC_BASE_URL`，字节一律经 `/api/attachments/:id` ACL 代理出。
 
 ## 测试与工具链
 

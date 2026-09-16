@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { api, cleanupTestData, closeSql, registerUser, uniqHandle } from "./helpers.js";
+import { api, BASE, cleanupTestData, closeSql, registerUser, uniqHandle } from "./helpers.js";
 
 afterAll(async () => {
   await cleanupTestData();
@@ -275,6 +275,47 @@ describe("messages: 发送 / 列取 / 编辑 / 搜索 / 反应 / 删除", () => 
     expect(t.status).toBe(200);
     expect(t.data.parent).toBeTruthy();
     expect(t.data.replies.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("线程回复带附件：thread 端点 parent/replies 均返回 attachments（F4）", async () => {
+    // multipart 上传（api() 只走 JSON，这里直 fetch，与 attachments.test.ts 同模式）；
+    // 附件行由 cleanupTestData 按 uploader 维度回收（helpers.ts F1 补刀）
+    const fd = new FormData();
+    fd.append("file", new Blob(["thread attachment"], { type: "text/plain" }), "thread-att.txt");
+    const upRes = await fetch(`${BASE}/api/attachments/upload`, {
+      method: "POST",
+      headers: { cookie: ck, "x-csrf-token": cs },
+      body: fd,
+    });
+    expect(upRes.status).toBe(200);
+    const up = (await upRes.json()) as any;
+    const attId = up.attachmentId as string;
+    expect(attId).toBeTruthy();
+
+    // parent 不带附件、reply 带附件（threadId + attachmentIds 同事务，server 本就支持）
+    const s = await api("/api/messages/send", {
+      method: "POST",
+      cookie: ck,
+      body: { target: "#general", content: "thread-att-parent" },
+    });
+    expect(s.status).toBe(200);
+    const r = await api("/api/messages/send", {
+      method: "POST",
+      cookie: ck,
+      body: { target: "#general", content: "reply with att", threadId: s.data.messageId, attachmentIds: [attId] },
+    });
+    expect(r.status).toBe(200);
+
+    const t = await api(`/api/messages/thread/${s.data.messageId}`, { cookie: ck });
+    expect(t.status).toBe(200);
+    // parent 无附件 → 空数组（字段必须存在，前端据 v-if 渲染）
+    expect(t.data.parent.attachments).toEqual([]);
+    const reply = t.data.replies.find((x: any) => x.content === "reply with att");
+    expect(reply).toBeTruthy();
+    expect(reply.attachments.length).toBe(1);
+    expect(reply.attachments[0].id).toBe(attId);
+    expect(reply.attachments[0].filename).toBe("thread-att.txt");
+    expect(reply.attachments[0].url).toBeTruthy();
   });
 
   it("不存在的线程 404", async () => {

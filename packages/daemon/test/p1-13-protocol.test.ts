@@ -102,6 +102,37 @@ describe("parseWsToDaemonMessage", () => {
     expect(m.content).toBe("inner");
     expect(m.channelId).toBe("#g");
   });
+
+  it("F6/F8：透传 attachments（filename 直通 + url 收口必填），畸形项丢弃", () => {
+    const m = readDeliverMessage({
+      type: "agent:deliver",
+      message: {
+        content: "see file",
+        attachments: [
+          {
+            id: "a1",
+            filename: "report.pdf",
+            mimeType: "application/pdf",
+            sizeBytes: 2048,
+            url: "/api/attachments/a1",
+          },
+          { id: "a2", name: "legacy.txt", mimeType: "text/plain", sizeBytes: 5 }, // 旧载荷 name 兜底；url 缺省 → ""
+          { filename: "no-id.png" }, // 缺 id → 丢弃
+          "garbage", // 非对象 → 丢弃
+        ],
+      },
+    });
+    expect(m.attachments).toEqual([
+      { id: "a1", filename: "report.pdf", mimeType: "application/pdf", sizeBytes: 2048, url: "/api/attachments/a1" },
+      { id: "a2", filename: "legacy.txt", mimeType: "text/plain", sizeBytes: 5, url: "" },
+    ]);
+  });
+
+  it("F6：attachments 缺失 / 空数组 / 全畸形 → undefined", () => {
+    expect(readDeliverMessage({ message: { content: "x" } }).attachments).toBeUndefined();
+    expect(readDeliverMessage({ message: { content: "x", attachments: [] } }).attachments).toBeUndefined();
+    expect(readDeliverMessage({ message: { content: "x", attachments: [{ nope: 1 }] } }).attachments).toBeUndefined();
+  });
 });
 
 describe("errMessage", () => {

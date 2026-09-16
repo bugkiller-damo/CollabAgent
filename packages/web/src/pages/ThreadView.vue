@@ -3,8 +3,10 @@ import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { apiClient } from "../api";
 import AgentProgressBar from "../components/agent/AgentProgressBar.vue";
+import AttachmentView from "../components/chat/AttachmentView.vue";
 import MarkdownContent from "../components/chat/MarkdownContent.vue";
 import MessageComposer from "../components/chat/MessageComposer.vue";
+import type { Attachment } from "../components/chat/types";
 import EmptyState from "../components/EmptyState.vue";
 import PageHeader from "../components/layout/PageHeader.vue";
 import MessageSkeleton from "../components/skeleton/MessageSkeleton.vue";
@@ -23,6 +25,8 @@ interface ThreadMsg {
   content: string;
   seq: number;
   time: string;
+  // F4：线程消息附件（server /thread 端点与 WS agent:deliver 均已下发）
+  attachments?: Attachment[];
 }
 
 const route = useRoute();
@@ -108,18 +112,21 @@ watch(liveReplies, (live) => {
       content: m.content,
       seq: m.seq,
       time: m.time,
+      attachments: m.attachments,
     } as ThreadMsg);
   }
   if (merged.length > 0) replies.value = [...prev, ...merged];
 });
 
-async function handleSend(content: string) {
-  if (!content.trim() || !channelName.value || !threadId.value) return;
+// F4：透传 attachmentIds——server /send 已支持 threadId+附件同事务，此处此前只缺接线；
+// 空文本+有附件允许发送（composer 的 canSend 口径与频道/DM 一致）
+async function handleSend(content: string, attachmentIds: string[]) {
+  if ((!content.trim() && attachmentIds.length === 0) || !channelName.value || !threadId.value) return;
   sendError.value = "";
   try {
     await apiClient("/api/messages/send", {
       method: "POST",
-      body: { target: `#${channelName.value}:${threadId.value}`, content, threadId: threadId.value },
+      body: { target: `#${channelName.value}:${threadId.value}`, content, threadId: threadId.value, attachmentIds },
     });
     await loadThread();
   } catch (err: any) {
@@ -190,6 +197,7 @@ function openSender(msg: { senderHandle?: string }) {
           </span>
         </div>
         <MarkdownContent :content="parent.content" />
+        <AttachmentView v-if="parent.attachments && parent.attachments.length > 0" :attachments="parent.attachments" />
       </div>
 
       <div v-if="replies.length > 0" class="flex items-center gap-2">
@@ -221,6 +229,7 @@ function openSender(msg: { senderHandle?: string }) {
             </span>
           </div>
           <MarkdownContent :content="msg.content" />
+          <AttachmentView v-if="msg.attachments && msg.attachments.length > 0" :attachments="msg.attachments" />
         </div>
       </div>
 

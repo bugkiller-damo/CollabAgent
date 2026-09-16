@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Hourglass, TriangleAlert } from "@lucide/vue";
+import { Hourglass, Paperclip, TriangleAlert } from "@lucide/vue";
 import type { PendingItem } from "./types";
 
 defineProps<{
@@ -17,12 +17,20 @@ const emit = defineEmits<{
     <div class="w-8 h-8 rounded bg-blue-600 shrink-0 flex items-center justify-center text-xs text-white">我</div>
     <div class="min-w-0 flex-1">
       <p
+        v-if="item.content"
         :class="[
           'text-sm whitespace-pre-wrap',
           item.status === 'failed' ? 'text-gray-500' : 'text-gray-700 dark:text-gray-300',
         ]"
       >
         {{ item.content }}
+      </p>
+      <!-- F5：附件随消息进离线队列——pending 只存已上传的 id（文件名不落盘），占位行给计数 -->
+      <p
+        v-if="item.attachmentIds && item.attachmentIds.length > 0"
+        class="flex items-center gap-1 text-sm text-gray-500 dark:text-gray-400"
+      >
+        <Paperclip class="h-3.5 w-3.5" aria-hidden="true" /> {{ item.attachmentIds.length }} 个附件
       </p>
       <div class="text-xs mt-0.5">
         <span v-if="item.status === 'sending'" class="text-muted">发送中…</span>

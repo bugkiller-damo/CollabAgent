@@ -77,6 +77,8 @@ export async function handleAttachmentUpload(
     filename: row.filename,
     mimeType: row.mime_type,
     sizeBytes: row.size_bytes,
-    url: row.storage_url,
+    // F7：对外一律发 ACL 端点 URL；storage_url 列仍写库（local 为 /files/...），
+    // 但只作内部句柄（GC/删除定位字节用），不再下发给客户端。
+    url: "/api/attachments/" + row.id,
   };
 }

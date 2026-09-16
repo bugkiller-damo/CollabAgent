@@ -28,6 +28,12 @@ export interface S3StorageOptions {
   forcePathStyle: boolean;
   /** 可选：公共桶/CDN 直链基地址；缺省时 publicUrl 返回 /api/attachments/by-key?key=<encoded> */
   publicBaseUrl: string;
+  /**
+   * 可选：对象 key 前缀（多系统共享桶时的目录隔离，如 "slock/"）。
+   * 只在存储层拼接——DB 的 storage_key 与上层路由始终看到不带前缀的逻辑 key；
+   * publicUrl 的 CDN 直链含前缀（真实对象路径），by-key 代理路径不含（key 参数是逻辑 key）。
+   */
+  keyPrefix?: string;
 }
 
 /** 判断错误是否为「对象不存在」（SDK NoSuchKey 名 / 404 状态码，兼容 fake 抛出的简装错误）。 */
@@ -43,6 +49,7 @@ export class S3Storage implements Storage {
   private readonly bucket: string;
   private readonly client: S3ClientLike;
   private readonly publicBaseUrl: string;
+  private readonly keyPrefix: string;
 
   constructor(opts: S3StorageOptions, client?: S3ClientLike) {
     const missing: string[] = [];
@@ -55,6 +62,9 @@ export class S3Storage implements Storage {
     }
     this.bucket = opts.bucket;
     this.publicBaseUrl = opts.publicBaseUrl || "";
+    // 前缀归一：去首尾斜杠后补单尾斜杠；空值保持空前缀（不污染 key）
+    const rawPrefix = (opts.keyPrefix || "").replace(/^\/+|\/+$/g, "");
+    this.keyPrefix = rawPrefix ? rawPrefix + "/" : "";
     this.client =
       client ??
       new S3Client({
@@ -66,13 +76,13 @@ export class S3Storage implements Storage {
   }
 
   async save(key: string, data: Buffer): Promise<void> {
-    await this.client.send(new PutObjectCommand({ Bucket: this.bucket, Key: key, Body: data }));
+    await this.client.send(new PutObjectCommand({ Bucket: this.bucket, Key: this.keyPrefix + key, Body: data }));
   }
 
   async read(key: string): Promise<Buffer> {
     let res: any;
     try {
-      res = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key }));
+      res = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: this.keyPrefix + key }));
     } catch (err) {
       if (isNotFound(err)) throw new Error(`object not found: ${key}`);
       throw err;
@@ -90,7 +100,7 @@ export class S3Storage implements Storage {
 
   async remove(key: string): Promise<void> {
     try {
-      await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }));
+      await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: this.keyPrefix + key }));
     } catch (err) {
       // 幂等删除：对象不存在视为成功，其余错误向上抛
       if (!isNotFound(err)) throw err;
@@ -100,8 +110,11 @@ export class S3Storage implements Storage {
   publicUrl(key: string): string {
     const encodedPath = key.split("/").map(encodeURIComponent).join("/");
     if (this.publicBaseUrl) {
-      return `${this.publicBaseUrl.replace(/\/+$/, "")}/${encodedPath}`;
+      // CDN 直链指向真实对象路径（含前缀）
+      const encodedPrefix = this.keyPrefix.split("/").filter(Boolean).map(encodeURIComponent).join("/");
+      return `${this.publicBaseUrl.replace(/\/+$/, "")}/${encodedPrefix ? encodedPrefix + "/" : ""}${encodedPath}`;
     }
+    // by-key 代理：key 参数是逻辑 key（无前缀），read 时存储层内部补前缀
     return `/api/attachments/by-key?key=${encodeURIComponent(key)}`;
   }
 }

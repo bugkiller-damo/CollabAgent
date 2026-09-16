@@ -11,7 +11,9 @@ export function reactionsJson(): string {
 }
 
 export function attachmentsJson(): string {
-  return `(SELECT COALESCE(json_agg(json_build_object('id', a.id, 'filename', a.filename, 'mimeType', a.mime_type, 'sizeBytes', a.size_bytes, 'url', a.storage_url)), '[]')
+  // F7：url 一律发 /api/attachments/<id>（有频道 ACL），不再发 storage_url
+  // （local 后端是 /files/ capability URL，仅登录即可下载——越权面已收敛）。
+  return `(SELECT COALESCE(json_agg(json_build_object('id', a.id, 'filename', a.filename, 'mimeType', a.mime_type, 'sizeBytes', a.size_bytes, 'url', '/api/attachments/' || a.id)), '[]')
             FROM message_attachments ma JOIN attachments a ON a.id = ma.attachment_id
              WHERE ma.message_id = m.id) as attachments`;
 }

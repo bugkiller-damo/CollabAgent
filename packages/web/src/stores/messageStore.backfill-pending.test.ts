@@ -47,7 +47,10 @@ function msg(target: string, seq: number, id = `m-${target}-${seq}`): Message {
   } as Message;
 }
 
-function pendingStorage(): Record<string, { nonce: string; status: string; failReason?: string }[]> {
+function pendingStorage(): Record<
+  string,
+  { nonce: string; status: string; attachmentIds?: string[]; failReason?: string }[]
+> {
   return JSON.parse(lsData.get("pending_msgs_v1") || "{}");
 }
 
@@ -425,6 +428,74 @@ describe("pending 乐观发送队列", () => {
 
     expect(apiPostMock).toHaveBeenCalledTimes(2);
     expect(store.pendingByTarget).toEqual({});
+  });
+});
+
+// F5：带附件消息与纯文本同走 pending 链路（ChannelView/DmView 调用点已收编）——
+// 两段式保持：文件先传完，队列里只存已上传的 attachmentIds。
+describe("pending 附件消息（F5）", () => {
+  it("enqueue 带 attachmentIds 并随队列持久化", () => {
+    const store = useMessageStore();
+    const item = store.enqueuePending("#a", "with att", ["att-1", "att-2"]);
+
+    expect(item.attachmentIds).toEqual(["att-1", "att-2"]);
+    expect(pendingStorage()["#a"][0]).toMatchObject({ attachmentIds: ["att-1", "att-2"], status: "queued" });
+  });
+
+  it("空附件数组归一为 undefined（纯文本不携带噪音字段）", () => {
+    const store = useMessageStore();
+    const item = store.enqueuePending("#a", "plain", []);
+
+    expect(item.attachmentIds).toBeUndefined();
+    expect(pendingStorage()["#a"][0].attachmentIds).toBeUndefined();
+  });
+
+  it("flush 把 attachmentIds 与 clientNonce 一起 POST；成功后移除并清持久化", async () => {
+    const store = useMessageStore();
+    const item = store.enqueuePending("#a", "", ["att-1"]); // 空文本+附件（附件消息合法形态）
+    apiPostMock.mockResolvedValueOnce({ state: "ok" } as any);
+
+    await store.flushPending("#a");
+
+    expect(apiPostMock.mock.calls[0][0]).toBe("/api/messages/send");
+    expect(apiPostMock.mock.calls[0][1]).toMatchObject({
+      target: "#a",
+      content: "",
+      attachmentIds: ["att-1"],
+      clientNonce: item.nonce,
+    });
+    expect(store.pendingByTarget["#a"]).toBeUndefined();
+    expect(pendingStorage()).toEqual({});
+  });
+
+  it("失败不丢附件：failed 态持久化带 attachmentIds，retry 沿用同 nonce+附件重发", async () => {
+    const store = useMessageStore();
+    const item = store.enqueuePending("#a", "x", ["att-9"]);
+    apiPostMock.mockRejectedValueOnce(new Error("network down"));
+
+    await store.flushPending("#a");
+
+    expect(store.pendingByTarget["#a"][0]).toMatchObject({ status: "failed", attachmentIds: ["att-9"] });
+    expect(pendingStorage()["#a"][0].attachmentIds).toEqual(["att-9"]);
+
+    apiPostMock.mockResolvedValueOnce({ state: "ok" } as any);
+    await store.retryPending("#a", item.tempId);
+
+    expect(apiPostMock.mock.calls[1][1]).toMatchObject({ attachmentIds: ["att-9"], clientNonce: item.nonce });
+    expect(store.pendingByTarget["#a"]).toBeUndefined();
+  });
+
+  it("持久化恢复：带附件的 queued 项刷新后 attachmentIds 仍在", () => {
+    lsData.set(
+      "pending_msgs_v1",
+      JSON.stringify({
+        "#a": [{ tempId: "t1", nonce: "n-a", content: "", status: "queued", attachmentIds: ["att-1"] }],
+      }),
+    );
+    setActivePinia(createPinia()); // 重新建 store 触发恢复
+    const store = useMessageStore();
+
+    expect(store.pendingByTarget["#a"][0]).toMatchObject({ status: "queued", attachmentIds: ["att-1"] });
   });
 });
 

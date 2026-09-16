@@ -3,7 +3,7 @@ import type { Message } from "@collabagent/shared";
 import { ClipboardList, Lock, Settings, SquareTerminal, Users } from "@lucide/vue";
 import { computed, nextTick, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { apiClient, apiGet } from "../api";
+import { apiGet } from "../api";
 import AgentProgressBar from "../components/agent/AgentProgressBar.vue";
 import ChannelMembersPanel from "../components/channel/ChannelMembersPanel.vue";
 import ChannelSettingsModal from "../components/channel/ChannelSettingsModal.vue";
@@ -17,7 +17,6 @@ import PageHeader from "../components/layout/PageHeader.vue";
 import MessageSkeleton from "../components/skeleton/MessageSkeleton.vue";
 import IconButton from "../components/ui/IconButton.vue";
 import { useAgentStore, useChannelStore, useMessageStore, useUiStore } from "../stores";
-import { toast } from "../stores/toastStore";
 
 const VIRTUAL_THRESHOLD = 100;
 const EMPTY_MSGS: Message[] = [];
@@ -177,25 +176,13 @@ function scrollToBottom() {
 
 // ---- 发送 / 离线队列 / 重试（队列逻辑已迁入 messageStore，本页只接线）----
 async function handleSend(content: string, attachmentIds: string[]) {
-  if (attachmentIds.length > 0) {
-    // 附件路径保持现状：直发，失败 toast，不进离线队列
-    try {
-      await apiClient("/api/messages/send", { method: "POST", body: { target: target.value, content, attachmentIds } });
-      messageStore.fetchHistory(target.value).catch(() => {});
-      scrollToBottom();
-    } catch (err) {
-      console.error("Send with attachments failed", err);
-      toast.error("发送失败，请重试");
-      throw err;
-    }
-    return;
-  }
-
   const trimmed = content.trim();
-  if (!trimmed) return;
+  if (!trimmed && attachmentIds.length === 0) return;
 
-  // 纯文本：入队（带 clientNonce 幂等键）→ 离线仅排队，在线立即 flush
-  messageStore.enqueuePending(target.value, trimmed);
+  // F5：带附件消息统一走离线队列（pending 结构本就支持 attachmentIds）——
+  // 两段式保持：composer 已把文件传完，这里只排队已上传的 id；
+  // 离线不再直接丢，queued 待重发、failed 可重试/丢弃（与纯文本同口径）。
+  messageStore.enqueuePending(target.value, trimmed, attachmentIds);
   scrollToBottom();
   if (typeof navigator !== "undefined" && navigator.onLine === false) return;
   messageStore.flushPending(target.value).catch(() => {});

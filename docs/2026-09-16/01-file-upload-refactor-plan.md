@@ -1,8 +1,17 @@
 # 文件上传/查看功能重构方案
 
 > 日期：2026-09-16
-> 状态：批次一推进中——**F1 ✅ / F2 ✅ / F3 ✅ 已落地**（2026-09-16：attachment-gc.ts 5 测试 +
-> upload.ts 收编，server 回归 29/29 绿）；F4~F8 待续
+> 状态：**批次一（P0）全部落地 ✅**——F1~F8 清零（2026-09-16）：attachment-gc.ts 5 测试 + upload.ts 收编；
+> F4 线程附件——ThreadView 透传 attachmentIds + /thread 端点补附件聚合；F5 附件消息收编进 messageStore
+> 离线队列；F6 daemon 透传附件——inbound 解析 + deliver 注入 prompt 摘要；F7 /files/ capability URL 下线——
+> url 全收敛 /api/attachments/<id>（ACL），静态路由改 410 + warn 观察期，?inline=1 直显安全图片；
+> F8 协议对齐——AttachmentRef 更名 filename（对齐线上 wire/web）+ url 收口必填 + thumbnailUrl 占位（F11 用）；
+> server 537/537 绿、web 143/143 绿、daemon 391/391 绿。**MinIO 已落地（2026-09-16）**：对接外部共享桶
+> skzhbg（192.168.50.104:9000），新增 S3_KEY_PREFIX=slock/ 目录隔离（逻辑 key 与真实对象路径分离，
+> 路由/前端零感知），storage-s3 +2 前缀测试；冒烟（scripts/s3-smoke.ts：save/read/remove 字节比对）与
+> HTTP 端到端（scripts/s3-e2e.ts：注册→建频道→上传→带附件发消息→ACL 下载字节一致→inline 白名单→
+> 删频道连带删对象→404）全绿，验证数据已回收。下一步：批次二（F9 流式/Range → F10 SHA256 去重 →
+> F12 预签名 → F11 缩略图）
 > 依据：对 packages/server、packages/web、packages/daemon 全量摸排（73 处工具调用，证据均带 文件:行号）
 
 ---
@@ -129,11 +138,11 @@
 
 ## 6. 验收清单
 
-- [ ] `npx tsc --noEmit -p packages/server/tsconfig.json` / `-p packages/web/tsconfig.json` / `-p packages/daemon/tsconfig.json` 全绿
-- [ ] server/web/daemon 各自 `pnpm vitest run` 全绿；批次一每个 F 项配 1 个回归测试（vitest 需 `node --env-file=.env` 跑 server 测试，残留走 `scripts/cleanup-test-data.mjs`）
+- [x] `npx tsc --noEmit -p packages/server/tsconfig.json` / `-p packages/web/tsconfig.json` / `-p packages/daemon/tsconfig.json` 全绿（web 实际走 vue-tsc）
+- [x] server/web/daemon 各自 `pnpm vitest run` 全绿；批次一每个 F 项配 1 个回归测试（vitest 需 `node --env-file=.env` 跑 server 测试，残留走 `scripts/cleanup-test-data.mjs`）
 - [ ] 手测链：频道/DM/线程三入口发图发文件 → 删消息 → GC 后 uploads 目录无残留
 - [ ] Range 验证：`curl -H "Range: bytes=0-99"` 回 206
-- [ ] `/files/` 旧链接访问返回 404/410 且日志有迁移提示
+- [x] `/files/` 旧链接访问返回 404/410 且日志有迁移提示（F7：410 + warn 观察期日志）
 - [ ] compose 以 MinIO profile 起栈，上传/下载/缩略图全链路通
 
 ## 7. 风险与备注

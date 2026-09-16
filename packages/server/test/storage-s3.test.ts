@@ -187,4 +187,32 @@ describe("S3Storage", () => {
     const storage = new S3Storage({ ...OPTS, region: "", publicBaseUrl: "", forcePathStyle: false }, makeFake().client);
     expect(storage.publicUrl("k")).toBe("/api/attachments/by-key?key=k");
   });
+
+  it("keyPrefix：save/read/remove 拼前缀，by-key 代理 URL 不含前缀（共享桶目录隔离）", async () => {
+    const { client, commands } = makeFake({ "slock/u1/f.txt": Buffer.from("x") });
+    const storage = new S3Storage({ ...OPTS, keyPrefix: "slock" }, client);
+
+    await storage.save("u1/f.txt", Buffer.from("x"));
+    await storage.read("u1/f.txt");
+    await storage.remove("u1/f.txt");
+
+    const keys = commands.map((c) => (c as PutObjectCommand | GetObjectCommand | DeleteObjectCommand).input.Key);
+    expect(keys).toEqual(["slock/u1/f.txt", "slock/u1/f.txt", "slock/u1/f.txt"]);
+    // by-key 代理路径用逻辑 key（无前缀）——DB storage_key 与路由层不感知前缀
+    expect(storage.publicUrl("u1/f.txt")).toBe("/api/attachments/by-key?key=u1%2Ff.txt");
+  });
+
+  it("keyPrefix 归一化：首尾斜杠修剪后补单尾斜杠；CDN 直链含前缀（真实对象路径）", () => {
+    const storage = new S3Storage(
+      { ...OPTS, keyPrefix: "/slock//", publicBaseUrl: "https://cdn.example.com" },
+      makeFake().client,
+    );
+    expect(storage.publicUrl("a/b.txt")).toBe("https://cdn.example.com/slock/a/b.txt");
+
+    const empty = new S3Storage(
+      { ...OPTS, keyPrefix: "", publicBaseUrl: "https://cdn.example.com" },
+      makeFake().client,
+    );
+    expect(empty.publicUrl("a/b.txt")).toBe("https://cdn.example.com/a/b.txt");
+  });
 });

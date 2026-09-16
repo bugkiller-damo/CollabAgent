@@ -12,8 +12,25 @@ interface AttachmentRow {
 }
 
 /**
+ * F7：可用 inline 方式直出的安全 MIME 白名单（<img> 内联渲染用）。
+ * 刻意排除 image/svg+xml——顶层导航打开 inline SVG 会在本域执行脚本（XSS），
+ * SVG 一律走 attachment 强制下载。本表与上传白名单（ALLOWED_MIME_TYPES）正交。
+ */
+const INLINE_SAFE_MIME = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+  "image/avif",
+  "image/bmp",
+  "image/x-icon",
+  "image/vnd.microsoft.icon",
+]);
+
+/**
  * 附件读取的统一出口：鉴权（上传者或所挂消息频道成员）→ ?meta 返回元数据行 → 否则出文件字节。
  * GET /:id 与 GET /by-key 共用，保证两条路径的访问控制完全一致。
+ * F7：?inline=1 且 MIME 在 INLINE_SAFE_MIME 时回 inline（web <img> 直显用）；默认 attachment 下载。
  */
 async function serveAttachment(
   app: FastifyInstance,
@@ -21,6 +38,7 @@ async function serveAttachment(
   userId: string,
   row: AttachmentRow,
   meta: boolean,
+  inline?: boolean,
 ): Promise<unknown> {
   // 访问控制：上传者本人，或附件所挂消息所在频道的成员。
   // 尚未挂到任何消息的附件（发送前先上传的场景）仅上传者可访问。
@@ -47,7 +65,8 @@ async function serveAttachment(
   try {
     const buf = await getStorage().read(row.storage_key);
     reply.header("Content-Type", row.mime_type || "application/octet-stream");
-    reply.header("Content-Disposition", `attachment; filename="${encodeURIComponent(row.filename)}"`);
+    const disposition = inline && INLINE_SAFE_MIME.has(row.mime_type) ? "inline" : "attachment";
+    reply.header("Content-Disposition", `${disposition}; filename="${encodeURIComponent(row.filename)}"`);
     return reply.send(buf);
   } catch {
     return reply.status(404).send({ error: "file bytes not found" });
@@ -69,7 +88,7 @@ export async function attachmentRoutes(app: FastifyInstance) {
       query.key,
     ]);
     if (result.rows.length === 0) return reply.status(404).send({ error: "not found" });
-    return serveAttachment(app, reply, req.user.sub, result.rows[0], Boolean(query.meta));
+    return serveAttachment(app, reply, req.user.sub, result.rows[0], Boolean(query.meta), Boolean(query.inline));
   });
 
   app.get("/:id", { preHandler: [app.authenticate] }, async (req, reply) => {
@@ -77,6 +96,7 @@ export async function attachmentRoutes(app: FastifyInstance) {
     const userId = req.user.sub;
     const result = await app.pg.query<AttachmentRow>("SELECT * FROM attachments WHERE id = $1", [attachmentId]);
     if (result.rows.length === 0) return reply.status(404).send({ error: "not found" });
-    return serveAttachment(app, reply, userId, result.rows[0], Boolean((req.query as Record<string, string>).meta));
+    const q = req.query as Record<string, string>;
+    return serveAttachment(app, reply, userId, result.rows[0], Boolean(q.meta), Boolean(q.inline));
   });
 }

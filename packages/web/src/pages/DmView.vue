@@ -2,7 +2,7 @@
 import type { Message } from "@collabagent/shared";
 import { computed, nextTick, ref, watch } from "vue";
 import { useRoute } from "vue-router";
-import { apiClient, apiGet } from "../api";
+import { apiGet } from "../api";
 import AgentProgressBar from "../components/agent/AgentProgressBar.vue";
 import MessageComposer, { type ComposerAttachment } from "../components/chat/MessageComposer.vue";
 import MessageRow from "../components/chat/MessageRow.vue";
@@ -105,25 +105,11 @@ function scrollToBottom() {
 
 async function handleSend(content: string, attachmentIds: string[]) {
   if (!convKey.value) return;
-  if (attachmentIds.length > 0) {
-    // 附件路径保持现状：直发，不进离线队列
-    try {
-      await apiClient("/api/messages/send", {
-        method: "POST",
-        body: { target: convKey.value, content, attachmentIds },
-      });
-      messageStore.fetchHistory(convKey.value).catch(() => {});
-      scrollToBottom();
-    } catch (err) {
-      throw err;
-    }
-    return;
-  }
-
-  // 纯文本对齐 ChannelView：入队（带 clientNonce 幂等键）→ 离线仅排队，在线立即 flush
+  // F5：与 ChannelView 同口径——带附件也走离线队列（两段式：文件已传完，只排队 id），
+  // 离线/失败不再直接丢，queued 待重发、failed 可重试/丢弃
   const trimmed = content.trim();
-  if (!trimmed) return;
-  messageStore.enqueuePending(convKey.value, trimmed);
+  if (!trimmed && attachmentIds.length === 0) return;
+  messageStore.enqueuePending(convKey.value, trimmed, attachmentIds);
   scrollToBottom();
   if (typeof navigator !== "undefined" && navigator.onLine === false) return;
   messageStore.flushPending(convKey.value).catch(() => {});
