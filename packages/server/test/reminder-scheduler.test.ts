@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { startReminderScheduler } from "../src/lib/reminder-scheduler.js";
 import { daemonClients } from "../src/ws/handler.js";
-import { closeSql, sql } from "./helpers.js";
+import { closeSql, sql, TEST_PREFIX } from "./helpers.js";
 
 // P1.28：reminder-scheduler tick 逻辑（评估零覆盖清单 ④，194 行此前仅手动 E2E）。
 // 离线直测（不起 server）：startReminderScheduler(假 app, 100ms) 真实短间隔驱动 tick；
@@ -22,7 +22,10 @@ import { closeSql, sql } from "./helpers.js";
 // 离线 owner 不认领（P1.23 门控，行保持 scheduled）/ duty off 不认领 / paused 不认领 /
 // patrol 沉默累计+自动暂停+通知+事件 / patrol 有产出清零。
 
-const TAG = "zzsched" + Date.now().toString(36);
+// TAG 统一走 TEST_PREFIX（zz_test_）：此前自起 zzsched 前缀，本机直连清理失败时
+// 残留账号不在 cleanupTestData/清理脚本口径内（2026-09-15 实锤残留一批）。
+// 句柄上限 20 字符：TEST_PREFIX(8)+"s"(1)+8 位时间戳+"_u"(2)=19 封顶
+const TAG = TEST_PREFIX + "s" + Date.now().toString(36);
 let userId = "";
 let agentId = "";
 let serverId = "";

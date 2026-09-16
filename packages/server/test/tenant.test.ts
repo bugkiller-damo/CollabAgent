@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parseHostMap, resolveHostServerId } from "../src/lib/tenant.js";
-import { api, cleanupTestData, closeSql, registerUser, sql, type TestUser } from "./helpers.js";
+import { api, cleanupTestData, closeSql, registerUser, sql, TEST_PREFIX, type TestUser } from "./helpers.js";
 
 const U1 = "11111111-1111-4111-8111-111111111111";
 const U2 = "22222222-2222-4222-8222-222222222222";
@@ -59,7 +59,10 @@ describe("tenant: 多租户边界（双 server 数据互不串号）", () => {
   let outsider: TestUser; // 非社区 B 成员
   let serverB: string;
   let generalB: string; // 社区 B 的 #general 频道 id（与默认社区同名）
-  const RUN = "zz_tenant_" + Date.now().toString(36);
+  // 句柄/server 名统一走 TEST_PREFIX（zz_test_）——此前自起 zz_tenant_ 前缀，
+  // cleanupTestData 的 zz_test_ 口径覆盖不到，本机/单库环境残留成灾（现靠脚本兜底）。
+  // 注：注册句柄上限 20 字符，"tenant" 缩写为 "t"（8+2+8 位时间戳+2 位后缀=20 恰好封顶）
+  const RUN = TEST_PREFIX + "t_" + Date.now().toString(36);
   const marker = `zztenantmarker${Date.now().toString(36)}`;
 
   beforeAll(async () => {
