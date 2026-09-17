@@ -53,7 +53,7 @@ const steps = computed<Step[]>(() => [
     cta: daemonOn.value && !claudeOn.value ? "去安装 Claude" : "去连接",
   },
   { label: "创建第一个 Agent", done: !!hasAgent.value, to: "/computers", cta: "去创建" },
-  { label: "邀请同事加入（可选）", done: false, to: "/admin/members", cta: "去邀请" },
+  { label: "邀请同事加入（可选）", done: false, to: "/settings/members", cta: "去邀请" },
 ]);
 
 const show = computed(() => {

@@ -21,7 +21,9 @@ function isActive(id: string): boolean {
   if (id === "tasks-page") return route.path.startsWith("/tasks");
   if (id === "chat") return route.path.startsWith("/channels") || route.path.startsWith("/dm");
   if (id === "people") {
-    return route.path === "/people" || route.path.startsWith("/admin") || route.path.startsWith("/computers");
+    return (
+      route.path === "/people" || route.path.startsWith("/settings/members") || route.path.startsWith("/computers")
+    );
   }
   if (id === "activity") return route.path === "/activity";
   return false;

@@ -173,7 +173,7 @@ function selectOrg(e: Event) {
 
 <template>
   <div class="mx-auto w-full max-w-7xl space-y-6 p-4 sm:p-6">
-    <PageHeader title="成员管理" back-to="/admin" :breadcrumb="[{ label: '管理后台', to: '/admin' }, { label: '成员管理' }]" />
+    <PageHeader title="成员管理" back-to="/settings" :breadcrumb="[{ label: '设置', to: '/settings' }, { label: '成员管理' }]" />
 
     <OrgMembersPanel />
 
@@ -260,7 +260,7 @@ function selectOrg(e: Event) {
       </Card>
     </div>
 
-    <!-- P1-15：移除成员前确认（对齐 ChannelManagement 同款确认流，此前 ✕ 直接删） -->
+    <!-- P1-15：移除成员前确认（对齐全站 ConfirmDialog 确认流惯例，此前 ✕ 直接删） -->
     <ConfirmDialog
       v-if="removeTarget"
       :title="`移除成员 @${removeTarget.handle}？`"

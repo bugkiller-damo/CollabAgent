@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { ClipboardList, MessageCircle, Monitor, Search, Settings, Users, Zap } from "@lucide/vue";
+import { ClipboardList, MessageCircle, Monitor, Moon, Search, Settings, Sun, Users, Zap } from "@lucide/vue";
 import { type Component, computed, markRaw } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { type SidebarPane, useChannelStore, useComputerStore, useNotificationStore, useUiStore } from "../../stores";
 import Tooltip from "../ui/Tooltip.vue";
-import UserMenu from "./UserMenu.vue";
+import UserAvatarButton from "./UserAvatarButton.vue";
 
 const uiStore = useUiStore();
 const channelStore = useChannelStore();
@@ -17,6 +17,12 @@ const chatUnread = computed(() => Object.values(channelStore.unreadCounts).reduc
 const activityUnread = computed(() => notificationStore.unreadCount);
 
 const settingsActive = computed(() => route.path.startsWith("/settings"));
+
+// 深色/浅色模式（2026-09-17 IA 收敛：原在头像弹出菜单，现挪到 rail 底部）
+const theme = computed(() => uiStore.theme);
+function toggleTheme() {
+  uiStore.setTheme(theme.value === "dark" ? "light" : "dark");
+}
 
 const items: { id: SidebarPane; label: string; icon: Component }[] = [
   { id: "search", label: "搜索", icon: markRaw(Search) },
@@ -121,6 +127,17 @@ function goSettings() {
     </div>
 
     <div class="mt-auto flex flex-col items-center gap-1 pb-1">
+      <Tooltip :label="theme === 'dark' ? '浅色模式' : '深色模式'" position="right">
+        <button
+          type="button"
+          :aria-label="theme === 'dark' ? '浅色模式' : '深色模式'"
+          class="flex h-10 w-10 items-center justify-center rounded-lg text-gray-500 transition-colors hover:bg-gray-200 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-700 dark:hover:text-white"
+          @click="toggleTheme"
+        >
+          <Sun v-if="theme === 'dark'" class="h-5 w-5" />
+          <Moon v-else class="h-5 w-5" />
+        </button>
+      </Tooltip>
       <Tooltip label="设置" position="right">
         <button
           type="button"
@@ -136,7 +153,7 @@ function goSettings() {
           <Settings class="h-5 w-5" />
         </button>
       </Tooltip>
-      <UserMenu compact />
+      <UserAvatarButton />
     </div>
   </nav>
 </template>

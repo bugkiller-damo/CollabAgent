@@ -46,7 +46,7 @@ const router = createRouter({
             { path: "computers/:id", component: () => import("../pages/ComputerView.vue") },
             { path: "connect", redirect: "/computers" },
 
-            // 设置（嵌套：SettingsLayout + 子页面）
+            // 设置（嵌套：SettingsLayout + 子页面）——2026-09-17 IA 收敛：原 /admin 三页并入
             {
               path: "settings",
               component: () => import("../pages/settings/SettingsLayout.vue"),
@@ -55,28 +55,25 @@ const router = createRouter({
                 { path: "security", component: () => import("../pages/settings/SecuritySettings.vue") },
                 { path: "integrations", component: () => import("../pages/settings/IntegrationSettings.vue") },
                 { path: "notifications", component: () => import("../pages/settings/NotificationSettings.vue") },
+                { path: "members", component: () => import("../pages/settings/WorkspaceMembers.vue") },
+                { path: "metrics", component: () => import("../pages/settings/MetricsDashboard.vue") },
               ],
             },
 
-            // 管理后台（嵌套：AdminPanel + 子页面）
+            // 旧 /admin 深链兼容重定向（书签/外部链接；站内引用已全部改指 /settings/*）
+            { path: "admin", redirect: "/settings" },
+            { path: "admin/channels", redirect: "/channels/general" },
+            { path: "admin/members", redirect: "/settings/members" },
+            { path: "admin/metrics", redirect: "/settings/metrics" },
             {
-              path: "admin",
-              component: () => import("../pages/admin/AdminPanel.vue"),
-              children: [
-                {
-                  path: "agents",
-                  redirect: (to) => {
-                    const agent = to.query.agent;
-                    if (typeof agent === "string" && agent) {
-                      return { path: "/people", query: { member: agent } };
-                    }
-                    return "/computers";
-                  },
-                },
-                { path: "channels", component: () => import("../pages/admin/ChannelManagement.vue") },
-                { path: "members", component: () => import("../pages/admin/WorkspaceMembers.vue") },
-                { path: "metrics", component: () => import("../pages/admin/MetricsDashboard.vue") },
-              ],
+              path: "admin/agents",
+              redirect: (to) => {
+                const agent = to.query.agent;
+                if (typeof agent === "string" && agent) {
+                  return { path: "/people", query: { member: agent } };
+                }
+                return "/computers";
+              },
             },
 
             // 根路径重定向 & 404

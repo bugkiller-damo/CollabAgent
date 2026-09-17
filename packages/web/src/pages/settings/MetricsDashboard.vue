@@ -276,7 +276,7 @@ onUnmounted(() => {
   </div>
 
   <div v-else class="mx-auto w-full max-w-7xl space-y-6 p-4 sm:p-6">
-    <PageHeader title="运行指标" back-to="/admin" :breadcrumb="[{ label: '管理后台', to: '/admin' }, { label: '运行指标' }]">
+    <PageHeader title="运行指标" back-to="/settings" :breadcrumb="[{ label: '设置', to: '/settings' }, { label: '运行指标' }]">
       <div class="flex items-center gap-2 text-xs text-green-600 dark:text-green-400">
         <LivePulse /> 实时 · 每 {{ POLL_MS / 1000 }} 秒刷新
       </div>

@@ -205,7 +205,7 @@ const footerLabel = computed(() => `${humans.value.length} 位成员 · ${agents
           <button
             type="button"
             class="block w-full px-3 py-1.5 text-left text-xs text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700"
-            @click="go('/admin/members')"
+            @click="go('/settings/members')"
           >
             工作区成员
           </button>

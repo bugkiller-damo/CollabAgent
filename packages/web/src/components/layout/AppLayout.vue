@@ -61,14 +61,12 @@ function useRouteTitle(pathname: string): { title: string; subtitle: string } {
   if (pathname === "/people") return { title: "成员", subtitle: "" };
   if (pathname === "/search") return { title: "搜索", subtitle: "" };
   if (pathname.startsWith("/computers")) return { title: "计算机", subtitle: "" };
-  if (pathname.startsWith("/admin/channels")) return { title: "频道管理", subtitle: "管理后台" };
-  if (pathname.startsWith("/admin/members")) return { title: "成员管理", subtitle: "管理后台" };
-  if (pathname.startsWith("/admin/metrics")) return { title: "运行指标", subtitle: "管理后台" };
-  if (pathname === "/admin") return { title: "管理后台", subtitle: "" };
   if (pathname.startsWith("/settings/profile")) return { title: "个人资料", subtitle: "设置" };
   if (pathname.startsWith("/settings/security")) return { title: "安全与账户", subtitle: "设置" };
   if (pathname.startsWith("/settings/integrations")) return { title: "集成", subtitle: "设置" };
   if (pathname.startsWith("/settings/notifications")) return { title: "通知", subtitle: "设置" };
+  if (pathname.startsWith("/settings/members")) return { title: "成员管理", subtitle: "设置" };
+  if (pathname.startsWith("/settings/metrics")) return { title: "运行指标", subtitle: "设置" };
   if (pathname === "/settings") return { title: "设置", subtitle: "" };
   return { title: "", subtitle: "" };
 }
@@ -91,7 +89,7 @@ function paneForPath(pathname: string): SidebarPane | null {
   if (pathname.startsWith("/tasks")) return "tasks";
   if (pathname === "/activity") return "activity";
   if (pathname === "/search") return "search";
-  if (pathname === "/people" || pathname.startsWith("/admin/members")) {
+  if (pathname === "/people" || pathname.startsWith("/settings/members")) {
     return "people";
   }
   if (pathname.startsWith("/computers")) return "computers";

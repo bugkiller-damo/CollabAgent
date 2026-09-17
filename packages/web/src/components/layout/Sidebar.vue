@@ -8,7 +8,7 @@ import ComputersPane from "./panes/ComputersPane.vue";
 import TasksPane from "./panes/TasksPane.vue";
 import SidebarPane from "./SidebarPane.vue";
 import SidebarRail from "./SidebarRail.vue";
-import UserMenu from "./UserMenu.vue";
+import UserAvatarButton from "./UserAvatarButton.vue";
 
 const uiStore = useUiStore();
 const router = useRouter();
@@ -43,7 +43,7 @@ function goSearch() {
         >
           <Search class="h-4 w-4" />
         </button>
-        <UserMenu compact />
+        <UserAvatarButton />
       </div>
       <div class="min-h-0 w-60 flex-1">
         <SidebarPane>
