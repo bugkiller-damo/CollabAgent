@@ -76,22 +76,67 @@ export interface UploadedAttachment {
   url: string;
 }
 
-export async function uploadAttachment(file: File): Promise<UploadedAttachment> {
-  const fd = new FormData();
-  fd.append("file", file);
-  const headers: Record<string, string> = {};
+export interface UploadProgressInfo {
+  loaded: number;
+  total: number;
+  /** 0~100 整数；lengthComputable=false 时为 null（进度未知，UI 回落「上传中…」文案） */
+  pct: number | null;
+}
 
-  const csrf = readCsrf();
-  if (csrf) headers["X-CSRF-Token"] = csrf;
-  const res = await fetch("/api/attachments/upload", {
-    method: "POST",
-    credentials: "include",
-    headers,
-    body: fd,
+export interface UploadOptions {
+  /** F15：XHR upload 进度回调（lengthComputable 时 pct 0~100） */
+  onProgress?: (p: UploadProgressInfo) => void;
+  /** F15：取消上传（XHR abort；取消后 Promise reject「已取消」） */
+  signal?: AbortSignal;
+}
+
+/**
+ * F15：附件上传改 XHR——fetch 拿不到 upload 进度事件，XHR upload.onprogress 是唯一
+ * 广泛可用的进度通道。老签名 (file) 完全兼容（第二参缺省 = 无进度无取消）。
+ * 口径与 fetch 版一致：POST /api/attachments/upload + cookie 凭据 + CSRF double-submit。
+ */
+export function uploadAttachment(file: File, opts: UploadOptions = {}): Promise<UploadedAttachment> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const csrf = readCsrf();
+    xhr.open("POST", "/api/attachments/upload");
+    xhr.withCredentials = true;
+    if (csrf) xhr.setRequestHeader("X-CSRF-Token", csrf);
+
+    let settled = false;
+    const settle = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      fn();
+    };
+
+    xhr.upload.onprogress = (e) => {
+      opts.onProgress?.({
+        loaded: e.loaded,
+        total: e.lengthComputable ? e.total : 0,
+        pct: e.lengthComputable ? Math.round((e.loaded / e.total) * 100) : null,
+      });
+    };
+    xhr.onload = () => {
+      settle(() => {
+        let data: any = null;
+        try {
+          data = JSON.parse(xhr.responseText || "null");
+        } catch {
+          /* 非 JSON 响应 → 走 statusText 回退 */
+        }
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve(data);
+        } else {
+          reject(new ApiError(xhr.status, data?.error || xhr.statusText || `HTTP ${xhr.status}`));
+        }
+      });
+    };
+    xhr.onerror = () => settle(() => reject(new ApiError(0, "网络错误，上传失败")));
+    xhr.onabort = () => settle(() => reject(new ApiError(0, "已取消")));
+    opts.signal?.addEventListener("abort", () => xhr.abort(), { once: true });
+    const fd = new FormData();
+    fd.append("file", file);
+    xhr.send(fd);
   });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new ApiError(res.status, (err as any).error || `HTTP ${res.status}`);
-  }
-  return res.json();
 }

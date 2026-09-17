@@ -11,6 +11,8 @@ export interface ComposerAttachment {
   name: string;
   status: "uploading" | "done" | "error";
   uploaded?: UploadedAttachment;
+  /** F15：上传进度 0~100；仅 uploading 态有意义（done 恒 100，error 不消费） */
+  progress?: number;
 }
 </script>
 
@@ -101,16 +103,31 @@ const setAttachments = (next: ComposerAttachment[] | ((prev: ComposerAttachment[
   }
 };
 
+// F15：tempId → 上传控制器。X 徽标点掉上传中的文件时 abort 中断 XHR（进度条不再空转）
+const uploadCancels = new Map<string, AbortController>();
+
 const addAttachment = (file: File) => {
   const tempId = "att-" + Date.now() + "-" + Math.random().toString(36).slice(2, 7);
   if (file.size > 10 * 1024 * 1024) {
     setAttachments((a) => [...a, { tempId, name: file.name, status: "error" }]);
     return;
   }
-  setAttachments((a) => [...a, { tempId, name: file.name, status: "uploading" }]);
-  uploadAttachment(file)
-    .then((uploaded) => setAttachments((a) => a.map((x) => (x.tempId === tempId ? { ...x, status: "done", uploaded } : x))))
-    .catch(() => setAttachments((a) => a.map((x) => (x.tempId === tempId ? { ...x, status: "error" } : x))));
+  const ctrl = new AbortController();
+  uploadCancels.set(tempId, ctrl);
+  setAttachments((a) => [...a, { tempId, name: file.name, status: "uploading", progress: 0 }]);
+  uploadAttachment(file, {
+    signal: ctrl.signal,
+    onProgress: (p) =>
+      setAttachments((a) => a.map((x) => (x.tempId === tempId && x.status === "uploading" ? { ...x, progress: p.pct ?? x.progress } : x))),
+  })
+    .then((uploaded) => {
+      uploadCancels.delete(tempId);
+      setAttachments((a) => a.map((x) => (x.tempId === tempId ? { ...x, status: "done", progress: 100, uploaded } : x)));
+    })
+    .catch(() => {
+      uploadCancels.delete(tempId);
+      setAttachments((a) => a.map((x) => (x.tempId === tempId ? { ...x, status: "error" } : x)));
+    });
 };
 
 // React 版 useEffect([droppedFiles, addAttachment]) 会在挂载时跑一次（初始 null → 早退）；
@@ -129,7 +146,15 @@ const handleFiles = (files: FileList | File[] | null) => {
   for (const file of Array.from(files)) addAttachment(file);
 };
 
-const removeAttachment = (tempId: string) => setAttachments((a) => a.filter((x) => x.tempId !== tempId));
+const removeAttachment = (tempId: string) => {
+  // F15：上传中移除 = 取消（abort XHR）；done/error 无控制器，直接滤掉
+  const ctrl = uploadCancels.get(tempId);
+  if (ctrl) {
+    ctrl.abort();
+    uploadCancels.delete(tempId);
+  }
+  setAttachments((a) => a.filter((x) => x.tempId !== tempId));
+};
 
 const canSend = computed(
   () =>
@@ -226,8 +251,21 @@ const onDrop = (e: DragEvent) => {
         class="flex items-center gap-1.5 rounded bg-gray-200 px-2 py-1 text-xs dark:bg-gray-700"
       >
         <span class="max-w-[140px] truncate text-gray-700 dark:text-gray-200">{{ a.name }}</span>
-        <span v-if="a.status === 'uploading'" class="text-muted">上传中…</span>
-        <span v-if="a.status === 'error'" class="text-red-500">失败</span>
+        <!-- F15：上传中显示进度条 + 百分比（pct 未知时回落「上传中…」） -->
+        <span v-if="a.status === 'uploading'" class="flex items-center gap-1.5 text-muted">
+          <span v-if="typeof a.progress === 'number'" class="flex items-center gap-1.5">
+            <span class="h-1 w-14 overflow-hidden rounded-full bg-gray-300 dark:bg-gray-600">
+              <span
+                class="block h-full rounded-full bg-blue-500 transition-[width] duration-200"
+                :style="{ width: a.progress + '%' }"
+              ></span>
+            </span>
+            <span class="tabular-nums">{{ a.progress }}%</span>
+          </span>
+          <span v-else>上传中…</span>
+        </span>
+        <!-- 过大（从未起传，无 progress）/ 上传失败（有 progress）分开标识 -->
+        <span v-if="a.status === 'error'" class="text-red-500">{{ a.progress === undefined ? "过大" : "失败" }}</span>
         <button
           type="button"
           class="text-muted hover:text-red-500"

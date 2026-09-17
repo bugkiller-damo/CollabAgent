@@ -81,9 +81,20 @@ export const config = {
   ATTACHMENT_GC_INTERVAL_MS: Number(process.env.ATTACHMENT_GC_INTERVAL_MS) || 60 * 60 * 1000,
   ATTACHMENT_GC_GRACE_HOURS: Number(process.env.ATTACHMENT_GC_GRACE_HOURS) || 24,
   ATTACHMENT_GC_BATCH: Number(process.env.ATTACHMENT_GC_BATCH) || 100,
+  // F13：白名单含 video/audio（mp4/webm/mpeg/ogg）——音视频可上传；
+  // 播放依赖 F9 的 Range 流式（serveAttachment 恒发 Accept-Ranges）。
+  // 2026-09-17 追补：Office 全家（docx/xlsx/pptx + 旧版 doc/xls/ppt）+ markdown/csv——
+  // 实测 .docx/.md 被 415 拒（严格 fail-closed 白名单，未入册即拒）。
+  // 注意显式设置 ALLOWED_MIME_TYPES 会整体覆盖默认表（含安全类型），
+  // 覆盖时须自行带上全部需要的类型。
   ALLOWED_MIME_TYPES: (
     process.env.ALLOWED_MIME_TYPES ||
-    "image/jpeg,image/png,image/gif,image/webp,application/pdf,text/plain,application/zip,application/json"
+    "image/jpeg,image/png,image/gif,image/webp,application/pdf,text/plain,application/zip,application/json," +
+      "video/mp4,video/webm,audio/mpeg,audio/ogg," +
+      "text/markdown,text/csv,application/msword,application/vnd.ms-excel,application/vnd.ms-powerpoint," +
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document," +
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet," +
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation"
   ).split(","),
   // 限流后端（Valkey / Redis 兼容协议）。VALKEY_URL 优先，REDIS_URL 为旧变量名兼容读取。
   VALKEY_URL: env("VALKEY_URL", env("REDIS_URL", "")),

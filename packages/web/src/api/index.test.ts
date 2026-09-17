@@ -4,11 +4,46 @@ import { ApiError, apiClient, apiGet, apiPost, readCsrf, uploadAttachment } from
 // api 模块用真实实现 + stub 全局 fetch/document（vitest.config 注释口径：node 环境手工 stub）
 beforeEach(() => {
   vi.stubGlobal("document", { cookie: "sid=abc; csrf_token=tok123" });
+  vi.stubGlobal("XMLHttpRequest", FakeXhr);
+  FakeXhr.instances.length = 0;
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
 });
+
+// F15：uploadAttachment 已切 XHR（进度/取消）——假 XHR 由测试驱动事件回调
+class FakeXhr {
+  static instances: FakeXhr[] = [];
+  upload = { onprogress: null as ((e: any) => void) | null };
+  onload: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  onabort: (() => void) | null = null;
+  withCredentials = false;
+  status = 200;
+  statusText = "";
+  responseText = "";
+  method = "";
+  url = "";
+  headers: Record<string, string> = {};
+  fd: FormData | null = null;
+  abortCalled = false;
+  open(method: string, url: string) {
+    this.method = method;
+    this.url = url;
+  }
+  setRequestHeader(k: string, v: string) {
+    this.headers[k] = v;
+  }
+  send(fd: FormData) {
+    this.fd = fd;
+    FakeXhr.instances.push(this);
+  }
+  abort() {
+    this.abortCalled = true;
+    this.onabort?.();
+  }
+}
 
 function okResponse(json: unknown, status = 200) {
   return new Response(JSON.stringify(json), { status });
@@ -129,31 +164,63 @@ describe("便捷封装", () => {
     expect(url).toBe("/api/x?q=%E5%85%B3%E9%94%AE%E8%AF%8D");
   });
 
-  it("uploadAttachment：POST /api/attachments/upload + CSRF 头 + FormData + 解析返回", async () => {
-    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) =>
-      okResponse({ attachmentId: "att1", url: "/files/att1" }),
-    );
-    vi.stubGlobal("fetch", fetchMock);
-
-    const file = new Blob(["x"], { type: "text/plain" }) as File;
-    const res = await uploadAttachment(file);
-
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("/api/attachments/upload");
-    expect(init.method).toBe("POST");
-    expect(init.credentials).toBe("include");
-    expect((init.headers as Record<string, string>)["X-CSRF-Token"]).toBe("tok123");
-    expect(init.body).toBeInstanceOf(FormData);
-    expect(res).toEqual({ attachmentId: "att1", url: "/files/att1" });
+  it("uploadAttachment(XHR)：POST + CSRF 头 + withCredentials + FormData + 解析返回", async () => {
+    const p = uploadAttachment(new Blob(["x"]) as File);
+    const xhr = FakeXhr.instances[0];
+    expect(xhr.method).toBe("POST");
+    expect(xhr.url).toBe("/api/attachments/upload");
+    expect(xhr.withCredentials).toBe(true);
+    expect(xhr.headers["X-CSRF-Token"]).toBe("tok123");
+    expect(xhr.fd).toBeInstanceOf(FormData);
+    xhr.responseText = JSON.stringify({ attachmentId: "att1", url: "/files/att1" });
+    xhr.onload?.();
+    await expect(p).resolves.toEqual({ attachmentId: "att1", url: "/files/att1" });
   });
 
-  it("uploadAttachment 失败：ApiError 透传 server 文案", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => okResponse({ error: "文件过大" }, 413)),
-    );
-    const err = (await uploadAttachment(new Blob(["x"]) as File).catch((e) => e)) as ApiError;
+  it("uploadAttachment 失败：ApiError 透传 server 文案（非 2xx + JSON error）", async () => {
+    const p = uploadAttachment(new Blob(["x"]) as File);
+    const xhr = FakeXhr.instances[0];
+    xhr.status = 413;
+    xhr.responseText = JSON.stringify({ error: "文件过大" });
+    xhr.onload?.();
+    const err = (await p.catch((e) => e)) as ApiError;
     expect(err).toBeInstanceOf(ApiError);
+    expect(err.status).toBe(413);
     expect(err.message).toBe("文件过大");
+  });
+
+  it("uploadAttachment 进度：onProgress 收 0~100 pct；lengthComputable=false 时 pct=null", async () => {
+    const seen: Array<{ loaded: number; total: number; pct: number | null }> = [];
+    const p = uploadAttachment(new Blob(["x"]) as File, { onProgress: (x) => seen.push(x) });
+    const xhr = FakeXhr.instances[0];
+    xhr.upload.onprogress?.({ lengthComputable: true, loaded: 60, total: 100 });
+    expect(seen[seen.length - 1]).toEqual({ loaded: 60, total: 100, pct: 60 });
+    xhr.upload.onprogress?.({ lengthComputable: true, loaded: 100, total: 100 });
+    expect(seen[seen.length - 1]).toEqual({ loaded: 100, total: 100, pct: 100 });
+    xhr.upload.onprogress?.({ lengthComputable: false, loaded: 10, total: 999 });
+    expect(seen[seen.length - 1]).toEqual({ loaded: 10, total: 0, pct: null });
+    xhr.onload?.();
+    await p;
+  });
+
+  it("uploadAttachment 取消：signal abort → xhr.abort → reject「已取消」", async () => {
+    const ctrl = new AbortController();
+    const p = uploadAttachment(new Blob(["x"]) as File, { signal: ctrl.signal });
+    const xhr = FakeXhr.instances[0];
+    ctrl.abort();
+    await expect(p).rejects.toMatchObject({ name: "ApiError", status: 0, message: "已取消" });
+    expect(xhr.abortCalled).toBe(true);
+  });
+
+  it("uploadAttachment 网络错误：onerror → ApiError(0)；settle 后重复事件不二次 settle", async () => {
+    const p = uploadAttachment(new Blob(["x"]) as File);
+    const xhr = FakeXhr.instances[0];
+    xhr.onerror?.();
+    await expect(p).rejects.toMatchObject({ status: 0, message: "网络错误，上传失败" });
+    // settle-once：之后来的 onload/onabort 不再触发（无 unhandled rejection）
+    expect(() => {
+      xhr.onload?.();
+      xhr.onabort?.();
+    }).not.toThrow();
   });
 });

@@ -24,8 +24,29 @@
 > skzhbg（192.168.50.104:9000），新增 S3_KEY_PREFIX=slock/ 目录隔离（逻辑 key 与真实对象路径分离，
 > 路由/前端零感知），storage-s3 +2 前缀测试；冒烟（scripts/s3-smoke.ts：save/read/remove 字节比对）与
 > HTTP 端到端（scripts/s3-e2e.ts：注册→建频道→上传→带附件发消息→ACL 下载字节一致→inline 白名单→
-> 删频道连带删对象→404）全绿，验证数据已回收。下一步：批次二（F9 流式/Range → F10 SHA256 去重 →
-> F12 预签名 → F11 缩略图）
+> 删频道连带删对象→404）全绿，验证数据已回收。**F13 MIME 白名单已落地（2026-09-17）**——默认
+> ALLOWED_MIME_TYPES 追加 video/mp4,video/webm,audio/mpeg,audio/ogg（音视频可上传；播放依赖
+> F9 Range 已就绪）；?inline=1 仍仅放行安全图片（<video>/<audio> 内联预览属 F14）；
+> lib.test.ts +3 用例、attachments.test.ts 黑盒 +1（上传/下载/未入册 415/inline 不放行）；
+> server 553/553 全绿（STORAGE_BACKEND=local 口径 + NODE_ENV=test server）。
+> **F14 预览矩阵已落地（2026-09-17）**——server INLINE_SAFE_MIME 扩容（+video/mp4,video/webm,
+> audio/mpeg,audio/ogg,application/pdf,text/plain,application/json；SVG/HTML 恒排除）+
+> 附件字节响应补 `X-Content-Type-Options: nosniff`（inline 面扩容后的底线纵深）；
+> web 新增 `lib/attachment-preview.ts` 纯判定模块（previewKind/textPreviewable，256KB 文本
+> 上限）+ AttachmentView 预览矩阵：`<video>`（F9 Range 拖动可用）/`<audio>` 播放条/PDF
+> lightbox iframe（浏览器内建阅读器）/text·json 代码块预览（cookie fetch 读字节，乱序回包
+> id 比对防串）；顺手修 AttachmentView 图标未导入缺陷（模板用 FileText/X 但 script 没
+> import，bee0848 同款）。web 159/159 绿（+16）、server 黑盒 attachments 11/11 绿、
+> 双包 tsc 绿。**F15 上传体验已落地（2026-09-17）**——`uploadAttachment` fetch→XHR
+> （`upload.onprogress` 进度 0~100，`lengthComputable=false` 时 pct=null 回落文案）+ AbortSignal
+> 取消（XHR abort，reject「已取消」）；MessageComposer 附件徽标改进度条（蓝条+tabular 百分比）
+> + 移除即取消（上传中点 X = abort），error 徽标区分「过大」（从未起传）/「失败」（起传后失败）；
+> 老签名 (file) 全兼容（ProfileSettings 头像零改动）。api 测试换 FakeXhr 驱动（+进度/取消/
+> 网络错误/settle-once 共 5 用例），web 162/162 绿。**分片/断点续传评估结论：暂不引入**——
+> MAX_UPLOAD_SIZE=10MB 上限下无断点场景；分片端点（init/part/complete）+ MinIO multipart
+> 与 F12 预签名直传天然组合，随 F12 设计时一并评估。下一步：F16 病毒扫描
+> 下一步：批次三 F14 预览矩阵（AttachmentView 原生 video/audio 标签 + PDF/text 预览）→
+> F15 上传进度/分片 → F16 病毒扫描
 > 依据：对 packages/server、packages/web、packages/daemon 全量摸排（73 处工具调用，证据均带 文件:行号）
 
 ---

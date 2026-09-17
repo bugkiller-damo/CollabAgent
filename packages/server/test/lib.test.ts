@@ -151,4 +151,14 @@ describe("parseCookies", () => {
 describe("isAllowedMimeType", () => {
   it("允许 jpeg", () => expect(isAllowedMimeType("image/jpeg")).toBe(true));
   it("拒绝 html", () => expect(isAllowedMimeType("text/html")).toBe(false));
+  // F13：音视频四类入默认白名单（播放依赖 F9 Range 流式）
+  it("允许 video/mp4 与 video/webm", () => {
+    expect(isAllowedMimeType("video/mp4")).toBe(true);
+    expect(isAllowedMimeType("video/webm")).toBe(true);
+  });
+  it("允许 audio/mpeg 与 audio/ogg", () => {
+    expect(isAllowedMimeType("audio/mpeg")).toBe(true);
+    expect(isAllowedMimeType("audio/ogg")).toBe(true);
+  });
+  it("拒绝未入册的视频容器", () => expect(isAllowedMimeType("video/x-matroska")).toBe(false));
 });

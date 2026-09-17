@@ -14,9 +14,15 @@ interface AttachmentRow {
 }
 
 /**
- * F7：可用 inline 方式直出的安全 MIME 白名单（<img> 内联渲染用）。
- * 刻意排除 image/svg+xml——顶层导航打开 inline SVG 会在本域执行脚本（XSS），
- * SVG 一律走 attachment 强制下载。本表与上传白名单（ALLOWED_MIME_TYPES）正交。
+ * F7/F14：可用 inline 方式直出的 MIME 白名单（预览矩阵）。
+ * 原则：只放行浏览器按「非可执行内容」渲染的类型——SVG/HTML 恒排除
+ * （顶层导航打开 inline SVG/HTML 会在本域执行脚本，XSS）。
+ * - 图片：<img> 直显（F7）
+ * - 音视频：<video>/<audio>（F9 Range 已就绪，进度条拖动可用；F14）
+ * - PDF：iframe/新标签页走浏览器内建阅读器，脚本不落页面上下文（F14）
+ * - 纯文本/JSON：浏览器按文本渲染；web 代码块预览走 fetch 读字节不经此路径，
+ *   inline 主要服务「新标签页打开」（F14）
+ * 本表与上传白名单（ALLOWED_MIME_TYPES）正交。
  */
 const INLINE_SAFE_MIME = new Set([
   "image/jpeg",
@@ -27,6 +33,13 @@ const INLINE_SAFE_MIME = new Set([
   "image/bmp",
   "image/x-icon",
   "image/vnd.microsoft.icon",
+  "video/mp4",
+  "video/webm",
+  "audio/mpeg",
+  "audio/ogg",
+  "application/pdf",
+  "text/plain",
+  "application/json",
 ]);
 
 /**
@@ -59,7 +72,8 @@ function parseRangeHeader(header: string | undefined, totalSize: number): Storag
 /**
  * 附件读取的统一出口：鉴权（上传者或所挂消息频道成员）→ ?meta 返回元数据行 → 否则出文件字节。
  * GET /:id 与 GET /by-key 共用，保证两条路径的访问控制完全一致。
- * F7：?inline=1 且 MIME 在 INLINE_SAFE_MIME 时回 inline（web <img> 直显用）；默认 attachment 下载。
+ * F7/F14：?inline=1 且 MIME 在 INLINE_SAFE_MIME 时回 inline（web <img>/<video>/<audio>/
+ * PDF iframe 直显用）；默认 attachment 下载。
  * F9：字节走流式（不再整文件读内存）；支持 Range（206/416），恒发 Accept-Ranges: bytes。
  * F11：?thumb=1 且有 thumb_key 时出缩略图（webp，恒 inline；无缩略图时回落原图字节）。
  */
@@ -103,6 +117,9 @@ async function serveAttachment(
       reply.header("Content-Type", "image/webp");
       reply.header("Content-Disposition", `inline; filename="${encodeURIComponent(row.filename)}.webp"`);
       reply.header("Content-Length", contentLength);
+      // F14：inline 面扩到音视频/PDF/文本后，禁 sniffing 是底线纵深——浏览器必须
+      // 按声明的 Content-Type 处理，防内容嗅探把数据当 HTML 执行。
+      reply.header("X-Content-Type-Options", "nosniff");
       return reply.send(stream);
     } catch {
       // 缩略图字节缺失：不 404，继续回落出原图字节（UI 不因此破图）
@@ -126,6 +143,8 @@ async function serveAttachment(
     reply.header("Content-Disposition", `${disposition}; filename="${encodeURIComponent(row.filename)}"`);
     reply.header("Accept-Ranges", "bytes");
     reply.header("Content-Length", contentLength);
+    // F14：禁 sniffing（inline 白名单扩容后的底线纵深，同缩略图分支）
+    reply.header("X-Content-Type-Options", "nosniff");
     if (range) {
       reply.header("Content-Range", `bytes ${range.start}-${range.end}/${realTotal || totalSize}`);
       reply.status(206);

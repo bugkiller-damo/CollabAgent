@@ -10,6 +10,7 @@ import { api, BASE, cleanupTestData, closeSql, registerUser, sql, type TestUser,
 // 4. 访问控制：非上传者 403；/by-key 与 /:id 走同一鉴权代理
 // 5. 删除频道连带清理不再被引用的附件行与对象字节
 // 6. F7：旧 /files/ capability 链接 410；?inline=1 仅对安全图片 MIME 放行 inline 直显
+// 7. F13/F14：音视频 MIME 可上传下载；inline 白名单扩音视频/PDF/文本（预览矩阵）
 
 let alice: TestUser;
 let bob: TestUser;
@@ -79,7 +80,7 @@ describe("attachments: O4 存储路由加固", () => {
     expect(res.status).toBe(410);
   });
 
-  it("F7：?inline=1 仅对安全图片 MIME 放行 inline 直显，其余仍 attachment 下载", async () => {
+  it("F7/F14：?inline=1 对安全图片/音视频/PDF/文本放行 inline，其余仍 attachment 下载", async () => {
     const img = await uploadFile(alice, "pic.png", Buffer.from([0x89, 0x50, 0x4e, 0x47]), "image/png");
     expect(img.status).toBe(200);
     const imgInline = await fetch(`${BASE}${img.data.url}?inline=1`, { headers: { cookie: alice.cookie } });
@@ -89,11 +90,38 @@ describe("attachments: O4 存储路由加固", () => {
     const imgDl = await fetch(`${BASE}${img.data.url}`, { headers: { cookie: alice.cookie } });
     expect(imgDl.headers.get("content-disposition")).toMatch(/^attachment;/);
 
-    // PDF 即使带 inline=1 也强制下载（不在 INLINE_SAFE_MIME；防非图片内容在站内嵌渲染）
+    // F14：PDF 入 inline 白名单——iframe/新标签页走浏览器内建阅读器（脚本不落页面上下文）
     const pdf = await uploadFile(alice, "doc.pdf", "%PDF-1.4 fake", "application/pdf");
     expect(pdf.status).toBe(200);
     const pdfInline = await fetch(`${BASE}${pdf.data.url}?inline=1`, { headers: { cookie: alice.cookie } });
-    expect(pdfInline.headers.get("content-disposition")).toMatch(/^attachment;/);
+    expect(pdfInline.headers.get("content-disposition")).toMatch(/^inline;/);
+    expect(pdfInline.headers.get("content-type")).toBe("application/pdf");
+  });
+
+  it("F13/F14：音视频可上传下载 + ?inline=1 放行 inline；未入册类型仍 415", async () => {
+    // video/mp4 入默认白名单：上传 200 + 原 MIME 下载 + inline 直出（<video> 用）
+    const vid = await uploadFile(alice, "clip.mp4", Buffer.from("fake mp4 bytes"), "video/mp4");
+    expect(vid.status).toBe(200);
+    const vidDl = await fetch(`${BASE}${vid.data.url}`, { headers: { cookie: alice.cookie } });
+    expect(vidDl.status).toBe(200);
+    expect(vidDl.headers.get("content-type")).toBe("video/mp4");
+    expect(vidDl.headers.get("content-disposition")).toMatch(/^attachment;/);
+    const vidInline = await fetch(`${BASE}${vid.data.url}?inline=1`, { headers: { cookie: alice.cookie } });
+    expect(vidInline.headers.get("content-disposition")).toMatch(/^inline;/);
+
+    // audio/mpeg 同口径可上传 + inline
+    const aud = await uploadFile(alice, "song.mp3", Buffer.from("fake mp3 bytes"), "audio/mpeg");
+    expect(aud.status).toBe(200);
+    const audDl = await fetch(`${BASE}${aud.data.url}`, { headers: { cookie: alice.cookie } });
+    expect(audDl.status).toBe(200);
+    expect(audDl.headers.get("content-type")).toBe("audio/mpeg");
+    const audInline = await fetch(`${BASE}${aud.data.url}?inline=1`, { headers: { cookie: alice.cookie } });
+    expect(audInline.headers.get("content-disposition")).toMatch(/^inline;/);
+
+    // 未入册的视频容器（mkv）仍拒绝
+    const mkv = await uploadFile(alice, "clip.mkv", Buffer.from("fake mkv"), "video/x-matroska");
+    expect(mkv.status).toBe(415);
+    expect(mkv.data.error).toMatch(/not allowed/);
   });
 
   it("路径穿越文件名被净化：storage_key 无 .. 段", async () => {
