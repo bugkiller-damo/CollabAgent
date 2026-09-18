@@ -2,7 +2,15 @@
 import { ClipboardList, MessageCircle, Monitor, Moon, Search, Settings, Sun, Users, Zap } from "@lucide/vue";
 import { type Component, computed, markRaw } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { type SidebarPane, useChannelStore, useComputerStore, useNotificationStore, useUiStore } from "../../stores";
+import { channelPath, parseChannelRoute, parseTasksRoute, tasksPath } from "../../lib/nav";
+import {
+  type SidebarPane,
+  useChannelStore,
+  useComputerStore,
+  useNotificationStore,
+  useServerStore,
+  useUiStore,
+} from "../../stores";
 import Tooltip from "../ui/Tooltip.vue";
 import UserAvatarButton from "./UserAvatarButton.vue";
 
@@ -10,6 +18,7 @@ const uiStore = useUiStore();
 const channelStore = useChannelStore();
 const notificationStore = useNotificationStore();
 const computerStore = useComputerStore();
+const serverStore = useServerStore();
 const route = useRoute();
 const router = useRouter();
 
@@ -40,12 +49,16 @@ function badgeFor(id: SidebarPane): number {
 }
 
 function lastChatPath(): string {
+  const sid = serverStore.activeServerId;
   const ch = channelStore.activeChannelName;
+  if (sid) return channelPath(sid, ch || "general");
   if (ch) return `/channels/${encodeURIComponent(ch)}`;
   return "/channels/general";
 }
 
 function lastTasksPath(): string {
+  const sid = serverStore.activeServerId;
+  if (sid) return tasksPath(sid, channelStore.activeChannelName || undefined);
   const ch = channelStore.activeChannelName;
   return ch ? `/tasks/${encodeURIComponent(ch)}` : "/tasks";
 }
@@ -65,13 +78,13 @@ function onSelect(id: SidebarPane) {
   uiStore.selectSidebarPane(id);
   if (same) return;
   if (id === "chat") {
-    if (!route.path.startsWith("/channels/") && !route.path.startsWith("/dm/")) {
+    if (!parseChannelRoute(route.path) && !route.path.startsWith("/dm/")) {
       void router.push(lastChatPath());
     }
     return;
   }
   if (id === "tasks") {
-    if (!route.path.startsWith("/tasks")) void router.push(lastTasksPath());
+    if (!parseTasksRoute(route.path)) void router.push(lastTasksPath());
     return;
   }
   const path = pathForPane(id);

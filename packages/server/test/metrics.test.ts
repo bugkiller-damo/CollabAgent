@@ -104,20 +104,28 @@ describe("P1.30 admin 门禁（org owner）", () => {
     expect(r.status).toBe(403);
   });
 
-  it("非个人社区成员（非 owner）403；owner 双口径（owner_id 直列 / owner 成员行）均放行", async () => {
+  it("非默认社区成员/自建社区 owner 均 403；默认社区 owner（成员行口径）放行", async () => {
     const member = await registerUser();
     const owner = await registerUser();
-    const orgId = await makeOrgOwner(owner);
-    // member 仅作为 member 加入该社区
-    await sql`INSERT INTO server_members (server_id, user_id, role) VALUES (${orgId}, ${member.userId}, 'member') ON CONFLICT DO NOTHING`;
+    // 2026-09-18 guild 化收紧回归：自建非默认社区的 owner 不再授予实例 admin
+    // （POST /api/orgs 放开后，旧「任一非个人 server owner」口径等于全员放行）
+    const own = await sql`INSERT INTO servers (name, created_by, owner_id, personal)
+                          VALUES (${owner.handle + "_org"}, ${owner.userId}, ${owner.userId}, false) RETURNING id`;
+    await sql`INSERT INTO server_members (server_id, user_id, role) VALUES (${own[0].id}, ${owner.userId}, 'owner') ON CONFLICT DO NOTHING`;
+    const ownRes = await api("/api/metrics", { cookie: owner.cookie });
+    expect(ownRes.status).toBe(403);
+    // 默认社区 owner 成员行 → 放行
+    const defId = await makeOrgOwner(owner);
+    // member 仅作为 member 加入默认社区
+    await sql`INSERT INTO server_members (server_id, user_id, role) VALUES (${defId}, ${member.userId}, 'member') ON CONFLICT DO NOTHING`;
     const m = await api("/api/metrics", { cookie: member.cookie });
     expect(m.status).toBe(403);
     const o = await api("/api/metrics", { cookie: owner.cookie });
     expect(o.status).toBe(200);
-    // owner 成员行删掉后仍凭 servers.owner_id 直列放行（isOrgOwner 同口径）
-    await sql`DELETE FROM server_members WHERE server_id = ${orgId} AND user_id = ${owner.userId}`;
+    // owner 成员行删掉后 → 默认社区 servers.owner_id 属 bootstrap 首用户而非本 owner → 403
+    await sql`DELETE FROM server_members WHERE server_id = ${defId} AND user_id = ${owner.userId}`;
     const o2 = await api("/api/metrics", { cookie: owner.cookie });
-    expect(o2.status).toBe(200);
+    expect(o2.status).toBe(403);
   });
 });
 

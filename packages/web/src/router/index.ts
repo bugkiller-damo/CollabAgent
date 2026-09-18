@@ -12,6 +12,10 @@ import AppLayout from "../components/layout/AppLayout.vue";
  * - React Router v7 的 path="*"              → "/:pathMatch(.*)*"。
  * - 嵌套 <Route>（settings / admin）          → children 嵌套路由，父组件内置 <router-view>。
  * - 路由级 lazy loading                      → () => import(...)，每个页面独立 chunk。
+ *
+ * guild 化：频道/任务的规范 URL 为 /s/:serverId/...；旧 /channels/* 与 /tasks/*
+ * 路由仍挂同一组件（兼容深链与未迁移跳转点），AppLayout 的 watcher 会把它
+ * replace 成带 active server 的规范 URL。
  */
 
 const router = createRouter({
@@ -21,17 +25,30 @@ const router = createRouter({
     { path: "/login", component: () => import("../pages/LoginPage.vue") },
     { path: "/register", component: () => import("../pages/RegisterPage.vue") },
     { path: "/forgot-password", component: () => import("../pages/ForgotPasswordPage.vue") },
+    // 邀请落地页：未登录自己跳 /register?invite=，已登录直接 accept
+    { path: "/invite/:token", component: () => import("../pages/InviteAcceptPage.vue") },
 
     // 受保护路由：AuthGuard → AppLayout → 页面
     {
       path: "/",
       component: AuthGuard,
       children: [
+        // 新注册强制向导（在 AppLayout 之外：全屏无侧栏）
+        { path: "onboarding/server", component: () => import("../pages/OnboardingServerPage.vue") },
         {
           path: "",
           component: AppLayout,
           children: [
-            // 频道 / DM / 任务
+            // 规范路由：/s/:serverId/...
+            { path: "s/:serverId/channels/:channelName", component: () => import("../pages/ChannelView.vue") },
+            {
+              path: "s/:serverId/channels/:channelName/:threadId",
+              component: () => import("../pages/ThreadView.vue"),
+            },
+            { path: "s/:serverId/tasks", component: () => import("../pages/TaskBoard.vue") },
+            { path: "s/:serverId/tasks/:channelName", component: () => import("../pages/TaskBoard.vue") },
+
+            // 旧路由：同组件承载，AppLayout watcher 规范化为 /s/:serverId/...
             { path: "channels", redirect: "/channels/general" },
             { path: "channels/:channelName", component: () => import("../pages/ChannelView.vue") },
             { path: "channels/:channelName/:threadId", component: () => import("../pages/ThreadView.vue") },
@@ -76,7 +93,7 @@ const router = createRouter({
               },
             },
 
-            // 根路径重定向 & 404
+            // 根路径重定向 & 404（"/" → /channels/general → watcher 规范化为 /s/<active>/channels/general）
             { path: "", redirect: "/channels/general" },
             { path: ":pathMatch(.*)*", component: () => import("../pages/NotFoundPage.vue") },
           ],

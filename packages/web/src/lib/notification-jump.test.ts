@@ -47,6 +47,24 @@ describe("resolveNotificationRoute", () => {
     expect(r).toBe("/tasks/dev");
   });
 
+  it("metadata 带 serverId → 生成 /s/<sid>/ 规范路径（跨 server 同名频道精确落地）", () => {
+    const r = resolveNotificationRoute({ ...base, metadata: { channelName: "dev", serverId: "srv-1" } }, channels);
+    expect(r).toBe("/s/srv-1/channels/dev#msg-1");
+  });
+
+  it("task_assigned 带 serverId → /s/<sid>/tasks/<频道名>", () => {
+    const r = resolveNotificationRoute(
+      {
+        ...base,
+        type: "task_assigned",
+        messageId: null,
+        metadata: { channelName: "dev", taskNumber: 3, serverId: "srv-1" },
+      },
+      channels,
+    );
+    expect(r).toBe("/s/srv-1/tasks/dev");
+  });
+
   it("无频道上下文（如 patrol_paused）→ null 不跳转", () => {
     const r = resolveNotificationRoute(
       { ...base, type: "patrol_paused", channelId: null, messageId: null, metadata: { reminderId: "r1" } },

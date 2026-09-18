@@ -1,11 +1,23 @@
 import type { Message } from "@collabagent/shared";
 import { defineStore } from "pinia";
 import { ref } from "vue";
-import { apiClient, apiGet, apiPost } from "../api";
+import { type ApiInit, apiClient, apiGet, apiPost } from "../api";
 import type { PendingItem } from "../components/chat/types";
 // #19：缓存 key 单点（clearMessageCaches 清盘与联动注册同 lib，防口径漂移）
 import { CACHE_PREFIX, onMessageCachesCleared, PENDING_CACHE_KEY } from "../lib/message-cache";
+import { parseScopedTarget } from "../lib/nav";
 import { toast } from "./toastStore";
+
+/**
+ * guild 化：频道类 target 的本地 key 是 "<serverId>:#<name>"（见 lib/nav.ts）。
+ * 调 API 前解包——线上协议仍是 #name / dm:uuid，server 语境走 x-server-id 头；
+ * 显式带头而非依赖 apiClient 注入：离线队列重发必须投递到入队时的 server，
+ * 与当前活跃 server 无关。
+ */
+function apiTarget(target: string): { channel: string; init?: ApiInit } {
+  const { serverId, name } = parseScopedTarget(target);
+  return { channel: name, init: serverId ? { headers: { "x-server-id": serverId } } : undefined };
+}
 
 const CACHE_LIMIT = 50;
 
@@ -113,14 +125,15 @@ export const useMessageStore = defineStore("messages", () => {
         messagesByTarget.value = { ...messagesByTarget.value, [channel]: cached };
       }
     }
-    const params: Record<string, string> = { channel };
+    const at = apiTarget(channel);
+    const params: Record<string, string> = { channel: at.channel };
     if (opts?.before) params.before = String(opts.before);
     if (opts?.limit) params.limit = String(opts.limit);
     try {
       // before 翻旧页必须走 /history：根端点 GET /api/messages 不读 before 参数
       // （只回最新一页），此前 highlight 回填打它等于重拉最新页，目标消息永远不进列表
       const url = opts?.before !== undefined ? "/api/messages/history" : "/api/messages";
-      const data = await apiGet<{ messages: Message[] }>(url, params);
+      const data = await apiGet<{ messages: Message[] }>(url, params, undefined, at.init);
       const fetched = data.messages || [];
       // P1-10 竞态归并：await 期间到达的 live 消息已在列表中，整体置换会把它们从 UI
       // 抹掉——且 lastSeenSeq 已被 receiveMessage 推进过，重连 backfill（after=水位）
@@ -204,13 +217,19 @@ export const useMessageStore = defineStore("messages", () => {
     if (backfillInflight.has(target)) return;
     backfillInflight.add(target);
     try {
+      const at = apiTarget(target);
       let after = lastSeenSeq.value[target] || 0;
       for (let page = 0; page < BACKFILL_MAX_PAGES; page++) {
-        const data = await apiGet<{ messages: Message[]; hasMore?: boolean }>("/api/messages/history", {
-          channel: target,
-          after: String(after),
-          limit: String(BACKFILL_PAGE_LIMIT),
-        });
+        const data = await apiGet<{ messages: Message[]; hasMore?: boolean }>(
+          "/api/messages/history",
+          {
+            channel: at.channel,
+            after: String(after),
+            limit: String(BACKFILL_PAGE_LIMIT),
+          },
+          undefined,
+          at.init,
+        );
         // 服务端按 seq 升序返回；本地再排一次兜底，receiveMessage 按 id 去重
         const msgs = (data.messages || []).slice().sort((a, b) => a.seq - b.seq);
         if (msgs.length === 0) return;
@@ -321,12 +340,18 @@ export const useMessageStore = defineStore("messages", () => {
         if (!next) return;
         setPendingStatus(target, next.tempId, "sending");
         try {
-          const sent = await apiPost<{ skippedMentions?: { handle: string; reason: string }[] }>("/api/messages/send", {
-            target,
-            content: next.content,
-            attachmentIds: next.attachmentIds,
-            clientNonce: next.nonce, // 幂等键：同 nonce 重发由服务端去重
-          });
+          const at = apiTarget(target);
+          const sent = await apiPost<{ skippedMentions?: { handle: string; reason: string }[] }>(
+            "/api/messages/send",
+            {
+              target: at.channel,
+              content: next.content,
+              attachmentIds: next.attachmentIds,
+              clientNonce: next.nonce, // 幂等键：同 nonce 重发由服务端去重
+            },
+            undefined,
+            at.init,
+          );
           if (sent?.skippedMentions?.length) {
             const names = sent.skippedMentions.map((s) => `@${s.handle}`).join("、");
             toast.info(`${names} 已停班，消息已发出但不会唤醒`);
@@ -353,12 +378,18 @@ export const useMessageStore = defineStore("messages", () => {
     if (!item || item.status === "sending") return;
     setPendingStatus(target, tempId, "sending");
     try {
-      await apiPost("/api/messages/send", {
-        target,
-        content: item.content,
-        attachmentIds: item.attachmentIds,
-        clientNonce: item.nonce,
-      });
+      const at = apiTarget(target);
+      await apiPost(
+        "/api/messages/send",
+        {
+          target: at.channel,
+          content: item.content,
+          attachmentIds: item.attachmentIds,
+          clientNonce: item.nonce,
+        },
+        undefined,
+        at.init,
+      );
       removePending(target, tempId);
     } catch (err: any) {
       setPendingStatus(target, tempId, "failed", err?.message || "网络错误");

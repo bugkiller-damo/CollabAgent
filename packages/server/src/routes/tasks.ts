@@ -297,8 +297,9 @@ export async function taskRoutes(app: FastifyInstance) {
       try {
         const task = result.rows[0];
         const { createNotification } = await import("../lib/notifications.js");
-        const channelResult = await app.pg.query("SELECT name FROM channels WHERE id = $1", [chId]);
+        const channelResult = await app.pg.query("SELECT name, server_id FROM channels WHERE id = $1", [chId]);
         const channelName = channelResult.rows[0]?.name || channel;
+        const channelServerId = channelResult.rows[0]?.server_id ? String(channelResult.rows[0].server_id) : undefined;
         await createNotification(app, {
           userId: String(task.sender_id),
           type: "task_assigned",
@@ -307,7 +308,7 @@ export async function taskRoutes(app: FastifyInstance) {
           channelId: String(chId),
           title: `任务 #${number} 已完成`,
           body: String(task.content || "").slice(0, 200),
-          metadata: { channelName, taskNumber: number, newStatus: status },
+          metadata: { channelName, serverId: channelServerId, taskNumber: number, newStatus: status },
         });
       } catch (err) {
         req.log.warn({ err }, "task completion notification failed");

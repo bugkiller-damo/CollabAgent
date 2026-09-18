@@ -7,7 +7,8 @@ import PageHeader from "../components/layout/PageHeader.vue";
 import TaskDetailModal from "../components/task/TaskDetailModal.vue";
 import Button from "../components/ui/Button.vue";
 import Input from "../components/ui/Input.vue";
-import { useAuthStore, useChannelStore } from "../stores";
+import { channelPath, tasksPath } from "../lib/nav";
+import { useAuthStore, useChannelStore, useServerStore } from "../stores";
 import { toast } from "../stores/toastStore";
 
 interface Task {
@@ -44,6 +45,7 @@ const route = useRoute();
 const router = useRouter();
 const channelStore = useChannelStore();
 const authStore = useAuthStore();
+const serverStore = useServerStore();
 
 const channels = computed(() => channelStore.channels);
 const activeChannelName = computed(() => channelStore.activeChannelName);
@@ -51,6 +53,20 @@ const channelName = computed(() => {
   const p = route.params.channelName;
   return typeof p === "string" ? p : undefined;
 });
+// guild 化：/s/:serverId/tasks[/:name] 上的 serverId 优先，旧链回落活跃 server
+const routeServerId = computed<string | undefined>(() => {
+  const p = route.params.serverId;
+  return (Array.isArray(p) ? p[0] : p) || serverStore.activeServerId || undefined;
+});
+const channelHomePath = computed(() =>
+  channel.value && routeServerId.value ? channelPath(routeServerId.value, channel.value) : `/channels/${channel.value}`,
+);
+
+// 任务 API 显式带路由 server 头：不依赖 activeServerId 同步时序，
+// 保证切 server 途中发的请求不会落到旧 server 的同名频道
+const taskInit = computed(() =>
+  routeServerId.value ? { headers: { "x-server-id": routeServerId.value } } : undefined,
+);
 
 const channel = ref("");
 const tasks = ref<Task[]>([]);
@@ -159,7 +175,7 @@ watch(
 function load() {
   if (!channel.value) return;
   loading.value = true;
-  apiGet<{ tasks: Task[] }>("/api/tasks", { channel: "#" + channel.value })
+  apiGet<{ tasks: Task[] }>("/api/tasks", { channel: "#" + channel.value }, undefined, taskInit.value)
     .then((d) => {
       tasks.value = d.tasks || [];
       loadError.value = "";
@@ -173,7 +189,9 @@ function load() {
 }
 
 // 对齐 React useEffect(() => { load(); }, [load])
-watch(channel, () => load(), { immediate: true });
+// routeServerId 一并监听：跨 server 同名频道（两边都有 general）切换时频道名不变，
+// 但数据语境已换，必须重拉
+watch([channel, routeServerId], () => load(), { immediate: true });
 
 onMounted(() => {
   const v = localStorage.getItem(VIEW_MODE_KEY);
@@ -190,7 +208,7 @@ async function createTask() {
   if (!t || !channel.value) return;
   newTitle.value = "";
   try {
-    await apiPost("/api/tasks", { channel: "#" + channel.value, tasks: [{ title: t }] });
+    await apiPost("/api/tasks", { channel: "#" + channel.value, tasks: [{ title: t }] }, undefined, taskInit.value);
     load();
   } catch (err: any) {
     toast.error(err?.message || "创建失败");
@@ -199,7 +217,7 @@ async function createTask() {
 
 async function claim(num: number) {
   try {
-    await apiPost("/api/tasks/claim", { channel: "#" + channel.value, task_numbers: [num] });
+    await apiPost("/api/tasks/claim", { channel: "#" + channel.value, task_numbers: [num] }, undefined, taskInit.value);
     load();
   } catch (err: any) {
     toast.error(err?.message || "认领失败");
@@ -208,7 +226,12 @@ async function claim(num: number) {
 
 async function moveTo(num: number, status: string) {
   try {
-    await apiPost("/api/tasks/update-status", { channel: "#" + channel.value, number: num, status });
+    await apiPost(
+      "/api/tasks/update-status",
+      { channel: "#" + channel.value, number: num, status },
+      undefined,
+      taskInit.value,
+    );
     load();
   } catch (err: any) {
     toast.error(localizeTaskError(err, "移动失败"));
@@ -235,7 +258,7 @@ function onDragLeave(e: DragEvent) {
 function onChannelSelect(e: Event) {
   const val = (e.target as HTMLSelectElement).value;
   channel.value = val;
-  router.push("/tasks/" + val);
+  router.push(routeServerId.value ? tasksPath(routeServerId.value, val) : "/tasks/" + val);
 }
 
 function colTasks(status: string) {
@@ -264,8 +287,8 @@ function fmtTime(t: string): string {
   <div class="flex min-h-0 flex-1 flex-col">
     <PageHeader
       title="任务看板"
-      :back-to="`/channels/${channel}`"
-      :breadcrumb="channel ? [{ label: '#' + channel, to: '/channels/' + channel }, { label: '任务看板' }] : undefined"
+      :back-to="channelHomePath"
+      :breadcrumb="channel ? [{ label: '#' + channel, to: channelHomePath }, { label: '任务看板' }] : undefined"
     >
       <div class="flex flex-wrap items-center gap-2">
         <!-- 视图切换 -->

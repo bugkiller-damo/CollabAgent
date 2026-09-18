@@ -40,19 +40,19 @@ export async function isOrgOwner(app: FastifyInstance, serverId: string, userId:
 }
 
 /**
- * 实例级管理员判定（P1.30）：任一非个人组织（社区）的 owner。
+ * 实例级管理员判定（P1.30）：默认社区（最早非个人 server）的 owner。
  * 个人空间（personal=true，每用户自动持有）不计——否则等于全员放行，门禁失效。
  * 口径与 isOrgOwner 一致：server_members role='owner' 或 servers.owner_id 直列。
- * 取舍立此存照：多社区托管下任一社区 owner 都可见实例全局 metrics（daemon 主机名/
- * OS/版本/计数器）——当前部署形态是单租户默认社区，「社区 owner」与「实例运维者」
- * 等价；若未来多社区上线需收敛为默认社区 owner（getDefaultServerId + isOrgOwner），
- * 改此一处即可。
+ * 2026-09-18 guild 化收紧：POST /api/orgs 放开建服后，「任一非个人 server 的
+ * owner」会让每个建服用户都拿到实例 metrics 权限（全员放行）——收敛为默认
+ * 社区 owner，与 index.ts 启动 bootstrap 的擢升目标同一子查询口径。
  */
 export async function isInstanceAdmin(app: FastifyInstance, userId: string): Promise<boolean> {
   const r = await app.pg.query(
     `SELECT 1 FROM servers s
        LEFT JOIN server_members sm ON sm.server_id = s.id AND sm.user_id::text = $1
-      WHERE s.personal = false AND (s.owner_id::text = $1 OR sm.role = 'owner') LIMIT 1`,
+      WHERE s.id = (SELECT id FROM servers WHERE personal = false ORDER BY created_at ASC LIMIT 1)
+        AND (s.owner_id::text = $1 OR sm.role = 'owner') LIMIT 1`,
     [userId],
   );
   return r.rows.length > 0;

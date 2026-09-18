@@ -6,7 +6,8 @@ import { useRouter } from "vue-router";
 import { apiClient } from "../../api";
 import { formatTime } from "../../lib/formatTime";
 import { MAX_MESSAGE_CONTENT_LEN } from "../../lib/limits";
-import { useAuthStore, useChannelStore, useMessageStore, useUiStore } from "../../stores";
+import { threadPath } from "../../lib/nav";
+import { useAuthStore, useChannelStore, useMessageStore, useServerStore, useUiStore } from "../../stores";
 import { toast } from "../../stores/toastStore";
 import ConfirmDialog from "../ConfirmDialog.vue";
 import AttachmentView from "./AttachmentView.vue";
@@ -45,6 +46,7 @@ const authStore = useAuthStore();
 const messageStore = useMessageStore();
 const uiStore = useUiStore();
 const channelStore = useChannelStore();
+const serverStore = useServerStore();
 
 const editing = ref(false);
 const editText = ref(props.msg.content || "");
@@ -185,7 +187,10 @@ watch(editing, (val) => {
 });
 
 function goToThread() {
-  router.push(`/channels/${props.channelName}/${props.msg.id}`);
+  const sid = serverStore.activeServerId;
+  router.push(
+    sid ? threadPath(sid, props.channelName || "", props.msg.id) : `/channels/${props.channelName}/${props.msg.id}`,
+  );
 }
 
 function senderHandle(): string {

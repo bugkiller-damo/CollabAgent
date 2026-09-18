@@ -352,8 +352,9 @@ export async function messageRoutes(app: FastifyInstance) {
             messageId: String(msg.id),
             title: `${senderHandle} 在消息中提到了你`,
             body: (content || "").slice(0, 200),
-            // 动态页/通知铃铛点击跳转要用（旧行无此字段，web 侧按 channelId 兜底解析）
-            metadata: { channelName: cleanChannelName(target) },
+            // 动态页/通知铃铛点击跳转要用（旧行无此字段，web 侧按 channelId 兜底解析）；
+            // guild 化补 serverId——跨 server 同名频道按 server 段精确落地
+            metadata: { channelName: cleanChannelName(target), serverId: resolvedServerId },
           });
         }
       }
@@ -424,6 +425,7 @@ export async function messageRoutes(app: FastifyInstance) {
         id: msg.id,
         seq: msg.seq,
         channelId: channelIdOut,
+        serverId: resolvedServerId,
         senderId: userId,
         senderName,
         senderHandle,

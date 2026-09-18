@@ -394,7 +394,7 @@ export async function channelRoutes(app: FastifyInstance) {
     const scope = tenant.serverId ?? undefined;
     if (target.startsWith("dm:@")) {
       const userId = req.user.sub;
-      const peer = await resolvePeer(app, target.slice(3).split(":")[0], scope);
+      const peer = await resolvePeer(app, target.slice(3).split(":")[0], scope, req.user.sub);
       if (!peer) return reply.status(404).send({ error: "peer not found" });
       const me: Party = { id: userId, type: "human", handle: req.user.handle ?? "unknown" };
       const channelId = await getOrCreateDmChannel(app, me, peer);

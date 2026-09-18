@@ -332,6 +332,8 @@ export interface WsDeliverMessage {
   seq: number;
   /** "#general" 或 "dm:<uuid>"（daemon 端剥 # 前缀解析频道名） */
   channelId: string;
+  /** 消息所属 server（web 端按 <serverId>:#name 消歧跨 server 同名频道的本地缓存） */
+  serverId?: UUID;
   senderId: UUID;
   senderName: string;
   senderHandle?: string;

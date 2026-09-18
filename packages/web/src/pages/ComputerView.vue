@@ -13,7 +13,7 @@ import Card from "../components/ui/Card.vue";
 import Input from "../components/ui/Input.vue";
 import Modal from "../components/ui/Modal.vue";
 import { usePolling } from "../composables";
-import { runtimeCatalog, useAgentStore, useAuthStore, useComputerStore, useUiStore } from "../stores";
+import { runtimeCatalog, useAgentStore, useAuthStore, useComputerStore, useServerStore, useUiStore } from "../stores";
 import { toast } from "../stores/toastStore";
 
 interface AgentRow {
@@ -34,6 +34,7 @@ const route = useRoute();
 const computerStore = useComputerStore();
 const authStore = useAuthStore();
 const agentStore = useAgentStore();
+const serverStore = useServerStore();
 const uiStore = useUiStore();
 
 const error = ref("");
@@ -233,6 +234,9 @@ async function createAgent() {
       avatarUrl: newAvatarUrl.value.trim(),
       runtime: newRuntime.value,
       model: newModel.value,
+      // guild 化：agent 是 server 级记录——创建到当前活跃 server（成员页/私信候选
+      // 均按 server 过滤）；无活跃语境时回落 server 端默认（personal org）
+      serverId: serverStore.activeServerId || undefined,
     });
     showCreate.value = false;
     resetCreateForm();

@@ -13,7 +13,8 @@ import MessageSkeleton from "../components/skeleton/MessageSkeleton.vue";
 import Avatar from "../components/ui/Avatar.vue";
 import type { MentionScope } from "../composables";
 import { formatTime } from "../lib/formatTime";
-import { threadBufferKey, useChannelStore, useMessageStore, useUiStore } from "../stores";
+import { channelPath, scopedChannelKey } from "../lib/nav";
+import { threadBufferKey, useChannelStore, useMessageStore, useServerStore, useUiStore } from "../stores";
 
 interface ThreadMsg {
   id: string;
@@ -34,15 +35,25 @@ const router = useRouter();
 const messageStore = useMessageStore();
 const channelStore = useChannelStore();
 const uiStore = useUiStore();
+const serverStore = useServerStore();
 
 const channelName = computed(() => route.params.channelName as string);
 const threadId = computed(() => route.params.threadId as string);
+// guild 化：URL serverId 优先，旧链回落活跃 server
+const routeServerId = computed<string | undefined>(() => {
+  const p = route.params.serverId;
+  return (Array.isArray(p) ? p[0] : p) || serverStore.activeServerId || undefined;
+});
 
 const threadKey = computed(() => {
   if (!channelName.value || !threadId.value) return "";
-  // P0-2：与 wsDispatch 写入侧共用同一 key 约定（无 # 前缀），防口径漂移
-  return threadBufferKey(channelName.value, threadId.value);
+  // P0-2：与 wsDispatch 写入侧共用同一 key 约定——频道 key 为 scoped <sid>:#name
+  return threadBufferKey(scopedChannelKey(routeServerId.value ?? null, "#" + channelName.value), threadId.value);
 });
+
+const channelHomePath = computed(() =>
+  routeServerId.value ? channelPath(routeServerId.value, channelName.value) : `/channels/${channelName.value}`,
+);
 
 // React 版 useMessageStore((s) => (threadKey ? s.messagesByTarget[threadKey] : undefined)) || []
 const liveReplies = computed<any[]>(() => {
@@ -156,7 +167,7 @@ function openSender(msg: { senderHandle?: string }) {
   <div v-if="error && !parent" class="flex flex-1 flex-col">
     <PageHeader
       title="线程"
-      :breadcrumb="[{ label: '频道', to: `/channels/${channelName}` }, { label: '线程' }]"
+      :breadcrumb="[{ label: '频道', to: channelHomePath }, { label: '线程' }]"
     />
     <div class="flex flex-1 items-center justify-center p-4">
       <EmptyState
@@ -164,7 +175,7 @@ function openSender(msg: { senderHandle?: string }) {
         title="加载失败"
         :description="error"
         action-label="返回频道"
-        @action="router.push(`/channels/${channelName}`)"
+        @action="router.push(channelHomePath)"
       />
     </div>
   </div>
@@ -172,8 +183,8 @@ function openSender(msg: { senderHandle?: string }) {
   <div v-else class="flex min-h-0 flex-1 flex-col">
     <PageHeader
       title="线程"
-      :back-to="`/channels/${channelName}`"
-      :breadcrumb="[{ label: `#${channelName}`, to: `/channels/${channelName}` }, { label: '线程' }]"
+      :back-to="channelHomePath"
+      :breadcrumb="[{ label: `#${channelName}`, to: channelHomePath }, { label: '线程' }]"
     />
 
     <AgentProgressBar :channel-name="channelName" />

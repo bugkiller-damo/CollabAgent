@@ -16,7 +16,8 @@ import EmptyState from "../components/EmptyState.vue";
 import PageHeader from "../components/layout/PageHeader.vue";
 import MessageSkeleton from "../components/skeleton/MessageSkeleton.vue";
 import IconButton from "../components/ui/IconButton.vue";
-import { useAgentStore, useChannelStore, useMessageStore, useUiStore } from "../stores";
+import { channelPath, lastChannelKey, scopedChannelKey, tasksPath } from "../lib/nav";
+import { useAgentStore, useChannelStore, useMessageStore, useServerStore, useUiStore } from "../stores";
 
 const VIRTUAL_THRESHOLD = 100;
 const EMPTY_MSGS: Message[] = [];
@@ -27,13 +28,22 @@ const messageStore = useMessageStore();
 const channelStore = useChannelStore();
 const uiStore = useUiStore();
 const agentStore = useAgentStore();
+const serverStore = useServerStore();
 
 // ---- 路由参数（React: useParams / useLocation / useNavigate）----
 const channelName = computed<string | undefined>(() => {
   const p = route.params.channelName;
   return Array.isArray(p) ? p[0] : p;
 });
-const target = computed(() => (channelName.value ? "#" + channelName.value : ""));
+// guild 化：URL 上的 serverId 优先（规范 /s/:serverId/channels/:name），
+// 旧 /channels/* 路径回落活跃 server——本地 target key 统一 <serverId>:#name
+const routeServerId = computed<string | undefined>(() => {
+  const p = route.params.serverId;
+  return (Array.isArray(p) ? p[0] : p) || serverStore.activeServerId || undefined;
+});
+const target = computed(() =>
+  channelName.value ? scopedChannelKey(routeServerId.value ?? null, "#" + channelName.value) : "",
+);
 // vue-router 的 route.hash 含前导 "#"（与 React useLocation().hash 一致），去掉后作高亮消息 id
 const highlightMsgId = computed(() => route.hash?.replace("#", "") || undefined);
 
@@ -76,14 +86,20 @@ const mentionScope = computed(() => ({
 }));
 
 // ---- Effect 1：切换频道时重置 + 拉历史（React useEffect([channelName, target, fetchHistory, setActiveChannel])）----
+// guild 化：频道身份 = (serverId, name)——同名频道跨 server 是不同频道
 watch(
-  channelName,
-  (name) => {
-    if (name && fetchedRef.value !== name) {
-      fetchedRef.value = name;
-      channelStore.setActiveChannel(name);
+  target,
+  (t) => {
+    if (t && channelName.value && fetchedRef.value !== t) {
+      fetchedRef.value = t;
+      channelStore.setActiveChannel(channelName.value);
       attachments.value = [];
-      messageStore.fetchHistory("#" + name).catch(() => {});
+      try {
+        if (routeServerId.value) localStorage.setItem(lastChannelKey(routeServerId.value), channelName.value);
+      } catch {
+        /* ignore */
+      }
+      messageStore.fetchHistory(t).catch(() => {});
     }
   },
   { immediate: true },
@@ -325,7 +341,8 @@ function closeSettings() {
   showSettings.value = false;
 }
 function goGeneral() {
-  router.push("/channels/general");
+  const sid = routeServerId.value;
+  router.push(sid ? channelPath(sid, "general") : "/channels/general");
 }
 </script>
 
@@ -360,7 +377,11 @@ function goGeneral() {
           >
             <SquareTerminal class="h-5 w-5" />
           </IconButton>
-          <IconButton label="看板" tooltip="任务看板" @click="router.push('/tasks/' + channelName)">
+          <IconButton
+            label="看板"
+            tooltip="任务看板"
+            @click="router.push(routeServerId ? tasksPath(routeServerId, channelName) : '/tasks/' + channelName)"
+          >
             <ClipboardList class="h-5 w-5" />
           </IconButton>
           <IconButton

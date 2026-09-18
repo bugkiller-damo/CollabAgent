@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { getOrCreatePersonalOrg, isOrgOwner } from "../lib/orgs.js";
-import { isServerMember, resolveTenant } from "../lib/tenant.js";
+import { isServerMember, resolveTenant, UUID_RE } from "../lib/tenant.js";
 
 export async function orgRoutes(app: FastifyInstance) {
   // ---- 组织列表 ----
@@ -20,6 +20,88 @@ export async function orgRoutes(app: FastifyInstance) {
       [req.user.sub],
     );
     return { orgs: r.rows };
+  });
+
+  // ---- 创建 server（guild 化 B1）----
+  // 用户主动建服：server + owner 成员 + general 频道 + 频道 owner 一个事务，
+  // 任一步失败整体回滚，不留无频道/无成员的半截 server。personal=false——
+  // 兜底个人空间由 getOrCreatePersonalOrg 负责，不走此端点。
+  app.post("/orgs", { preHandler: [app.authenticate] }, async (req: any, reply: any) => {
+    const { name } = req.body || {};
+    const cleanName = typeof name === "string" ? name.trim() : "";
+    if (!cleanName) return reply.status(400).send({ error: "name required" });
+    if (cleanName.length > 100) return reply.status(400).send({ error: "server name too long (max 100)" });
+    const userId = String(req.user.sub);
+    const org = await app.pg.transaction(async (tx) => {
+      const s = await tx.query(
+        `INSERT INTO servers (name, created_by, owner_id, personal) VALUES ($1, $2, $3, false) RETURNING id, name, personal, owner_id, created_at`,
+        [cleanName, userId, userId],
+      );
+      const serverId = String(s.rows[0]!.id);
+      await tx.query("INSERT INTO server_members (server_id, user_id, role) VALUES ($1, $2, 'owner')", [
+        serverId,
+        userId,
+      ]);
+      const ch = await tx.query(
+        `INSERT INTO channels (server_id, name, description, type, created_by)
+         VALUES ($1, 'general', 'General discussion', 'public', $2) RETURNING id`,
+        [serverId, userId],
+      );
+      await tx.query(
+        `INSERT INTO channel_members (channel_id, member_id, member_type, role)
+         VALUES ($1, $2, 'human', 'owner')`,
+        [ch.rows[0]!.id, userId],
+      );
+      return s.rows[0];
+    });
+    return { org: { ...org, role: "owner", memberCount: 1, agentCount: 0 } };
+  });
+
+  // ---- 改名（guild 化 B3；onboarding wizard 复用：ensure personal + PATCH 命名）----
+  app.patch("/orgs/:serverId", { preHandler: [app.authenticate] }, async (req: any, reply: any) => {
+    const { serverId } = req.params;
+    if (!UUID_RE.test(String(serverId))) return reply.status(400).send({ error: "invalid serverId" });
+    if (!(await isOrgOwner(app, serverId, req.user.sub)))
+      return reply.status(403).send({ error: "only org owner can rename" });
+    const { name } = req.body || {};
+    const cleanName = typeof name === "string" ? name.trim() : "";
+    if (!cleanName) return reply.status(400).send({ error: "name required" });
+    if (cleanName.length > 100) return reply.status(400).send({ error: "server name too long (max 100)" });
+    const r = await app.pg.query("UPDATE servers SET name = $2 WHERE id = $1 RETURNING id, name, personal, owner_id", [
+      serverId,
+      cleanName,
+    ]);
+    return { org: r.rows[0] };
+  });
+
+  // ---- 退出 server（guild 化 B4）----
+  // owner 拒退（只能转让或删除——先保证每个 server 恒有 owner）；personal 拒退
+  // （daemon/computer/POST /agents 的兜底落点，退出会留空挂点）。
+  app.post("/orgs/:serverId/leave", { preHandler: [app.authenticate] }, async (req: any, reply: any) => {
+    const { serverId } = req.params;
+    if (!UUID_RE.test(String(serverId))) return reply.status(400).send({ error: "invalid serverId" });
+    const s = await app.pg.query<{ personal: boolean; owner_id: string | null }>(
+      "SELECT personal, owner_id FROM servers WHERE id = $1",
+      [serverId],
+    );
+    const srv = s.rows[0];
+    if (!srv) return reply.status(404).send({ error: "server not found" });
+    const me = await app.pg.query<{ role: string }>(
+      "SELECT role FROM server_members WHERE server_id = $1 AND user_id::text = $2",
+      [serverId, req.user.sub],
+    );
+    if (me.rows.length === 0) return reply.status(403).send({ error: "not a member" });
+    if (srv.personal) return reply.status(409).send({ error: "cannot leave personal server" });
+    if (me.rows[0]!.role === "owner" || String(srv.owner_id) === String(req.user.sub)) {
+      return reply.status(409).send({ error: "owner must transfer or delete the server" });
+    }
+    await app.pg.query("DELETE FROM server_members WHERE server_id = $1 AND user_id::text = $2", [
+      serverId,
+      req.user.sub,
+    ]);
+    const { invalidateServerMembers } = await import("../lib/access.js");
+    invalidateServerMembers(String(serverId));
+    return { ok: true };
   });
 
   // ---- 成员管理 ----
@@ -135,12 +217,96 @@ export async function orgRoutes(app: FastifyInstance) {
       uses: number;
       server_name: string;
     };
+    // 可选鉴权：已登录且已是目标 server 成员 → alreadyMember 放行。
+    // 受邀注册路径必经此处（register 事务已消费 invite + 入组）——max_uses=1 的
+    // 邀请此时已耗尽，没有该短路 InviteAcceptPage 会误显「已达上限」。
+    const serverId = String(r.rows[0].server_id);
+    const { parseCookies, ACCESS_COOKIE } = await import("../lib/cookies.js");
+    const { verifyBrowserToken } = await import("../lib/auth-token.js");
+    const cookieTok = parseCookies(req.headers.cookie)[ACCESS_COOKIE];
+    if (cookieTok) {
+      const me = await verifyBrowserToken(app.jwt.access, app.pg, cookieTok).catch(() => null);
+      if (me) {
+        const m = await app.pg.query("SELECT 1 FROM server_members WHERE server_id = $1 AND user_id::text = $2", [
+          serverId,
+          me.sub,
+        ]);
+        if (m.rows.length > 0) {
+          return { valid: true, alreadyMember: true, serverId, serverName: inv.server_name };
+        }
+      }
+    }
     if (inv.revoked_at) return reply.status(410).send({ error: "邀请链接已失效" });
     if (inv.expires_at && new Date(inv.expires_at) < new Date())
       return reply.status(410).send({ error: "邀请链接已过期" });
     if (inv.max_uses != null && inv.uses >= inv.max_uses)
       return reply.status(410).send({ error: "邀请链接使用次数已达上限" });
-    return { valid: true, serverName: inv.server_name };
+    // serverId 随校验结果返回：注册/登录后接邀请需要落到被邀 server 的 URL
+    // （token 本身即能力凭证，id 非敏感信息）
+    return { valid: true, serverId, serverName: inv.server_name };
+  });
+
+  // ---- 已登录接受邀请（guild 化 B2）----
+  // 与 register 的 invite 消费同一「条件 UPDATE」口径（revoked/expires/max_uses
+  // 全部入库判定，行锁串行后超额方 UPDATE 0 行自然失效），不开第二条
+  // SELECT-then-UPDATE 路径。消费 + 入圈同一事务；已是成员幂等放行。
+  app.post("/invites/:token/accept", { preHandler: [app.authenticate] }, async (req: any, reply: any) => {
+    const { token } = req.params;
+    try {
+      const joined = await app.pg.transaction(async (tx) => {
+        // 已是该邀请目标 server 的成员 → 不消费 uses 直接放行（幂等）
+        const target = await tx.query<{ server_id: string; server_name: string }>(
+          `SELECT i.server_id, s.name AS server_name FROM invites i JOIN servers s ON s.id = i.server_id
+            WHERE i.token = $1 AND i.revoked_at IS NULL`,
+          [token],
+        );
+        const t = target.rows[0];
+        if (t) {
+          const m = await tx.query("SELECT 1 FROM server_members WHERE server_id = $1 AND user_id::text = $2", [
+            t.server_id,
+            req.user.sub,
+          ]);
+          if (m.rows.length > 0) return { ...t, role: "member", already: true };
+        }
+        const consumed = await tx.query<{ server_id: string; role: string; server_name: string }>(
+          `UPDATE invites SET uses = uses + 1
+             WHERE token = $1 AND revoked_at IS NULL
+               AND (expires_at IS NULL OR expires_at > now())
+               AND (max_uses IS NULL OR uses < max_uses)
+             RETURNING server_id, role, (SELECT name FROM servers WHERE id = invites.server_id) AS server_name`,
+          [token],
+        );
+        const inv = consumed.rows[0];
+        if (!inv) return null;
+        await tx.query(
+          "INSERT INTO server_members (server_id, user_id, role) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+          [inv.server_id, req.user.sub, inv.role],
+        );
+        return { ...inv, already: false };
+      });
+      if (!joined) {
+        // 诊断 SELECT 仅为错误文案（原子消费已失败）：区分无效/吊销/过期/耗尽
+        const d = await app.pg.query<{
+          revoked_at: string | null;
+          expires_at: string | null;
+          max_uses: number | null;
+          uses: number;
+        }>("SELECT revoked_at, expires_at, max_uses, uses FROM invites WHERE token = $1", [token]);
+        const inv = d.rows[0];
+        if (!inv) return reply.status(404).send({ error: "邀请链接无效" });
+        if (inv.revoked_at) return reply.status(410).send({ error: "邀请链接已失效" });
+        if (inv.expires_at && new Date(inv.expires_at) < new Date())
+          return reply.status(410).send({ error: "邀请链接已过期" });
+        return reply.status(410).send({ error: "邀请链接使用次数已达上限" });
+      }
+      const { invalidateServerMembers } = await import("../lib/access.js");
+      invalidateServerMembers(String(joined.server_id));
+      return { ok: true, serverId: String(joined.server_id), serverName: joined.server_name };
+    } catch (e) {
+      // 并发注册/消费撞唯一约束时按幂等处理：已是成员则视为成功
+      if ((e as { code?: string })?.code === "23505") return { ok: true };
+      throw e;
+    }
   });
 
   // ---- 工作区信息 ----

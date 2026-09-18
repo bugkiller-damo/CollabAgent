@@ -66,7 +66,10 @@ async function handleRegister() {
     localStorage.setItem("user", JSON.stringify(data.user));
     authStore.user = data.user as any;
     authStore.isAuthenticated = true;
-    router.push("/channels/general");
+    // guild 化：受邀注册 → InviteAcceptPage 幂等接邀请并落地被邀 server；
+    // 普通注册 → 强制向导创建自己的服务器
+    if (invite) void router.replace("/invite/" + encodeURIComponent(invite));
+    else void router.replace("/onboarding/server");
   } catch (err) {
     error.value = (err as Error).message || "注册失败";
   } finally {

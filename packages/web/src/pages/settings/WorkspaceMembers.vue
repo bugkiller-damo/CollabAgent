@@ -8,6 +8,7 @@ import PageHeader from "../../components/layout/PageHeader.vue";
 import Avatar from "../../components/ui/Avatar.vue";
 import Button from "../../components/ui/Button.vue";
 import Card from "../../components/ui/Card.vue";
+import { useServerStore } from "../../stores";
 
 interface Org {
   id: string;
@@ -32,6 +33,7 @@ interface Invite {
   revoked_at: string | null;
 }
 
+const serverStore = useServerStore();
 const orgs = ref<Org[]>([]);
 const org = ref<Org | null>(null);
 const members = ref<Member[]>([]);
@@ -52,7 +54,9 @@ function loadOrgs() {
     .then((d) => {
       const list = d.orgs || [];
       orgs.value = list;
-      const def = list.find((o) => !o.personal) || list[0] || null;
+      // guild 化：默认选中当前活跃 server（用户正在看的语境），无活跃回落旧口径
+      const activeId = serverStore.activeServerId;
+      const def = list.find((o) => o.id === activeId) || list.find((o) => !o.personal) || list[0] || null;
       org.value = def;
     })
     .catch((err: any) => {

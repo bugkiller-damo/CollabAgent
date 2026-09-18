@@ -1,16 +1,20 @@
 <script setup lang="ts">
-import { Lock, Menu, TriangleAlert } from "@lucide/vue";
-import { computed, onMounted, onUnmounted, watch } from "vue";
+import { Lock, Menu, TriangleAlert, X } from "@lucide/vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { LG_QUERY, useMediaQuery } from "../../composables";
+import { channelPath, parseChannelRoute, parseTasksRoute, tasksPath, threadPath } from "../../lib/nav";
 import { dispatchWsEvent } from "../../lib/wsDispatch";
 import { initWsManager, teardownWsManager, wsSend } from "../../lib/wsManager";
 import {
+  hasOwnServer,
   type SidebarPane,
+  useAuthStore,
   useChannelStore,
   useComputerStore,
   useMessageStore,
   useNotificationStore,
+  useServerStore,
   useUiStore,
 } from "../../stores";
 import AgentTerminalPanel from "../agent/AgentTerminalPanel.vue";
@@ -29,6 +33,8 @@ const channelStore = useChannelStore();
 const notificationStore = useNotificationStore();
 const uiStore = useUiStore();
 const computerStore = useComputerStore();
+const serverStore = useServerStore();
+const authStore = useAuthStore();
 
 function decode(s: string | undefined): string {
   try {
@@ -39,12 +45,13 @@ function decode(s: string | undefined): string {
 }
 
 function useRouteTitle(pathname: string): { title: string; subtitle: string } {
-  if (pathname.startsWith("/channels/")) {
-    const parts = pathname.split("/");
-    const channel = decode(parts[2]);
-    const thread = parts[3];
-    if (thread) return { title: "线程", subtitle: `#${channel}` };
-    return { title: `#${channel}`, subtitle: "频道" };
+  // guild 化：新旧频道路径统一解析；副标题带 server 名提示语境
+  const cr = parseChannelRoute(pathname);
+  if (cr) {
+    const serverName = serverStore.orgs.find((o) => o.id === cr.serverId)?.name;
+    const scope = serverName ? `${serverName} · ` : "";
+    if (cr.threadId) return { title: "线程", subtitle: `${scope}#${cr.channelName}` };
+    return { title: `#${cr.channelName}`, subtitle: `${scope}频道` };
   }
   if (pathname.startsWith("/dm/")) {
     const peer = decode(pathname.split("/")[2]);
@@ -52,9 +59,9 @@ function useRouteTitle(pathname: string): { title: string; subtitle: string } {
     if (thread) return { title: "线程", subtitle: `@${peer}` };
     return { title: `@${peer}`, subtitle: "私信" };
   }
-  if (pathname.startsWith("/tasks")) {
-    const ch = pathname.split("/")[2];
-    if (ch) return { title: "任务看板", subtitle: `#${decode(ch)}` };
+  const tr = parseTasksRoute(pathname);
+  if (tr) {
+    if (tr.channelName) return { title: "任务看板", subtitle: `#${tr.channelName}` };
     return { title: "任务看板", subtitle: "" };
   }
   if (pathname === "/activity") return { title: "动态", subtitle: "" };
@@ -78,15 +85,15 @@ const showProfileDrawer = computed(() => !!uiStore.profileTarget && !(route.path
 
 const isPrivateChannel = computed(
   () =>
-    route.path.startsWith("/channels/") &&
+    !!parseChannelRoute(route.path) &&
     channelStore.channels.some(
       (c: any) => c.name === channelStore.activeChannelName && (c.type === "private" || c.visibility === "private"),
     ),
 );
 
 function paneForPath(pathname: string): SidebarPane | null {
-  if (pathname.startsWith("/channels/") || pathname.startsWith("/dm/")) return "chat";
-  if (pathname.startsWith("/tasks")) return "tasks";
+  if (parseChannelRoute(pathname) || pathname.startsWith("/dm/")) return "chat";
+  if (parseTasksRoute(pathname)) return "tasks";
   if (pathname === "/activity") return "activity";
   if (pathname === "/search") return "search";
   if (pathname === "/people" || pathname.startsWith("/settings/members")) {
@@ -108,6 +115,72 @@ watch(
   },
   { immediate: true },
 );
+
+// ---- guild 化：server 语境同步 ----
+// 1) URL serverId → activeServerId：/s/:serverId/* 路由把 server 语境显式化；
+//    非成员 server id（手改 URL/被移出后旧链）回落到合法 active
+watch(
+  [() => route.params.serverId, () => serverStore.orgs],
+  ([sid]) => {
+    if (typeof sid !== "string" || !sid || !serverStore.loaded) return;
+    if (serverStore.orgs.some((o) => o.id === sid)) {
+      if (sid !== serverStore.activeServerId) serverStore.setActive(sid);
+    } else if (serverStore.activeServerId) {
+      void router.replace(channelPath(serverStore.activeServerId, "general"));
+    }
+  },
+  { immediate: true },
+);
+
+// 2) activeServerId → channelStore：切 server 立即清旧列表再拉新 server 频道
+watch(
+  () => serverStore.activeServerId,
+  (sid) => {
+    channelStore.resetForServer(sid);
+    if (sid) void channelStore.fetchChannels(sid);
+  },
+  { immediate: true },
+);
+
+// 3) 旧 URL 规范化：/channels/:name 与 /tasks[/:name] → /s/<active>/...
+//    activeServerId 未就绪时等其就绪（orgs 加载或恢复 localStorage 后再 replace）
+watch(
+  [() => route.path, () => serverStore.activeServerId],
+  ([path, sid]) => {
+    if (!sid) return;
+    const cr = parseChannelRoute(path);
+    if (cr && !cr.serverId) {
+      void router.replace({
+        path: cr.threadId ? threadPath(sid, cr.channelName, cr.threadId) : channelPath(sid, cr.channelName),
+        query: route.query,
+        hash: route.hash,
+      });
+      return;
+    }
+    const tr = parseTasksRoute(path);
+    if (tr && !tr.serverId) {
+      void router.replace({ path: tasksPath(sid, tr.channelName), query: route.query });
+    }
+  },
+  { immediate: true },
+);
+
+// D1：受邀/存量用户没有自有 server 时的持久引导条（每会话可暂关）
+// hasOwnServer 而非 ownedCount：personal server 用户天然 owner，单看 role 会让
+// 判定恒为「已有」，受邀用户永远看不到引导（serverStore.hasOwnServer 注释详述）
+const HINT_DISMISS_KEY = "slock.hideCreateServerHint";
+const hintDismissed = ref(typeof sessionStorage !== "undefined" && sessionStorage.getItem(HINT_DISMISS_KEY) === "1");
+const showCreateServerHint = computed(
+  () => serverStore.loaded && !hasOwnServer(serverStore.orgs, authStore.user?.handle) && !hintDismissed.value,
+);
+function dismissCreateServerHint() {
+  hintDismissed.value = true;
+  try {
+    sessionStorage.setItem(HINT_DISMISS_KEY, "1");
+  } catch {
+    /* ignore */
+  }
+}
 
 function goOnline() {
   uiStore.setOnline(true);
@@ -154,7 +227,9 @@ watch(
 );
 
 onMounted(() => {
-  void channelStore.fetchChannels();
+  // orgs 拉取后 activeServerId 校验/回落由 serverStore.fetchOrgs 完成；
+  // 频道列表由上方 activeServerId watcher 拉取（resetForServer + fetchChannels）
+  void serverStore.fetchOrgs();
   void notificationStore.loadFromApi();
   void computerStore.refresh();
 });
@@ -230,6 +305,22 @@ watch([() => uiStore.terminalAgent, () => channelStore.activeChannelName], ([nam
 
       <div v-if="!uiStore.online" class="bg-amber-500 px-4 py-1.5 text-center text-sm text-gray-900">
         <TriangleAlert class="mr-1 inline h-4 w-4" aria-hidden="true" /> 你当前处于离线状态，新消息可能无法收发
+      </div>
+
+      <div
+        v-if="showCreateServerHint"
+        class="flex items-center justify-center gap-3 border-b border-blue-200 bg-blue-50 px-4 py-1.5 text-sm text-blue-800 dark:border-blue-900 dark:bg-blue-950/60 dark:text-blue-200"
+      >
+        <span>你还没有自己的服务器</span>
+        <button
+          class="rounded-md bg-blue-600 px-2.5 py-0.5 text-xs font-medium text-white hover:bg-blue-700"
+          @click="router.push('/onboarding/server')"
+        >
+          创建你的服务器
+        </button>
+        <button class="text-blue-500 hover:text-blue-700" aria-label="暂时关闭" @click="dismissCreateServerHint">
+          <X class="h-4 w-4" />
+        </button>
       </div>
 
       <ErrorBoundary>

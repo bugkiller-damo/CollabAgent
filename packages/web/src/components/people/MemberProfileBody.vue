@@ -5,7 +5,8 @@ import { Crown } from "@lucide/vue";
 import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { apiClient, apiGet, apiPatch, apiPost } from "../../api";
-import { runtimeCatalog, useAgentStore, useAuthStore, useUiStore } from "../../stores";
+import { channelPath, parseChannelRoute } from "../../lib/nav";
+import { runtimeCatalog, useAgentStore, useAuthStore, useServerStore, useUiStore } from "../../stores";
 import { toast } from "../../stores/toastStore";
 import AgentPatrolPanel from "../admin/AgentPatrolPanel.vue";
 import AgentWorkspacePanel from "../agent/AgentWorkspacePanel.vue";
@@ -36,6 +37,7 @@ const emit = defineEmits<{
 const uiStore = useUiStore();
 const agentStore = useAgentStore();
 const authStore = useAuthStore();
+const serverStore = useServerStore();
 const router = useRouter();
 const route = useRoute();
 
@@ -57,7 +59,7 @@ const draftModel = ref("sonnet");
 type AgentTab = "overview" | "workspace" | "channels" | "patrol";
 const agentTab = ref<AgentTab>("overview");
 
-const isChannelView = computed(() => route.path.startsWith("/channels/"));
+const isChannelView = computed(() => !!parseChannelRoute(route.path));
 
 const liveStatus = computed(() => {
   if (!profile.value || profile.value.type !== "agent") return null;
@@ -226,7 +228,8 @@ function mentionHere() {
 
 function goChannel(name: string) {
   leaveIfOverlay();
-  void router.push("/channels/" + name);
+  const sid = serverStore.activeServerId;
+  void router.push(sid ? channelPath(sid, name) : "/channels/" + name);
 }
 
 function goMembership(c: PersonChannelMembership) {

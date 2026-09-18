@@ -1,4 +1,4 @@
-import { threadBufferKey, useAgentStore, useChannelStore, useMessageStore } from "../stores";
+import { threadBufferKey, useAgentStore, useChannelStore, useMessageStore, useServerStore } from "../stores";
 import type { AgentActivity } from "../stores/agentStore";
 import { useNotificationStore } from "../stores/notificationStore";
 import { useTerminalStore } from "../stores/terminalStore";
@@ -15,6 +15,7 @@ export function dispatchWsEvent(msg: WsServerEvent): void {
   const agentStore = useAgentStore();
   const notificationStore = useNotificationStore();
   const terminalStore = useTerminalStore();
+  const serverStore = useServerStore();
 
   // 统一按 string 取 type：WsServerEvent 是多个来源的并集（shared WsServerMessage +
   // LocalWsEvent + AgentStatusEvent），直接解构会被 TS 收窄成单一 union 而误报无可比性
@@ -112,9 +113,13 @@ export function dispatchWsEvent(msg: WsServerEvent): void {
     // agents-dispatch.ts 三处同口径）；snake 仅作兜底
     const threadId = (m.threadId || m.thread_id || null) as string | null;
     // server 三处广播（messages.ts / agents-messages.ts / agents-dispatch.ts）的 channelId
-    // 统一为 "#name" / "dm:<uuid>"，直接作 targetKey——此前按 c.id === m.channelId 反查
-    // channels 的分支在生产恒不命中（server 从不发裸 UUID），已删除（P1-9）
-    const targetKey = m.channelId as string;
+    // 统一为 "#name" / "dm:<uuid>"；频道类 target 再前缀 serverId 作本地 key——
+    // 跨 server 同名频道（两边都有 general）在缓冲区/未读计数里必须消歧（guild 化）
+    const msgServerId = (m.serverId as string | undefined) ?? null;
+    const targetKey =
+      typeof m.channelId === "string" && m.channelId.startsWith("#") && msgServerId
+        ? `${msgServerId}:${m.channelId}`
+        : (m.channelId as string);
     const normalized = {
       id: m.id,
       seq: m.seq,
@@ -143,9 +148,14 @@ export function dispatchWsEvent(msg: WsServerEvent): void {
     // 聚合徽标（SidebarRail 单调增长）。DM 不计：全站无 per-DM 未读徽标消费方，计入
     // 只推高聚合值且无任何清除路径；DM 提醒由独立通知链路覆盖（server 发 type:"dm"
     // 通知 → notificationStore → 动态/铃铛徽标）
-    if (typeof targetKey === "string" && targetKey.startsWith("#")) {
-      const name = targetKey.slice(1);
-      if (name !== channelStore.activeChannelName) channelStore.incrementUnread(name);
+    // P1-9 未读计数：仅频道消息计入。key 为 (serverId, 频道名)——其他 server 的同名
+    // 频道消息进对应 server 的未读桶；当前正在看的频道（同 server 同名）才不计。
+    // DM 不计：全站无 per-DM 未读徽标消费方，计入只推高聚合值且无任何清除路径；
+    // DM 提醒由独立通知链路覆盖（server 发 type:"dm" 通知 → notificationStore）
+    if (typeof m.channelId === "string" && m.channelId.startsWith("#")) {
+      const name = m.channelId.slice(1);
+      const isViewing = msgServerId === (serverStore.activeServerId ?? null) && name === channelStore.activeChannelName;
+      if (!isViewing) channelStore.incrementUnread(msgServerId, name);
     }
   }
 }

@@ -46,6 +46,7 @@ async function insertAndDeliver(
       id: msg.id,
       seq: msg.seq,
       channelId: "#" + channelName,
+      serverId,
       senderId,
       senderName: senderAgent?.display_name || senderAgent?.name || "Agent",
       senderHandle: senderAgent?.name || "agent",

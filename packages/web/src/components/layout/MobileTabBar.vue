@@ -2,13 +2,15 @@
 import { MessageCircle, ShieldCheck, Users, Zap } from "@lucide/vue";
 import { type Component, computed, markRaw } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { type SidebarPane, useChannelStore, useNotificationStore, useUiStore } from "../../stores";
+import { channelPath, parseChannelRoute, parseTasksRoute, tasksPath } from "../../lib/nav";
+import { type SidebarPane, useChannelStore, useNotificationStore, useServerStore, useUiStore } from "../../stores";
 
 const route = useRoute();
 const router = useRouter();
 const uiStore = useUiStore();
 const channelStore = useChannelStore();
 const notificationStore = useNotificationStore();
+const serverStore = useServerStore();
 
 const tabs: { id: SidebarPane | "tasks-page"; label: string; icon: Component }[] = [
   { id: "chat", label: "聊天", icon: markRaw(MessageCircle) },
@@ -18,8 +20,8 @@ const tabs: { id: SidebarPane | "tasks-page"; label: string; icon: Component }[]
 ];
 
 function isActive(id: string): boolean {
-  if (id === "tasks-page") return route.path.startsWith("/tasks");
-  if (id === "chat") return route.path.startsWith("/channels") || route.path.startsWith("/dm");
+  if (id === "tasks-page") return !!parseTasksRoute(route.path);
+  if (id === "chat") return !!parseChannelRoute(route.path) || route.path.startsWith("/dm");
   if (id === "people") {
     return (
       route.path === "/people" || route.path.startsWith("/settings/members") || route.path.startsWith("/computers")
@@ -38,13 +40,17 @@ function badge(id: string): number {
 function onTab(id: string) {
   uiStore.closeMobileDrawer();
   if (id === "tasks-page") {
+    const sid = serverStore.activeServerId;
     const ch = channelStore.activeChannelName;
-    void router.push(ch ? `/tasks/${encodeURIComponent(ch)}` : "/tasks");
+    void router.push(sid ? tasksPath(sid, ch || undefined) : ch ? `/tasks/${encodeURIComponent(ch)}` : "/tasks");
     return;
   }
   if (id === "chat") {
+    const sid = serverStore.activeServerId;
     const ch = channelStore.activeChannelName;
-    void router.push(ch ? `/channels/${encodeURIComponent(ch)}` : "/channels/general");
+    void router.push(
+      sid ? channelPath(sid, ch || "general") : ch ? `/channels/${encodeURIComponent(ch)}` : "/channels/general",
+    );
     return;
   }
   if (id === "activity") {

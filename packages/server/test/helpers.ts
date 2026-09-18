@@ -94,14 +94,17 @@ export async function registerUser(handle?: string): Promise<TestUser> {
   return { handle: h, userId: r.data.user.id, token: r.data.token, csrf: r.data.csrf, cookie: r.cookieHeader };
 }
 
-// P1.30：把测试用户立为某非个人社区的 owner（metrics admin 门禁的通过侧 fixture）。
-// 注意个人空间 owner 不算 admin（每用户都有，门禁会失效）——必须是 personal=false。
-// 返回新建社区 id；cleanupTestData 按 created_by/owner_id 维度会清掉该空社区。
+// P1.30：把测试用户立为默认社区的 owner（metrics admin 门禁的通过侧 fixture）。
+// 2026-09-18 guild 化收紧后 admin = 默认社区（最早非个人 server）owner——自建
+// 非默认社区不再授予 admin（POST /api/orgs 放开后那等于全员放行）。给默认社区
+// 加 owner 成员行即可：不动 servers.owner_id（bootstrap 首用户位，覆写会让
+// cleanupTestData 按 owner_id 误删默认社区）。返回默认社区 id；
+// cleanupTestData 按 server_members.user_id 维度回收该成员行。
 export async function makeOrgOwner(user: TestUser): Promise<string> {
-  const rows = await sql`INSERT INTO servers (name, created_by, owner_id, personal)
-                         VALUES (${user.handle + "_org"}, ${user.userId}, ${user.userId}, false) RETURNING id`;
+  const rows = await sql`SELECT id FROM servers WHERE personal = false ORDER BY created_at ASC LIMIT 1`;
   const id = String(rows[0].id);
-  await sql`INSERT INTO server_members (server_id, user_id, role) VALUES (${id}, ${user.userId}, 'owner') ON CONFLICT DO NOTHING`;
+  await sql`INSERT INTO server_members (server_id, user_id, role) VALUES (${id}, ${user.userId}, 'owner')
+            ON CONFLICT (server_id, user_id) DO UPDATE SET role = 'owner'`;
   return id;
 }
 

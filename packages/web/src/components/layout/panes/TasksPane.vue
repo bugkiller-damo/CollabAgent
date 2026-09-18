@@ -2,7 +2,8 @@
 import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { apiGet } from "../../../api";
-import { useChannelStore, useUiStore } from "../../../stores";
+import { parseTasksRoute, tasksPath } from "../../../lib/nav";
+import { useChannelStore, useServerStore, useUiStore } from "../../../stores";
 import SidebarSection from "../SidebarSection.vue";
 
 interface Task {
@@ -12,12 +13,14 @@ interface Task {
 const route = useRoute();
 const router = useRouter();
 const channelStore = useChannelStore();
+const serverStore = useServerStore();
 const uiStore = useUiStore();
 
 const channels = computed(() => channelStore.channels);
+const routeServerId = computed(() => parseTasksRoute(route.path)?.serverId);
 const activeFromRoute = computed(() => {
-  const p = route.params.channelName;
-  if (typeof p === "string" && route.path.startsWith("/tasks")) return p;
+  const parsed = parseTasksRoute(route.path);
+  if (parsed?.channelName) return decodeURIComponent(parsed.channelName);
   return channelStore.activeChannelName || channels.value[0]?.name || "";
 });
 
@@ -44,7 +47,8 @@ watch(activeFromRoute, (name) => loadCounts(name), { immediate: true });
 
 function openChannel(name: string) {
   uiStore.closeMobileDrawer();
-  void router.push("/tasks/" + encodeURIComponent(name));
+  const sid = routeServerId.value || serverStore.activeServerId;
+  void router.push(sid ? tasksPath(sid, name) : "/tasks/" + encodeURIComponent(name));
 }
 
 const summary = computed(() => counts.value[activeFromRoute.value]);

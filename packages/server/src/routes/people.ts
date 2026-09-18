@@ -57,7 +57,7 @@ export async function peopleRoutes(app: FastifyInstance) {
       reply.status(403).send({ error: "not a member of that server" });
       return null;
     }
-    const peer = await resolvePeer(app, rawHandle, tenant.explicit ? tenant.serverId : undefined);
+    const peer = await resolvePeer(app, rawHandle, tenant.explicit ? tenant.serverId : undefined, req.user.sub);
     if (!peer) {
       reply.status(404).send({ error: "not found" });
       return null;

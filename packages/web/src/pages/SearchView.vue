@@ -7,7 +7,8 @@ import MarkdownContent from "../components/chat/MarkdownContent.vue";
 import EmptyState from "../components/EmptyState.vue";
 import PageHeader from "../components/layout/PageHeader.vue";
 import { formatTime } from "../lib/formatTime";
-import { useUiStore } from "../stores";
+import { channelPath } from "../lib/nav";
+import { useServerStore, useUiStore } from "../stores";
 
 interface SearchResult {
   id: string;
@@ -19,6 +20,7 @@ interface SearchResult {
 
 const router = useRouter();
 const uiStore = useUiStore();
+const serverStore = useServerStore();
 const query = ref("");
 const results = ref<SearchResult[]>([]);
 const loading = ref(false);
@@ -57,7 +59,9 @@ function navigateTo(r: SearchResult) {
   const ch = r.channelId?.startsWith("#") ? r.channelId.slice(1) : r.channelId;
   uiStore.openSidebarPane("chat");
   uiStore.closeMobileDrawer();
-  void router.push(`/channels/${ch}#${r.id}`);
+  // 搜索随 x-server-id 注入圈定活跃 server（结果均属该 server），直接生成规范路径
+  const sid = serverStore.activeServerId;
+  void router.push(sid ? `${channelPath(sid, ch)}#${r.id}` : `/channels/${ch}#${r.id}`);
 }
 
 onMounted(() => {

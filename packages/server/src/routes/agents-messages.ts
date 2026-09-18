@@ -111,6 +111,7 @@ export async function agentMessageRoutes(app: FastifyInstance) {
         id: msg.id,
         seq: msg.seq,
         channelId: dm ? "dm:" + channelDbId : "#" + (tstr.startsWith("#") ? tstr.slice(1).split(":")[0] : tstr),
+        serverId,
         senderId: agentId,
         senderName: agent?.display_name || agent?.name || "Agent",
         senderHandle: agent?.name || "agent",

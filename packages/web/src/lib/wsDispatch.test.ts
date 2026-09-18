@@ -4,6 +4,7 @@ import { useAgentStore } from "../stores/agentStore";
 import { useChannelStore } from "../stores/channelStore";
 import { useMessageStore } from "../stores/messageStore";
 import { useNotificationStore } from "../stores/notificationStore";
+import { useServerStore } from "../stores/serverStore";
 import { useTerminalStore } from "../stores/terminalStore";
 import { dispatchWsEvent } from "./wsDispatch";
 
@@ -13,7 +14,9 @@ import { dispatchWsEvent } from "./wsDispatch";
 vi.mock("../api", () => ({
   apiGet: vi.fn(),
   apiPost: vi.fn(),
+  apiPatch: vi.fn(),
   apiClient: vi.fn(),
+  setTenantProvider: vi.fn(), // serverStore setup 调用（x-server-id 注入源）
 }));
 
 function stubLocalStorage() {
@@ -343,8 +346,9 @@ describe("wsDispatch", () => {
     expect(messageStore.messagesByTarget["dm:dm-uuid-1:99999999"]).toHaveLength(1);
   });
 
-  // P1-9：未读计数 key 统一裸名 + 正在看的频道不计 + DM 走通知链路不计频道未读
-  function deliver(channelId: string, id: string, threadId?: string) {
+  // 未读计数 key = "<serverId>:<裸名>"（广播无 serverId 时 ":<名>"）——
+  // 正在看的频道不计 + 跨 server 分桶 + DM 走通知链路不计频道未读
+  function deliver(channelId: string, id: string, threadId?: string, serverId?: string) {
     dispatchWsEvent({
       type: "agent:deliver",
       message: {
@@ -357,36 +361,61 @@ describe("wsDispatch", () => {
         content: "hi",
         time: "t",
         ...(threadId ? { threadId } : {}),
+        ...(serverId ? { serverId } : {}),
       },
     } as any);
   }
 
-  it("非当前频道投递 → 未读 +1 且 key 为裸名（与 ChatPane 读侧 unreadCounts[ch.name] 同口径）", () => {
+  it("非当前频道投递 → 未读 +1 且 key 为 '<serverId>:<名>'（与 ChatPane unreadKeyFor 同口径）", () => {
     const channelStore = useChannelStore();
     channelStore.setActiveChannel("general");
 
-    deliver("#random", "m-u1");
-    deliver("#random", "m-u2");
+    deliver("#random", "m-u1", undefined, "s1");
+    deliver("#random", "m-u2", undefined, "s1");
 
-    expect(channelStore.unreadCounts.random).toBe(2);
-    expect(channelStore.unreadCounts["#random"]).toBeUndefined(); // 无 #-前缀 key 残留
+    expect(channelStore.unreadCounts["s1:random"]).toBe(2);
+    expect(channelStore.unreadCounts["s1:#random"]).toBeUndefined(); // 无 #-前缀 key 残留
   });
 
-  it("正在看的频道不计未读（此前 ch 反查恒 undefined，active 频道也累计进聚合徽标）", () => {
+  it("正在看的频道不计未读（同 server 同频道名守卫）", () => {
     const channelStore = useChannelStore();
+    const serverStore = useServerStore();
+    serverStore.setActive("s1");
+    channelStore.resetForServer("s1");
     channelStore.setActiveChannel("general");
 
-    deliver("#general", "m-u3");
+    deliver("#general", "m-u3", undefined, "s1");
 
-    expect(channelStore.unreadCounts.general ?? 0).toBe(0);
+    expect(channelStore.unreadCounts["s1:general"] ?? 0).toBe(0);
+  });
+
+  it("其他 server 的同名频道照计未读——serverId 不匹配 active 守卫", () => {
+    const channelStore = useChannelStore();
+    const serverStore = useServerStore();
+    serverStore.setActive("s1");
+    channelStore.resetForServer("s1");
+    channelStore.setActiveChannel("general");
+
+    deliver("#general", "m-u3b", undefined, "s2"); // server B 的 general
+
+    expect(channelStore.unreadCounts["s2:general"]).toBe(1);
+    expect(channelStore.unreadCounts["s1:general"] ?? 0).toBe(0);
   });
 
   it("未打开任何频道（activeChannelName=null）也正常累计——守卫不再以 activeChannelName 为前提", () => {
     const channelStore = useChannelStore();
 
-    deliver("#random", "m-u4");
+    deliver("#random", "m-u4", undefined, "s1");
 
-    expect(channelStore.unreadCounts.random).toBe(1);
+    expect(channelStore.unreadCounts["s1:random"]).toBe(1);
+  });
+
+  it("广播缺 serverId（旧端点/单租户）退化为 ':name' key，读写同口径", () => {
+    const channelStore = useChannelStore();
+
+    deliver("#random", "m-u4b");
+
+    expect(channelStore.unreadCounts[":random"]).toBe(1);
   });
 
   it("DM 投递不计频道未读（无 per-DM 徽标消费方；DM 提醒走 type:dm 通知链路）", () => {
@@ -399,10 +428,9 @@ describe("wsDispatch", () => {
 
   it("线程回复仍计所属频道未读（频道有新活动，语义保留）", () => {
     const channelStore = useChannelStore();
-    channelStore.setActiveChannel("general");
 
-    deliver("#random", "m-u6", "12345678-1234-1234-1234-123456789abc");
+    deliver("#random", "m-u6", "12345678-1234-1234-1234-123456789abc", "s1");
 
-    expect(channelStore.unreadCounts.random).toBe(1);
+    expect(channelStore.unreadCounts["s1:random"]).toBe(1);
   });
 });

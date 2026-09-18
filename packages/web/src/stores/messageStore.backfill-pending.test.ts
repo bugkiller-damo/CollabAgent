@@ -74,11 +74,17 @@ describe("backfill 断线增量补拉", () => {
     await store.backfillTarget("#a");
 
     expect(apiGetMock).toHaveBeenCalledTimes(1);
-    expect(apiGetMock).toHaveBeenCalledWith("/api/messages/history", {
-      channel: "#a",
-      after: "3",
-      limit: "200",
-    });
+    // 非 scoped key → (url, params, signal, init) 后两位为 undefined（无 x-server-id 覆盖）
+    expect(apiGetMock).toHaveBeenCalledWith(
+      "/api/messages/history",
+      {
+        channel: "#a",
+        after: "3",
+        limit: "200",
+      },
+      undefined,
+      undefined,
+    );
     const list = store.messagesByTarget["#a"];
     expect(list.map((m) => m.seq)).toEqual([1, 3, 4, 5]); // 升序且 m-#a-3 未重复入列
     expect(store.lastSeenSeq["#a"]).toBe(5);
@@ -243,11 +249,16 @@ describe("backfill 断线增量补拉", () => {
 
     // 只对主频道 key 发 history，thread key 不产生请求
     expect(apiGetMock).toHaveBeenCalledTimes(1);
-    expect(apiGetMock).toHaveBeenCalledWith("/api/messages/history", {
-      channel: "#a",
-      after: "1",
-      limit: "200",
-    });
+    expect(apiGetMock).toHaveBeenCalledWith(
+      "/api/messages/history",
+      {
+        channel: "#a",
+        after: "1",
+        limit: "200",
+      },
+      undefined,
+      undefined,
+    );
   });
 });
 

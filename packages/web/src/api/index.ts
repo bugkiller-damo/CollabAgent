@@ -5,7 +5,19 @@
  * ServerError 类，这里保持原样。
  */
 
-type FetchOptions = Omit<RequestInit, "body"> & { body?: unknown };
+type FetchOptions = Omit<RequestInit, "body"> & {
+  body?: unknown;
+  /** 传 false 关闭本请求的 x-server-id 注入（全局语境端点用，如跨 server 搜索） */
+  tenant?: boolean;
+};
+
+// ---- 租户注入（guild 化）----
+// serverStore 注册 provider，apiClient 对 /api/ 请求统一注入 x-server-id。
+// 用 provider 回调而不是直接 import store：api 是 stores 的下游依赖，反向 import 会成环。
+let tenantProvider: (() => string | null) | null = null;
+export function setTenantProvider(fn: (() => string | null) | null): void {
+  tenantProvider = fn;
+}
 
 /**
  * W-A4：带 HTTP 状态码的错误（message 与原 plain Error 完全一致，全站 err?.message 消费方零影响）。
@@ -41,10 +53,20 @@ export async function apiClient<T = unknown>(url: string, options: FetchOptions 
     if (csrf) headers["X-CSRF-Token"] = csrf;
   }
 
+  // guild 化：/api/ 请求默认携带活跃 server 语境（resolveTenant 的 header 优先级
+  // 高于 Host/默认降级）。显式 x-server-id 已存在时不覆盖（离线队列重发按其入队时
+  // 的 server 投递）；tenant:false 可整体关闭（跨 server 的全局端点）。
+  const explicitHeaders = options.headers as Record<string, string> | undefined;
+  if (options.tenant !== false && url.startsWith("/api/") && !explicitHeaders?.["x-server-id"]) {
+    const sid = tenantProvider?.();
+    if (sid) headers["x-server-id"] = sid;
+  }
+
+  const { tenant: _tenant, ...rest } = options;
   const res = await fetch(url, {
-    ...options,
+    ...rest,
     credentials: "include",
-    headers: { ...headers, ...(options.headers as Record<string, string>) },
+    headers: { ...headers, ...explicitHeaders },
     body: options.body ? JSON.stringify(options.body) : undefined,
   });
 
@@ -55,17 +77,25 @@ export async function apiClient<T = unknown>(url: string, options: FetchOptions 
   return res.json();
 }
 
-export function apiGet<T = unknown>(url: string, params?: Record<string, string>, signal?: AbortSignal): Promise<T> {
+/** 按请求覆盖：tenant:false 关注入；headers["x-server-id"] 强制指定 server（离线重发等） */
+export type ApiInit = Pick<FetchOptions, "tenant" | "headers">;
+
+export function apiGet<T = unknown>(
+  url: string,
+  params?: Record<string, string>,
+  signal?: AbortSignal,
+  init?: ApiInit,
+): Promise<T> {
   const qs = params ? "?" + new URLSearchParams(params).toString() : "";
-  return apiClient<T>(url + qs, { method: "GET", signal });
+  return apiClient<T>(url + qs, { method: "GET", signal, ...init });
 }
 
-export function apiPatch<T = unknown>(url: string, body?: unknown, signal?: AbortSignal): Promise<T> {
-  return apiClient<T>(url, { method: "PATCH", body, signal });
+export function apiPatch<T = unknown>(url: string, body?: unknown, signal?: AbortSignal, init?: ApiInit): Promise<T> {
+  return apiClient<T>(url, { method: "PATCH", body, signal, ...init });
 }
 
-export function apiPost<T = unknown>(url: string, body?: unknown, signal?: AbortSignal): Promise<T> {
-  return apiClient<T>(url, { method: "POST", body, signal });
+export function apiPost<T = unknown>(url: string, body?: unknown, signal?: AbortSignal, init?: ApiInit): Promise<T> {
+  return apiClient<T>(url, { method: "POST", body, signal, ...init });
 }
 
 export interface UploadedAttachment {

@@ -12,10 +12,14 @@ export interface Party {
 // 解析一个 handle（用户 handle 或 agent name）为对端实体。
 // serverId（可选）：agent name 只在 server 内唯一（idx_agents_server_name），显式租户下
 // 必须带 serverId 解析，否则同名 agent 会跨社区串号（O3）。用户 handle 全局唯一，不受影响。
+// meId（可选，DM 语境）：serverId 范围内解析不到 agent 时的兜底——
+// 依次找「我自己的 agent」（跨 server，DM 发起语义本就指我的 agent）与
+// 「与我共享任一 server 的 agent」。不放宽 user/频道解析，仅限 DM 对端消歧。
 export async function resolvePeer(
   app: FastifyInstance,
   rawHandle: string,
   serverId?: string | null,
+  meId?: string | null,
 ): Promise<Party | null> {
   const clean = String(rawHandle).replace(/^@/, "");
   if (!clean) return null;
@@ -39,6 +43,25 @@ export async function resolvePeer(
   if (a.rows.length) {
     const r = a.rows[0];
     return { id: String(r.id), type: "agent", handle: r.name, displayName: r.display_name ?? undefined };
+  }
+  // 兜底仅在「显式 server 范围解析失败 + 知道我是谁」时启用——
+  // 自己的 agent 优先于同 server 他人的同名 agent
+  if (serverId && meId) {
+    const fb = await app.pg.query<{ id: number; name: string; display_name: string | null }>(
+      `SELECT a.id, a.name, a.display_name FROM agents a
+        WHERE a.name = $1 AND (
+          a.user_id::text = $2
+          OR EXISTS (SELECT 1 FROM server_members sm
+                      WHERE sm.server_id = a.server_id AND sm.user_id::text = $2)
+        )
+        ORDER BY (a.user_id::text = $2) DESC
+        LIMIT 1`,
+      [clean, meId],
+    );
+    if (fb.rows.length) {
+      const r = fb.rows[0];
+      return { id: String(r.id), type: "agent", handle: r.name, displayName: r.display_name ?? undefined };
+    }
   }
   return null;
 }
@@ -114,7 +137,7 @@ export async function resolveDmTarget(
   const body = target.slice(3); // 去掉 "dm:"
   const first = body.split(":")[0];
   if (first.startsWith("@")) {
-    const peer = await resolvePeer(app, first, serverId);
+    const peer = await resolvePeer(app, first, serverId, me.id);
     if (!peer) return null;
     const channelId = await getOrCreateDmChannel(app, me, peer);
     return { channelId, peer };

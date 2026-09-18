@@ -10,7 +10,7 @@ import MemberProfileBody from "../components/people/MemberProfileBody.vue";
 import Avatar from "../components/ui/Avatar.vue";
 import Input from "../components/ui/Input.vue";
 import { LG_QUERY, useMediaQuery } from "../composables";
-import { runtimeCatalog, useAgentStore, useAuthStore, useUiStore } from "../stores";
+import { runtimeCatalog, useAgentStore, useAuthStore, useServerStore, useUiStore } from "../stores";
 
 interface AgentComputer {
   id: string;
@@ -31,6 +31,7 @@ interface Agent {
   runtime?: string;
   model?: string;
   user_id?: string;
+  server_id?: string;
   computer?: AgentComputer | null;
 }
 
@@ -45,6 +46,7 @@ const router = useRouter();
 const uiStore = useUiStore();
 const agentStore = useAgentStore();
 const authStore = useAuthStore();
+const serverStore = useServerStore();
 const isDesktop = useMediaQuery(LG_QUERY);
 
 const agents = ref<Agent[]>([]);
@@ -65,14 +67,18 @@ const humansError = ref("");
 async function load() {
   agentsError.value = "";
   humansError.value = "";
+  const sid = serverStore.activeServerId;
   const agentsReq = apiGet<{ agents: Agent[] }>("/api/agents")
     .then((a) => {
-      agents.value = a.agents || [];
+      // agent 是 server 级记录：成员页只列活跃 server 的 agent（跨 server 同名不混）
+      const all = a.agents || [];
+      agents.value = sid ? all.filter((x) => String(x.server_id) === sid) : all;
     })
     .catch((err: any) => {
       agentsError.value = err?.message || "网络错误";
     });
-  const humansReq = apiGet<{ humans?: Human[] }>("/api/server/info")
+  // humans 走 /api/server/info（resolveTenant → x-server-id 注入圈定活跃 server）
+  const humansReq = apiGet<{ humans?: Human[] }>("/api/server/info", sid ? { serverId: sid } : undefined)
     .then((s) => {
       humans.value = (s.humans || []).filter((h) => h.handle !== authStore.user?.handle);
     })
@@ -87,6 +93,14 @@ onMounted(async () => {
   loaded.value = true;
   openFromQuery();
 });
+
+// 切 server 后成员语境整体更换，重拉
+watch(
+  () => serverStore.activeServerId,
+  () => {
+    if (loaded.value) void load();
+  },
+);
 
 function retryLoad() {
   void load();
