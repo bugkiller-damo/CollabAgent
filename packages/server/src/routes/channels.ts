@@ -6,7 +6,7 @@ import { getOrCreateDmChannel, type Party, resolvePeer } from "../lib/dm.js";
 import { getStorage } from "../lib/storage.js";
 import { isServerMember, resolveTenant } from "../lib/tenant.js";
 import { thumbKeyFor } from "../lib/thumbnail.js";
-import { getLastAgentRuntime } from "../ws/handler.js";
+import { getLastAgentRuntime, revalidateTerminalWatchersByChannel } from "../ws/handler.js";
 
 export async function channelRoutes(app: FastifyInstance) {
   app.get("/", { preHandler: [app.authenticate] }, async (req, reply) => {
@@ -171,10 +171,19 @@ export async function channelRoutes(app: FastifyInstance) {
     const { channelId } = req.params as Record<string, string>;
     // 私有频道 / DM 不允许自主加入：必须由管理员通过 /invite 拉人，否则拿到
     // 频道 UUID 即可绕过邀请制直接成为成员。
-    const ch = await app.pg.query<{ type: string }>("SELECT type FROM channels WHERE id = $1", [channelId]);
+    const ch = await app.pg.query<{ type: string; server_id: string }>(
+      "SELECT type, server_id::text AS server_id FROM channels WHERE id = $1",
+      [channelId],
+    );
     if (ch.rows.length === 0) return reply.status(404).send({ error: "channel not found" });
     if (ch.rows[0].type !== "public") {
       return reply.status(403).send({ error: "private channels require an invite" });
+    }
+    // 2026-09-17 审计收紧：加入公开频道须为该 server 成员——此前任何登录用户
+    // 拿到频道 UUID 即可零门槛自加入（也是「频道同事」终端观看门槛被伪造的主路径）。
+    // 跨社区协作仍可由频道管理员经 /invite 邀请（成员行直接放行）。
+    if (!(await isServerMember(app, ch.rows[0].server_id, req.user.sub))) {
+      return reply.status(403).send({ error: "not a member of that server" });
     }
     // P1.32：memberType 服务端定死——本端点认证主体恒为人类用户（req.user.sub），
     // agent 入圈走 /internal/agent/:agentId/channels/:name/join；采信 body.memberType
@@ -195,6 +204,7 @@ export async function channelRoutes(app: FastifyInstance) {
       req.user.sub,
     ]);
     invalidateMember(channelId, req.user.sub); // O7：退出后立即失去访问权
+    void revalidateTerminalWatchersByChannel(channelId); // 观看权随成员变更复核（异步，不阻塞响应）
     return { ok: true };
   });
 
@@ -259,7 +269,8 @@ export async function channelRoutes(app: FastifyInstance) {
       return reply.status(403).send({ error: "only channel admins can remove members" });
     }
     await app.pg.query(`DELETE FROM channel_members WHERE channel_id = $1 AND member_id = $2`, [channelId, memberId]);
-    invalidateMember(channelId, memberId); // O7：被移除成员立即失去访问权
+    invalidateMember(channelId, memberId); // O7：被移除成员立即失去观看/访问权
+    void revalidateTerminalWatchersByChannel(channelId); // 频道同事观看权随成员变更复核
     return { ok: true };
   });
 
@@ -350,6 +361,7 @@ export async function channelRoutes(app: FastifyInstance) {
       await tx.query("DELETE FROM channels WHERE id = $1", [channelId]);
       return removedKeys;
     });
+    void revalidateTerminalWatchersByChannel(channelId); // 频道删除后复核全部观看权
     // 事务提交后再删对象字节：引用关系已断；失败仅告警（best-effort），不影响频道删除结果
     // F10：去重后多行可共享同一 storage_key——只清已无任何 attachments 行引用的 key
     for (const key of orphanedKeys) {
@@ -379,7 +391,7 @@ export async function channelRoutes(app: FastifyInstance) {
     if (tenant.explicit && !(await isServerMember(app, tenant.serverId, req.user.sub))) {
       return reply.status(403).send({ error: "not a member of that server" });
     }
-    const scope = tenant.explicit ? tenant.serverId : undefined;
+    const scope = tenant.serverId ?? undefined;
     if (target.startsWith("dm:@")) {
       const userId = req.user.sub;
       const peer = await resolvePeer(app, target.slice(3).split(":")[0], scope);
@@ -389,9 +401,16 @@ export async function channelRoutes(app: FastifyInstance) {
       // dmKey：浏览器侧统一会话键，与 WS 投递 channelId 一致
       return { type: "dm", channelId, dmKey: "dm:" + channelId, peer };
     }
-    // resolveChannel 内部会清理 "#"/线程后缀；显式租户下限定在租户 server 内
+    // resolveChannel 内部会清理 "#"/线程后缀；租户 scope 对齐 messages.ts 的 P1.28
+    // 口径——降级模式也圈定默认 server，跨社区同名频道不再串号
     const ch = await resolveChannel(app, target, "*", scope);
     if (!ch) return reply.status(404).send({ error: "channel not found" });
+    // 2026-09-17 审计 F2 修复：解析结果过频道 ACL——private/DM 非成员、公开频道
+    // 非 server 成员/非频道成员一律 404，不再泄 channels 全行元数据（与 GET /
+    // 列表的 P0.9「非成员不可枚举私有频道名称/描述」口径对齐）
+    if (!(await canAccessChannel(app, String(ch.id), req.user.sub))) {
+      return reply.status(404).send({ error: "channel not found" });
+    }
     return { type: "channel", ...ch };
   });
 

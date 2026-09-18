@@ -6,6 +6,8 @@ import type {
   WsToDaemonMessage,
 } from "@collabagent/shared";
 import type { WebSocket } from "ws";
+// 2026-09-17 审计：公开频道扇出用 server 成员集合（带 TTL 缓存 + 主动失效）
+import { getServerMemberIdSet } from "../lib/access.js";
 import { appendEvent } from "../lib/audit.js";
 // P1.15：令牌校验逻辑统一在 lib/auth-token.ts——机器令牌（sk_machine_）与浏览器
 // JWT 的校验 HTTP/WS 共用同一实现（此前逐行重复两份，修 bug 必改两处；浏览器
@@ -106,9 +108,9 @@ export function getLastAgentRuntime(ownerUserId: string, agentName: string): str
 
 /**
  * 终端观察目标解析 + 鉴权：返回被观察 agent 的 owner userId。
- * 口径与状态可见性一致——owner 本人，或与 agent 共频道的人类成员（频道同事）；
- * 无权/不存在/解析失败 → null（fail-closed，观察通道不放大权限）。
- * 同名冲突时自己的 agent 优先（ORDER BY 自有置顶）。
+ * 2026-09-17 审计 Q1：owner 本人，或（属主开关 allow_terminal_watch 开启时）与 agent
+ * 共频道的人类成员（频道同事）。此前「频道同事」门槛可被零成本满足（公开频道自加入 /
+ * 单方面建 DM），现加属主开关（默认关）——开关经 agent 档案 PATCH 端点由属主设置。
  */
 async function resolveTerminalWatchTarget(watcherUserId: string, agentName: string): Promise<string | null> {
   if (!wsPg) return null;
@@ -117,12 +119,12 @@ async function resolveTerminalWatchTarget(watcherUserId: string, agentName: stri
       `SELECT a.user_id FROM agents a
         WHERE a.name = $1 AND (
           a.user_id::text = $2
-          OR EXISTS (
+          OR (a.allow_terminal_watch = true AND EXISTS (
             SELECT 1 FROM channel_members cm1
             JOIN channel_members cm2 ON cm2.channel_id = cm1.channel_id
             WHERE cm1.member_id = a.id AND cm1.member_type = 'agent'
               AND cm2.member_id::text = $2 AND cm2.member_type = 'human')
-        )
+          ))
         ORDER BY (a.user_id::text = $2) DESC
         LIMIT 1`,
       [agentName, watcherUserId],
@@ -568,7 +570,35 @@ export async function broadcast(channelId: string, event: WsChannelBroadcast) {
         allowedDaemonUserIds = owners.rows.map((r) => String(r.user_id));
         resolved = true;
       } else if (t === "public") {
-        resolved = true;
+        // 2026-09-17 审计收紧：公开频道扇出不再「全体已登录浏览器/daemon」——
+        // 改为「频道所在 server 成员 ∪ 频道人类/agent 成员」（与 canAccessChannel
+        // 收紧口径一致；管理员邀请入圈的跨社区成员仍可达；跨社区浏览器与
+        // daemon 不再收到本社区公开频道明文）。
+        const info = await wsPg.query<{ server_id: string }>(
+          "SELECT server_id::text AS server_id FROM channels WHERE id = $1",
+          [channelId],
+        );
+        const serverId = info.rows[0]?.server_id;
+        if (!serverId) {
+          resolved = false;
+        } else {
+          const sm = await getServerMemberIdSet(wsPg, serverId);
+          const cm = await wsPg.query<{ member_id: string; user_id: string | null }>(
+            `SELECT cm.member_id, a.user_id FROM channel_members cm
+             LEFT JOIN agents a ON cm.member_type = 'agent' AND cm.member_id = a.id
+             WHERE cm.channel_id = $1`,
+            [channelId],
+          );
+          const humanIds = new Set<string>(sm);
+          const daemonIds = new Set<string>(sm);
+          for (const row of cm.rows) {
+            if (!row.user_id) humanIds.add(String(row.member_id)); // 人类成员（agent 行的 member_id 是 agents.id）
+            if (row.user_id) daemonIds.add(String(row.user_id)); // agent 成员 → 其属主 daemon
+          }
+          allowedHumanIds = [...humanIds];
+          allowedDaemonUserIds = [...daemonIds];
+          resolved = true;
+        }
       }
       // t 为 undefined（频道不存在）或未知类型值（type 列暂无 CHECK 约束，见 P1.32）
       // → resolved 保持 false，走下方 fail-closed
@@ -626,9 +656,43 @@ export function requestDaemonWorkspace(
   });
 }
 
-/** Broadcast to all connected daemons */
-export function broadcastToDaemons(event: any) {
-  publish({ kind: "all-daemons", event });
+/**
+ * 2026-09-17 审计 Q1 配套：终端观看权是 watch 时一次性判定，成员变更后长连帧流
+ * 不会自动中断。本函数在频道成员变更（移出/退出/频道删除）时被调用，对每个仍在
+ * 观看非自有 agent 的观众重跑 resolveTerminalWatchTarget，不再有权者立即摘除。
+ */
+export async function revalidateTerminalWatchersByChannel(channelId: string): Promise<void> {
+  if (!wsPg || terminalWatchers.size === 0) return;
+  const members = await wsPg
+    .query<{ name: string }>(
+      `SELECT a.name FROM channel_members cm
+       JOIN agents a ON cm.member_id = a.id AND cm.member_type = 'agent'
+       WHERE cm.channel_id = $1`,
+      [channelId],
+    )
+    .catch(() => ({ rows: [] as { name: string }[] }));
+  // 行空（频道已删/无 agent 成员）→ 不提前返回：复核所有观看者（低频操作，多复核无害）
+  for (const [owner, byAgent] of terminalWatchers) {
+    for (const agentName of [...byAgent.keys()]) {
+      // 该 agent 不在被变更的频道里 → 其观看权与本次变更无关，跳过
+      const isMemberHere = members.rows.some((r) => r.name === agentName);
+      if (!isMemberHere) continue;
+      for (const ws of [...(byAgent.get(agentName) ?? [])]) {
+        const watcherId = socketOwnerOf(ws);
+        if (!watcherId || watcherId === owner) continue; // owner 恒有权
+        const stillAllowed = await resolveTerminalWatchTarget(watcherId, agentName);
+        if (!stillAllowed) removeTerminalWatcher(owner, agentName, ws);
+      }
+    }
+  }
+}
+
+/** 观众 socket → 其登录 userId：browserClients 反查（观看复核低频，O(n) 可接受） */
+function socketOwnerOf(ws: WebSocket): string | null {
+  for (const [uid, set] of browserClients) {
+    if (set.has(ws)) return uid;
+  }
+  return null;
 }
 
 /** Send a message to a specific user's browser clients */

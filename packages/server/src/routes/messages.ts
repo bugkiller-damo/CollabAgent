@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { canAccessChannel, getChannelType } from "../lib/access.js";
+import { filterAuthorizedAttachmentIds } from "../lib/attachment-access.js";
 import { appendEvent } from "../lib/audit.js";
 import { cleanChannelName, resolveChannel } from "../lib/channel.js";
 import { dmOtherMembers, isDmTarget, type Party, resolveDmTarget } from "../lib/dm.js";
@@ -252,16 +253,26 @@ export async function messageRoutes(app: FastifyInstance) {
           );
           const mentionedNames = candidates.rows.map((r) => r.name).filter((n) => n && contentMentions(content, n));
           if (mentionedNames.length > 0) {
-            // 公开频道：自动入圈，入圈后即可被唤醒（已是成员的命中行靠 ON CONFLICT 跳过）
+            // 公开频道：自动入圈收窄（2026-09-17 审计 Q2）——非成员 agent 仅在
+            // 属主 opt-in（consent_channel_invite）或发送者本人名下时才被拉入频道；
+            // 已是成员的命中行靠 ON CONFLICT 跳过（管理员/属主邀请过的不受影响）。
             await tx.query(
               `INSERT INTO channel_members (channel_id, member_id, member_type, role)
                SELECT $1, a.id, 'agent', 'member' FROM agents a
-               WHERE a.duty = 'on' AND a.name = ANY($2) AND (a.server_id = $3 OR a.user_id = $4
+               WHERE a.duty = 'on' AND a.name = ANY($2) AND (a.consent_channel_invite OR a.user_id = $3
                  OR a.id IN (SELECT member_id FROM channel_members WHERE channel_id = $1 AND member_type = 'agent'))
                ON CONFLICT DO NOTHING`,
-              [resolvedChannelId, mentionedNames, resolvedServerId, userId],
+              [resolvedChannelId, mentionedNames, userId],
             );
-            mentionAgents = mentionedNames;
+            // 只唤醒「现在确已是成员」的 agent——未被征得属主同意的不入圈也不唤醒，
+            // 避免 daemon 空 spawn 后回复 403 的资源浪费
+            const wakeable = await tx.query<{ name: string }>(
+              `SELECT a.name FROM agents a
+                JOIN channel_members cm ON cm.member_id = a.id AND cm.member_type = 'agent' AND cm.channel_id = $1
+               WHERE a.name = ANY($2)`,
+              [resolvedChannelId, mentionedNames],
+            );
+            mentionAgents = wakeable.rows.map((r) => r.name);
           } else {
             mentionAgents = [];
           }
@@ -279,17 +290,29 @@ export async function messageRoutes(app: FastifyInstance) {
       }
       let attachments: any[] = [];
       if (ids.length > 0) {
-        const values = ids.map((_, i) => `($1, $${i + 2})`).join(", ");
-        await tx.query(
-          `INSERT INTO message_attachments (message_id, attachment_id) VALUES ${values} ON CONFLICT DO NOTHING`,
-          [msg.id, ...ids],
-        );
-        const att = await tx.query<{ id: string; filename: string; mimeType: string; sizeBytes: number; url: string }>(
-          // F7：url 发 /api/attachments/<id>（ACL 端点），不发 storage_url capability URL
-          `SELECT id, filename, mime_type as "mimeType", size_bytes as "sizeBytes", ('/api/attachments/' || id) as url FROM attachments WHERE id = ANY($1)`,
-          [ids],
-        );
-        attachments = att.rows;
+        // 2026-09-17 审计 F1（高危）修复：绑定前授权过滤——发送者须为附件上传者，
+        // 或对附件已挂载的某个频道可访问（即当前本就读得到它）。无权/不存在的 id
+        // 静默过滤，防「把他人私信附件绑进公开频道 → 全站可读化」。
+        const bindable = await filterAuthorizedAttachmentIds(app, userId, ids);
+        if (bindable.length > 0) {
+          const values = bindable.map((_, i) => `($1, $${i + 2})`).join(", ");
+          await tx.query(
+            `INSERT INTO message_attachments (message_id, attachment_id) VALUES ${values} ON CONFLICT DO NOTHING`,
+            [msg.id, ...bindable],
+          );
+          const att = await tx.query<{
+            id: string;
+            filename: string;
+            mimeType: string;
+            sizeBytes: number;
+            url: string;
+          }>(
+            // F7：url 发 /api/attachments/<id>（ACL 端点），不发 storage_url capability URL
+            `SELECT id, filename, mime_type as "mimeType", size_bytes as "sizeBytes", ('/api/attachments/' || id) as url FROM attachments WHERE id = ANY($1)`,
+            [bindable],
+          );
+          attachments = att.rows;
+        }
       }
       return { msg, attachments, mentionAgents, deduplicated: false };
     });
@@ -315,20 +338,23 @@ export async function messageRoutes(app: FastifyInstance) {
           [atNames],
         );
         for (const u of users.rows) {
-          if (String(u.id) !== userId) {
-            await createNotification(app, {
-              userId: String(u.id),
-              type: "@mention",
-              actorId: String(userId),
-              actorName: String(senderHandle),
-              channelId: resolvedChannelId,
-              messageId: String(msg.id),
-              title: `${senderHandle} 在消息中提到了你`,
-              body: (content || "").slice(0, 200),
-              // 动态页/通知铃铛点击跳转要用（旧行无此字段，web 侧按 channelId 兜底解析）
-              metadata: { channelName: cleanChannelName(target) },
-            });
-          }
+          if (String(u.id) === userId) continue;
+          // 2026-09-17 审计 F2 修复：@提及通知与 agent mention 同口径——被提及者
+          // 必须能访问该频道（private/dm 需成员；公开频道需 server 成员）。否则
+          // 私有频道消息 @ 错人时，频道名 + 200 字内容预览会泄给非成员。
+          if (!(await canAccessChannel(app, resolvedChannelId, String(u.id)))) continue;
+          await createNotification(app, {
+            userId: String(u.id),
+            type: "@mention",
+            actorId: String(userId),
+            actorName: String(senderHandle),
+            channelId: resolvedChannelId,
+            messageId: String(msg.id),
+            title: `${senderHandle} 在消息中提到了你`,
+            body: (content || "").slice(0, 200),
+            // 动态页/通知铃铛点击跳转要用（旧行无此字段，web 侧按 channelId 兜底解析）
+            metadata: { channelName: cleanChannelName(target) },
+          });
         }
       }
     }

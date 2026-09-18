@@ -1,7 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { computerOnlineFor } from "../lib/agent-duty.js";
-import { getAgent, isChannelManager, requireOwnAgent } from "../lib/agent-helpers.js";
-import { resolveChannel } from "../lib/channel.js";
+import { getAgent, isChannelManager, requireOwnAgent, resolveAgentChannelByName } from "../lib/agent-helpers.js";
 import { resolvePeer } from "../lib/dm.js";
 import { recordTaskEvent } from "../lib/task-events.js";
 import { acquireTaskNumberLock } from "../lib/task-numbering.js";
@@ -98,7 +97,9 @@ export async function agentDispatchRoutes(app: FastifyInstance) {
     const { channel, toAgent, text } = req.body as { channel?: string; toAgent?: string; text?: string };
     if (!channel || !toAgent || !text) return reply.status(400).send({ error: "channel, toAgent and text required" });
 
-    const ch = await resolveChannel(app, channel, "id, server_id, name");
+    // 2026-09-17 审计 F4 修复：频道名解析限定经理 agent 所属 server（跨社区同名不串号）
+    const manager = await getAgent(app, agentId);
+    const ch = await resolveAgentChannelByName(app, agentId, channel, "id, server_id, name");
     if (!ch) return reply.status(404).send({ error: "channel not found" });
     if (!(await isChannelManager(app, ch.id, agentId))) {
       return reply.status(403).send({ error: "only the channel's designated manager can dispatch tasks" });
@@ -121,7 +122,6 @@ export async function agentDispatchRoutes(app: FastifyInstance) {
       return reply.status(409).send({ error: "worker is off duty" });
     }
 
-    const manager = await getAgent(app, agentId);
     const dispatch = (
       await app.pg.query<{
         id: string;
@@ -186,7 +186,7 @@ export async function agentDispatchRoutes(app: FastifyInstance) {
     const agentId = (req.params as Record<string, string>).agentId;
     const { channel, status } = req.query as Record<string, string>;
     if (!channel) return reply.status(400).send({ error: "channel required" });
-    const ch = await resolveChannel(app, channel, "id");
+    const ch = await resolveAgentChannelByName(app, agentId, channel, "id");
     if (!ch) return reply.status(404).send({ error: "channel not found" });
 
     const asManager = await isChannelManager(app, ch.id, agentId);

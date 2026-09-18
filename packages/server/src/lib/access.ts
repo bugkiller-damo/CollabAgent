@@ -128,8 +128,8 @@ export interface ChannelAccessOptions {
    */
   serverId?: string | null;
   /**
-   * 显式租户下把「公开频道任何登录用户可读」收紧为「必须同时是频道所在 server
-   * 的成员」。单租户降级（默认）保持既有行为，避免存量部署被破坏。
+   * 公开频道是否要求「频道所在 server 成员」身份。2026-09-17 审计起**默认开启**
+   * （收紧为 server 成员口径）；传 false 显式豁免（仅测试/存量迁移期使用）。
    */
   enforceServerMembership?: boolean;
 }
@@ -147,10 +147,40 @@ export async function canAccessChannel(
   if (type !== "dm" && opts.serverId && String(server_id) !== String(opts.serverId)) return false;
   if (type === "private" || type === "dm") {
     if ((await getMemberRole(app, channelId, userId)) === null) return false;
-  } else if (opts.enforceServerMembership) {
-    if (!(await isServerMember(app, String(server_id), userId))) return false;
+  } else {
+    // 2026-09-17 审计决定：公开频道收紧为「频道所在 server 的成员」可读——
+    // 此前仅 enforceServerMembership 显式开启才校验，任意登录用户即可读全站
+    // 公开频道与附件字节。频道成员行（管理员邀请 / 征用入圈）同样放行，保住
+    // 跨社区协作邀请的语义；「零门槛自加入」已由 join 端点的 server 成员门槛
+    // 封死，成员行不再是无权来源。测试或存量豁免用 opts 显式关。
+    if (opts.enforceServerMembership !== false) {
+      const role = await getMemberRole(app, channelId, userId);
+      if (role === null && !(await isServerMember(app, String(server_id), userId))) return false;
+    }
   }
   return true;
+}
+
+/**
+ * 2026-09-17 审计批次 7：server 成员 id 集合（WS 公开频道扇出过滤用）。
+ * 带短 TTL 缓存摊薄每条消息一次的成员查询；成员增删处调 invalidateServerMembers。
+ */
+export async function getServerMemberIdSet(
+  pg: { query: <T = any>(text: string, params?: unknown[]) => Promise<{ rows: T[] }> },
+  serverId: string,
+): Promise<Set<string>> {
+  return cached(`sm:${serverId}`, async () => {
+    const r = await pg.query<{ user_id: string }>(
+      "SELECT user_id::text AS user_id FROM server_members WHERE server_id = $1",
+      [serverId],
+    );
+    return new Set(r.rows.map((row) => String(row.user_id)));
+  });
+}
+
+/** server 成员变更（邀请/移除/注册入圈）后失效对应缓存。 */
+export function invalidateServerMembers(serverId: string): void {
+  clearByPrefix(`sm:${serverId}`);
 }
 
 export async function canManageChannel(app: FastifyInstance, channelId: string, userId: string): Promise<boolean> {

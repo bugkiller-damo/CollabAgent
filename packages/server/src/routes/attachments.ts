@@ -94,7 +94,8 @@ async function serveAttachment(
     const links = await app.pg.query<{ channel_id: string }>(
       `SELECT m.channel_id FROM message_attachments ma
         JOIN messages m ON m.id = ma.message_id
-       WHERE ma.attachment_id = $1 LIMIT 5`,
+       WHERE ma.attachment_id = $1
+       ORDER BY m.created_at ASC`,
       [row.id],
     );
     let allowed = false;
@@ -107,8 +108,20 @@ async function serveAttachment(
     if (!allowed) return reply.status(403).send({ error: "no access to this attachment" });
   }
 
-  // ?meta=1 返回元数据；默认直接下载文件字节（供 slock attachment view 使用）
-  if (meta) return row;
+  // ?meta=1 返回元数据；默认直接下载文件字节（供 slock attachment view 使用）。
+  // 2026-09-17 审计 F5 修复：改白名单字段——此前 SELECT * 整行返回，泄漏
+  // storage_url（配置 S3_PUBLIC_BASE_URL 时为无 ACL 永久直链）/ storage_key /
+  // thumb_key 内部句柄，绕过后续的成员移除与删除。
+  if (meta) {
+    return {
+      id: row.id,
+      filename: row.filename,
+      mimeType: row.mime_type,
+      sizeBytes: Number(row.size_bytes),
+      uploaderId: row.uploader_id,
+      hasThumb: Boolean(row.thumb_key),
+    };
+  }
 
   // F11：缩略图分支——webp 恒 inline；不走 Range（<img> 不发 Range，且 size_bytes 是原图尺寸）
   if (thumb && row.thumb_key) {

@@ -233,9 +233,29 @@ export async function previewRoutes(app: FastifyInstance) {
       if (!ct.includes("text/html")) {
         return { url: finalUrl.toString(), title: finalUrl.hostname };
       }
-      // 仅读取前 256KB，避免大页面
-      const buf = await res.arrayBuffer();
-      const html = Buffer.from(buf.slice(0, 256 * 1024)).toString("utf8");
+      // 仅读取前 256KB，避免大页面。2026-09-17 审计修复：此前 arrayBuffer() 先把
+      // 响应体整包读入内存再截断——恶意超大 text/html 响应可致内存膨胀（DoS）。
+      // 改为流式按块读取，累计超过 256KB 即停止（abort 底层连接）。
+      const MAX_HTML_BYTES = 256 * 1024;
+      const reader = res.body?.getReader();
+      let html = "";
+      if (reader) {
+        const chunks: Uint8Array[] = [];
+        let total = 0;
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done || !value) break;
+          chunks.push(value);
+          total += value.byteLength;
+          if (total >= MAX_HTML_BYTES) {
+            await reader.cancel().catch(() => {});
+            break;
+          }
+        }
+        html = Buffer.concat(chunks.map((c) => Buffer.from(c)))
+          .subarray(0, MAX_HTML_BYTES)
+          .toString("utf8");
+      }
       const title =
         metaContent(html, "og:title", "twitter:title") ||
         decodeEntities(html.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || "") ||

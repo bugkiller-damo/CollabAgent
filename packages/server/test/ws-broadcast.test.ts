@@ -1,15 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { WebSocket } from "ws";
 import type { PubSub } from "../src/lib/pubsub.js";
-import {
-  broadcast,
-  broadcastToDaemons,
-  deliver,
-  sendToDaemon,
-  sendToUser,
-  setPubSub,
-  setWsPg,
-} from "../src/ws/handler.js";
+import { broadcast, deliver, sendToDaemon, sendToUser, setPubSub, setWsPg } from "../src/ws/handler.js";
 
 // P0.2 回归（docs/2026-08-28/01-server-evaluation-report.md）：
 // broadcast() 在频道类型/成员解析失败时必须 fail-closed（丢弃事件），
@@ -19,11 +11,13 @@ import {
 // 纯单元测试：fake wsPg + fake PubSub，可离线跑。
 
 interface FakePg {
-  channels: Map<string, { type: string }>;
+  channels: Map<string, { type: string; server_id?: string }>;
   /** channelId -> human 成员 id 列表 */
   members: Map<string, string[]>;
   /** channelId -> agent 成员归属的 user_id 列表 */
   agentOwners?: Map<string, string[]>;
+  /** serverId -> 成员 user_id 列表（2026-09-17 公开频道扇出收紧语义） */
+  serverMembers?: Map<string, string[]>;
   failChannels?: boolean;
   failMembers?: boolean;
   failAgentOwners?: boolean;
@@ -36,6 +30,22 @@ function makeFakePg(f: FakePg) {
         if (f.failChannels) throw new Error("db jitter");
         const row = f.channels.get(String(params[0]));
         return { rows: row ? [row] : [] };
+      }
+      // 2026-09-17：公开频道扇出的 server 成员查询（getServerMemberIdSet）
+      if (/FROM server_members WHERE server_id/.test(text)) {
+        const ids = f.serverMembers?.get(String(params[0])) ?? [];
+        return { rows: ids.map((user_id) => ({ user_id })) };
+      }
+      // 2026-09-17：公开频道扇出的「频道成员（含 agent 归属）」联合查询
+      if (/SELECT cm.member_id, a.user_id FROM channel_members/.test(text)) {
+        const owners = f.agentOwners?.get(String(params[0])) ?? [];
+        const humans = f.members.get(String(params[0])) ?? [];
+        return {
+          rows: [
+            ...humans.map((member_id) => ({ member_id, user_id: null })),
+            ...owners.map((user_id) => ({ member_id: "agent-" + user_id, user_id })),
+          ],
+        };
       }
       // P1.22：daemon 定向查询（channel_members cm JOIN agents a）先于人类成员查询匹配
       if (/JOIN agents/.test(text)) {
@@ -154,11 +164,18 @@ describe("ws broadcast: fail-closed on channel resolve failure (P0.2)", () => {
 });
 
 describe("ws broadcast: normal delivery unchanged", () => {
-  it("public channel publishes with allowedHumanIds = null (unrestricted)", async () => {
+  it("public channel publishes scoped to server members ∪ channel members (2026-09-17 收紧)", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const { published, pubsub } = makeFakePubSub();
     setPubSub(pubsub);
-    setWsPg(makeFakePg({ channels: new Map([["ch-pub", { type: "public" }]]), members: new Map() }));
+    setWsPg(
+      makeFakePg({
+        channels: new Map([["ch-pub", { type: "public", server_id: "s1" }]]),
+        members: new Map([["ch-pub", ["user-x"]]]),
+        agentOwners: new Map([["ch-pub", ["owner-9"]]]),
+        serverMembers: new Map([["s1", ["user-s1", "user-s2"]]]),
+      }),
+    );
 
     await broadcast("ch-pub", evt);
 
@@ -167,10 +184,22 @@ describe("ws broadcast: normal delivery unchanged", () => {
     expect(published[0].envelope).toMatchObject({
       kind: "channel",
       channelId: "ch-pub",
-      allowedHumanIds: null,
-      allowedDaemonUserIds: null, // 公开频道 daemon 不定向（@提及自动入圈依赖广播面）
+      allowedHumanIds: ["user-s1", "user-s2", "user-x"],
+      allowedDaemonUserIds: ["user-s1", "user-s2", "owner-9"],
       event: evt,
     });
+  });
+
+  it("public channel without server_id fails closed (dropped)", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { published, pubsub } = makeFakePubSub();
+    setPubSub(pubsub);
+    setWsPg(makeFakePg({ channels: new Map([["ch-pub", { type: "public" }]]), members: new Map() }));
+
+    await broadcast("ch-pub", evt);
+
+    expect(published).toHaveLength(0);
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/fail-closed/));
   });
 
   it("private channel publishes restricted to its human members", async () => {
@@ -284,21 +313,25 @@ describe("ws broadcast: daemon targeting by agent membership (P1.22)", () => {
 });
 
 describe("pubsub channel routing by envelope kind (P1.22)", () => {
-  it("routes user/daemon envelopes to the per-user channel, channel/all-daemons to global channels", async () => {
+  it("routes user/daemon envelopes to the per-user channel, channel to the global channel", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const { published, pubsub } = makeFakePubSub();
     setPubSub(pubsub);
-    setWsPg(makeFakePg({ channels: new Map([["ch-pub", { type: "public" }]]), members: new Map() }));
+    setWsPg(
+      makeFakePg({
+        channels: new Map([["ch-pub", { type: "public", server_id: "s1" }]]),
+        members: new Map(),
+        serverMembers: new Map([["s1", ["u-1"]]]),
+      }),
+    );
 
     sendToUser("u-1", { type: "agent:status", agentId: "a", agentName: "n", status: "s", detail: "d" });
     sendToDaemon("u-1", { type: "agent:stop", agentId: "a" });
-    broadcastToDaemons({ type: "x" });
     await broadcast("ch-pub", evt);
 
     expect(published.map((p) => p.channel)).toEqual([
       "slock:ws:v1:u:u-1", // user → 定向频道
       "slock:ws:v1:u:u-1", // daemon → 同一用户定向频道
-      "slock:ws:v1:all", // all-daemons → 全局
       "slock:ws:v1:channel", // 频道广播 → 全局广播面
     ]);
   });

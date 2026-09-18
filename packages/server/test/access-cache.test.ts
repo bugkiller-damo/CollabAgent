@@ -16,6 +16,7 @@ import { api, cleanupTestData, closeSql, registerUser, uniqHandle } from "./help
 interface FakeDb {
   channels: Map<string, { server_id: string; type: string }>;
   members: Map<string, { role: string }>; // key: channelId:userId
+  serverMembers: Set<string>; // key: serverId:userId（2026-09-17 公开频道收紧语义）
   queries: number;
 }
 
@@ -30,6 +31,10 @@ function makeFakeApp(db: FakeDb) {
       if (/FROM channel_members WHERE channel_id/.test(sqlText)) {
         const row = db.members.get(`${String(params[0])}:${String(params[1])}`);
         return { rows: row ? [row] : [] };
+      }
+      if (/FROM server_members WHERE server_id/.test(sqlText)) {
+        const hit = db.serverMembers.has(`${String(params[0])}:${String(params[1])}`);
+        return { rows: hit ? [{ ok: 1 }] : [] };
       }
       return { rows: [] };
     },
@@ -46,6 +51,7 @@ describe("access 缓存语义（O7）", () => {
     const db: FakeDb = {
       channels: new Map([["c1", { server_id: "s1", type: "public" }]]),
       members: new Map(),
+      serverMembers: new Set(),
       queries: 0,
     };
     const app = makeFakeApp(db);
@@ -58,6 +64,7 @@ describe("access 缓存语义（O7）", () => {
     const db: FakeDb = {
       channels: new Map([["c2", { server_id: "s1", type: "public" }]]),
       members: new Map(),
+      serverMembers: new Set(),
       queries: 0,
     };
     const app = makeFakeApp(db);
@@ -74,6 +81,7 @@ describe("access 缓存语义（O7）", () => {
         ["c3:u1", { role: "member" }],
         ["c3:u2", { role: "admin" }],
       ]),
+      serverMembers: new Set(),
       queries: 0,
     };
     const app = makeFakeApp(db);
@@ -90,6 +98,7 @@ describe("access 缓存语义（O7）", () => {
     const db: FakeDb = {
       channels: new Map([["c4", { server_id: "s1", type: "private" }]]),
       members: new Map(),
+      serverMembers: new Set(["s1:u9"]), // 公开频道收紧语义：u9 是 s1 成员（最后的 public 判定需要）
       queries: 0,
     };
     const app = makeFakeApp(db);
@@ -107,6 +116,7 @@ describe("access 缓存语义（O7）", () => {
     const db: FakeDb = {
       channels: new Map([["c5", { server_id: "s1", type: "private" }]]),
       members: new Map([["c5:u7", { role: "member" }]]),
+      serverMembers: new Set(),
       queries: 0,
     };
     const app = makeFakeApp(db);
@@ -121,6 +131,7 @@ describe("access 缓存语义（O7）", () => {
     const db: FakeDb = {
       channels: new Map([["c6", { server_id: "s1", type: "public" }]]),
       members: new Map([["c6:u3", { role: "member" }]]),
+      serverMembers: new Set(),
       queries: 0,
     };
     const app = makeFakeApp(db);
@@ -142,6 +153,7 @@ describe("access 缓存语义（O7）", () => {
     const db: FakeDb = {
       channels: new Map([["c7", { server_id: "s1", type: "public" }]]),
       members: new Map(),
+      serverMembers: new Set(),
       queries: 0,
     };
     const app = makeFakeApp(db);

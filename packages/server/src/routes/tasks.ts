@@ -29,7 +29,10 @@ export async function taskRoutes(app: FastifyInstance) {
   // 返回 null 表示已发 404/403，调用方直接 return。
   async function resolveAccessible(req: any, channel: string, userId: string, reply: any, cols = "id") {
     const tenant = await resolveTenant(app, req);
-    const scope = tenant.explicit ? tenant.serverId : undefined;
+    // 2026-09-17 审计：scope 对齐 messages.ts P1.28 口径——降级模式也圈定默认 server；
+    // canAccessChannel 不再传 enforceServerMembership: explicit（公开频道收紧为全局
+    // 默认，降级模式同样要求 server 成员/频道成员身份）。
+    const scope = tenant.serverId ?? undefined;
     const ch = await resolveChannel(app, channel, cols, scope);
     if (!ch) {
       reply.status(404).send({ error: "channel not found" });
@@ -37,8 +40,7 @@ export async function taskRoutes(app: FastifyInstance) {
     }
     if (
       !(await canAccessChannel(app, ch.id, userId, {
-        serverId: tenant.explicit ? tenant.serverId : undefined,
-        enforceServerMembership: tenant.explicit,
+        serverId: tenant.serverId ?? undefined,
       }))
     ) {
       reply.status(403).send({ error: "no access to this channel" });

@@ -404,6 +404,29 @@ describe("security fixes 2026-07-17", () => {
     const tm2 = (members2.data.members as any[]).find((m) => m.member_type === "agent" && m.handle === "teambot");
     expect(tm2.presence).toBe("working");
 
+    // 2026-09-17 审计 Q1 负向：开关默认关——bob 虽是频道同事，属主未开
+    // allow_terminal_watch 时 watch 不得转发给 daemon（fail-closed，与下方 eve 同形态）
+    let leakedPreToggle = false;
+    const preToggleListener = (raw: any) => {
+      const m = JSON.parse(raw.toString());
+      if (m.type === "terminal:watch") leakedPreToggle = true;
+    };
+    daemonWs.on("message", preToggleListener);
+    ws.send(JSON.stringify({ type: "terminal:watch", agentName: "teambot" }));
+    await new Promise((r) => setTimeout(r, 1500));
+    daemonWs.off("message", preToggleListener);
+    expect(leakedPreToggle).toBe(false);
+
+    // 2026-09-17 审计 Q1：频道同事观看终端需属主开关（allow_terminal_watch 默认关）——
+    // alice 先开启，bob（非 owner 频道同事）的 watch 才会被鉴权转发给 daemon
+    const toggle = await api(`/api/agents/${ag.data.agent.id}`, {
+      method: "PATCH",
+      cookie: alice.cookie,
+      csrf: alice.csrf,
+      body: { allowTerminalWatch: true },
+    });
+    expect(toggle.status).toBe(200);
+
     // 终端观察（G3）频道同事化：bob（频道成员、非 owner）watch teambot——
     // server 鉴权后应把 watch 转发给 alice 的 daemon，daemon 推帧 bob 能收到
     const daemonGotWatch = new Promise<any>((resolve, reject) => {

@@ -1,6 +1,8 @@
 import type { FastifyInstance } from "fastify";
-import { resolveChannel } from "./channel.js";
 import { isDmTarget, type Party, resolveDmTarget } from "./dm.js";
+import { getUserOrgIds } from "./orgs.js";
+import { getDefaultServerId } from "./server.js";
+import { getTenantHostMap, isServerMember } from "./tenant.js";
 
 export async function getAgent(app: FastifyInstance, agentId: string): Promise<any | null> {
   const r = await app.pg.query(
@@ -35,15 +37,33 @@ export async function agentCanAccessChannel(
   channelId: string,
   agentId: string,
 ): Promise<boolean> {
-  const r = await app.pg.query<{ type: string }>("SELECT type FROM channels WHERE id = $1", [channelId]);
-  const type = r.rows[0]?.type;
-  if (type == null) return false;
-  if (type !== "private" && type !== "dm") return true;
-  const m = await app.pg.query(
+  const r = await app.pg.query<{ type: string; server_id: string }>(
+    "SELECT type, server_id::text AS server_id FROM channels WHERE id = $1",
+    [channelId],
+  );
+  const row = r.rows[0];
+  if (!row) return false;
+  if (row.type === "private" || row.type === "dm") {
+    const m = await app.pg.query(
+      "SELECT 1 FROM channel_members WHERE channel_id = $1 AND member_id = $2 AND member_type = 'agent'",
+      [channelId, agentId],
+    );
+    return m.rows.length > 0;
+  }
+  // 2026-09-17 审计收紧：公开频道不再无条件放行——与人类侧 canAccessChannel 同口径，
+  // agent 属主须为频道所在 server 的成员（封死「持 scoped token 的 agent 写任意
+  // 社区公开频道」与多租户跨社区同名频道串号两个面）。被邀请/征用入圈的 agent
+  // （含跨社区协作邀请）同样放行——与人类侧「频道成员行同放行」一致。
+  const ag = await app.pg.query<{ user_id: string }>("SELECT user_id::text AS user_id FROM agents WHERE id = $1", [
+    agentId,
+  ]);
+  if (!ag.rows[0]) return false;
+  const am = await app.pg.query(
     "SELECT 1 FROM channel_members WHERE channel_id = $1 AND member_id = $2 AND member_type = 'agent'",
     [channelId, agentId],
   );
-  return m.rows.length > 0;
+  if (am.rows.length > 0) return true;
+  return isServerMember(app, row.server_id, String(ag.rows[0].user_id));
 }
 
 export async function isChannelManager(app: FastifyInstance, channelId: string, agentId: string): Promise<boolean> {
@@ -65,10 +85,43 @@ export async function resolveAgentChannelDbId(
     const r = await resolveDmTarget(app, me, channelArg);
     return r?.channelId ?? null;
   }
-  const ch = await resolveChannel(app, channelArg);
+  // 2026-09-17 审计 F4 修复：频道名解析走 resolveAgentChannelByName 的候选集口径
+  const ch = await resolveAgentChannelByName(app, agentId, channelArg, "id");
   return ch?.id ?? null;
 }
 
-export async function resolveChannelByName(app: FastifyInstance, channel: string): Promise<any | null> {
-  return resolveChannel(app, channel, "id, server_id");
+/**
+ * 2026-09-17 审计 F4 修复：agent 视角的频道名解析——候选限定在
+ * agent 所属 server ∪ 属主所属 org ∪（单租户部署的）默认社区，
+ * 与 agents.ts join/leave 的 resolveTenantChannel 同口径：跨社区同名频道
+ * 不再串号，同时不误伤「agent 在私有空间、频道在默认社区」的既有协作流。
+ * 命中优先级：agent 自己的 server 置顶。
+ */
+export async function resolveAgentChannelByName(
+  app: FastifyInstance,
+  agentId: string,
+  channel: string,
+  fields = "id, server_id",
+): Promise<any | null> {
+  const ag = await getAgent(app, agentId);
+  if (!ag) return null;
+  const candidates = new Set<string>([String(ag.server_id), ...(await getUserOrgIds(app, String(ag.user_id)))]);
+  if (getTenantHostMap().size === 0) {
+    const fallback = await getDefaultServerId(app);
+    if (fallback) candidates.add(fallback);
+  }
+  const r = await app.pg.query(
+    `SELECT ${fields} FROM channels
+      WHERE name = $1 AND server_id::text = ANY($2)
+      ORDER BY (server_id::text = $3) DESC
+      LIMIT 1`,
+    [resolveChannelNameOnly(channel), [...candidates], String(ag.server_id)],
+  );
+  return r.rows[0] ?? null;
+}
+
+/** 频道名预清洗（剥 "#" 与线程后缀），供 ANY 候选查询使用 */
+function resolveChannelNameOnly(raw: string): string {
+  const noHash = raw.startsWith("#") ? raw.slice(1) : raw;
+  return noHash.split(":")[0];
 }

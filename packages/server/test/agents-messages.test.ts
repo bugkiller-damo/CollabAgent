@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { api, cleanupTestData, closeSql, registerUser, sql, type TestUser, uniqHandle } from "./helpers.js";
+import { api, BASE, cleanupTestData, closeSql, registerUser, sql, type TestUser, uniqHandle } from "./helpers.js";
 
 // P1.28：agent 侧消息面（/internal/agent/:agentId/…）集成测试——此前 12 个端点约 330
 // 行零覆盖（评估 §2.6 零覆盖清单 ①）。覆盖：send（公开/私有/越权/未入圈）、
@@ -29,7 +29,9 @@ async function mkAgent(user: TestUser): Promise<{ id: string; server_id: string 
 }
 
 afterAll(async () => {
-  // attachments 无 FK 级联（uploader_id 裸列），测试内上传的行显式清掉
+  // attachments 无 FK 级联（uploader_id 裸列），测试内上传的行显式清掉；
+  // 已绑定到消息的附件先清 message_attachments 映射行（FK 顺序）
+  await sql`DELETE FROM message_attachments WHERE attachment_id IN (SELECT id FROM attachments WHERE filename LIKE 'zz-msg-%')`;
   await sql`DELETE FROM attachments WHERE filename LIKE 'zz-msg-%'`;
   await cleanupTestData();
   await closeSql();
@@ -165,9 +167,18 @@ describe("agent 消息面：send + requireOwnAgent 越权矩阵", () => {
       expect([403, 404]).toContain(r403.status);
       if (r403.status === 403) expect(r403.data.error).toBe("not your agent");
     }
-    // intruder 自己的 agent 上同路径 → 200（403 只拦「别人的 agent」）
+    // intruder 自己的 agent 上同路径 → 200（403 只拦「别人的 agent」）。
+    // 2026-09-17 收紧语义：公开频道不再跨 server 全局可达，改在 intruder 自己的
+    // 个人空间建同名频道验证「自有 agent 正常访问自己 server 的频道」。
     const mine = await mkAgent(intruder);
-    const own = await api(`/internal/agent/${mine.id}/history?channel=${CH}`, { cookie: intruder.cookie });
+    const chMine = await api("/api/channels", {
+      method: "POST",
+      cookie: intruder.cookie,
+      csrf: intruder.csrf,
+      body: { name: CH + "_mine", type: "public" },
+    });
+    expect(chMine.status).toBe(200);
+    const own = await api(`/internal/agent/${mine.id}/history?channel=${CH + "_mine"}`, { cookie: intruder.cookie });
     expect(own.status).toBe(200);
   });
 
@@ -185,6 +196,47 @@ describe("agent 消息面：send + requireOwnAgent 越权矩阵", () => {
     // 用完即撤，避免影响 credentials 文件的「签发→使用→吊销」全链断言
     const rev = await api(`/internal/agent/${agentId}/credentials`, { method: "DELETE", token: machineToken });
     expect(rev.status).toBe(200);
+  });
+
+  it("attachmentIds 授权过滤（2026-09-17 F1）：他人附件静默过滤，属主附件正常绑定", async () => {
+    // intruder（非属主）上传的附件——agent 不能把它绑进频道消息
+    const fd = new FormData();
+    fd.append("file", new Blob(["intruder file"], { type: "text/plain" }), "zz-msg-foreign.txt");
+    const up = await fetch(`${BASE}/api/attachments/upload`, {
+      method: "POST",
+      headers: { cookie: intruder.cookie, "x-csrf-token": intruder.csrf },
+      body: fd,
+    });
+    expect(up.status).toBe(200);
+    const foreignAtt = ((await up.json()) as { attachmentId: string }).attachmentId;
+    const steal = await api(`/internal/agent/${agentId}/send`, {
+      method: "POST",
+      cookie: owner.cookie,
+      csrf: owner.csrf,
+      body: { target: `#${CH}`, content: "bind foreign", attachmentIds: [foreignAtt] },
+    });
+    expect(steal.status).toBe(200);
+    expect(steal.data.attachments ?? []).toEqual([]); // 无权 id 被过滤，不绑定
+
+    // 属主自己上传的附件 → 正常绑定（uploaderIds 含 agentId 与属主 user_id）
+    const fd2 = new FormData();
+    fd2.append("file", new Blob(["owner file"], { type: "text/plain" }), "zz-msg-own.txt");
+    const up2 = await fetch(`${BASE}/api/attachments/upload`, {
+      method: "POST",
+      headers: { cookie: owner.cookie, "x-csrf-token": owner.csrf },
+      body: fd2,
+    });
+    expect(up2.status).toBe(200);
+    const ownAtt = ((await up2.json()) as { attachmentId: string }).attachmentId;
+    const ok = await api(`/internal/agent/${agentId}/send`, {
+      method: "POST",
+      cookie: owner.cookie,
+      csrf: owner.csrf,
+      body: { target: `#${CH}`, content: "bind own", attachmentIds: [ownAtt] },
+    });
+    expect(ok.status).toBe(200);
+    expect(ok.data.attachments).toHaveLength(1);
+    expect(ok.data.attachments[0].id).toBe(ownAtt);
   });
 });
 
@@ -366,6 +418,36 @@ describe("agent 消息面：server / channel-members / reactions / search", () =
     expect(after.length).toBe(0);
   });
 
+  it("reactions ACL（2026-09-17 F2）：无权频道消息与不存在消息统一 404，不泄露存在性", async () => {
+    // owner 在私有频道（agent 未入圈）发一条消息，agent 对它加/撤 reaction 均应 404
+    // （CH_PRIV 在 agent 个人 server，人类侧 send 须带 x-server-id 显式租户头才能解析）
+    const priv = await api("/api/messages/send", {
+      method: "POST",
+      cookie: owner.cookie,
+      csrf: owner.csrf,
+      headers: { "x-server-id": agentServerId },
+      body: { target: `#${CH_PRIV}`, content: "priv-react-target" },
+    });
+    expect(priv.status).toBe(200);
+    const mid = priv.data.messageId as string;
+    const ghost = "00000000-0000-0000-0000-000000000000";
+    for (const method of ["POST", "DELETE"] as const) {
+      for (const target of [mid, ghost]) {
+        const r = await api(`/internal/agent/${agentId}/messages/${target}/reactions`, {
+          method,
+          cookie: owner.cookie,
+          csrf: owner.csrf,
+          body: { emoji: "🎯" },
+        });
+        expect(r.status, `${method} ${target}`).toBe(404);
+        expect(r.data.error).toBe("message not found");
+      }
+    }
+    // 私有消息未被写入 reaction（不存在的消息与无权访问同形态）
+    const rows = await sql`SELECT 1 FROM message_reactions WHERE message_id = ${mid}`;
+    expect(rows.length).toBe(0);
+  });
+
   it("search：命中 agent 消息；未知频道 404", async () => {
     const marker = "zzsearch" + Date.now().toString(36);
     await api(`/internal/agent/${agentId}/send`, {
@@ -386,7 +468,7 @@ describe("agent 消息面：upload", () => {
   it("multipart text/plain 上传 → attachmentId + 大小；非白名单 MIME → 415", async () => {
     const fd = new FormData();
     fd.append("file", new Blob(["hello upload"], { type: "text/plain" }), "zz-msg-a.txt");
-    const ok = await fetch(`http://localhost:3001/internal/agent/${agentId}/upload`, {
+    const ok = await fetch(`${BASE}/internal/agent/${agentId}/upload`, {
       method: "POST",
       headers: { authorization: `Bearer ${machineToken}` },
       body: fd,
@@ -399,7 +481,7 @@ describe("agent 消息面：upload", () => {
 
     const bad = new FormData();
     bad.append("file", new Blob(["\x00\x01"], { type: "application/octet-stream" }), "zz-msg-b.bin");
-    const rejected = await fetch(`http://localhost:3001/internal/agent/${agentId}/upload`, {
+    const rejected = await fetch(`${BASE}/internal/agent/${agentId}/upload`, {
       method: "POST",
       headers: { authorization: `Bearer ${machineToken}` },
       body: bad,
@@ -413,7 +495,7 @@ describe("agent 消息面：upload", () => {
   it("路径穿越文件名被净化：storage_key 无 .. 段，字节落点与 key 一致", async () => {
     const fd = new FormData();
     fd.append("file", new Blob(["agent traversal"], { type: "text/plain" }), "../zz-msg-traversal.txt");
-    const up = await fetch(`http://localhost:3001/internal/agent/${agentId}/upload`, {
+    const up = await fetch(`${BASE}/internal/agent/${agentId}/upload`, {
       method: "POST",
       headers: { authorization: `Bearer ${machineToken}` },
       body: fd,

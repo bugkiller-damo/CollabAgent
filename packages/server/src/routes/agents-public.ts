@@ -181,10 +181,25 @@ export async function agentPublicRoutes(app: FastifyInstance) {
     // agent:start），是水平越权。web 侧编辑/删除本就按 ownedByMe 门控，服务端滞后。
     const existingDuty = await app.pg.query<{ duty: string }>("SELECT duty FROM agents WHERE id = $1", [agentId]);
     const wasOff = parseAgentDuty(existingDuty.rows[0]?.duty) === "off";
-    const { name, displayName, description, avatarUrl, runtime, model } = req.body || {};
+    const { name, displayName, description, avatarUrl, runtime, model, allowTerminalWatch, consentChannelInvite } =
+      req.body || {};
     const sets: string[] = [];
     const params: any[] = [];
     let p = 1;
+    if (allowTerminalWatch !== undefined) {
+      if (typeof allowTerminalWatch !== "boolean") {
+        return reply.status(400).send({ error: "allowTerminalWatch must be boolean" });
+      }
+      sets.push(`allow_terminal_watch = $${p++}`);
+      params.push(allowTerminalWatch);
+    }
+    if (consentChannelInvite !== undefined) {
+      if (typeof consentChannelInvite !== "boolean") {
+        return reply.status(400).send({ error: "consentChannelInvite must be boolean" });
+      }
+      sets.push(`consent_channel_invite = $${p++}`);
+      params.push(consentChannelInvite);
+    }
     if (name !== undefined) {
       sets.push(`name = $${p++}`);
       params.push(name);

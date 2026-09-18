@@ -34,13 +34,17 @@ const VISIBLE_CHANNELS_SQL = `
    AND cm.member_type = $2
    AND c.archived = false
    AND (
-     c.type = 'public'
-     OR EXISTS (
+     EXISTS (
        SELECT 1 FROM channel_members me
         WHERE me.channel_id = c.id
           AND me.member_id::text = $3
           AND me.member_type = 'human'
      )
+     OR (c.type = 'public' AND EXISTS (
+       SELECT 1 FROM server_members sm
+        WHERE sm.server_id = c.server_id
+          AND sm.user_id::text = $3
+     ))
    )
 `;
 
@@ -147,13 +151,31 @@ export async function peopleRoutes(app: FastifyInstance) {
                 AND c.day >= (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date - ($2::int - 1)`;
       // 专属两参：postgres.js 对「传入但 SQL 未引用」的参数无法推型（42P18 实测），
       // 不能复用上面 4 参的 params
-      const cost = await app.pg.query<{ usd: number; n: number }>(costSql, [peer.id, days]);
+      // 2026-09-17 审计 Q3：成本可见口径对齐——human 对端补「与调用者共享社区」门槛
+      //（agent 对端在 resolveVisiblePeer 已有 org 成员门槛；本人查自己不受限）。
+      // daemon 账本按归一化频道名记账、无法按可见频道过滤的既有取舍保留，但
+      // 跨用户财务数据至少要求同处一个社区。
+      let costUsd: number | null = null;
+      const costAllowed =
+        peer.type === "agent" ||
+        String(peer.id) === String(req.user.sub) ||
+        (
+          await app.pg.query(
+            `SELECT 1 FROM server_members a JOIN server_members b ON a.server_id = b.server_id
+              WHERE a.user_id::text = $1 AND b.user_id::text = $2 LIMIT 1`,
+            [String(req.user.sub), String(peer.id)],
+          )
+        ).rows.length > 0;
+      if (costAllowed) {
+        const cost = await app.pg.query<{ usd: number; n: number }>(costSql, [peer.id, days]);
+        costUsd = Number(cost.rows[0]?.n || 0) > 0 ? Number(cost.rows[0]?.usd || 0) : null;
+      }
 
       return {
         messages: Number(msg.rows[0]?.n || 0),
         tasksOpen: Number(open.rows[0]?.n || 0),
         tasksDone: Number(done.rows[0]?.n || 0),
-        costUsd: Number(cost.rows[0]?.n || 0) > 0 ? Number(cost.rows[0]?.usd || 0) : null,
+        costUsd,
       };
     } catch (err: any) {
       req.log.error({ err }, "people_stats_failed");
@@ -323,14 +345,17 @@ export async function peopleRoutes(app: FastifyInstance) {
           AND m.sender_type = $2
           AND c.archived = false
           AND (
-            c.type = 'public'
-            OR c.type = 'dm'
-            OR EXISTS (
+            EXISTS (
               SELECT 1 FROM channel_members me
                WHERE me.channel_id = c.id
                  AND me.member_id::text = $3
                  AND me.member_type = 'human'
             )
+            OR (c.type = 'public' AND EXISTS (
+              SELECT 1 FROM server_members sm
+               WHERE sm.server_id = c.server_id
+                 AND sm.user_id::text = $3
+            ))
           )
           ${lastServerFilter}
         ORDER BY m.created_at DESC

@@ -1,5 +1,12 @@
 import type { FastifyInstance } from "fastify";
-import { agentCanAccessChannel, getAgent, requireOwnAgent, resolveAgentChannelDbId } from "../lib/agent-helpers.js";
+import {
+  agentCanAccessChannel,
+  getAgent,
+  requireOwnAgent,
+  resolveAgentChannelByName,
+  resolveAgentChannelDbId,
+} from "../lib/agent-helpers.js";
+import { filterAuthorizedAttachmentIds } from "../lib/attachment-access.js";
 import { dmOtherMembers, isDmTarget, type Party, resolveDmTarget } from "../lib/dm.js";
 import { attachmentsJson } from "../lib/query-fragments.js";
 import { UUID_RE } from "../lib/tenant.js";
@@ -31,12 +38,11 @@ export async function agentMessageRoutes(app: FastifyInstance) {
       ]);
       serverId = sv.rows[0]?.server_id;
     } else {
-      const ch = await app.pg.query("SELECT id, server_id FROM channels WHERE name = $1", [
-        tstr.startsWith("#") ? tstr.slice(1).split(":")[0] : tstr,
-      ]);
-      if (ch.rows.length === 0) return reply.status(404).send({ error: "channel not found" });
-      channelDbId = String(ch.rows[0].id);
-      serverId = String(ch.rows[0].server_id);
+      // 2026-09-17 审计 F4 修复：候选集口径解析（agent server ∪ 属主 orgs ∪ 单租户默认社区）
+      const ch = await resolveAgentChannelByName(app, agentId, tstr);
+      if (!ch) return reply.status(404).send({ error: "channel not found" });
+      channelDbId = String(ch.id);
+      serverId = String(ch.server_id);
     }
     if (!(await agentCanAccessChannel(app, channelDbId, agentId)))
       return reply.status(403).send({ error: "no access" });
@@ -69,18 +75,29 @@ export async function agentMessageRoutes(app: FastifyInstance) {
     );
     const msg = result.rows[0] as { id: string; seq: number; created_at: string };
     let attachments: any[] = [];
-    if (attIds.length > 0) {
-      for (const aid of attIds)
+    if (attIds.length > 0 && agent) {
+      // 2026-09-17 审计 F1（高危）修复：与人类侧 /send 同口径的绑定授权过滤——
+      // 访问判定按属主 user_id；上传者主体含 agentId（agent 上传的行 uploader_id
+      // 是 agentId）与属主。无权/不存在的 id 静默过滤，防 agent 搬运他人私信附件
+      // 进公开频道（daemon 会把历史消息里的附件 URL 喂给 agent，MCP send 可传任意
+      // attachmentIds）。
+      const bindable = await filterAuthorizedAttachmentIds(app, String(agent.user_id), attIds, [
+        agentId,
+        String(agent.user_id),
+      ]);
+      for (const aid of bindable)
         await app.pg.query(
           "INSERT INTO message_attachments (message_id, attachment_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
           [msg.id, aid],
         );
-      const att = await app.pg.query(
-        // F7：url 发 /api/attachments/<id>（ACL 端点），不发 storage_url capability URL
-        `SELECT id, filename, mime_type as "mimeType", size_bytes as "sizeBytes", ('/api/attachments/' || id) as url FROM attachments WHERE id = ANY($1)`,
-        [attIds],
-      );
-      attachments = att.rows;
+      if (bindable.length > 0) {
+        const att = await app.pg.query(
+          // F7：url 发 /api/attachments/<id>（ACL 端点），不发 storage_url capability URL
+          `SELECT id, filename, mime_type as "mimeType", size_bytes as "sizeBytes", ('/api/attachments/' || id) as url FROM attachments WHERE id = ANY($1)`,
+          [bindable],
+        );
+        attachments = att.rows;
+      }
     }
     let dmAgentRecipients: string[] | undefined;
     if (dm) {
@@ -272,10 +289,21 @@ export async function agentMessageRoutes(app: FastifyInstance) {
   app.post(
     "/:agentId/messages/:messageId/reactions",
     { preHandler: [app.authenticate, requireOwnAgent] },
-    async (req) => {
+    async (req, reply) => {
       const agentId = (req.params as Record<string, string>).agentId,
         messageId = (req.params as Record<string, string>).messageId,
         { emoji } = req.body as { emoji?: string };
+      // 2026-09-17 审计 F2 修复：补频道 ACL——此前完全缺失，任意 agent 可对
+      // 私有频道/DM 的任意 messageId 写 reaction（边界破坏 + 存在性探测）。
+      // 与人类侧同口径：先验消息存在，再验 agent 对所在频道可访问。不存在的
+      // 消息与无权访问统一 404，不泄露私有频道消息存在性。
+      const m = await app.pg.query<{ channel_id: string }>("SELECT channel_id FROM messages WHERE id = $1", [
+        messageId,
+      ]);
+      if (m.rows.length === 0) return reply.status(404).send({ error: "message not found" });
+      if (!(await agentCanAccessChannel(app, String(m.rows[0].channel_id), agentId))) {
+        return reply.status(404).send({ error: "message not found" });
+      }
       await app.pg.query(
         "INSERT INTO message_reactions (message_id, user_id, emoji) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
         [messageId, agentId, emoji],
@@ -286,10 +314,18 @@ export async function agentMessageRoutes(app: FastifyInstance) {
   app.delete(
     "/:agentId/messages/:messageId/reactions",
     { preHandler: [app.authenticate, requireOwnAgent] },
-    async (req) => {
+    async (req, reply) => {
       const agentId = (req.params as Record<string, string>).agentId,
         messageId = (req.params as Record<string, string>).messageId,
         { emoji } = req.body as { emoji?: string };
+      // 2026-09-17 审计 F2 修复：与 POST 同口径的频道 ACL
+      const m = await app.pg.query<{ channel_id: string }>("SELECT channel_id FROM messages WHERE id = $1", [
+        messageId,
+      ]);
+      if (m.rows.length === 0) return reply.status(404).send({ error: "message not found" });
+      if (!(await agentCanAccessChannel(app, String(m.rows[0].channel_id), agentId))) {
+        return reply.status(404).send({ error: "message not found" });
+      }
       await app.pg.query("DELETE FROM message_reactions WHERE message_id = $1 AND user_id = $2 AND emoji = $3", [
         messageId,
         agentId,
@@ -308,11 +344,10 @@ export async function agentMessageRoutes(app: FastifyInstance) {
     const params: any[] = [q, agent.server_id, agentId];
     let chFilter = "";
     if (channel) {
-      const ch = await app.pg.query("SELECT id FROM channels WHERE name = $1", [
-        channel.startsWith("#") ? channel.slice(1) : channel,
-      ]);
-      if (ch.rows.length === 0) return reply.status(404).send({ error: "channel not found" });
-      params.push(ch.rows[0].id);
+      // 2026-09-17 审计 F4 修复：同 send——候选集口径解析，防跨社区同名串号
+      const ch = await resolveAgentChannelByName(app, agentId, channel, "id");
+      if (!ch) return reply.status(404).send({ error: "channel not found" });
+      params.push(String(ch.id));
       chFilter = ` AND m.channel_id = $${params.length}`;
     }
     params.push(Number(limit) || 20);

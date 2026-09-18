@@ -10,6 +10,7 @@ import {
   recordLoginFailure,
 } from "../lib/login-lock.js";
 import { generateResetCode, hashResetCode, RESET_CODE_TTL_MS, resetCodeMatches } from "../lib/password-reset.js";
+import { getDefaultServerId } from "../lib/server.js";
 import { validatePassword } from "../lib/validators.js";
 
 // P1.16：假 bcrypt 哈希（内容无关，仅耗时特征有效——12 轮 bcrypt.compare 恒失败）。
@@ -103,6 +104,23 @@ export async function authRoutes(app: FastifyInstance) {
         return reply.status(409).send({ error: "用户名或邮箱已被注册" });
       }
       throw e;
+    }
+
+    // 2026-09-17 审计收紧配套：注册自动加入默认社区——公开频道收紧为「server 成员
+    // ∪ 频道成员」后，未入圈的新注册用户将无频道可读（收紧语义 = 成员制）。邀请
+    // 注册的入圈由邀请事务完成，本处幂等（ON CONFLICT DO NOTHING）。
+    try {
+      const fallback = await getDefaultServerId(app);
+      if (fallback) {
+        await app.pg.query(
+          "INSERT INTO server_members (server_id, user_id, role) VALUES ($1, $2, 'member') ON CONFLICT DO NOTHING",
+          [fallback, user.id],
+        );
+        const { invalidateServerMembers } = await import("../lib/access.js");
+        invalidateServerMembers(fallback);
+      }
+    } catch {
+      /* 入圈失败不阻断注册 */
     }
 
     const sid = await recordSession(app, req, String(user.id));

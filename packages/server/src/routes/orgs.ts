@@ -53,6 +53,8 @@ export async function orgRoutes(app: FastifyInstance) {
       "INSERT INTO server_members (server_id, user_id, role) VALUES ($1, $2, 'member') ON CONFLICT DO NOTHING",
       [serverId, u.rows[0]!.id],
     );
+    const { invalidateServerMembers } = await import("../lib/access.js");
+    invalidateServerMembers(String(serverId));
     return { ok: true };
   });
 
@@ -64,6 +66,8 @@ export async function orgRoutes(app: FastifyInstance) {
       serverId,
       userId,
     ]);
+    const { invalidateServerMembers } = await import("../lib/access.js");
+    invalidateServerMembers(String(serverId));
     return { ok: true };
   });
 

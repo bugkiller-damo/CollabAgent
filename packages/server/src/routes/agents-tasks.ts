@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { agentCanAccessChannel, requireOwnAgent, resolveChannelByName } from "../lib/agent-helpers.js";
+import { agentCanAccessChannel, requireOwnAgent, resolveAgentChannelByName } from "../lib/agent-helpers.js";
 import { syncDispatchOnCardClose } from "../lib/dispatch-sync.js";
 import { recordTaskEvent } from "../lib/task-events.js";
 import { acquireTaskNumberLock } from "../lib/task-numbering.js";
@@ -11,7 +11,7 @@ export async function agentTaskRoutes(app: FastifyInstance) {
     const agentId = (req.params as Record<string, string>).agentId;
     const { channel, status } = req.query as Record<string, string>;
     if (!channel) return reply.status(400).send({ error: "channel required" });
-    const ch = await resolveChannelByName(app, channel);
+    const ch = await resolveAgentChannelByName(app, agentId, channel);
     if (!ch) return reply.status(404).send({ error: "channel not found" });
     if (!(await agentCanAccessChannel(app, ch.id, agentId))) return reply.status(403).send({ error: "no access" });
     let q =
@@ -28,7 +28,7 @@ export async function agentTaskRoutes(app: FastifyInstance) {
     const agentId = (req.params as Record<string, string>).agentId;
     const { channel, tasks } = req.body as { channel?: string; tasks?: { title: string }[] };
     if (!channel || !tasks?.length) return reply.status(400).send({ error: "channel and tasks required" });
-    const ch = await resolveChannelByName(app, channel);
+    const ch = await resolveAgentChannelByName(app, agentId, channel);
     if (!ch) return reply.status(404).send({ error: "channel not found" });
     if (!(await agentCanAccessChannel(app, ch.id, agentId))) return reply.status(403).send({ error: "no access" });
     // P0.5：取号持频道级 advisory lock 串行化，锁内读 MAX + 连续 INSERT，防并发重号
@@ -61,7 +61,7 @@ export async function agentTaskRoutes(app: FastifyInstance) {
       message_ids?: string[];
     };
     if (!channel) return reply.status(400).send({ error: "channel required" });
-    const ch = await resolveChannelByName(app, channel);
+    const ch = await resolveAgentChannelByName(app, agentId, channel);
     if (!ch) return reply.status(404).send({ error: "channel not found" });
     if (!(await agentCanAccessChannel(app, ch.id, agentId))) return reply.status(403).send({ error: "no access" });
     const nums: number[] = [...(task_numbers || [])];
@@ -114,7 +114,7 @@ export async function agentTaskRoutes(app: FastifyInstance) {
     const agentId = (req.params as Record<string, string>).agentId;
     const { channel, task_number } = req.body as { channel?: string; task_number?: number };
     if (!channel) return reply.status(400).send({ error: "channel required" });
-    const ch = await resolveChannelByName(app, channel);
+    const ch = await resolveAgentChannelByName(app, agentId, channel);
     if (!ch) return reply.status(404).send({ error: "channel not found" });
     if (!(await agentCanAccessChannel(app, ch.id, agentId))) return reply.status(403).send({ error: "no access" });
     const before = await app.pg.query<{ id: string; task_status: string | null; task_assignee: string | null }>(
@@ -150,7 +150,7 @@ export async function agentTaskRoutes(app: FastifyInstance) {
     const { channel, number, status } = req.body as { channel?: string; number?: number; status?: string };
     if (!channel) return reply.status(400).send({ error: "channel required" });
     if (!status || !STATUSES.includes(status)) return reply.status(400).send({ error: `invalid status: ${status}` });
-    const ch = await resolveChannelByName(app, channel);
+    const ch = await resolveAgentChannelByName(app, agentId, channel);
     if (!ch) return reply.status(404).send({ error: "channel not found" });
     if (!(await agentCanAccessChannel(app, ch.id, agentId))) return reply.status(403).send({ error: "no access" });
     const before = await app.pg.query<{ id: string; task_status: string | null; task_assignee: string | null }>(
