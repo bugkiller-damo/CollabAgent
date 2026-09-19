@@ -107,13 +107,30 @@ const progressHeadline = computed(() => {
 });
 
 const joinedLabel = computed(() => {
-  const iso = profile.value?.channel?.joinedAt || profile.value?.createdAt;
+  // agent 的创建时间已移入资料页 dl，头部只保留「加入本频道」（频道语境信息）；
+  // 人类档案无 dl，createdAt 回落保留在头部
+  const iso =
+    profile.value?.type === "agent"
+      ? profile.value?.channel?.joinedAt
+      : profile.value?.channel?.joinedAt || profile.value?.createdAt;
   if (!iso) return "";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
   const ymd = d.toISOString().slice(0, 10);
   return profile.value?.channel?.joinedAt ? `加入本频道 ${ymd}` : `加入 ${ymd}`;
 });
+
+const createdLabel = computed(() => {
+  const iso = profile.value?.createdAt;
+  if (!iso) return "";
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? "" : d.toISOString().slice(0, 10);
+});
+
+// 档案内跳转（创建人 / 创建的 Agent）：嵌入面板与抽屉壳同读 profileTarget
+function openMemberProfile(handle?: string | null) {
+  if (handle) uiStore.openProfile({ handle });
+}
 
 const lastSpokeLabel = computed(() => {
   const iso = profile.value?.lastMessageAt;
@@ -179,9 +196,14 @@ async function load() {
   try {
     const params: Record<string, string> = {};
     if (props.channelId) params.channelId = props.channelId;
+    // 显式租户语境：人类档案的「创建的 Agent」按当前 server 过滤（频道/统计同口径收窄）
+    if (serverStore.activeServerId) params.serverId = serverStore.activeServerId;
     profile.value = await apiGet<PersonProfile>(`/api/people/${encodeURIComponent(h)}`, params);
     try {
-      stats.value = await apiGet<PersonStats>(`/api/people/${encodeURIComponent(h)}/stats`, { days: "7" });
+      stats.value = await apiGet<PersonStats>(`/api/people/${encodeURIComponent(h)}/stats`, {
+        days: "7",
+        ...(params.serverId ? { serverId: params.serverId } : {}),
+      });
     } catch {
       stats.value = null;
     }
@@ -194,7 +216,7 @@ async function load() {
   }
 }
 
-watch(() => [props.handle, props.channelId] as const, load, { immediate: true });
+watch(() => [props.handle, props.channelId, serverStore.activeServerId] as const, load, { immediate: true });
 
 function leaveIfOverlay() {
   emit("navigate");
@@ -606,6 +628,30 @@ async function expandChannels() {
               </button>
             </dd>
           </div>
+          <div v-if="profile.createdBy" class="grid grid-cols-[6.5rem_minmax(0,1fr)] gap-3 px-3 py-2.5">
+            <dt class="text-xs text-muted">创建人</dt>
+            <dd class="min-w-0">
+              <button
+                type="button"
+                class="flex items-center gap-2 text-left"
+                @click="openMemberProfile(profile.createdBy?.handle)"
+              >
+                <Avatar
+                  :name="profile.createdBy.displayName || profile.createdBy.handle"
+                  :src="profile.createdBy.avatarUrl || undefined"
+                  size="sm"
+                />
+                <span class="min-w-0 text-sm text-gray-800 dark:text-gray-200">
+                  {{ profile.createdBy.displayName || profile.createdBy.handle }}
+                  <span class="ml-1 text-xs text-muted">@{{ profile.createdBy.handle }}</span>
+                </span>
+              </button>
+            </dd>
+          </div>
+          <div v-if="createdLabel" class="grid grid-cols-[6.5rem_minmax(0,1fr)] gap-3 px-3 py-2.5">
+            <dt class="text-xs text-muted">创建时间</dt>
+            <dd class="min-w-0 text-sm text-gray-800 dark:text-gray-200">{{ createdLabel }}</dd>
+          </div>
         </dl>
         <section v-if="canEditAgent" class="mt-5">
           <h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">值班</h3>
@@ -687,6 +733,28 @@ async function expandChannels() {
 
       <section v-if="profile.channel?.isManager" class="mt-5">
         <p class="text-sm text-amber-700 dark:text-amber-300">本频道经理，可派单</p>
+      </section>
+
+      <!-- 人类档案：该用户在当前 server 创建的 agent 列表（点击跳转 agent 档案） -->
+      <section v-if="profile.type === 'human' && (profile.agents?.length ?? 0) > 0" class="mt-5">
+        <h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">
+          创建的 Agent · {{ profile.agents!.length }}
+        </h3>
+        <ul class="space-y-1">
+          <li v-for="a in profile.agents" :key="a.id">
+            <button
+              type="button"
+              class="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-gray-100 dark:hover:bg-gray-700"
+              @click="openMemberProfile(a.handle)"
+            >
+              <Avatar :name="a.displayName || a.handle" :src="a.avatarUrl || undefined" size="sm" />
+              <span class="min-w-0 truncate text-sm text-gray-800 dark:text-gray-200">
+                {{ a.displayName || a.handle }}
+              </span>
+              <span class="ml-auto shrink-0 text-xs text-muted">@{{ a.handle }}</span>
+            </button>
+          </li>
+        </ul>
       </section>
 
       <section v-if="profile.type !== 'agent'" class="mt-5 space-y-4">

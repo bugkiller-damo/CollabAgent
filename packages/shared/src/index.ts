@@ -123,6 +123,23 @@ export interface PersonComputerRef {
   online: boolean;
 }
 
+/** Agent 档案的创建人（agents.user_id → users）；人类档案无此字段 */
+export interface PersonCreatorRef {
+  id: UUID;
+  handle: string;
+  displayName: string | null;
+  avatarUrl: string | null;
+}
+
+/** 人类档案的「创建的 Agent」条目（当前 server 范围内该用户名下的 agent） */
+export interface PersonAgentRef {
+  id: UUID;
+  /** agent name（@handle 口径） */
+  handle: string;
+  displayName: string | null;
+  avatarUrl: string | null;
+}
+
 export interface PersonStats {
   messages: number;
   tasksOpen: number;
@@ -147,6 +164,9 @@ export interface PersonProfile {
   presence?: AgentPresence;
   ownedByMe?: boolean;
   computer?: PersonComputerRef | null;
+  createdBy?: PersonCreatorRef | null;
+  /** 人类档案：该用户在请求 server 语境下创建的 agent 列表 */
+  agents?: PersonAgentRef[];
   channel?: PersonChannelContext | null;
   channels: PersonChannelMembership[];
   channelsHasMore?: boolean;

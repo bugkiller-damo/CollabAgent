@@ -5,6 +5,7 @@ import { computerOnlineFor } from "../lib/agent-duty.js";
 import { resolvePeer } from "../lib/dm.js";
 import { getUserOrgIds } from "../lib/orgs.js";
 import { isMachineOnline } from "../lib/presence.js";
+import { getDefaultServerId } from "../lib/server.js";
 import { isServerMember, resolveTenant } from "../lib/tenant.js";
 
 const CHANNELS_PREVIEW = 8;
@@ -204,6 +205,8 @@ export async function peopleRoutes(app: FastifyInstance) {
     let presence: ReturnType<typeof agentListFields>["presence"] | undefined;
     let ownedByMe: boolean | undefined;
     let computer: { id: string; name: string; online: boolean } | null | undefined;
+    let createdBy: { id: string; handle: string; displayName: string | null; avatarUrl: string | null } | null = null;
+    let agents: { id: string; handle: string; displayName: string | null; avatarUrl: string | null }[] | undefined;
 
     if (peer.type === "human") {
       const u = await app.pg.query<{
@@ -218,6 +221,28 @@ export async function peopleRoutes(app: FastifyInstance) {
       description = row.description;
       avatarUrl = row.avatar_url;
       createdAt = iso(row.created_at) || "";
+
+      // 该用户在「当前 server」创建的 agent——成员页人类档案的「创建的 Agent」区。
+      // 范围 = 显式租户 serverId（web 传活跃 server），缺省回落默认社区（广场）
+      const scopeServerId =
+        tenant.explicit && tenant.serverId ? String(tenant.serverId) : await getDefaultServerId(app);
+      const ag = await app.pg.query<{
+        id: string;
+        name: string;
+        display_name: string | null;
+        avatar_url: string | null;
+      }>(
+        `SELECT id, name, display_name, avatar_url FROM agents
+          WHERE user_id::text = $1 AND server_id::text = $2
+          ORDER BY created_at ASC`,
+        [peer.id, scopeServerId],
+      );
+      agents = ag.rows.map((r) => ({
+        id: String(r.id),
+        handle: r.name,
+        displayName: r.display_name,
+        avatarUrl: r.avatar_url,
+      }));
     } else {
       const a = await app.pg.query<{
         user_id: string;
@@ -270,6 +295,23 @@ export async function peopleRoutes(app: FastifyInstance) {
       presence = fields.presence;
       isOnline = fields.isOnline;
       ownedByMe = String(row.user_id) === String(req.user.sub);
+
+      // 创建人（agents.user_id → users）：agent 档案页的「创建人」字段
+      const cu = await app.pg.query<{
+        id: string;
+        handle: string;
+        display_name: string | null;
+        avatar_url: string | null;
+      }>("SELECT id, handle, display_name, avatar_url FROM users WHERE id = $1", [row.user_id]);
+      const cur = cu.rows[0];
+      if (cur) {
+        createdBy = {
+          id: String(cur.id),
+          handle: cur.handle,
+          displayName: cur.display_name,
+          avatarUrl: cur.avatar_url,
+        };
+      }
 
       if (cr) {
         computer = {
@@ -389,8 +431,17 @@ export async function peopleRoutes(app: FastifyInstance) {
       createdAt,
       lastMessageAt: iso(last.rows[0]?.created_at),
       ...(peer.type === "agent"
-        ? { runtime, model, isOnline, duty, presence, ownedByMe: !!ownedByMe, computer: computer ?? null }
-        : { ownedByMe: String(peer.id) === String(req.user.sub) }),
+        ? {
+            runtime,
+            model,
+            isOnline,
+            duty,
+            presence,
+            ownedByMe: !!ownedByMe,
+            computer: computer ?? null,
+            createdBy,
+          }
+        : { ownedByMe: String(peer.id) === String(req.user.sub), agents: agents ?? [] }),
       channel,
       channels,
       channelsHasMore: !wantAllChannels && overflow,
