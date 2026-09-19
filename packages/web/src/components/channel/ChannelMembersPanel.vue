@@ -1,19 +1,11 @@
 <script setup lang="ts">
 import { Crown, X } from "@lucide/vue";
 import { computed, onMounted, ref, watch } from "vue";
-import { apiClient, apiGet } from "../../api";
-import { useAuthStore, useChannelStore, useUiStore } from "../../stores";
+import { apiClient } from "../../api";
+import { type ChannelMember, useAuthStore, useChannelStore, useUiStore } from "../../stores";
 import { toast } from "../../stores/toastStore";
+import Avatar from "../ui/Avatar.vue";
 import Button from "../ui/Button.vue";
-
-interface Member {
-  member_id: string;
-  member_type: "human" | "agent";
-  role: string;
-  is_manager?: boolean;
-  handle: string;
-  display_name?: string;
-}
 
 const ROLE_LABEL: Record<string, string> = { owner: "所有者", admin: "管理员", member: "成员" };
 
@@ -27,7 +19,9 @@ const channelStore = useChannelStore();
 const uiStore = useUiStore();
 const currentUserId = computed(() => authStore.user?.id);
 
-const members = ref<Member[]>([]);
+// 成员列表直接读 channelStore 缓存（fetchMembers 是唯一写入点）——profile:update
+// 广播 / 本地保存的 applyMemberProfile 回写后，本面板随 store 即时刷新头像/显示名
+const members = computed<ChannelMember[]>(() => channelStore.membersByChannelId[props.channelId] ?? []);
 const loading = ref(true);
 const inviteHandle = ref("");
 const inviteMsg = ref("");
@@ -35,16 +29,10 @@ const busy = ref(false);
 
 function load() {
   loading.value = true;
-  apiGet<{ members: Member[] }>(`/api/channels/${props.channelId}/members`)
-    .then((d) => {
-      members.value = d.members || [];
-      channelStore.membersByChannelId = {
-        ...channelStore.membersByChannelId,
-        [props.channelId]: members.value,
-      };
-      loading.value = false;
-    })
-    .catch(() => {
+  channelStore
+    .fetchMembers(props.channelId)
+    .catch(() => {})
+    .finally(() => {
       loading.value = false;
     });
 }
@@ -74,7 +62,7 @@ async function handleInvite() {
   }
 }
 
-async function handleRemove(m: Member) {
+async function handleRemove(m: ChannelMember) {
   if (!confirm(`将 @${m.handle} 移出频道？`)) return;
   try {
     await apiClient(`/api/channels/${props.channelId}/members/${m.member_id}`, { method: "DELETE" });
@@ -84,7 +72,7 @@ async function handleRemove(m: Member) {
   }
 }
 
-async function handleRole(m: Member, role: string) {
+async function handleRole(m: ChannelMember, role: string) {
   try {
     await apiClient(`/api/channels/${props.channelId}/members/${m.member_id}`, { method: "PATCH", body: { role } });
     load();
@@ -93,7 +81,7 @@ async function handleRole(m: Member, role: string) {
   }
 }
 
-async function handleManager(m: Member, is_manager: boolean) {
+async function handleManager(m: ChannelMember, is_manager: boolean) {
   try {
     await apiClient(`/api/channels/${props.channelId}/members/${m.member_id}`, {
       method: "PATCH",
@@ -114,7 +102,7 @@ function onInviteKeydown(e: KeyboardEvent) {
   if (e.key === "Enter") handleInvite();
 }
 
-function openProfile(m: Member) {
+function openProfile(m: ChannelMember) {
   uiStore.openProfile({ handle: m.handle, channelId: props.channelId });
   props.onClose();
 }
@@ -166,9 +154,7 @@ function openProfile(m: Member) {
             @click="openProfile(m)"
             @keydown.enter="openProfile(m)"
           >
-            <div :class="'w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-bold shrink-0 ' + (m.member_type === 'agent' ? 'bg-purple-600' : 'bg-gray-500')">
-              {{ (m.display_name || m.handle || "?")[0]?.toUpperCase() }}
-            </div>
+            <Avatar :name="m.display_name || m.handle" :src="m.avatar_url || undefined" size="sm" />
             <div class="flex-1 min-w-0">
               <div class="text-gray-800 dark:text-gray-200 text-sm truncate">
                 {{ m.display_name || m.handle }}<span v-if="m.member_id === currentUserId" class="text-muted"> （你）</span>
@@ -229,9 +215,7 @@ function openProfile(m: Member) {
             @click="openProfile(m)"
             @keydown.enter="openProfile(m)"
           >
-            <div :class="'w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-bold shrink-0 ' + (m.member_type === 'agent' ? 'bg-purple-600' : 'bg-gray-500')">
-              {{ (m.display_name || m.handle || "?")[0]?.toUpperCase() }}
-            </div>
+            <Avatar :name="m.display_name || m.handle" :src="m.avatar_url || undefined" size="sm" />
             <div class="flex-1 min-w-0">
               <div class="text-gray-800 dark:text-gray-200 text-sm truncate">
                 {{ m.display_name || m.handle }}<span v-if="m.member_id === currentUserId" class="text-muted"> （你）</span>

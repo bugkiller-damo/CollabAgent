@@ -20,6 +20,7 @@ interface ThreadMsg {
   id: string;
   channel_id: string;
   sender_id: string;
+  senderId?: string;
   senderName: string;
   senderHandle?: string;
   senderType?: string;
@@ -86,6 +87,11 @@ async function loadThread() {
     );
     parent.value = data.parent;
     replies.value = data.replies || [];
+    // 线程页可直达（不经频道页）——按父消息所在频道补拉成员缓存供头像解析
+    const cid = data.parent?.channel_id;
+    if (cid && !channelStore.membersByChannelId[String(cid)]) {
+      void channelStore.fetchMembers(String(cid));
+    }
   } catch {
     error.value = "加载线程失败";
   } finally {
@@ -157,6 +163,15 @@ function localeString(iso: string): string {
   return new Date(iso).toLocaleString();
 }
 
+// 发送者头像：成员缓存解析（含 dm 行；channel_id 为该消息的频道 UUID）
+function senderAvatar(msg: ThreadMsg): string | undefined {
+  return channelStore.memberAvatarUrl(
+    String(msg.channel_id || currentChannel.value?.id || ""),
+    msg.senderId ?? msg.sender_id,
+    msg.senderType,
+  );
+}
+
 function openSender(msg: { senderHandle?: string }) {
   const h = String(msg.senderHandle || "").replace(/^@/, "");
   if (h) uiStore.openProfile({ handle: h, channelId: currentChannel.value?.id });
@@ -198,7 +213,7 @@ function openSender(msg: { senderHandle?: string }) {
       >
         <div class="mb-2 flex items-center gap-2">
           <button type="button" class="flex items-center gap-2" :disabled="!parent.senderHandle" @click="openSender(parent)">
-            <Avatar :name="parent.senderName || parent.sender_id" size="md" />
+            <Avatar :name="parent.senderName || parent.senderId || '?'" :src="senderAvatar(parent)" size="md" />
             <span class="text-sm font-semibold text-gray-900 hover:underline dark:text-white">
               {{ parent.senderName || parent.sender_id }}
             </span>
@@ -223,7 +238,7 @@ function openSender(msg: { senderHandle?: string }) {
         class="group flex gap-3 rounded p-2 hover:bg-gray-100 dark:hover:bg-gray-800/50"
       >
         <button type="button" class="shrink-0" :disabled="!msg.senderHandle" @click="openSender(msg)">
-          <Avatar :name="msg.senderName || msg.sender_id" size="md" />
+          <Avatar :name="msg.senderName || msg.senderId || '?'" :src="senderAvatar(msg)" size="md" />
         </button>
         <div class="min-w-0">
           <div class="flex items-baseline gap-2">

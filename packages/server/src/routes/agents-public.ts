@@ -5,6 +5,7 @@ import { computerOnlineFor, decorateAgentPresence, setAgentDuty } from "../lib/a
 import { requireOwnAgent } from "../lib/agent-helpers.js";
 import { getUserOrgIds, isOrgOwner } from "../lib/orgs.js";
 import { isMachineOnline } from "../lib/presence.js";
+import { broadcastProfileUpdate } from "../lib/profile-events.js";
 import {
   agentMachineOnline,
   daemonTargetForAgent,
@@ -290,6 +291,19 @@ export async function agentPublicRoutes(app: FastifyInstance) {
 
     const agent = r.rows[0] as any;
     const rp = parseRuntimeProfile(agent.runtime_profile);
+    // 资料字段变更 → 广播 profile:update（频道成员缓存就地回写，头像/显示名不落刷新）。
+    // 仅 runtime/consent 等开关类 PATCH 不广播——成员缓存里没有这些字段的镜像。
+    if (name !== undefined || displayName !== undefined || avatarUrl !== undefined) {
+      await broadcastProfileUpdate(app.pg, {
+        memberType: "agent",
+        memberId: String(agent.id),
+        handle: agent.name,
+        displayName: agent.display_name || "",
+        avatarUrl: agent.avatar_url ?? null,
+        ownerUserId: String(agent.user_id),
+        serverId: agent.server_id ? String(agent.server_id) : null,
+      });
+    }
     // 停班中禁止 agent:start，否则会把人重新注册进 daemon
     if (!wasOff && parseAgentDuty(agent.duty) !== "off") {
       await sendToAgentDaemon(app.pg, agent, {

@@ -425,7 +425,7 @@ export async function channelRoutes(app: FastifyInstance) {
               peer.member_id as "peerId", peer.member_type as "peerType",
               COALESCE(pu.handle, pa.name) as "peerHandle",
               COALESCE(pu.display_name, pa.display_name, pu.handle, pa.name) as "peerName",
-              pu.avatar_url as "peerAvatar",
+              COALESCE(pu.avatar_url, pa.avatar_url) as "peerAvatar",
               lm.content as "lastContent", lm.created_at as "lastTime", lm.seq as "lastSeq"
          FROM channels c
          JOIN channel_members me ON me.channel_id = c.id AND me.member_id::text = $1 AND me.member_type = 'human'

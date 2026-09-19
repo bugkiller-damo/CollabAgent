@@ -1,4 +1,11 @@
-import { threadBufferKey, useAgentStore, useChannelStore, useMessageStore, useServerStore } from "../stores";
+import {
+  threadBufferKey,
+  useAgentStore,
+  useAuthStore,
+  useChannelStore,
+  useMessageStore,
+  useServerStore,
+} from "../stores";
 import type { AgentActivity } from "../stores/agentStore";
 import { useNotificationStore } from "../stores/notificationStore";
 import { useTerminalStore } from "../stores/terminalStore";
@@ -12,6 +19,7 @@ import type { AgentStatusEvent, WsServerEvent } from "../types";
 export function dispatchWsEvent(msg: WsServerEvent): void {
   const messageStore = useMessageStore();
   const channelStore = useChannelStore();
+  const authStore = useAuthStore();
   const agentStore = useAgentStore();
   const notificationStore = useNotificationStore();
   const terminalStore = useTerminalStore();
@@ -91,6 +99,29 @@ export function dispatchWsEvent(msg: WsServerEvent): void {
       toast.warning(`发给 @${m.agentName} 的消息暂未送达（对方 daemon 离线）：${m.error || "对方设备未连接"}`);
     } else {
       toast.error(`发给 @${m.agentName} 的消息投递失败（已自动重试多次）：${m.error || "未知原因"}，请重新发送`);
+    }
+  }
+  // 资料变更（头像/显示名/handle）：就地回写所有频道成员缓存——成员面板 /
+  // AgentStatusBar / 消息行头像读 membersByChannelId，不落刷新即同步。
+  // 自己的人类资料在别处改动时顺带同步会话缓存（侧栏头像、多标签页一致）。
+  if (type === "profile:update") {
+    const p = msg as any;
+    if (p.memberId) {
+      const memberType = p.memberType === "agent" ? "agent" : "human";
+      channelStore.applyMemberProfile({
+        memberType,
+        memberId: String(p.memberId),
+        handle: typeof p.handle === "string" ? p.handle : undefined,
+        displayName: typeof p.displayName === "string" ? p.displayName : undefined,
+        avatarUrl: p.avatarUrl ?? null,
+      });
+      if (memberType === "human" && String(p.memberId) === String(authStore.user?.id)) {
+        authStore.updateUser({
+          ...(typeof p.displayName === "string" ? { displayName: p.displayName } : {}),
+          // null → null 显式清空（侧栏头像回字母兜底）；缺字段时 ?? null 与下发口径一致
+          avatarUrl: p.avatarUrl ?? null,
+        });
+      }
     }
   }
   if (type === "message:update" && (msg as any).message) {

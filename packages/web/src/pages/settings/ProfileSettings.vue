@@ -4,7 +4,6 @@ import { ref } from "vue";
 import { apiPatch, apiPost, uploadAttachment } from "../../api";
 import PageHeader from "../../components/layout/PageHeader.vue";
 import PasswordStrength from "../../components/PasswordStrength.vue";
-import Avatar from "../../components/ui/Avatar.vue";
 import AvatarPresetPicker from "../../components/ui/AvatarPresetPicker.vue";
 import Button from "../../components/ui/Button.vue";
 import Card from "../../components/ui/Card.vue";
@@ -12,8 +11,18 @@ import Input from "../../components/ui/Input.vue";
 import Textarea from "../../components/ui/Textarea.vue";
 import { validatePasswordPolicy } from "../../lib/passwordPolicy";
 import { useAuthStore } from "../../stores/authStore";
+import { useChannelStore } from "../../stores/channelStore";
 
 const authStore = useAuthStore();
+const channelStore = useChannelStore();
+
+// 自己的资料变更同步频道成员缓存——成员面板/消息行头像即时跟随（server 的
+// profile:update 广播也会回投本人，幂等重放；这里本地先写不等回环）
+function syncMemberCache(patch: { displayName?: string; avatarUrl?: string | null }) {
+  const id = authStore.user?.id;
+  if (!id) return;
+  channelStore.applyMemberProfile({ memberType: "human", memberId: String(id), ...patch });
+}
 
 const displayName = ref(authStore.user?.displayName || "");
 const description = ref(authStore.user?.description || "");
@@ -21,7 +30,7 @@ const msg = ref("");
 // P1-13：消息分性（true=成功绿 / false=失败红）——「保存失败」等不再恒绿渲染
 const msgOk = ref(false);
 
-const avatarUrl = ref((authStore.user as any)?.avatarUrl || "");
+const avatarUrl = ref(authStore.user?.avatarUrl || "");
 const avatarUploading = ref(false);
 const avatarInputRef = ref<HTMLInputElement | null>(null);
 
@@ -50,7 +59,8 @@ async function handleAvatar(file: File) {
     const up = await uploadAttachment(file);
     await apiPatch("/api/profile", { avatarUrl: up.url });
     avatarUrl.value = up.url;
-    authStore.updateUser({ avatarUrl: up.url } as any);
+    authStore.updateUser({ avatarUrl: up.url });
+    syncMemberCache({ avatarUrl: up.url });
     msg.value = "头像已更新";
     msgOk.value = true;
   } catch {
@@ -68,7 +78,8 @@ async function selectPreset(url: string) {
   try {
     await apiPatch("/api/profile", { avatarUrl: url || null });
     avatarUrl.value = url;
-    authStore.updateUser({ avatarUrl: url } as any);
+    authStore.updateUser({ avatarUrl: url || null });
+    syncMemberCache({ avatarUrl: url || null });
     msg.value = url ? "头像已更新" : "已恢复默认字母头像";
     msgOk.value = true;
   } catch {
@@ -85,6 +96,7 @@ async function handleSaveProfile() {
     msg.value = "已保存";
     msgOk.value = true;
     authStore.updateUser({ displayName: displayName.value, description: description.value });
+    syncMemberCache({ displayName: displayName.value });
   } catch {
     msg.value = "保存失败";
     msgOk.value = false;
@@ -119,7 +131,13 @@ async function handleChangePassword() {
     <Card class="w-full">
       <div class="mx-auto max-w-lg space-y-4">
         <div class="flex items-center gap-4">
-          <Avatar :name="authStore.user?.handle || '?'" :src="avatarUrl" size="xl" />
+          <AvatarPresetPicker
+            :current="avatarUrl"
+            :letter-name="authStore.user?.handle || '?'"
+            :disabled="avatarUploading"
+            size="xl"
+            @select="selectPreset"
+          />
           <div>
             <input
               ref="avatarInputRef"
@@ -129,19 +147,10 @@ async function handleChangePassword() {
               @change="onAvatarFileChange"
             />
             <Button @click="avatarInputRef?.click()" :disabled="avatarUploading" size="sm" variant="secondary">
-              {{ avatarUploading ? "更新中…" : "更换头像" }}
+              {{ avatarUploading ? "更新中…" : "上传照片" }}
             </Button>
-            <p class="mt-1 text-xs text-muted">支持 JPG/PNG，最大 10MB</p>
+            <p class="mt-1 text-xs text-muted">点击头像挑内置样式；支持 JPG/PNG，最大 10MB</p>
           </div>
-        </div>
-        <div>
-          <p class="mb-2 text-sm text-subtle">不上传照片？挑一个默认头像</p>
-          <AvatarPresetPicker
-            :current="avatarUrl"
-            :letter-name="authStore.user?.handle || '?'"
-            :disabled="avatarUploading"
-            @select="selectPreset"
-          />
         </div>
         <div>
           <label class="mb-1 block text-sm text-subtle">用户名 (不可修改)</label>

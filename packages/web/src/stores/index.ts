@@ -1,6 +1,6 @@
 export { useAgentStore } from "./agentStore";
 export { useAuthStore } from "./authStore";
-export { useChannelStore } from "./channelStore";
+export { type ChannelMember, useChannelStore } from "./channelStore";
 export {
   type ComputerRecord,
   claudeInstalled,

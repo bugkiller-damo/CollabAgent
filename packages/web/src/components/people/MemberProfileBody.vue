@@ -5,8 +5,9 @@ import { Crown } from "@lucide/vue";
 import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { apiClient, apiGet, apiPatch, apiPost } from "../../api";
+import { isPresetAvatarUrl } from "../../lib/defaultAvatars";
 import { channelPath, parseChannelRoute } from "../../lib/nav";
-import { runtimeCatalog, useAgentStore, useAuthStore, useServerStore, useUiStore } from "../../stores";
+import { runtimeCatalog, useAgentStore, useAuthStore, useChannelStore, useServerStore, useUiStore } from "../../stores";
 import { toast } from "../../stores/toastStore";
 import AgentPatrolPanel from "../admin/AgentPatrolPanel.vue";
 import AgentWorkspacePanel from "../agent/AgentWorkspacePanel.vue";
@@ -14,7 +15,7 @@ import ConfirmDialog from "../ConfirmDialog.vue";
 import Avatar from "../ui/Avatar.vue";
 import AvatarPresetPicker from "../ui/AvatarPresetPicker.vue";
 import Button from "../ui/Button.vue";
-import Input from "../ui/Input.vue";
+import InlineAgentField from "./InlineAgentField.vue";
 
 const LIVE_STATUS_LABEL = PRESENCE_LABEL;
 
@@ -38,6 +39,7 @@ const emit = defineEmits<{
 const uiStore = useUiStore();
 const agentStore = useAgentStore();
 const authStore = useAuthStore();
+const channelStore = useChannelStore();
 const serverStore = useServerStore();
 const router = useRouter();
 const route = useRoute();
@@ -48,15 +50,8 @@ const loading = ref(false);
 const error = ref("");
 const expandingChannels = ref(false);
 const channelsExpanded = ref(false);
-const editing = ref(false);
-const saving = ref(false);
 const deleting = ref(false);
 const confirmDelete = ref(false);
-const draftDisplayName = ref("");
-const draftDescription = ref("");
-const draftAvatarUrl = ref("");
-const draftRuntime = ref("claude");
-const draftModel = ref("sonnet");
 type AgentTab = "overview" | "workspace" | "channels" | "patrol";
 const agentTab = ref<AgentTab>("overview");
 
@@ -179,7 +174,6 @@ async function load() {
   loading.value = true;
   error.value = "";
   channelsExpanded.value = false;
-  editing.value = false;
   confirmDelete.value = false;
   agentTab.value = "overview";
   try {
@@ -278,49 +272,38 @@ function goComputer() {
   void router.push("/computers/" + id);
 }
 
-function fillDrafts() {
-  const p = profile.value;
-  draftDisplayName.value = p?.displayName || "";
-  draftDescription.value = p?.description || "";
-  draftAvatarUrl.value = p?.avatarUrl || "";
-  draftRuntime.value = p?.runtime || "claude";
-  draftModel.value = (p?.model || "sonnet").toLowerCase();
-}
-
 function goEdit() {
-  if (isSelf.value) {
-    leaveIfOverlay();
-    void router.push("/settings/profile");
-    return;
-  }
-  if (!canEditAgent.value) return;
-  fillDrafts();
-  editing.value = true;
+  if (!isSelf.value) return;
+  leaveIfOverlay();
+  void router.push("/settings/profile");
 }
 
-function cancelEdit() {
-  fillDrafts();
-  editing.value = false;
-}
-
-async function saveEdit() {
+// 行内编辑：单字段 PATCH 成功后本地合并，不整页 reload（避免「加载中」闪烁）
+function applyField(field: string, value: string) {
   const p = profile.value;
-  if (!p || saving.value) return;
-  saving.value = true;
-  try {
-    await apiPatch(`/api/agents/${p.id}`, {
-      displayName: draftDisplayName.value,
-      description: draftDescription.value,
-      avatarUrl: draftAvatarUrl.value,
-      runtime: draftRuntime.value,
-      model: draftModel.value,
+  if (!p) return;
+  profile.value = { ...p, [field]: value };
+  // 头像/显示名同步频道成员缓存——成员面板/AgentStatusBar/消息行头像都读
+  // membersByChannelId，本地即写不依赖 WS 回环（server profile:update 到达后幂等重放）
+  if (p.type === "agent" && (field === "avatarUrl" || field === "displayName")) {
+    channelStore.applyMemberProfile({
+      memberType: "agent",
+      memberId: p.id,
+      ...(field === "avatarUrl" ? { avatarUrl: value || null } : { displayName: value }),
     });
-    editing.value = false;
-    await load();
+  }
+}
+
+// 头部头像即选择器（自己的 agent）：点选即存，"" = 恢复字母兜底
+async function saveAvatar(url: string) {
+  const p = profile.value;
+  if (!p || p.type !== "agent" || !p.ownedByMe) return;
+  try {
+    await apiPatch(`/api/agents/${p.id}`, { avatarUrl: url });
+    applyField("avatarUrl", url);
+    toast.success("头像已更新");
   } catch (err: any) {
-    toast.error(err?.message || "保存失败");
-  } finally {
-    saving.value = false;
+    toast.error(err?.message || "头像更新失败");
   }
 }
 
@@ -374,7 +357,14 @@ async function expandChannels() {
     <template v-else-if="profile">
       <div class="min-h-0 flex-1 overflow-y-auto" :class="embedded && agentTab === 'workspace' ? 'flex flex-col' : ''">
       <div class="flex items-start gap-3">
-        <Avatar :name="displayName" :src="profile.avatarUrl || undefined" size="lg" />
+        <AvatarPresetPicker
+          v-if="canEditAgent"
+          :current="profile.avatarUrl"
+          :letter-name="displayName"
+          size="lg"
+          @select="saveAvatar"
+        />
+        <Avatar v-else :name="displayName" :src="profile.avatarUrl || undefined" size="lg" />
         <div class="min-w-0 flex-1">
           <div class="flex flex-wrap items-center gap-2">
             <h2 class="truncate text-base font-semibold text-ink">{{ displayName }}</h2>
@@ -417,7 +407,7 @@ async function expandChannels() {
         <Button size="sm" @click="sendMessage">发消息</Button>
         <Button v-if="profile.type === 'agent'" size="sm" variant="secondary" @click="openObserve">打开观察</Button>
         <Button v-if="isChannelView" size="sm" variant="ghost" @click="mentionHere">在此 @</Button>
-        <Button v-if="isSelf || (canEditAgent && !editing)" size="sm" variant="ghost" @click="goEdit">编辑资料</Button>
+        <Button v-if="isSelf" size="sm" variant="ghost" @click="goEdit">编辑资料</Button>
       </div>
 
       <section v-if="progressHeadline" class="mt-5">
@@ -504,80 +494,20 @@ async function expandChannels() {
         </div>
 
         <div v-show="agentTab === 'overview'">
-        <div v-if="editing && canEditAgent" class="space-y-3 rounded-md border border-gray-200 p-3 dark:border-gray-700">
-          <div class="space-y-1">
-            <label class="text-xs text-muted">显示名称</label>
-            <Input
-              type="text"
-              placeholder="显示名称"
-              :value="draftDisplayName"
-              @input="draftDisplayName = ($event.target as HTMLInputElement).value"
-            />
-          </div>
-          <div class="space-y-1">
-            <label class="text-xs text-muted">Agent 名称</label>
-            <p class="break-all font-mono text-sm text-gray-800 dark:text-gray-200">@{{ profile.handle }}</p>
-          </div>
-          <div class="space-y-1">
-            <label class="text-xs text-muted">描述</label>
-            <Input
-              type="text"
-              placeholder="描述（也作为它的角色设定）"
-              :value="draftDescription"
-              @input="draftDescription = ($event.target as HTMLInputElement).value"
-            />
-          </div>
-          <div class="space-y-1">
-            <label class="text-xs text-muted">头像 URL</label>
-            <Input
-              type="text"
-              placeholder="头像 URL（可选）"
-              :value="draftAvatarUrl"
-              @input="draftAvatarUrl = ($event.target as HTMLInputElement).value"
-            />
-            <AvatarPresetPicker
-              compact
-              :current="draftAvatarUrl"
-              :letter-name="draftDisplayName || profile.handle"
-              @select="draftAvatarUrl = $event"
-            />
-          </div>
-          <div class="flex gap-2">
-            <select
-              :value="draftRuntime"
-              class="rounded-md border border-gray-300 bg-gray-100 p-2 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
-              @change="draftRuntime = ($event.target as HTMLSelectElement).value"
-            >
-              <option value="claude">Claude</option>
-            </select>
-            <select
-              :value="draftModel"
-              class="rounded-md border border-gray-300 bg-gray-100 p-2 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
-              @change="draftModel = ($event.target as HTMLSelectElement).value"
-            >
-              <option value="sonnet">Sonnet</option>
-              <option value="opus">Opus</option>
-              <option value="haiku">Haiku</option>
-            </select>
-          </div>
-          <div v-if="profile.computer" class="text-sm text-muted">
-            跑在
-            <button type="button" class="text-blue-600 hover:underline dark:text-blue-400" @click="goComputer">
-              {{ profile.computer.name }}
-            </button>
-          </div>
-          <div class="flex gap-2">
-            <Button size="sm" :loading="saving" @click="saveEdit">保存</Button>
-            <Button variant="secondary" size="sm" :disabled="saving" @click="cancelEdit">取消</Button>
-          </div>
-        </div>
-        <dl
-          v-else
-          class="divide-y divide-gray-100 rounded-md border border-gray-200 dark:divide-gray-700 dark:border-gray-700"
-        >
+        <dl class="divide-y divide-gray-100 rounded-md border border-gray-200 dark:divide-gray-700 dark:border-gray-700">
           <div class="grid grid-cols-[6.5rem_minmax(0,1fr)] gap-3 px-3 py-2.5">
             <dt class="text-xs text-muted">显示名称</dt>
-            <dd class="min-w-0 text-sm text-gray-800 dark:text-gray-200">{{ fieldValue(profile.displayName, profile.handle) }}</dd>
+            <dd class="min-w-0 text-sm text-gray-800 dark:text-gray-200">
+              <InlineAgentField
+                :agent-id="profile.id"
+                field="displayName"
+                :value="profile.displayName || ''"
+                :editable="canEditAgent"
+                @saved="applyField('displayName', $event)"
+              >
+                <span class="min-w-0">{{ fieldValue(profile.displayName, profile.handle) }}</span>
+              </InlineAgentField>
+            </dd>
           </div>
           <div class="grid grid-cols-[6.5rem_minmax(0,1fr)] gap-3 px-3 py-2.5">
             <dt class="text-xs text-muted">Agent 名称</dt>
@@ -585,27 +515,80 @@ async function expandChannels() {
           </div>
           <div class="grid grid-cols-[6.5rem_minmax(0,1fr)] gap-3 px-3 py-2.5">
             <dt class="text-xs text-muted">描述</dt>
-            <dd
-              :class="[
-                'min-w-0 whitespace-pre-wrap text-sm',
-                profile.description?.trim() ? 'text-gray-800 dark:text-gray-200' : 'text-muted',
-              ]"
-            >
-              {{ fieldValue(profile.description) }}
+            <dd class="min-w-0 text-sm text-gray-800 dark:text-gray-200">
+              <InlineAgentField
+                :agent-id="profile.id"
+                field="description"
+                :value="profile.description || ''"
+                :editable="canEditAgent"
+                @saved="applyField('description', $event)"
+              >
+                <span :class="['min-w-0 whitespace-pre-wrap', !profile.description?.trim() && 'text-muted']">
+                  {{ fieldValue(profile.description) }}
+                </span>
+              </InlineAgentField>
             </dd>
           </div>
           <div class="grid grid-cols-[6.5rem_minmax(0,1fr)] gap-3 px-3 py-2.5">
             <dt class="text-xs text-muted">运行时 CLI</dt>
             <dd class="min-w-0 text-sm text-gray-800 dark:text-gray-200">
-              {{ runtimeLabel }}
-              <span class="ml-1 text-xs text-muted">{{ profile.runtime || "claude" }}</span>
+              <InlineAgentField
+                :agent-id="profile.id"
+                field="runtime"
+                :value="profile.runtime || 'claude'"
+                :editable="canEditAgent"
+                kind="select"
+                :options="[{ value: 'claude', label: 'Claude' }]"
+                :extra-patch="{ model: profile.model || 'sonnet' }"
+                @saved="applyField('runtime', $event)"
+              >
+                <span class="min-w-0">
+                  {{ runtimeLabel }}
+                  <span class="ml-1 text-xs text-muted">{{ profile.runtime || "claude" }}</span>
+                </span>
+              </InlineAgentField>
             </dd>
           </div>
           <div class="grid grid-cols-[6.5rem_minmax(0,1fr)] gap-3 px-3 py-2.5">
             <dt class="text-xs text-muted">模型</dt>
             <dd class="min-w-0 text-sm text-gray-800 dark:text-gray-200">
-              {{ modelLabel }}
-              <span class="ml-1 text-xs text-muted">{{ profile.model || "sonnet" }}</span>
+              <InlineAgentField
+                :agent-id="profile.id"
+                field="model"
+                :value="(profile.model || 'sonnet').toLowerCase()"
+                :editable="canEditAgent"
+                kind="select"
+                :options="[
+                  { value: 'sonnet', label: 'Sonnet' },
+                  { value: 'opus', label: 'Opus' },
+                  { value: 'haiku', label: 'Haiku' },
+                ]"
+                :extra-patch="{ runtime: profile.runtime || 'claude' }"
+                @saved="applyField('model', $event)"
+              >
+                <span class="min-w-0">
+                  {{ modelLabel }}
+                  <span class="ml-1 text-xs text-muted">{{ profile.model || "sonnet" }}</span>
+                </span>
+              </InlineAgentField>
+            </dd>
+          </div>
+          <!-- 自定义头像 URL：仅当当前值非内置预设时显示（预设/字母走头部头像选择器） -->
+          <div
+            v-if="profile.avatarUrl && !isPresetAvatarUrl(profile.avatarUrl)"
+            class="grid grid-cols-[6.5rem_minmax(0,1fr)] gap-3 px-3 py-2.5"
+          >
+            <dt class="text-xs text-muted">头像 URL</dt>
+            <dd class="min-w-0 text-sm text-gray-800 dark:text-gray-200">
+              <InlineAgentField
+                :agent-id="profile.id"
+                field="avatarUrl"
+                :value="profile.avatarUrl"
+                :editable="canEditAgent"
+                @saved="applyField('avatarUrl', $event)"
+              >
+                <span class="min-w-0 break-all">{{ profile.avatarUrl }}</span>
+              </InlineAgentField>
             </dd>
           </div>
           <div v-if="profile.computer" class="grid grid-cols-[6.5rem_minmax(0,1fr)] gap-3 px-3 py-2.5">

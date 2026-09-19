@@ -532,6 +532,18 @@ export type WsToBrowserMessage =
       presence: AgentPresence;
     }
   | { type: "agent:delivery-queued"; agentName: string; channelName: string }
+  // 资料变更广播：PATCH /agents/:id 与 PATCH /profile 成功后推送最新 handle/
+  // displayName/avatarUrl——web 端就地回写 channelStore.membersByChannelId，
+  // 成员面板/AgentStatusBar/消息行头像不落刷新即同步（memberId = users.id 或
+  // agents.id，与 channel_members.member_id 同口径）
+  | {
+      type: "profile:update";
+      memberType: "human" | "agent";
+      memberId: UUID;
+      handle: string;
+      displayName: string;
+      avatarUrl: string | null;
+    }
   // P1.26：reason 可选——daemon 上报的 A1 死信不带（重试耗尽语义）；server 侧
   // dispatch 离线告警带 "daemon-offline"（目标 agent 的 owner daemon 未连接，
   // 消息不会实时送达也不会被唤醒），web 据此区分 toast 文案。

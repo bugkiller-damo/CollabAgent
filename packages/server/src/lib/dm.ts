@@ -7,6 +7,7 @@ export interface Party {
   type: "human" | "agent";
   handle: string;
   displayName?: string;
+  avatarUrl?: string | null;
 }
 
 // 解析一个 handle（用户 handle 或 agent name）为对端实体。
@@ -23,32 +24,44 @@ export async function resolvePeer(
 ): Promise<Party | null> {
   const clean = String(rawHandle).replace(/^@/, "");
   if (!clean) return null;
-  const u = await app.pg.query<{ id: number; handle: string; display_name: string | null }>(
-    "SELECT id, handle, display_name FROM users WHERE handle = $1",
+  const u = await app.pg.query<{ id: number; handle: string; display_name: string | null; avatar_url: string | null }>(
+    "SELECT id, handle, display_name, avatar_url FROM users WHERE handle = $1",
     [clean],
   );
   if (u.rows.length) {
     const r = u.rows[0];
-    return { id: String(r.id), type: "human", handle: r.handle, displayName: r.display_name ?? undefined };
+    return {
+      id: String(r.id),
+      type: "human",
+      handle: r.handle,
+      displayName: r.display_name ?? undefined,
+      avatarUrl: r.avatar_url,
+    };
   }
   const a = serverId
-    ? await app.pg.query<{ id: number; name: string; display_name: string | null }>(
-        "SELECT id, name, display_name FROM agents WHERE name = $1 AND server_id = $2",
+    ? await app.pg.query<{ id: number; name: string; display_name: string | null; avatar_url: string | null }>(
+        "SELECT id, name, display_name, avatar_url FROM agents WHERE name = $1 AND server_id = $2",
         [clean, serverId],
       )
-    : await app.pg.query<{ id: number; name: string; display_name: string | null }>(
-        "SELECT id, name, display_name FROM agents WHERE name = $1",
+    : await app.pg.query<{ id: number; name: string; display_name: string | null; avatar_url: string | null }>(
+        "SELECT id, name, display_name, avatar_url FROM agents WHERE name = $1",
         [clean],
       );
   if (a.rows.length) {
     const r = a.rows[0];
-    return { id: String(r.id), type: "agent", handle: r.name, displayName: r.display_name ?? undefined };
+    return {
+      id: String(r.id),
+      type: "agent",
+      handle: r.name,
+      displayName: r.display_name ?? undefined,
+      avatarUrl: r.avatar_url,
+    };
   }
   // 兜底仅在「显式 server 范围解析失败 + 知道我是谁」时启用——
   // 自己的 agent 优先于同 server 他人的同名 agent
   if (serverId && meId) {
-    const fb = await app.pg.query<{ id: number; name: string; display_name: string | null }>(
-      `SELECT a.id, a.name, a.display_name FROM agents a
+    const fb = await app.pg.query<{ id: number; name: string; display_name: string | null; avatar_url: string | null }>(
+      `SELECT a.id, a.name, a.display_name, a.avatar_url FROM agents a
         WHERE a.name = $1 AND (
           a.user_id::text = $2
           OR EXISTS (SELECT 1 FROM server_members sm
@@ -60,7 +73,13 @@ export async function resolvePeer(
     );
     if (fb.rows.length) {
       const r = fb.rows[0];
-      return { id: String(r.id), type: "agent", handle: r.name, displayName: r.display_name ?? undefined };
+      return {
+        id: String(r.id),
+        type: "agent",
+        handle: r.name,
+        displayName: r.display_name ?? undefined,
+        avatarUrl: r.avatar_url,
+      };
     }
   }
   return null;

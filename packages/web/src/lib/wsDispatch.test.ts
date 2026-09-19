@@ -1,6 +1,7 @@
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useAgentStore } from "../stores/agentStore";
+import { useAuthStore } from "../stores/authStore";
 import { useChannelStore } from "../stores/channelStore";
 import { useMessageStore } from "../stores/messageStore";
 import { useNotificationStore } from "../stores/notificationStore";
@@ -432,5 +433,90 @@ describe("wsDispatch", () => {
     deliver("#random", "m-u6", "12345678-1234-1234-1234-123456789abc", "s1");
 
     expect(channelStore.unreadCounts["s1:random"]).toBe(1);
+  });
+
+  // profile:update：资料变更（头像/显示名）就地回写所有已缓存频道成员行——
+  // 成员面板 / AgentStatusBar / 消息行头像不落刷新即同步；本人会话缓存同步更新
+  it("profile:update → 所有已缓存频道的同 (type,id) 成员行就地更新", () => {
+    const channelStore = useChannelStore();
+    channelStore.membersByChannelId = {
+      c1: [{ member_id: "a-1", member_type: "agent", handle: "bot", avatar_url: "/avatars/old.svg" }],
+      c2: [{ member_id: "a-1", member_type: "agent", handle: "bot", avatar_url: "/avatars/old.svg" }],
+      c3: [{ member_id: "a-1", member_type: "human", handle: "bot", avatar_url: null }], // 同 id 不同 type 不动
+    };
+
+    dispatchWsEvent({
+      type: "profile:update",
+      memberType: "agent",
+      memberId: "a-1",
+      handle: "bot",
+      displayName: "新名字",
+      avatarUrl: "/avatars/new.svg",
+    } as any);
+
+    for (const cid of ["c1", "c2"]) {
+      const m = channelStore.membersByChannelId[cid]![0];
+      expect(m.avatar_url).toBe("/avatars/new.svg");
+      expect(m.display_name).toBe("新名字");
+    }
+    expect(channelStore.membersByChannelId.c3![0].avatar_url).toBeNull();
+  });
+
+  it("profile:update 指向当前用户 → authStore.user 同步（侧栏头像/多标签页一致）", () => {
+    const authStore = useAuthStore();
+    authStore.updateUser({ id: "u-1", handle: "me", avatarUrl: "/avatars/old.svg" });
+
+    dispatchWsEvent({
+      type: "profile:update",
+      memberType: "human",
+      memberId: "u-1",
+      handle: "me",
+      displayName: "改名了",
+      avatarUrl: "/avatars/new.svg",
+    } as any);
+
+    expect(authStore.user?.avatarUrl).toBe("/avatars/new.svg");
+    expect(authStore.user?.displayName).toBe("改名了");
+  });
+
+  it("profile:update avatarUrl=null → 清空头像（成员行 + 本人会话均回字母兜底）", () => {
+    const channelStore = useChannelStore();
+    const authStore = useAuthStore();
+    authStore.updateUser({ id: "u-1", handle: "me", avatarUrl: "/avatars/old.svg" });
+    channelStore.membersByChannelId = {
+      c1: [{ member_id: "u-1", member_type: "human", handle: "me", avatar_url: "/avatars/old.svg" }],
+    };
+
+    dispatchWsEvent({
+      type: "profile:update",
+      memberType: "human",
+      memberId: "u-1",
+      handle: "me",
+      displayName: "我",
+      avatarUrl: null,
+    } as any);
+
+    expect(channelStore.membersByChannelId.c1![0].avatar_url).toBeNull();
+    expect(authStore.user?.avatarUrl).toBeNull();
+  });
+
+  it("profile:update 幂等——发起端已乐观更新，回环重放无副作用", () => {
+    const channelStore = useChannelStore();
+    channelStore.membersByChannelId = {
+      c1: [{ member_id: "a-1", member_type: "agent", handle: "bot", avatar_url: "/avatars/new.svg" }],
+    };
+    const evt = {
+      type: "profile:update",
+      memberType: "agent",
+      memberId: "a-1",
+      handle: "bot",
+      displayName: "bot",
+      avatarUrl: "/avatars/new.svg",
+    } as any;
+
+    dispatchWsEvent(evt);
+    dispatchWsEvent(evt);
+
+    expect(channelStore.membersByChannelId.c1![0].avatar_url).toBe("/avatars/new.svg");
   });
 });

@@ -11,7 +11,7 @@ import EmptyState from "../components/EmptyState.vue";
 import PageHeader from "../components/layout/PageHeader.vue";
 import MessageSkeleton from "../components/skeleton/MessageSkeleton.vue";
 import Avatar from "../components/ui/Avatar.vue";
-import { useMessageStore, useUiStore } from "../stores";
+import { useChannelStore, useMessageStore, useUiStore } from "../stores";
 
 const EMPTY: Message[] = [];
 
@@ -20,15 +20,19 @@ interface Peer {
   type: "human" | "agent";
   handle: string;
   displayName?: string;
+  avatarUrl?: string | null;
 }
 
 const route = useRoute();
 const messageStore = useMessageStore();
+const channelStore = useChannelStore();
 const uiStore = useUiStore();
 
 const peerName = computed(() => route.params.peerName as string);
 const peer = ref<Peer | null>(null);
 const convKey = ref("");
+// dm 频道 UUID：消息行头像经成员缓存解析（/api/channels/:id/members 对 dm 频道同样可用）
+const dmChannelId = ref("");
 const error = ref("");
 const attachments = ref<ComposerAttachment[]>([]);
 const containerRef = ref<HTMLDivElement | null>(null);
@@ -49,6 +53,15 @@ const online = computed(() => uiStore.online);
 const title = computed(() => peer.value?.displayName || peer.value?.handle || peerName.value || "私信");
 const subtitle = computed(() => `@${peer.value?.handle || peerName.value || ""}`);
 const isAgent = computed(() => peer.value?.type === "agent");
+// 页头头像：成员缓存行存在即以它为准（profile:update 就地回写，清空也同步为字母兜底），
+// 未缓存时用 resolve 快照兜底
+const peerAvatarUrl = computed(() => {
+  const m = channelStore.membersByChannelId[dmChannelId.value]?.find(
+    (mm) => String(mm.member_id) === String(peer.value?.id),
+  );
+  if (m) return m.avatar_url || undefined;
+  return peer.value?.avatarUrl ?? undefined;
+});
 
 // React 版 useEffect([peerName, fetchHistory])：解析 dm:@peer → convKey，随后拉历史。
 // fetchHistory 是 store 动作（引用稳定），故这里只 watch peerName。
@@ -58,11 +71,14 @@ watch(
     if (!name) return;
     error.value = "";
     convKey.value = "";
+    dmChannelId.value = ""; // 切会话先清——旧频道的成员缓存不能拿去解析新会话头像
     stickToBottom.value = true;
     apiGet<{ channelId: string; dmKey: string; peer: Peer }>("/api/channels/resolve", { target: "dm:@" + name })
       .then((d) => {
         peer.value = d.peer;
         convKey.value = d.dmKey;
+        dmChannelId.value = d.channelId || "";
+        if (d.channelId) void channelStore.fetchMembers(d.channelId);
         messageStore.fetchHistory(d.dmKey).catch(() => {});
       })
       .catch((e: any) => {
@@ -151,7 +167,7 @@ function setAttachments(next: ComposerAttachment[]) {
     <PageHeader :title="title" :subtitle="subtitle">
       <template #leading>
         <button type="button" class="flex items-center" @click="uiStore.openProfile({ handle: peer?.handle || peerName })">
-          <Avatar :name="title" size="md" />
+          <Avatar :name="title" :src="peerAvatarUrl" size="md" />
         </button>
       </template>
       <span
@@ -193,6 +209,7 @@ function setAttachments(next: ComposerAttachment[]) {
         :key="m.id"
         :msg="m"
         :channel-name="convKey"
+        :channel-id="dmChannelId"
         :prev-msg="messages[idx - 1]"
       />
       <PendingRow v-for="p in pending" :key="p.tempId" :item="p" @retry="retryPending" @discard="discardPending" />

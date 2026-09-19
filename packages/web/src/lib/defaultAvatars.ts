@@ -6,6 +6,9 @@
  */
 
 export const AVATAR_FAMILIES = [
+  { key: "toon", label: "卡通" },
+  { key: "male", label: "男士" },
+  { key: "female", label: "女士" },
   { key: "orb", label: "渐变" },
   { key: "geo", label: "几何" },
   { key: "pixel", label: "像素" },
@@ -30,6 +33,16 @@ const preset = (id: string, label: string, family: AvatarFamilyKey): AvatarPrese
 });
 
 export const DEFAULT_AVATARS: AvatarPreset[] = [
+  preset("toon-bear", "小熊", "toon"),
+  preset("toon-kitty", "猫咪", "toon"),
+  preset("toon-bot", "机器人", "toon"),
+  preset("toon-panda", "熊猫", "toon"),
+  preset("male-1", "男士·蓝", "male"),
+  preset("male-2", "男士·绿", "male"),
+  preset("male-3", "男士·紫", "male"),
+  preset("female-1", "女士·粉", "female"),
+  preset("female-2", "女士·橙", "female"),
+  preset("female-3", "女士·青", "female"),
   preset("orb-aurora", "极光", "orb"),
   preset("orb-sunset", "落日", "orb"),
   preset("orb-lagoon", "泻湖", "orb"),

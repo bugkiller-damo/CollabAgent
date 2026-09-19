@@ -29,6 +29,9 @@ export const useChannelStore = defineStore("channels", () => {
   const unreadCounts = ref<Record<string, number>>({});
   /** 当前频道的成员（观察面板/侧栏只展示已加入的 agent） */
   const membersByChannelId = ref<Record<string, ChannelMember[]>>({});
+  /** 资料变更版本号：profile:update / 本地保存递增——自持副本的视图
+   * （PeopleView、AgentStatusBar 的 DM 路径）watch 它重拉，不必逐个注入回写 */
+  const membersVersion = ref(0);
 
   async function fetchMembers(channelId: string): Promise<ChannelMember[]> {
     if (!channelId) return [];
@@ -40,6 +43,57 @@ export const useChannelStore = defineStore("channels", () => {
     } catch {
       return membersByChannelId.value[channelId] ?? [];
     }
+  }
+
+  /**
+   * 按 (member_id, member_type) 就地回写所有已缓存频道的成员行——
+   * server 的 profile:update 广播与本地保存（MemberProfileBody/ProfileSettings）共用；
+   * 幂等（同值重放无副作用），未缓存的频道不动（下次打开仍走 fetchMembers 权威拉取）。
+   */
+  function applyMemberProfile(u: {
+    memberType: "human" | "agent";
+    memberId: string;
+    handle?: string;
+    displayName?: string;
+    avatarUrl?: string | null;
+  }): void {
+    membersVersion.value++;
+    const next = { ...membersByChannelId.value };
+    let changed = false;
+    for (const cid of Object.keys(next)) {
+      const list = next[cid]!;
+      if (!list.some((m) => m.member_type === u.memberType && String(m.member_id) === u.memberId)) continue;
+      next[cid] = list.map((m) =>
+        m.member_type === u.memberType && String(m.member_id) === u.memberId
+          ? {
+              ...m,
+              handle: u.handle ?? m.handle,
+              display_name: u.displayName ?? m.display_name,
+              avatar_url: u.avatarUrl === undefined ? m.avatar_url : u.avatarUrl,
+            }
+          : m,
+      );
+      changed = true;
+    }
+    if (changed) membersByChannelId.value = next;
+  }
+
+  /**
+   * 发送者头像解析（消息行/线程行共用）：读成员缓存而非消息负载——成员行被
+   * profile:update 就地回写，历史消息的头像也随资料变更同步刷新（负载快照做不到）。
+   * senderId 与 channel_members.member_id 同口径（human=users.id / agent=agents.id）。
+   */
+  function memberAvatarUrl(
+    channelId: string | null | undefined,
+    senderId: unknown,
+    senderType?: unknown,
+  ): string | undefined {
+    if (!channelId || senderId == null) return undefined;
+    const list = membersByChannelId.value[channelId];
+    if (!list) return undefined;
+    const t = senderType === "agent" ? "agent" : "human";
+    const sid = String(senderId);
+    return list.find((m) => m.member_type === t && String(m.member_id) === sid)?.avatar_url || undefined;
   }
 
   async function fetchChannels(sid?: string | null): Promise<void> {
@@ -164,6 +218,9 @@ export const useChannelStore = defineStore("channels", () => {
     incrementUnread,
     clearUnread,
     membersByChannelId,
+    membersVersion,
+    applyMemberProfile,
+    memberAvatarUrl,
     fetchMembers,
   };
 });

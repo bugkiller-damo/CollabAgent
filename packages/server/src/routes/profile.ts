@@ -7,6 +7,7 @@ import {
   MACHINE_TOKEN_MAX_ACTIVE_PER_USER,
   MACHINE_TOKEN_TTL_DAYS,
 } from "../lib/machine-token-policy.js";
+import { broadcastProfileUpdate } from "../lib/profile-events.js";
 import { validatePassword } from "../lib/validators.js";
 
 export async function profileRoutes(app: FastifyInstance) {
@@ -55,6 +56,16 @@ export async function profileRoutes(app: FastifyInstance) {
       params,
     );
     const u = result.rows[0] as Record<string, unknown>;
+    // 资料变更广播：频道成员缓存就地回写（成员面板/消息头像/Agent 状态栏不落刷新），
+    // 本人其他端/标签页也收同事件同步会话缓存
+    await broadcastProfileUpdate(app.pg, {
+      memberType: "human",
+      memberId: String(u.id),
+      handle: String(u.handle),
+      displayName: String(u.display_name ?? ""),
+      avatarUrl: (u.avatar_url as string | null) ?? null,
+      ownerUserId: String(u.id),
+    });
     return {
       user: {
         id: u.id,

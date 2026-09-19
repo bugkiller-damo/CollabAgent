@@ -9,6 +9,8 @@ interface User {
   displayName?: string;
   email?: string;
   description?: string;
+  /** 头像 URL（/api/attachments/... 或 /avatars/... 预设；null/缺省 = 字母兜底） */
+  avatarUrl?: string | null;
 }
 
 // 纯 httpOnly Cookie 鉴权：用户信息可缓存（仅展示用），不再用 JWT 作 Bearer 头

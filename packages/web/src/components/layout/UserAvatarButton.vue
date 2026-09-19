@@ -232,7 +232,7 @@ async function submitAdd() {
       @click="toggle"
     >
       <span :class="['rounded-full', ringClass]">
-        <Avatar :name="displayName" :src="(authStore.user as any)?.avatarUrl" size="sm" />
+        <Avatar :name="displayName" :src="authStore.user?.avatarUrl || undefined" size="sm" />
       </span>
       <span
         v-if="elsewhereUnread"
@@ -254,7 +254,7 @@ async function submitAdd() {
       <!-- 用户身份头 -->
       <div class="flex items-center gap-3 border-b border-gray-100 px-4 py-3 dark:border-gray-700">
         <span :class="['rounded-full', ringClass]">
-          <Avatar :name="displayName" :src="(authStore.user as any)?.avatarUrl" size="md" />
+          <Avatar :name="displayName" :src="authStore.user?.avatarUrl || undefined" size="md" />
         </span>
         <div class="min-w-0 flex-1">
           <div class="truncate text-sm font-semibold text-ink">{{ displayName }}</div>

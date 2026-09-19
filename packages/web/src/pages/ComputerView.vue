@@ -788,18 +788,20 @@ watch(
           :value="newDesc"
           @input="newDesc = ($event.target as HTMLInputElement).value"
         />
-        <Input
-          type="text"
-          placeholder="头像 URL（可选）"
-          :value="newAvatarUrl"
-          @input="newAvatarUrl = ($event.target as HTMLInputElement).value"
-        />
-        <AvatarPresetPicker
-          compact
-          :current="newAvatarUrl"
-          :letter-name="newDisplayName || newName || '?'"
-          @select="newAvatarUrl = $event"
-        />
+        <div class="flex items-center gap-2">
+          <AvatarPresetPicker
+            :current="newAvatarUrl"
+            :letter-name="newDisplayName || newName || '?'"
+            @select="newAvatarUrl = $event"
+          />
+          <Input
+            type="text"
+            placeholder="头像 URL（可选），或点左侧头像挑选"
+            :value="newAvatarUrl"
+            @input="newAvatarUrl = ($event.target as HTMLInputElement).value"
+            class="min-w-0 flex-1"
+          />
+        </div>
         <div class="flex gap-2">
           <select
             v-model="newRuntime"

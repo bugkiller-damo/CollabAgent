@@ -8,6 +8,8 @@ import type { ListItem } from "./types";
 const props = defineProps<{
   items: ListItem[];
   channelName?: string;
+  /** 频道 UUID：透传给 MessageRow 做发送者头像的成员缓存解析 */
+  channelId?: string;
   highlightMsgId?: string;
 }>();
 
@@ -158,6 +160,7 @@ watch(
           v-if="items[vi.index].kind === 'msg'"
           :msg="items[vi.index].data"
           :channel-name="channelName"
+          :channel-id="channelId"
           :prev-msg="vi.index > 0 && items[vi.index - 1].kind === 'msg' ? items[vi.index - 1].data : undefined"
           :is-highlighted="
             highlightMsgId !== undefined &&

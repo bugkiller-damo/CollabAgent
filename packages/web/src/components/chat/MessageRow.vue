@@ -10,6 +10,7 @@ import { threadPath } from "../../lib/nav";
 import { useAuthStore, useChannelStore, useMessageStore, useServerStore, useUiStore } from "../../stores";
 import { toast } from "../../stores/toastStore";
 import ConfirmDialog from "../ConfirmDialog.vue";
+import Avatar from "../ui/Avatar.vue";
 import AttachmentView from "./AttachmentView.vue";
 import LinkPreview from "./LinkPreview.vue";
 import MarkdownContent from "./MarkdownContent.vue";
@@ -37,6 +38,8 @@ if (typeof document !== "undefined" && !document.getElementById(highlightStyleId
 const props = defineProps<{
   msg: any;
   channelName?: string;
+  /** 频道 UUID（含 dm 频道）：发送者头像经成员缓存解析——profile:update 就地回写后自动跟随 */
+  channelId?: string;
   isHighlighted?: boolean;
   prevMsg?: any;
 }>();
@@ -74,6 +77,9 @@ const dispatchKind = computed(() =>
         : null,
 );
 const isProgress = computed(() => isProgressContent(props.msg.content));
+const senderAvatarUrl = computed(() =>
+  channelStore.memberAvatarUrl(props.channelId, props.msg.senderId ?? props.msg.sender_id, props.msg.senderType),
+);
 
 // 紧凑模式：与上一条为同一发送者，且时间差在 5 分钟内
 const timeDiffMin = computed(() => {
@@ -221,12 +227,12 @@ function openSenderProfile() {
     <button
       v-else
       type="button"
-      class="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-gray-600 text-xs text-white hover:opacity-80"
+      class="shrink-0 rounded-full transition-opacity hover:opacity-80"
       :disabled="!senderHandle()"
       :title="senderHandle() ? '查看档案' : undefined"
       @click="openSenderProfile"
     >
-      {{ (msg.senderName || "?")[0] }}
+      <Avatar :name="msg.senderName || '?'" :src="senderAvatarUrl" size="md" />
     </button>
 
     <div class="min-w-0 flex-1">

@@ -12,7 +12,7 @@ import MemberProfileBody from "../components/people/MemberProfileBody.vue";
 import Avatar from "../components/ui/Avatar.vue";
 import Input from "../components/ui/Input.vue";
 import { LG_QUERY, useMediaQuery } from "../composables";
-import { runtimeCatalog, useAgentStore, useAuthStore, useServerStore, useUiStore } from "../stores";
+import { runtimeCatalog, useAgentStore, useAuthStore, useChannelStore, useServerStore, useUiStore } from "../stores";
 import { toast } from "../stores/toastStore";
 
 interface AgentComputer {
@@ -57,6 +57,7 @@ interface Invite {
 const route = useRoute();
 const uiStore = useUiStore();
 const agentStore = useAgentStore();
+const channelStore = useChannelStore();
 const authStore = useAuthStore();
 const serverStore = useServerStore();
 const isDesktop = useMediaQuery(LG_QUERY);
@@ -242,6 +243,15 @@ onMounted(async () => {
 // 切 server 后成员语境整体更换，重拉
 watch(
   () => serverStore.activeServerId,
+  () => {
+    if (loaded.value) void load();
+  },
+);
+
+// 任一成员资料变更（profile:update / 本页保存 → membersVersion 递增）重拉——
+// 本页 agents/members 是自持副本，不刷新会滞留旧头像/显示名
+watch(
+  () => channelStore.membersVersion,
   () => {
     if (loaded.value) void load();
   },

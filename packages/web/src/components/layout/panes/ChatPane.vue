@@ -17,6 +17,7 @@ interface DmItem {
   peerHandle: string;
   peerName: string;
   peerType: "human" | "agent";
+  peerAvatar?: string | null;
   lastContent?: string;
 }
 
@@ -24,6 +25,7 @@ interface PeopleItem {
   handle: string;
   displayName: string;
   type: "human" | "agent";
+  avatarUrl?: string | null;
 }
 
 const channelStore = useChannelStore();
@@ -84,6 +86,13 @@ function loadDms() {
 // 否则仍显示上一个 server 语境下的会话列表
 watch([() => route.path, () => serverStore.activeServerId], () => loadDms(), { immediate: true });
 
+// 对端资料变更（profile:update → membersVersion 递增）时重拉——peerName/peerAvatar 是
+// 列表快照字段，不刷新会滞留旧值
+watch(
+  () => channelStore.membersVersion,
+  () => loadDms(),
+);
+
 async function openPeoplePicker() {
   showPeople.value = !showPeople.value;
   if (people.value.length > 0) return;
@@ -94,14 +103,14 @@ async function openPeoplePicker() {
     // agent 是 server 级记录：私信候选只列活跃 server 的 agent（跨 server 同名不混）
     for (const x of a.agents || []) {
       if (sid && String(x.server_id) !== sid) continue;
-      list.push({ handle: x.name, displayName: x.display_name || x.name, type: "agent" });
+      list.push({ handle: x.name, displayName: x.display_name || x.name, type: "agent", avatarUrl: x.avatar_url });
     }
   } catch {}
   try {
     const s = await apiGet<any>("/api/server/info", sid ? { serverId: sid } : undefined);
     for (const h of s.humans || []) {
       if (h.handle === user.value?.handle) continue;
-      list.push({ handle: h.handle, displayName: h.display_name || h.handle, type: "human" });
+      list.push({ handle: h.handle, displayName: h.display_name || h.handle, type: "human", avatarUrl: h.avatar_url });
     }
   } catch {}
   people.value = list;
@@ -424,7 +433,7 @@ async function submitDelete() {
                 class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700"
                 @click="startDm(p.handle)"
               >
-                <Avatar :name="p.displayName" size="sm" />
+                <Avatar :name="p.displayName" :src="p.avatarUrl || undefined" size="sm" />
                 <span class="truncate">{{ p.displayName }}</span>
                 <span class="ml-auto text-xs text-muted">@{{ p.handle }}</span>
               </button>
@@ -442,7 +451,7 @@ async function submitDelete() {
           ]"
           @click="startDm(d.peerHandle)"
         >
-          <Avatar :name="d.peerName || d.peerHandle" size="sm" />
+          <Avatar :name="d.peerName || d.peerHandle" :src="d.peerAvatar || undefined" size="sm" />
           <span class="truncate">{{ d.peerName || d.peerHandle }}</span>
         </button>
         <p v-if="dms.length === 0" class="px-2 py-1 text-xs text-muted">点 + 发起私信</p>
