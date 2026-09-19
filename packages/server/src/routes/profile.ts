@@ -39,9 +39,10 @@ export async function profileRoutes(app: FastifyInstance) {
       sets.push("description = $" + p++);
       params.push(description);
     }
-    if (avatarUrl) {
+    // avatarUrl 显式传 null/"" 时清空（恢复默认字母头像）；undefined 才不触碰该列
+    if (avatarUrl !== undefined) {
       sets.push("avatar_url = $" + p++);
-      params.push(avatarUrl);
+      params.push(avatarUrl || null);
     }
     if (sets.length === 0) return reply.status(400).send({ error: "no fields to update" });
     params.push(userId);

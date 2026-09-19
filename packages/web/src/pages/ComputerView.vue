@@ -2,18 +2,28 @@
 import { type AgentPresence, composePresence, PRESENCE_LABEL } from "@collabagent/shared";
 import { Check, Monitor } from "@lucide/vue";
 import { computed, onMounted, ref, watch } from "vue";
-import { useRoute } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { apiClient, apiGet, apiPatch, apiPost } from "../api";
 import AgentWorkspacePanel from "../components/agent/AgentWorkspacePanel.vue";
 import ConfirmDialog from "../components/ConfirmDialog.vue";
 import PageHeader from "../components/layout/PageHeader.vue";
 import Avatar from "../components/ui/Avatar.vue";
+import AvatarPresetPicker from "../components/ui/AvatarPresetPicker.vue";
 import Button from "../components/ui/Button.vue";
 import Card from "../components/ui/Card.vue";
 import Input from "../components/ui/Input.vue";
 import Modal from "../components/ui/Modal.vue";
 import { usePolling } from "../composables";
-import { runtimeCatalog, useAgentStore, useAuthStore, useComputerStore, useServerStore, useUiStore } from "../stores";
+import {
+  type ComputerRecord,
+  claudeInstalled,
+  runtimeCatalog,
+  useAgentStore,
+  useAuthStore,
+  useComputerStore,
+  useServerStore,
+  useUiStore,
+} from "../stores";
 import { toast } from "../stores/toastStore";
 
 interface AgentRow {
@@ -587,6 +597,12 @@ watch(
           placeholder="头像 URL（可选）"
           :value="newAvatarUrl"
           @input="newAvatarUrl = ($event.target as HTMLInputElement).value"
+        />
+        <AvatarPresetPicker
+          compact
+          :current="newAvatarUrl"
+          :letter-name="newDisplayName || newName || '?'"
+          @select="newAvatarUrl = $event"
         />
         <div class="flex gap-2">
           <select

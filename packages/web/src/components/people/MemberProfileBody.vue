@@ -12,6 +12,7 @@ import AgentPatrolPanel from "../admin/AgentPatrolPanel.vue";
 import AgentWorkspacePanel from "../agent/AgentWorkspacePanel.vue";
 import ConfirmDialog from "../ConfirmDialog.vue";
 import Avatar from "../ui/Avatar.vue";
+import AvatarPresetPicker from "../ui/AvatarPresetPicker.vue";
 import Button from "../ui/Button.vue";
 import Input from "../ui/Input.vue";
 
@@ -533,6 +534,12 @@ async function expandChannels() {
               placeholder="头像 URL（可选）"
               :value="draftAvatarUrl"
               @input="draftAvatarUrl = ($event.target as HTMLInputElement).value"
+            />
+            <AvatarPresetPicker
+              compact
+              :current="draftAvatarUrl"
+              :letter-name="draftDisplayName || profile.handle"
+              @select="draftAvatarUrl = $event"
             />
           </div>
           <div class="flex gap-2">

@@ -5,6 +5,7 @@ import { apiPatch, apiPost, uploadAttachment } from "../../api";
 import PageHeader from "../../components/layout/PageHeader.vue";
 import PasswordStrength from "../../components/PasswordStrength.vue";
 import Avatar from "../../components/ui/Avatar.vue";
+import AvatarPresetPicker from "../../components/ui/AvatarPresetPicker.vue";
 import Button from "../../components/ui/Button.vue";
 import Card from "../../components/ui/Card.vue";
 import Input from "../../components/ui/Input.vue";
@@ -54,6 +55,24 @@ async function handleAvatar(file: File) {
     msgOk.value = true;
   } catch {
     msg.value = "头像上传失败";
+    msgOk.value = false;
+  } finally {
+    avatarUploading.value = false;
+  }
+}
+
+// 预设头像：url=""（字母格）时写 null，server 落 NULL → Avatar 回退彩色字母
+async function selectPreset(url: string) {
+  avatarUploading.value = true;
+  msg.value = "";
+  try {
+    await apiPatch("/api/profile", { avatarUrl: url || null });
+    avatarUrl.value = url;
+    authStore.updateUser({ avatarUrl: url } as any);
+    msg.value = url ? "头像已更新" : "已恢复默认字母头像";
+    msgOk.value = true;
+  } catch {
+    msg.value = "头像更新失败";
     msgOk.value = false;
   } finally {
     avatarUploading.value = false;
@@ -110,10 +129,19 @@ async function handleChangePassword() {
               @change="onAvatarFileChange"
             />
             <Button @click="avatarInputRef?.click()" :disabled="avatarUploading" size="sm" variant="secondary">
-              {{ avatarUploading ? "上传中…" : "更换头像" }}
+              {{ avatarUploading ? "更新中…" : "更换头像" }}
             </Button>
             <p class="mt-1 text-xs text-muted">支持 JPG/PNG，最大 10MB</p>
           </div>
+        </div>
+        <div>
+          <p class="mb-2 text-sm text-subtle">不上传照片？挑一个默认头像</p>
+          <AvatarPresetPicker
+            :current="avatarUrl"
+            :letter-name="authStore.user?.handle || '?'"
+            :disabled="avatarUploading"
+            @select="selectPreset"
+          />
         </div>
         <div>
           <label class="mb-1 block text-sm text-subtle">用户名 (不可修改)</label>

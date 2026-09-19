@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, type PropType } from "vue";
+import { avatarFallbackClass } from "../../lib/defaultAvatars";
 
 type AvatarSize = "sm" | "md" | "lg" | "xl";
 
@@ -21,6 +22,8 @@ const sizeMap: Record<AvatarSize, { box: string; text: string; dot: string }> = 
 
 const s = computed(() => sizeMap[props.size]);
 const initial = computed(() => (props.name || "?")[0].toUpperCase());
+// 无头像兜底：按名字散列取固定色（同名字恒同色），取代此前的统一灰
+const fallbackBg = computed(() => avatarFallbackClass(props.name || "?"));
 </script>
 
 <template>
@@ -30,7 +33,8 @@ const initial = computed(() => (props.name || "?")[0].toUpperCase());
       v-else
       :class="[
         s.box,
-        'rounded-full bg-gray-500 dark:bg-gray-600 flex items-center justify-center font-medium text-white',
+        'rounded-full flex items-center justify-center font-medium text-white',
+        fallbackBg,
         s.text,
       ]"
     >

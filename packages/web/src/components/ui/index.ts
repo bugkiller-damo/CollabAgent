@@ -1,5 +1,6 @@
 // 对齐 packages/web/src/components/ui/ 的导出关系（同名导出，供页面层统一 import）
 export { default as Avatar } from "./Avatar.vue";
+export { default as AvatarPresetPicker } from "./AvatarPresetPicker.vue";
 export { default as Breadcrumb } from "./Breadcrumb.vue";
 export { default as Button } from "./Button.vue";
 export { default as Card } from "./Card.vue";
