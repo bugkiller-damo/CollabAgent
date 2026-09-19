@@ -2,6 +2,8 @@
 
 > 日期：2026-09-18
 > 状态：**P0 已落地**（2026-09-18：后端 `test/orgs.test.ts` 7 例 + `test/metrics.test.ts` 12 例全绿；前端 `vue-tsc` 干净、vitest 168/168 全绿）
+> **P1 推进**：B5 已落地（2026-09-18：`test/orgs.test.ts` 11/11 全绿；补口径——默认社区/广场拒删 409，`GET /api/orgs` 返回 `isDefault` 供前端隐藏入口）；B6 已落地（2026-09-18：`test/orgs.test.ts` 14/14 全绿；补口径——personal server 拒转 409，默认社区**可转**作为实例管理员显式交接路径）
+> **IA 变更**（2026-09-18）：撤销最左 ServerRail 独立列，server 切换/新建/加入收进左下角头像二级菜单（`UserAvatarButton`：私有空间/公共服务器分组 + 未读角标 + 连接状态；移动端抽屉顶栏同组件向下弹出）
 > 范围：`packages/server`（少量端点 + 一处安全收紧）、`packages/web`（server rail + 路由/存储加维度）、`packages/shared`（协议字段透传）；daemon 派发链路零改动
 > 依据：2026-09-18 三包并行核查（server 数据模型 / WS·权限 / web IA）；`lib/tenant.ts`、`lib/orgs.ts`、`routes/orgs.ts` 现状
 > 视觉约束：不仿 Raft UI，沿用现有灰蓝 Tailwind（与 08-23 成员页报告同口径）
@@ -89,8 +91,8 @@
 | B2 | `POST /api/invites/:token/accept` | 已登录消费邀请 → `{ ok, serverId, serverName }`；已是成员幂等不烧 uses | 条件 UPDATE invites（revoked/expires/max_uses 入库判定，复用 register 的单语句防 TOCTOU 口径）+ `INSERT server_members ON CONFLICT DO NOTHING` + `invalidateServerMembers`，同一事务 | ✅ |
 | B3 | `PATCH /api/orgs/:id` | `{ name? }`（预留 `iconUrl?`）→ `{ org }` | owner 限定（`isOrgOwner`）。wizard 复用：先 `getOrCreatePersonalOrg` 再 PATCH 命名 | ✅ |
 | B4 | `POST /api/orgs/:id/leave` | → `{ ok }` | member/admin 可退；**owner 拒退**（409 `owner must transfer or delete`）。personal server 拒退（409） | ✅ |
-| B5 | `DELETE /api/orgs/:id`（P1） | → `{ ok }` | owner 限定 + **前置校验：`agents.server_id = :id` 计数为 0**，否则 409 `delete agents first`（D4）。删除 = 事务内删 channels→messages 依赖序 + server_members + invites + servers。personal server 拒删 |
-| B6 | `POST /api/orgs/:id/transfer`（P1） | `{ userId }` → `{ ok }` | owner 限定；目标须为 server member；事务内改 `servers.owner_id` + 两人 `server_members.role` 互换 |
+| B5 | `DELETE /api/orgs/:id`（P1） | → `{ ok }` | owner 限定 + **前置校验：`agents.server_id = :id` 计数为 0**，否则 409 `delete agents first`（D4）。删除 = 事务内删 channels→messages 依赖序 + server_members + invites + servers。personal server 拒删 | ✅ |
+| B6 | `POST /api/orgs/:id/transfer`（P1） | `{ userId }` → `{ ok }` | owner 限定；目标须为 server member；事务内改 `servers.owner_id` + 两人 `server_members.role` 互换 | ✅ |
 | 补 | `GET /api/invites/:token` 增强 | 返回新增 `serverId`；已登录且已是目标成员时返回 `alreadyMember:true`（在 exhausted 检查之前短路） | 可选鉴权（cookie）。受邀注册后主路径必经：register 事务已消费 invite，max_uses=1 时已耗尽——无此短路 InviteAcceptPage 会误显「已达上限」 | ✅ |
 
 ### 4.2 安全收紧（P0 必做，防回归）—— ✅ 已落地
@@ -197,6 +199,8 @@ WHERE s.id = <getDefaultServerId> AND (s.owner_id::text = $1 OR sm.role = 'owner
 |------|------|
 | DM `/dm/cindy` 跨 server 同名 agent | `resolvePeer` 优先 active server 的 agent；DM 列表行加 server 副标（D2）。仍歧义时取最近交互 |
 | owner 退出/删除 personal server | 一律 409 |
+| owner 转让 personal server | 一律 409（B6 落地补口径：`servers.owner_id` 是 `getOrCreatePersonalOrg` 的命中键，转出会让原主丢兜底空间、受让者凭空多一个 personal server） |
+| owner 删除默认社区（广场） | 一律 409（B5 落地补口径：删除会让 `getDefaultServerId` 静默易主到任意自建 server，注册自动入圈与 `resolveTenant` 豁免随之转移） |
 | 被邀 server 与自建 server 同名频道 | URL 已带 serverId 消歧 |
 | daemon 派发跨 server | 零改动：`agent:deliver` → owner userId → `daemonClients` |
 | 用户被移出 server 后 WS 扇出 | `invalidateServerMembers` 后下一条消息起不再收到（成员集合每次扇出前解析） |
@@ -216,7 +220,9 @@ WHERE s.id = <getDefaultServerId> AND (s.owner_id::text = $1 OR sm.role = 'owner
 
 ### P1 — 完整度
 
-- B5 删除 server（D4 级联校验）、B6 转让、`icon_url` 列 + 上传、server 图标未读聚合角标、activity/search server 过滤、`resolveTenant` 豁免复查、`server_members.user_id` 补 FK（连同 `::text` 残留清理）
+- ~~B5 删除 server（D4 级联校验）~~ ✅（补口径：默认社区拒删；computers/machine_tokens 挂靠重指 personal server；action_cards/attachments 孤儿随级联清理）
+- ~~B6 转让~~ ✅（补口径：personal server 拒转 409；默认社区可转 = 实例管理员显式交接；事务内 RETURNING 复检防目标被移出竞态；脏数据多 owner 时旧主钳到 member）
+- `icon_url` 列 + 上传、server 图标未读聚合角标、activity/search server 过滤、`resolveTenant` 豁免复查、`server_members.user_id` 补 FK（连同 `::text` 残留清理）
 
 ### 不做（本期明确）
 

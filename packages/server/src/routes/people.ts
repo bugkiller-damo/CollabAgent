@@ -4,6 +4,7 @@ import { canAccessChannel } from "../lib/access.js";
 import { computerOnlineFor } from "../lib/agent-duty.js";
 import { resolvePeer } from "../lib/dm.js";
 import { getUserOrgIds } from "../lib/orgs.js";
+import { isMachineOnline } from "../lib/presence.js";
 import { isServerMember, resolveTenant } from "../lib/tenant.js";
 
 const CHANNELS_PREVIEW = 8;
@@ -226,9 +227,10 @@ export async function peopleRoutes(app: FastifyInstance) {
         runtime_profile: unknown;
         created_at: unknown;
         server_id: string;
+        computer_id: string | null;
         duty: string;
       }>(
-        "SELECT user_id, display_name, description, avatar_url, runtime_profile, created_at, server_id, duty FROM agents WHERE id = $1",
+        "SELECT user_id, display_name, description, avatar_url, runtime_profile, created_at, server_id, computer_id, duty FROM agents WHERE id = $1",
         [peer.id],
       );
       const row = a.rows[0];
@@ -244,22 +246,36 @@ export async function peopleRoutes(app: FastifyInstance) {
       const rp = parseRuntimeProfile(row.runtime_profile);
       runtime = rp.runtime || "claude";
       model = rp.model || "sonnet";
-      const fields = agentListFields(row.duty, computerOnlineFor(String(row.user_id)));
+
+      // 计算机解析：绑定机优先，其次属主在同 server 的任一机器行（与列表 LATERAL 同口径）
+      const comp = await app.pg.query<{
+        id: string;
+        name: string;
+        user_id: string;
+        machine_uuid: string;
+        server_id: string;
+      }>(
+        `SELECT id, name, user_id, machine_uuid, server_id FROM computers
+          WHERE id = $1 OR (user_id::text = $2 AND server_id = $3)
+          ORDER BY (id = $1) DESC, last_ready_at DESC NULLS LAST
+          LIMIT 1`,
+        [row.computer_id, String(row.user_id), String(row.server_id)],
+      );
+      const cr = comp.rows[0];
+      const crOnline = cr
+        ? isMachineOnline(String(cr.user_id), cr.machine_uuid, String(cr.server_id))
+        : computerOnlineFor(String(row.user_id));
+      const fields = agentListFields(row.duty, crOnline);
       duty = fields.duty;
       presence = fields.presence;
       isOnline = fields.isOnline;
       ownedByMe = String(row.user_id) === String(req.user.sub);
 
-      const comp = await app.pg.query<{ id: string; name: string; user_id: string }>(
-        "SELECT id, name, user_id FROM computers WHERE user_id::text = $1",
-        [String(row.user_id)],
-      );
-      const cr = comp.rows[0];
       if (cr) {
         computer = {
           id: String(cr.id),
           name: cr.name,
-          online: computerOnlineFor(String(cr.user_id)),
+          online: crOnline,
         };
       }
     }

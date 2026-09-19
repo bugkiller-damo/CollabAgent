@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { type AgentPresence, composePresence, PRESENCE_LABEL } from "@collabagent/shared";
+import { Check, Crown, UserPlus, X } from "@lucide/vue";
 import { computed, onMounted, ref, watch } from "vue";
-import { useRoute, useRouter } from "vue-router";
-import { apiGet } from "../api";
+import { useRoute } from "vue-router";
+import { apiClient, apiGet, apiPost } from "../api";
+import ConfirmDialog from "../components/ConfirmDialog.vue";
 import EmptyState from "../components/EmptyState.vue";
 import PageHeader from "../components/layout/PageHeader.vue";
 import SidebarSection from "../components/layout/SidebarSection.vue";
@@ -11,6 +13,7 @@ import Avatar from "../components/ui/Avatar.vue";
 import Input from "../components/ui/Input.vue";
 import { LG_QUERY, useMediaQuery } from "../composables";
 import { runtimeCatalog, useAgentStore, useAuthStore, useServerStore, useUiStore } from "../stores";
+import { toast } from "../stores/toastStore";
 
 interface AgentComputer {
   id: string;
@@ -35,14 +38,23 @@ interface Agent {
   computer?: AgentComputer | null;
 }
 
-interface Human {
+interface Member {
+  user_id: string;
+  role: string;
   handle: string;
   display_name?: string;
   avatar_url?: string;
 }
+interface Invite {
+  token: string;
+  role: string;
+  max_uses: number | null;
+  uses: number;
+  expires_at: string | null;
+  revoked_at: string | null;
+}
 
 const route = useRoute();
-const router = useRouter();
 const uiStore = useUiStore();
 const agentStore = useAgentStore();
 const authStore = useAuthStore();
@@ -50,10 +62,138 @@ const serverStore = useServerStore();
 const isDesktop = useMediaQuery(LG_QUERY);
 
 const agents = ref<Agent[]>([]);
-const humans = ref<Human[]>([]);
+const members = ref<Member[]>([]);
 const loaded = ref(false);
 const query = ref("");
-const manageOpen = ref(false);
+
+// ---- server 成员管理（融合自原设置页 WorkspaceMembers）----
+// 数据源 /api/orgs/:id/members（成员可读，返回 role+user_id+avatar_url）；
+// 移除/转让/邀请链接管理是 owner-only（后端 isOrgOwner 门禁，前端仅 owner 展示）。
+const isServerOwner = computed(() => serverStore.activeServer?.role === "owner");
+const invites = ref<Invite[]>([]);
+const invitePanelOpen = ref(false);
+const addHandle = ref("");
+const addBusy = ref(false);
+const inviteBusy = ref(false);
+const copiedToken = ref("");
+const removeTarget = ref<Member | null>(null);
+const transferTarget = ref<Member | null>(null);
+const actionBusy = ref(false);
+
+const activeInvites = computed(() => invites.value.filter((i) => !i.revoked_at));
+
+function roleLabel(r: string) {
+  return r === "owner" ? "所有者" : "成员";
+}
+
+function loadInvites(sid: string) {
+  if (!isServerOwner.value) {
+    invites.value = [];
+    return;
+  }
+  apiGet<{ invites: Invite[] }>(`/api/orgs/${sid}/invites`)
+    .then((d) => {
+      invites.value = d.invites || [];
+    })
+    .catch(() => {
+      invites.value = [];
+    });
+}
+
+async function addMember() {
+  const sid = serverStore.activeServerId;
+  const handle = addHandle.value.trim().replace(/^@/, "");
+  if (!sid || !handle || addBusy.value) return;
+  addBusy.value = true;
+  try {
+    await apiPost(`/api/orgs/${sid}/members`, { handle });
+    addHandle.value = "";
+    toast.success(`已添加 @${handle}`);
+    void loadMembers(sid);
+  } catch (e: any) {
+    toast.error(e?.message || "添加失败");
+  } finally {
+    addBusy.value = false;
+  }
+}
+
+async function createInvite() {
+  const sid = serverStore.activeServerId;
+  if (!sid || inviteBusy.value) return;
+  inviteBusy.value = true;
+  try {
+    await apiPost(`/api/orgs/${sid}/invites`, { expiresInDays: 7 });
+    loadInvites(sid);
+  } catch (e: any) {
+    toast.error(e?.message || "生成失败");
+  } finally {
+    inviteBusy.value = false;
+  }
+}
+
+function inviteUrl(token: string) {
+  return `${window.location.origin}/register?invite=${token}`;
+}
+
+async function copyInvite(token: string) {
+  try {
+    await navigator.clipboard.writeText(inviteUrl(token));
+    copiedToken.value = token;
+    setTimeout(() => {
+      copiedToken.value = "";
+    }, 2000);
+  } catch {
+    toast.error("复制失败");
+  }
+}
+
+async function revokeInvite(token: string) {
+  const sid = serverStore.activeServerId;
+  if (!sid) return;
+  try {
+    await apiClient(`/api/orgs/${sid}/invites/${token}`, { method: "DELETE" });
+    loadInvites(sid);
+  } catch (e: any) {
+    toast.error(e?.message || "吊销失败");
+  }
+}
+
+async function confirmRemove() {
+  const m = removeTarget.value;
+  const sid = serverStore.activeServerId;
+  removeTarget.value = null;
+  if (!m || !sid) return;
+  actionBusy.value = true;
+  try {
+    await apiClient(`/api/orgs/${sid}/members/${m.user_id}`, { method: "DELETE" });
+    toast.success(`已移除 @${m.handle}`);
+    void loadMembers(sid);
+  } catch (e: any) {
+    toast.error(e?.message || "移除失败");
+  } finally {
+    actionBusy.value = false;
+  }
+}
+
+// 转让后我降为 member——isServerOwner 翻 false，行内操作与邀请面板自动收起；
+// serverStore 同步刷新让 activeServer.role 落到新口径
+async function confirmTransfer() {
+  const m = transferTarget.value;
+  const sid = serverStore.activeServerId;
+  transferTarget.value = null;
+  if (!m || !sid) return;
+  actionBusy.value = true;
+  try {
+    await apiClient(`/api/orgs/${sid}/transfer`, { method: "POST", body: { userId: m.user_id } });
+    toast.success(`已将所有权转让给 @${m.handle}`);
+    void loadMembers(sid);
+    void serverStore.fetchOrgs();
+  } catch (e: any) {
+    toast.error(e?.message || "转让失败");
+  } finally {
+    actionBusy.value = false;
+  }
+}
 
 function openFromQuery() {
   const m = typeof route.query.member === "string" ? route.query.member.trim() : "";
@@ -62,11 +202,22 @@ function openFromQuery() {
 
 // P1-11：两个列表独立加载、失败原因分别记录——失败不再伪装成「还没有成员」
 const agentsError = ref("");
-const humansError = ref("");
+const membersError = ref("");
+
+function loadMembers(sid: string) {
+  membersError.value = "";
+  return apiGet<{ members: Member[] }>(`/api/orgs/${sid}/members`)
+    .then((d) => {
+      members.value = d.members || [];
+    })
+    .catch((err: any) => {
+      membersError.value = err?.message || "网络错误";
+    });
+}
 
 async function load() {
   agentsError.value = "";
-  humansError.value = "";
+  membersError.value = "";
   const sid = serverStore.activeServerId;
   const agentsReq = apiGet<{ agents: Agent[] }>("/api/agents")
     .then((a) => {
@@ -77,15 +228,9 @@ async function load() {
     .catch((err: any) => {
       agentsError.value = err?.message || "网络错误";
     });
-  // humans 走 /api/server/info（resolveTenant → x-server-id 注入圈定活跃 server）
-  const humansReq = apiGet<{ humans?: Human[] }>("/api/server/info", sid ? { serverId: sid } : undefined)
-    .then((s) => {
-      humans.value = (s.humans || []).filter((h) => h.handle !== authStore.user?.handle);
-    })
-    .catch((err: any) => {
-      humansError.value = err?.message || "网络错误";
-    });
-  await Promise.all([agentsReq, humansReq]);
+  const membersReq = sid ? loadMembers(sid) : Promise.resolve();
+  loadInvites(sid || "");
+  await Promise.all([agentsReq, membersReq]);
 }
 
 onMounted(async () => {
@@ -132,7 +277,7 @@ function matchesQuery(display: string, handle: string): boolean {
 }
 
 const filteredAgents = computed(() => agents.value.filter((a) => matchesQuery(a.display_name || a.name, a.name)));
-const filteredHumans = computed(() => humans.value.filter((h) => matchesQuery(h.display_name || h.handle, h.handle)));
+const filteredMembers = computed(() => members.value.filter((m) => matchesQuery(m.display_name || m.handle, m.handle)));
 
 interface AgentComputerGroup {
   key: string;
@@ -167,13 +312,15 @@ const agentComputerGroups = computed<AgentComputerGroup[]>(() => {
 });
 
 // P1-11：有失败记录时「全空」不算真空——错误态优先于「还没有成员」
-const anyError = computed(() => agentsError.value || humansError.value);
+const anyError = computed(() => agentsError.value || membersError.value);
 const loadFailed = computed(
-  () => loaded.value && !!anyError.value && agents.value.length === 0 && humans.value.length === 0,
+  () => loaded.value && !!anyError.value && agents.value.length === 0 && members.value.length === 0,
 );
-const empty = computed(() => loaded.value && agents.value.length === 0 && humans.value.length === 0 && !anyError.value);
+const empty = computed(
+  () => loaded.value && agents.value.length === 0 && members.value.length === 0 && !anyError.value,
+);
 const filterEmpty = computed(
-  () => loaded.value && !empty.value && filteredAgents.value.length === 0 && filteredHumans.value.length === 0,
+  () => loaded.value && !empty.value && filteredAgents.value.length === 0 && filteredMembers.value.length === 0,
 );
 
 const selectedHandle = computed(() => uiStore.profileTarget?.handle || "");
@@ -186,53 +333,37 @@ function onAgentDeleted(handle: string) {
   agents.value = agents.value.filter((a) => a.name !== handle && a.id !== handle);
 }
 
-function go(path: string) {
-  manageOpen.value = false;
-  void router.push(path);
+// ---- owner 移出他人 agent（DELETE /api/orgs/:id/agents/:agentId）----
+// 踢出而非销毁：后端把 agents.server_id 重指到属主最早拥有的 server（优先带
+// 计算机的），agent 本体不动；属主无其他 owned server 时后端 409。
+// 行能区分「他人 agent」靠 user_id（缺该字段的存量行不显示入口，宁缺勿滥）。
+const kickingId = ref<string | null>(null);
+
+function canKick(a: Agent): boolean {
+  return isServerOwner.value && !!a.user_id && a.user_id !== authStore.user?.id;
 }
 
-const footerLabel = computed(() => `${humans.value.length} 位成员 · ${agents.value.length} 个 Agent`);
+async function kickAgent(a: Agent) {
+  const sid = serverStore.activeServerId;
+  if (!sid || !canKick(a)) return;
+  kickingId.value = a.id;
+  try {
+    await apiClient(`/api/orgs/${sid}/agents/${a.id}`, { method: "DELETE" });
+    agents.value = agents.value.filter((x) => x.id !== a.id);
+    toast.success(`@${a.name} 已移出服务器`);
+  } catch (err: any) {
+    toast.error(err?.message || "移出失败");
+  } finally {
+    kickingId.value = null;
+  }
+}
+
+const footerLabel = computed(() => `${members.value.length} 位成员 · ${agents.value.length} 个 Agent`);
 </script>
 
 <template>
   <div class="flex min-h-0 flex-1 flex-col">
-    <PageHeader title="成员" subtitle="工作区里的人与 Agent">
-      <div class="relative">
-        <button
-          type="button"
-          class="rounded-md px-2 py-1 text-xs text-gray-500 hover:bg-gray-100 hover:text-gray-800 dark:text-gray-400 dark:hover:bg-gray-700 dark:hover:text-gray-200"
-          @click="manageOpen = !manageOpen"
-        >
-          管理
-        </button>
-        <button
-          v-if="manageOpen"
-          type="button"
-          class="fixed inset-0 z-10 cursor-default"
-          aria-label="关闭管理菜单"
-          @click="manageOpen = false"
-        />
-        <div
-          v-if="manageOpen"
-          class="absolute right-0 z-20 mt-1 w-40 rounded-md border border-gray-200 bg-white py-1 shadow-sm dark:border-gray-700 dark:bg-gray-800"
-        >
-          <button
-            type="button"
-            class="block w-full px-3 py-1.5 text-left text-xs text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700"
-            @click="go('/settings/members')"
-          >
-            工作区成员
-          </button>
-          <button
-            type="button"
-            class="block w-full px-3 py-1.5 text-left text-xs text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700"
-            @click="go('/computers')"
-          >
-            我的计算机
-          </button>
-        </div>
-      </div>
-    </PageHeader>
+    <PageHeader title="成员" subtitle="工作区里的人与 Agent" />
 
     <div class="flex min-h-0 flex-1">
       <div
@@ -272,7 +403,7 @@ const footerLabel = computed(() => `${humans.value.length} 位成员 · ${agents
               v-if="anyError"
               class="mb-2 rounded-md bg-amber-50 px-2 py-1.5 text-xs text-amber-700 dark:bg-amber-900/20 dark:text-amber-300"
             >
-              {{ agentsError ? "Agent 列表" : "" }}{{ agentsError && humansError ? "、" : "" }}{{ humansError ? "成员列表" : "" }}
+              {{ agentsError ? "Agent 列表" : "" }}{{ agentsError && membersError ? "、" : "" }}{{ membersError ? "成员列表" : "" }}
               加载失败（{{ anyError }}），当前显示可能不完整
             </p>
             <div class="mb-3">
@@ -293,53 +424,166 @@ const footerLabel = computed(() => `${humans.value.length} 位成员 · ${agents
                   <span :class="g.online ? 'text-green-500' : 'text-muted'">{{ g.online ? "在线" : "离线" }}</span>
                   · {{ g.subtitle }}
                 </p>
-                <button
-                  v-for="a in g.agents"
-                  :key="a.id"
-                  type="button"
-                  :class="[
-                    'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm',
-                    selectedHandle === a.name
-                      ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'
-                      : 'text-gray-700 hover:bg-gray-200 dark:text-gray-200 dark:hover:bg-gray-700',
-                  ]"
-                  @click="openPerson(a.name)"
-                >
-                  <span :class="['h-2 w-2 shrink-0 rounded-full', statusFor(a).dot]" />
-                  <Avatar :name="a.display_name || a.name" :src="a.avatar_url" size="sm" />
-                  <div class="min-w-0 flex-1">
-                    <div class="flex items-center justify-between gap-2">
-                      <span class="truncate font-medium">{{ a.display_name || a.name }}</span>
-                      <span :class="['shrink-0 text-[10px]', statusFor(a).cls]">{{ statusFor(a).text }}</span>
+                <div v-for="a in g.agents" :key="a.id" class="group flex items-center">
+                  <button
+                    type="button"
+                    :class="[
+                      'flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm',
+                      selectedHandle === a.name
+                        ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'
+                        : 'text-gray-700 hover:bg-gray-200 dark:text-gray-200 dark:hover:bg-gray-700',
+                    ]"
+                    @click="openPerson(a.name)"
+                  >
+                    <span :class="['h-2 w-2 shrink-0 rounded-full', statusFor(a).dot]" />
+                    <Avatar :name="a.display_name || a.name" :src="a.avatar_url" size="sm" />
+                    <div class="min-w-0 flex-1">
+                      <div class="flex items-center justify-between gap-2">
+                        <span class="truncate font-medium">{{ a.display_name || a.name }}</span>
+                        <span :class="['shrink-0 text-[10px]', statusFor(a).cls]">{{ statusFor(a).text }}</span>
+                      </div>
+                      <p class="truncate font-mono text-[11px] text-muted">@{{ a.name }}</p>
+                      <p v-if="a.description" class="truncate text-[11px] text-gray-500">{{ a.description }}</p>
+                      <p class="truncate text-[11px] text-muted">{{ runtimeLine(a) }}</p>
                     </div>
-                    <p class="truncate font-mono text-[11px] text-muted">@{{ a.name }}</p>
-                    <p v-if="a.description" class="truncate text-[11px] text-gray-500">{{ a.description }}</p>
-                    <p class="truncate text-[11px] text-muted">{{ runtimeLine(a) }}</p>
-                  </div>
-                </button>
+                  </button>
+                  <!-- server owner 可移出他人 agent（踢出而非销毁，重指属主自有 server） -->
+                  <button
+                    v-if="canKick(a)"
+                    type="button"
+                    class="ml-1 hidden shrink-0 rounded-md px-1.5 py-1 text-xs text-red-600 hover:bg-red-50 disabled:opacity-50 group-hover:block dark:text-red-400 dark:hover:bg-red-900/30"
+                    :disabled="kickingId === a.id"
+                    title="移出服务器（agent 回到属主自有的服务器，不会被删除）"
+                    @click="kickAgent(a)"
+                  >
+                    {{ kickingId === a.id ? "移出中…" : "移出" }}
+                  </button>
+                </div>
               </SidebarSection>
             </div>
 
-            <SidebarSection title="成员" persist-key="people.page.humans" :count="filteredHumans.length">
-              <p v-if="filteredHumans.length === 0" class="px-2 text-xs text-muted">没有匹配的成员</p>
-              <button
-                v-for="h in filteredHumans"
-                :key="h.handle"
-                type="button"
-                :class="[
-                  'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm',
-                  selectedHandle === h.handle
-                    ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'
-                    : 'text-gray-700 hover:bg-gray-200 dark:text-gray-200 dark:hover:bg-gray-700',
-                ]"
-                @click="openPerson(h.handle)"
+            <SidebarSection title="成员" persist-key="people.page.humans" :count="filteredMembers.length">
+              <template v-if="isServerOwner" #action>
+                <button
+                  type="button"
+                  class="rounded-md p-1 text-gray-400 hover:bg-gray-200 hover:text-gray-700 dark:hover:bg-gray-700 dark:hover:text-gray-200"
+                  :class="invitePanelOpen && 'bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-200'"
+                  title="邀请 / 添加成员"
+                  @click="invitePanelOpen = !invitePanelOpen"
+                >
+                  <UserPlus class="h-3.5 w-3.5" />
+                </button>
+              </template>
+
+              <!-- owner 邀请面板：handle 直拉 + 邀请链接 CRUD（融合自原设置页） -->
+              <div
+                v-if="isServerOwner && invitePanelOpen"
+                class="mb-2 space-y-2 rounded-md border border-gray-200 bg-gray-50 p-2 dark:border-gray-700 dark:bg-gray-800/60"
               >
-                <Avatar :name="h.display_name || h.handle" :src="h.avatar_url" size="sm" />
-                <div class="min-w-0 flex-1">
-                  <p class="truncate">{{ h.display_name || h.handle }}</p>
-                  <p class="truncate text-[11px] text-muted">@{{ h.handle }}</p>
+                <div>
+                  <p class="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted">按 handle 添加</p>
+                  <div class="flex items-center gap-1.5">
+                    <input
+                      v-model="addHandle"
+                      type="text"
+                      placeholder="@handle"
+                      class="min-w-0 flex-1 rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-900 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100"
+                      @keydown.enter="addMember"
+                    />
+                    <button
+                      type="button"
+                      class="shrink-0 rounded bg-blue-600 px-2 py-1 text-xs text-white hover:bg-blue-700 disabled:opacity-50"
+                      :disabled="addBusy || !addHandle.trim()"
+                      @click="addMember"
+                    >
+                      {{ addBusy ? "…" : "添加" }}
+                    </button>
+                  </div>
                 </div>
-              </button>
+                <div class="border-t border-gray-200 pt-2 dark:border-gray-700">
+                  <div class="mb-1 flex items-center justify-between">
+                    <p class="text-[10px] font-semibold uppercase tracking-wider text-muted">邀请链接</p>
+                    <button
+                      type="button"
+                      class="rounded px-1.5 py-0.5 text-[11px] text-blue-600 hover:bg-blue-50 disabled:opacity-50 dark:text-blue-400 dark:hover:bg-blue-900/30"
+                      :disabled="inviteBusy"
+                      @click="createInvite"
+                    >
+                      {{ inviteBusy ? "生成中…" : "生成链接" }}
+                    </button>
+                  </div>
+                  <div
+                    v-for="inv in activeInvites"
+                    :key="inv.token"
+                    class="mb-1 flex items-center gap-1.5 rounded bg-white p-1.5 dark:bg-gray-900"
+                  >
+                    <code class="min-w-0 flex-1 truncate text-[10px] text-gray-600 dark:text-gray-300">{{ inviteUrl(inv.token) }}</code>
+                    <span class="shrink-0 text-[10px] text-muted">
+                      {{ inv.uses }}{{ inv.max_uses != null ? "/" + inv.max_uses : "" }} 次
+                    </span>
+                    <button
+                      type="button"
+                      class="shrink-0 rounded px-1 py-0.5 text-[10px] text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800"
+                      :title="copiedToken === inv.token ? '已复制' : '复制'"
+                      @click="copyInvite(inv.token)"
+                    >
+                      <Check v-if="copiedToken === inv.token" class="inline h-3 w-3" />
+                      <template v-else>复制</template>
+                    </button>
+                    <button
+                      type="button"
+                      class="shrink-0 rounded px-1 py-0.5 text-[10px] text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30"
+                      title="吊销"
+                      @click="revokeInvite(inv.token)"
+                    >
+                      <X class="h-3 w-3" />
+                    </button>
+                  </div>
+                  <p v-if="activeInvites.length === 0" class="text-[10px] text-muted">还没有有效的邀请链接</p>
+                </div>
+              </div>
+
+              <p v-if="filteredMembers.length === 0" class="px-2 text-xs text-muted">没有匹配的成员</p>
+              <div v-for="m in filteredMembers" :key="m.user_id" class="group flex items-center">
+                <button
+                  type="button"
+                  :class="[
+                    'flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm',
+                    selectedHandle === m.handle
+                      ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'
+                      : 'text-gray-700 hover:bg-gray-200 dark:text-gray-200 dark:hover:bg-gray-700',
+                  ]"
+                  @click="openPerson(m.handle)"
+                >
+                  <Avatar :name="m.display_name || m.handle" :src="m.avatar_url" size="sm" />
+                  <div class="min-w-0 flex-1">
+                    <p class="truncate">
+                      {{ m.display_name || m.handle }}
+                      <span v-if="m.user_id === authStore.user?.id" class="text-[10px] text-muted">（我）</span>
+                    </p>
+                    <p class="truncate text-[11px] text-muted">@{{ m.handle }} · {{ roleLabel(m.role) }}</p>
+                  </div>
+                </button>
+                <!-- owner 行内管理：转让所有权 / 移除成员（owner 行不可操作） -->
+                <template v-if="isServerOwner && m.role !== 'owner'">
+                  <button
+                    type="button"
+                    class="ml-1 hidden shrink-0 rounded-md px-1.5 py-1 text-xs text-amber-600 hover:bg-amber-50 group-hover:block dark:text-amber-400 dark:hover:bg-amber-900/30"
+                    title="转让所有权"
+                    @click="transferTarget = m"
+                  >
+                    <Crown class="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    class="hidden shrink-0 rounded-md px-1.5 py-1 text-xs text-red-600 hover:bg-red-50 group-hover:block dark:text-red-400 dark:hover:bg-red-900/30"
+                    title="移出服务器"
+                    @click="removeTarget = m"
+                  >
+                    <X class="h-3.5 w-3.5" />
+                  </button>
+                </template>
+              </div>
             </SidebarSection>
           </template>
         </div>
@@ -360,5 +604,26 @@ const footerLabel = computed(() => `${humans.value.length} 位成员 · ${agents
         </div>
       </div>
     </div>
+
+    <!-- 移除成员确认（对齐全站 ConfirmDialog 惯例） -->
+    <ConfirmDialog
+      v-if="removeTarget"
+      :title="`移除成员 @${removeTarget.handle}？`"
+      message="移除后该成员将失去此服务器的访问权限。"
+      confirm-label="移除"
+      danger
+      @confirm="confirmRemove"
+      @cancel="removeTarget = null"
+    />
+    <!-- 转让所有权确认：对方成为 owner，我降为成员 -->
+    <ConfirmDialog
+      v-if="transferTarget"
+      :title="`转让所有权给 @${transferTarget.handle}？`"
+      :message="`对方将成为「${serverStore.activeServer?.name}」的所有者，你的角色将变为成员。`"
+      :confirm-label="actionBusy ? '转让中…' : '转让'"
+      danger
+      @confirm="confirmTransfer"
+      @cancel="transferTarget = null"
+    />
   </div>
 </template>

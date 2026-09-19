@@ -9,23 +9,28 @@ export async function metricsRoutes(app: FastifyInstance) {
       return reply.status(403).send({ error: "admin only" });
     }
     const { metricsSnapshot } = await import("../lib/metrics.js");
-    const { onlineUserSnapshot } = await import("../lib/presence.js");
+    const { isComputerOnline, onlineUserSnapshot } = await import("../lib/presence.js");
     const { daemonClients, daemonMeta } = await import("../ws/handler.js");
     // P1.27：在线计数走跨实例并集（daemon 连在其他实例也计入）；
     // daemons 明细数组仍是本实例视角（daemonMeta 只记本地连接），daemonsLocal 供对照。
-    const onlineUsers = onlineUserSnapshot();
+    // presence 成员串为 `userId|machineUuid|serverId`——daemons 计数 = 在线机器连接数；
+    // agentsOnline 按「属主是否有任一机器在线」前缀匹配（isComputerOnline）。
+    const onlineMembers = onlineUserSnapshot();
     let total = 0,
       online = 0;
     try {
       const r = await app.pg.query<{ user_id: string }>("SELECT user_id FROM agents");
       total = r.rows.length;
-      online = r.rows.filter((a) => onlineUsers.has(String(a.user_id))).length;
+      online = r.rows.filter((a) => isComputerOnline(String(a.user_id))).length;
     } catch {
       /* ignore */
     }
     return metricsSnapshot({
-      online: { daemons: onlineUsers.size, daemonsLocal: daemonClients.size, agents: total, agentsOnline: online },
+      online: { daemons: onlineMembers.size, daemonsLocal: daemonClients.size, agents: total, agentsOnline: online },
       daemons: Array.from(daemonMeta.values()).map((d) => ({
+        userId: d.userId,
+        serverId: d.serverId,
+        machineUuid: d.machineUuid,
         hostname: d.hostname,
         daemonVersion: d.daemonVersion,
         os: d.os,

@@ -5,13 +5,13 @@ import { apiGet } from "../api";
 import Button from "../components/ui/Button.vue";
 import Card from "../components/ui/Card.vue";
 import { channelPath } from "../lib/nav";
-import { useAuthStore, useServerStore } from "../stores";
+import { useAuthStore, useChannelStore, useServerStore } from "../stores";
 
 /**
  * /invite/:token 邀请落地页。
  * - 未登录：转 /register?invite=<token>（注册链路消费邀请并入组）
  * - 已登录：显示邀请信息 → 点击加入 → POST /invites/:token/accept →
- *   刷新 orgs → 落地被邀 server 的 #general
+ *   刷新 orgs → 落地被邀 server 的首个频道（resolveLandingChannel 解析）
  * 失效（吊销/过期/耗尽）显示对应错误文案。
  */
 
@@ -19,6 +19,7 @@ const route = useRoute();
 const router = useRouter();
 const authStore = useAuthStore();
 const serverStore = useServerStore();
+const channelStore = useChannelStore();
 
 const token = computed(() => String(route.params.token || ""));
 const loading = ref(true);
@@ -39,7 +40,7 @@ onMounted(async () => {
     if (d.alreadyMember && d.serverId) {
       await serverStore.fetchOrgs().catch(() => []);
       serverStore.setActive(d.serverId);
-      void router.replace(channelPath(d.serverId, "general"));
+      void router.replace(channelPath(d.serverId, await channelStore.resolveLandingChannel(d.serverId)));
       return;
     }
     serverName.value = d.serverName;
@@ -56,7 +57,7 @@ async function accept() {
   try {
     const r = await serverStore.acceptInvite(token.value);
     serverStore.setActive(r.serverId);
-    void router.replace(channelPath(r.serverId, "general"));
+    void router.replace(channelPath(r.serverId, await channelStore.resolveLandingChannel(r.serverId)));
   } catch (e: any) {
     error.value = e?.message || "加入失败";
     busy.value = false;

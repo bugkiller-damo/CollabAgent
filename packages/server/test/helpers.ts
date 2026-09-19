@@ -100,12 +100,64 @@ export async function registerUser(handle?: string): Promise<TestUser> {
 // 加 owner 成员行即可：不动 servers.owner_id（bootstrap 首用户位，覆写会让
 // cleanupTestData 按 owner_id 误删默认社区）。返回默认社区 id；
 // cleanupTestData 按 server_members.user_id 维度回收该成员行。
+// 同日权限模型：默认社区判定升格为 is_public 列（最早 is_public server），
+// 无命中回退原启发式——与 isInstanceAdmin/getDefaultServerId 同一子查询口径。
 export async function makeOrgOwner(user: TestUser): Promise<string> {
-  const rows = await sql`SELECT id FROM servers WHERE personal = false ORDER BY created_at ASC LIMIT 1`;
+  const rows = await sql`SELECT COALESCE(
+    (SELECT id FROM servers WHERE is_public = true ORDER BY created_at ASC LIMIT 1),
+    (SELECT id FROM servers ORDER BY created_at ASC LIMIT 1)) AS id`;
   const id = String(rows[0].id);
   await sql`INSERT INTO server_members (server_id, user_id, role) VALUES (${id}, ${user.userId}, 'owner')
             ON CONFLICT (server_id, user_id) DO UPDATE SET role = 'owner'`;
   return id;
+}
+
+/**
+ * server-scoped computers（2026-09-19 设计稿）：POST /agents 要求目标 server
+ * 已有属主的计算机行（daemon ready 写库；测试无真 daemon，直插铺底）。
+ * serverId 省略时解析该用户「最早拥有的非公共 server」——personal 兜底取消后
+ * 没有 owned server 就用 POST /api/orgs 现建一个（幂等复用）。
+ * 返回 {id, machineUuid, serverId}——serverId 供调用方传给 POST /agents / machine-token。
+ */
+export async function ensureTestComputer(
+  user: { userId: string; cookie: string; handle?: string },
+  serverId?: string | null,
+  opts?: { machineUuid?: string; name?: string },
+): Promise<{ id: string; machineUuid: string; serverId: string }> {
+  let sid = serverId || null;
+  if (!sid) {
+    const rows = await sql`
+      SELECT s.id FROM servers s
+        JOIN server_members sm ON sm.server_id = s.id AND sm.role = 'owner'
+       WHERE sm.user_id::text = ${user.userId} AND s.is_public = false
+       ORDER BY s.created_at ASC LIMIT 1`;
+    sid = rows[0] ? String(rows[0].id) : null;
+    if (!sid) {
+      const created = await api("/api/orgs", {
+        method: "POST",
+        cookie: user.cookie,
+        body: { name: `${user.handle || "test"}-space` },
+      });
+      if (created.status !== 200) throw new Error("create owned org failed: " + JSON.stringify(created.data));
+      sid = String(created.data.org.id);
+    }
+  }
+  // 幂等：同 (user,server) 已有行则复用——重复铺底不能造出第二台机器
+  // （多机场景会触发 POST /agents 的 computer_required 400）。要真多机须显式
+  // 传 opts.machineUuid。
+  if (!opts?.machineUuid) {
+    const existing =
+      await sql`SELECT id, machine_uuid FROM computers WHERE user_id::text = ${user.userId} AND server_id = ${sid} ORDER BY created_at ASC LIMIT 1`;
+    if (existing[0])
+      return { id: String(existing[0].id), machineUuid: String(existing[0].machine_uuid), serverId: sid };
+  }
+  const machineUuid = opts?.machineUuid || crypto.randomUUID();
+  const rows = await sql`
+    INSERT INTO computers (user_id, server_id, machine_uuid, name, description, hostname, last_ready_at)
+    VALUES (${user.userId}, ${sid}, ${machineUuid}, ${opts?.name || "test-machine"}, '', 'test-host', now())
+    ON CONFLICT (user_id, server_id, machine_uuid) DO UPDATE SET last_ready_at = now()
+    RETURNING id`;
+  return { id: String(rows[0].id), machineUuid, serverId: sid };
 }
 
 // 精准清理所有 zz_test_ 前缀用户及其关联数据（FK 安全顺序）
@@ -135,7 +187,6 @@ export async function cleanupTestData(): Promise<void> {
   await sql`DELETE FROM message_reactions WHERE user_id::text = ANY(${uids})`;
   await sql`DELETE FROM channel_members WHERE member_id::text = ANY(${uids})`;
   await sql`DELETE FROM reminders WHERE owner_id::text = ANY(${uids})`;
-  await sql`DELETE FROM computers WHERE user_id::text = ANY(${uids})`;
   await sql`DELETE FROM machine_tokens WHERE user_id::text = ANY(${uids})`;
   await sql`DELETE FROM user_sessions WHERE user_id::text = ANY(${uids})`;
   await sql`DELETE FROM agent_credentials WHERE agent_id IN (SELECT id FROM agents WHERE user_id::text = ANY(${uids}))`;
@@ -145,7 +196,12 @@ export async function cleanupTestData(): Promise<void> {
   await sql`DELETE FROM dispatches WHERE from_agent_id IN (SELECT id FROM agents WHERE user_id::text = ANY(${uids}))
      OR to_agent_id IN (SELECT id FROM agents WHERE user_id::text = ANY(${uids}))`;
   await sql`DELETE FROM agents WHERE user_id::text = ANY(${uids})`;
+  // computers só depois de agents: agents.computer_id referencia computers.id (030)
+  await sql`DELETE FROM computers WHERE user_id::text = ANY(${uids})`;
   await sql`DELETE FROM server_members WHERE user_id::text = ANY(${uids})`;
+  // invites.created_by 无级联——测试用户发的邀请行不先删，users 删除撞
+  // invites_created_by_fkey（server_id 侧倒是有 ON DELETE CASCADE）。
+  await sql`DELETE FROM invites WHERE created_by::text = ANY(${uids})`;
   await sql`DELETE FROM servers WHERE created_by::text = ANY(${uids}) OR owner_id::text = ANY(${uids})`;
   await sql`DELETE FROM users WHERE id::text = ANY(${uids})`;
 }

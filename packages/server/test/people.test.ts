@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { api, cleanupTestData, closeSql, registerUser } from "./helpers.js";
+import { api, cleanupTestData, closeSql, ensureTestComputer, makeOrgOwner, registerUser } from "./helpers.js";
 
 afterAll(async () => {
   await cleanupTestData();
@@ -8,19 +8,23 @@ afterAll(async () => {
 
 describe("GET /api/people/:handle", () => {
   let ck: string, cs: string, peerHandle: string, agentName: string, channelId: string, channelName: string;
+  let myServerId = "";
 
   beforeAll(async () => {
     const me = await registerUser();
+    await makeOrgOwner(me); // 2026-09-18：默认社区建频道需 server owner
     ck = me.cookie;
     cs = me.csrf;
     const peer = await registerUser();
     peerHandle = peer.handle;
     agentName = "ag_" + Date.now().toString(36);
+    const comp = await ensureTestComputer(me);
+    myServerId = comp.serverId;
     const created = await api("/api/agents", {
       method: "POST",
       cookie: ck,
       csrf: cs,
-      body: { name: agentName, displayName: "Coder", description: "写代码的人" },
+      body: { name: agentName, displayName: "Coder", description: "写代码的人", serverId: comp.serverId },
     });
     expect(created.status).toBe(200);
     const ch = await api("/api/channels", {
@@ -79,7 +83,7 @@ describe("GET /api/people/:handle", () => {
       method: "POST",
       cookie: ck,
       csrf: cs,
-      body: { name: peerHandle, displayName: "Clash" },
+      body: { name: peerHandle, displayName: "Clash", serverId: myServerId },
     });
     expect(clash.status).toBe(200);
     const r = await api(`/api/people/${peerHandle}`, { cookie: ck });

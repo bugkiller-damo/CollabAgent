@@ -6,11 +6,11 @@ import {
   parseAgentDuty,
   type WsToBrowserMessage,
 } from "@collabagent/shared";
-import { sendToDaemon, sendToUser } from "../ws/handler.js";
+import { agentMachineOnline, sendToAgentDaemon, sendToUser } from "../ws/handler.js";
 import { appendEvent } from "./audit.js";
 // P1.27：读路径跨实例化——daemon 可能连在其他实例上，本实例 Map 之外的在线状态
 // 由 lib/presence.ts 的 Redis 并集缓存补齐（未配 VALKEY_URL 时退化为纯本地，行为不变）。
-import { isComputerOnline } from "./presence.js";
+import { isComputerOnline, isMachineOnline } from "./presence.js";
 
 export { composePresence, parseAgentDuty };
 
@@ -18,12 +18,24 @@ export function computerOnlineFor(userId: string): boolean {
   return isComputerOnline(String(userId));
 }
 
-export function decorateAgentPresence<T extends { user_id?: unknown; userId?: unknown; duty?: unknown }>(
-  row: T,
-  runtime?: string | null,
-): T & { duty: AgentDuty; presence: AgentPresence; isOnline: boolean } {
+/**
+ * 行带 computer_machine_uuid + server_id（绑定机 join 字段）时按 (user,server,machine)
+ * 三维判定在线——绑定机连了别的 server 时不误判在线；缺字段回落用户级聚合（旧行为）。
+ */
+export function decorateAgentPresence<
+  T extends {
+    user_id?: unknown;
+    userId?: unknown;
+    duty?: unknown;
+    server_id?: unknown;
+    computer_machine_uuid?: unknown;
+  },
+>(row: T, runtime?: string | null): T & { duty: AgentDuty; presence: AgentPresence; isOnline: boolean } {
   const owner = String(row.user_id ?? row.userId ?? "");
-  const fields = agentListFields(row.duty as string | undefined, computerOnlineFor(owner), runtime);
+  const mu = row.computer_machine_uuid ? String(row.computer_machine_uuid) : null;
+  const sid = row.server_id ? String(row.server_id) : null;
+  const online = mu && sid ? isMachineOnline(owner, mu, sid) : computerOnlineFor(owner);
+  const fields = agentListFields(row.duty as string | undefined, online, runtime);
   return { ...row, ...fields };
 }
 
@@ -178,11 +190,12 @@ export async function setAgentDuty(
       name: string;
       user_id: string;
       server_id: string;
+      computer_id: string | null;
       duty: string;
-    }>("UPDATE agents SET duty = $1, updated_at = now() WHERE id = $2 RETURNING id, name, user_id, server_id, duty", [
-      input.duty,
-      input.agentId,
-    ]);
+    }>(
+      "UPDATE agents SET duty = $1, updated_at = now() WHERE id = $2 RETURNING id, name, user_id, server_id, computer_id, duty",
+      [input.duty, input.agentId],
+    );
     const agent = updated.rows[0];
     if (!agent) return null;
     await appendEvent(tx, {
@@ -201,9 +214,10 @@ export async function setAgentDuty(
     throw err;
   }
   const duty = parseAgentDuty(row.duty);
-  const computerOnline = computerOnlineFor(String(row.user_id));
+  // 在线判定与事件投递同按绑定机解析（agentMachineOnline/sendToAgentDaemon 共享口径）
+  const computerOnline = await agentMachineOnline(pg, row);
   const presence = composePresence(duty, computerOnline);
-  sendToDaemon(String(row.user_id), {
+  await sendToAgentDaemon(pg, row, {
     type: "agent:duty",
     agentId: String(row.id),
     name: row.name,

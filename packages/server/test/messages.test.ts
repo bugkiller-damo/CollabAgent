@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { api, BASE, cleanupTestData, closeSql, registerUser, uniqHandle } from "./helpers.js";
+import { api, BASE, cleanupTestData, closeSql, makeOrgOwner, registerUser, uniqHandle } from "./helpers.js";
 
 afterAll(async () => {
   await cleanupTestData();
@@ -11,6 +11,7 @@ describe("messages: 发送 / 列取 / 编辑 / 搜索 / 反应 / 删除", () => 
 
   beforeAll(async () => {
     const u = await registerUser();
+    await makeOrgOwner(u); // 2026-09-18：建频道收敛 server owner，兜底建 general 需要
     uid = u.userId;
     ck = u.cookie;
     cs = u.csrf;
@@ -171,6 +172,7 @@ describe("messages: 发送 / 列取 / 编辑 / 搜索 / 反应 / 删除", () => 
 
     // 私有频道：非成员 locate 403（不泄露消息存在性与位置）
     const owner = await registerUser();
+    await makeOrgOwner(owner); // 建频道收敛 server owner（2026-09-18）
     const chName = "loc_" + uniqHandle();
     await api("/api/channels", { method: "POST", cookie: owner.cookie, body: { name: chName, type: "private" } });
     const ps = await api("/api/messages/send", {
@@ -326,6 +328,7 @@ describe("messages: 发送 / 列取 / 编辑 / 搜索 / 反应 / 删除", () => 
 describe("P1.33: threadId 校验 / content 上限 / 移出私有频道后禁改删", () => {
   it("/send threadId：非 UUID / 不存在 / 跨频道 400，本频道合法 200", async () => {
     const a = await registerUser();
+    await makeOrgOwner(a); // 建频道收敛 server owner（2026-09-18）
     const chA = "th_a_" + uniqHandle();
     const chB = "th_b_" + uniqHandle();
     await api("/api/channels", { method: "POST", cookie: a.cookie, body: { name: chA } });
@@ -375,6 +378,7 @@ describe("P1.33: threadId 校验 / content 上限 / 移出私有频道后禁改�
 
   it("被移出私有频道后不得编辑/删除自己的旧消息；公开频道不受影响", async () => {
     const owner = await registerUser();
+    await makeOrgOwner(owner); // 建频道收敛 server owner（2026-09-18）
     const member = await registerUser();
     const chName = "kick_" + uniqHandle();
     const ch = (

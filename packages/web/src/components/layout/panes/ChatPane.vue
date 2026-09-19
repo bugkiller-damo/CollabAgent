@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Check, ChevronDown, Copy, Link2, LogOut, Pencil, Plus, Users } from "@lucide/vue";
+import { Check, ChevronDown, Copy, Link2, LogOut, Pencil, Plus, Trash2, Users } from "@lucide/vue";
 import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { apiGet, apiPost } from "../../../api";
@@ -46,11 +46,18 @@ const inviteBusy = ref(false);
 const renameValue = ref("");
 const renameBusy = ref(false);
 const leaveBusy = ref(false);
+const deleteBusy = ref(false);
 const linkCopied = ref(false);
 
 const activeServer = computed(() => serverStore.activeServer);
 const isOwner = computed(() => activeServer.value?.role === "owner");
-const canLeave = computed(() => !!activeServer.value && !activeServer.value.personal && !isOwner.value);
+// member 可退任意 server（含广场——退出后卡片回发现面可再加入）；owner 恒拒退
+const canLeave = computed(() => !!activeServer.value && !isOwner.value);
+// 删除入口仅 owner 可见；is_public（广场，等价旧 isDefault 口径）后端拒删，前端直接隐藏。
+// 自建 server 一律可删（2026-09-19 personal 特例取消：所有自建 server 生命周期同口径）
+const canDelete = computed(
+  () => !!activeServer.value && isOwner.value && !activeServer.value.isDefault && !activeServer.value.is_public,
+);
 
 const user = computed(() => authStore.user);
 const activeDmHandle = computed(() =>
@@ -73,11 +80,9 @@ function loadDms() {
     .catch(() => {});
 }
 
-watch(
-  () => route.path,
-  () => loadDms(),
-  { immediate: true },
-);
+// 私信列表按活跃 server 过滤（后端读 x-server-id）：切 server 也要重拉，
+// 否则仍显示上一个 server 语境下的会话列表
+watch([() => route.path, () => serverStore.activeServerId], () => loadDms(), { immediate: true });
 
 async function openPeoplePicker() {
   showPeople.value = !showPeople.value;
@@ -203,11 +208,35 @@ async function submitLeave() {
     await serverStore.leaveServer(s.id);
     showServerMenu.value = false;
     const next = serverStore.activeServerId;
-    if (next) void router.push(channelPath(next, "general"));
+    if (next) void router.push(channelPath(next, await channelStore.resolveLandingChannel(next)));
   } catch (e: any) {
     toast.error("退出失败：" + (e?.message || "网络错误"));
   } finally {
     leaveBusy.value = false;
+  }
+}
+
+async function submitDelete() {
+  const s = activeServer.value;
+  if (!s) return;
+  if (
+    !window.confirm(
+      `确定删除「${s.name}」吗？该服务器下的频道、消息、成员与邀请链接将一并清除，不可恢复。` +
+        (s.agentCount > 0 ? `\n注意：${s.agentCount} 个 agent 也将一并删除。` : ""),
+    )
+  )
+    return;
+  deleteBusy.value = true;
+  try {
+    await serverStore.deleteServer(s.id);
+    showServerMenu.value = false;
+    const next = serverStore.activeServerId;
+    if (next) void router.push(channelPath(next, await channelStore.resolveLandingChannel(next)));
+    else void router.push("/");
+  } catch (e: any) {
+    toast.error("删除失败：" + (e?.message || "网络错误"));
+  } finally {
+    deleteBusy.value = false;
   }
 }
 </script>
@@ -238,7 +267,7 @@ async function submitLeave() {
           </button>
           <button
             class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700"
-            @click="router.push('/settings/members'); showServerMenu = false"
+            @click="router.push('/people'); showServerMenu = false"
           >
             <Users class="h-4 w-4" /> 成员管理
           </button>
@@ -256,6 +285,14 @@ async function submitLeave() {
             @click="submitLeave"
           >
             <LogOut class="h-4 w-4" /> {{ leaveBusy ? "退出中…" : "退出服务器" }}
+          </button>
+          <button
+            v-if="canDelete"
+            class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/30"
+            :disabled="deleteBusy"
+            @click="submitDelete"
+          >
+            <Trash2 class="h-4 w-4" /> {{ deleteBusy ? "删除中…" : "删除服务器" }}
           </button>
           <p v-if="!isOwner && !canLeave" class="px-3 py-1.5 text-xs text-muted">没有可用的管理操作</p>
         </template>
@@ -309,7 +346,8 @@ async function submitLeave() {
     <nav class="min-h-0 flex-1 space-y-4 overflow-y-auto p-2">
       <SidebarSection title="频道" persist-key="chat.public" :count="publicChannels.length">
         <template #action>
-          <IconButton label="创建频道" tooltip="创建频道" class="h-6 w-6" @click="showCreateChannel = true">
+          <!-- 建频道已收敛到 server owner（POST /api/channels → isOrgOwner），member 隐藏 -->
+          <IconButton v-if="isOwner" label="创建频道" tooltip="创建频道" class="h-6 w-6" @click="showCreateChannel = true">
             <Plus class="h-4 w-4" />
           </IconButton>
         </template>

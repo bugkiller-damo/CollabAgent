@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { api, cleanupTestData, closeSql, registerUser, sql, type TestUser } from "./helpers.js";
+import { api, cleanupTestData, closeSql, ensureTestComputer, registerUser, sql, type TestUser } from "./helpers.js";
 
 // P1.28：agent scoped 凭据生命周期（/internal/agent/:agentId/credentials）——此前零覆盖
 //（评估 §2.6 零覆盖清单 ③，安全敏感面）。覆盖：签发（sk_agent_ 前缀 + 24h TTL）→
@@ -15,6 +15,7 @@ let machineToken = "";
 
 beforeAll(async () => {
   owner = await registerUser();
+  const comp = await ensureTestComputer(owner);
   for (const [name, setter] of [
     ["cred_a", (id: string) => (agentId = id)],
     ["cred_b", (id: string) => (secondAgentId = id)],
@@ -23,7 +24,7 @@ beforeAll(async () => {
       method: "POST",
       cookie: owner.cookie,
       csrf: owner.csrf,
-      body: { name: `${name}_${Date.now().toString(36)}`, displayName: "CredTest" },
+      body: { name: `${name}_${Date.now().toString(36)}`, displayName: "CredTest", serverId: comp.serverId },
     });
     expect(r.status).toBe(200);
     setter(r.data.agent.id);
@@ -32,7 +33,7 @@ beforeAll(async () => {
     method: "POST",
     cookie: owner.cookie,
     csrf: owner.csrf,
-    body: {},
+    body: { serverId: comp.serverId },
   });
   expect(mt.status).toBe(200);
   machineToken = mt.data.token;

@@ -27,7 +27,10 @@ export function resolveHostname(): string {
   return process.env.COMPUTERNAME || process.env.HOSTNAME || "unknown";
 }
 
-export function buildReadyPayload(runtimes?: RuntimeProbe[]): Extract<WsFromDaemonMessage, { type: "ready" }> {
+export function buildReadyPayload(
+  runtimes?: RuntimeProbe[],
+  identity?: { machineUuid?: string; serverName?: string },
+): Extract<WsFromDaemonMessage, { type: "ready" }> {
   return {
     type: "ready",
     capabilities: ["send", "read"],
@@ -36,5 +39,9 @@ export function buildReadyPayload(runtimes?: RuntimeProbe[]): Extract<WsFromDaem
     daemonVersion: readDaemonVersion(),
     os: process.platform,
     arch: process.arch,
+    // 2026-09-19 server-scoped computers：本机身份（~/.slock/machine-id）+
+    // --server 声明（服务端比对 token scope，不一致拒连）
+    ...(identity?.machineUuid ? { machineUuid: identity.machineUuid } : {}),
+    ...(identity?.serverName ? { serverName: identity.serverName } : {}),
   };
 }

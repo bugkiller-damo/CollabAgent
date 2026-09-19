@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Bell, ChartColumn, CodeXml, LogOut, ShieldCheck, User, Users } from "@lucide/vue";
+import { Bell, ChartColumn, CodeXml, LogOut, Server, ShieldCheck, User } from "@lucide/vue";
 import { type Component, computed, markRaw } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import NavItem from "../../components/ui/NavItem.vue";
@@ -12,11 +12,12 @@ const authStore = useAuthStore();
 
 const items: { to: string; label: string; icon: Component; adminOnly?: boolean }[] = [
   { to: "/settings/profile", label: "个人资料", icon: markRaw(User) },
+  { to: "/settings/server", label: "服务器资料", icon: markRaw(Server) },
   { to: "/settings/security", label: "安全与账户", icon: markRaw(ShieldCheck) },
   { to: "/settings/integrations", label: "集成", icon: markRaw(CodeXml) },
   { to: "/settings/notifications", label: "通知", icon: markRaw(Bell) },
-  // 原管理后台管理页（2026-09-17 IA 收敛：/admin 并入设置；频道管理已删——频道页自带建/删/归档）
-  { to: "/settings/members", label: "成员管理", icon: markRaw(Users) },
+  // 原管理后台管理页（2026-09-17 IA 收敛：/admin 并入设置；频道管理已删——频道页自带建/删/归档；
+  // 成员管理 2026-09-18 融合进侧边栏成员页 PeopleView，不再单独成页）
   { to: "/settings/metrics", label: "运行指标", icon: markRaw(ChartColumn), adminOnly: true },
 ];
 

@@ -3,7 +3,16 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
 import { MACHINE_TOKEN_MAX_ACTIVE_PER_USER } from "../src/lib/machine-token-policy.js";
 import { sha256Token } from "../src/lib/token-hash.js";
-import { api, BASE, cleanupTestData, closeSql, registerUser, sql, type TestUser } from "./helpers.js";
+import {
+  api,
+  BASE,
+  cleanupTestData,
+  closeSql,
+  ensureTestComputer,
+  registerUser,
+  sql,
+  type TestUser,
+} from "./helpers.js";
 
 /**
  * 评估报告 P1.12：machine_tokens 默认过期（90 天滚动续期）+ 同用户签发数量上限。
@@ -19,7 +28,15 @@ function remainingDays(expiresAt: Date | string): number {
 }
 
 async function mintToken(u: TestUser): Promise<string> {
-  const r = await api("/api/profile/machine-token", { method: "POST", cookie: u.cookie, csrf: u.csrf, body: {} });
+  // machine-token 需显式 serverId（personal 兜底取消）——owned server 由
+  // ensureTestComputer 幂等解析，同 scope 多枚令牌共存（上限测试依赖此）
+  const comp = await ensureTestComputer(u);
+  const r = await api("/api/profile/machine-token", {
+    method: "POST",
+    cookie: u.cookie,
+    csrf: u.csrf,
+    body: { serverId: comp.serverId },
+  });
   expect(r.status).toBe(200);
   return r.data.token as string;
 }
@@ -82,22 +99,18 @@ describe("machine token 默认过期与签发上限（P1.12）", () => {
 
   it("同用户活跃令牌达上限后签发 409，吊销一个后可再签", async () => {
     const u2 = await registerUser();
-    for (let i = 0; i < MACHINE_TOKEN_MAX_ACTIVE_PER_USER; i++) {
-      const r = await api("/api/profile/machine-token", {
+    const u2Comp = await ensureTestComputer(u2);
+    const mint = () =>
+      api("/api/profile/machine-token", {
         method: "POST",
         cookie: u2.cookie,
         csrf: u2.csrf,
-        body: {},
+        body: { serverId: u2Comp.serverId },
       });
-      expect(r.status).toBe(200);
+    for (let i = 0; i < MACHINE_TOKEN_MAX_ACTIVE_PER_USER; i++) {
+      expect((await mint()).status).toBe(200);
     }
-    const over = await api("/api/profile/machine-token", {
-      method: "POST",
-      cookie: u2.cookie,
-      csrf: u2.csrf,
-      body: {},
-    });
-    expect(over.status).toBe(409);
+    expect((await mint()).status).toBe(409);
 
     // 吊销一个 → 额度释放
     const list = await api("/api/profile/tokens", { cookie: u2.cookie });
@@ -109,13 +122,7 @@ describe("machine token 默认过期与签发上限（P1.12）", () => {
       csrf: u2.csrf,
     });
     expect(del.status).toBe(200);
-    const again = await api("/api/profile/machine-token", {
-      method: "POST",
-      cookie: u2.cookie,
-      csrf: u2.csrf,
-      body: {},
-    });
-    expect(again.status).toBe(200);
+    expect((await mint()).status).toBe(200);
   });
 
   it("过期令牌 HTTP 认证 401", async () => {

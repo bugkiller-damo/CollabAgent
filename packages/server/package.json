@@ -11,6 +11,7 @@
     "lint": "biome check .",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:server": "tsx scripts/test-server.ts",
     "db:migrate": "tsx src/db/migrate.ts",
     "db:seed": "tsx src/db/seed.ts"
   },

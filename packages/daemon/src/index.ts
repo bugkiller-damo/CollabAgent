@@ -58,20 +58,24 @@ function enforceSingleInstance(): void {
 
 enforceSingleInstance();
 
-function parseArgs(args: string[]): { serverUrl: string; apiKey: string } | null {
+function parseArgs(args: string[]): { serverUrl: string; apiKey: string; serverName?: string } | null {
   let serverUrl = "";
   let apiKey = "";
+  let serverName = "";
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--server-url" && args[i + 1]) serverUrl = args[++i];
     if (args[i] === "--api-key" && args[i + 1]) apiKey = args[++i];
+    // 2026-09-19：声明本进程服务的 server——服务端握手时与令牌 scope 比对，
+    // 不一致直接拒连（拿错 token 立刻报，不静默连错 server）
+    if (args[i] === "--server" && args[i + 1]) serverName = args[++i];
   }
   if (!serverUrl || !apiKey) return null;
-  return { serverUrl, apiKey };
+  return { serverUrl, apiKey, ...(serverName.trim() ? { serverName: serverName.trim() } : {}) };
 }
 
 const parsed = parseArgs(process.argv.slice(2));
 if (!parsed) {
-  console.error("Usage: collabagent-daemon --server-url <url> --api-key <key>");
+  console.error("Usage: collabagent-daemon --server-url <url> --api-key <key> [--server <name>]");
   process.exit(1);
 }
 

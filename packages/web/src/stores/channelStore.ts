@@ -2,6 +2,7 @@ import type { AgentDuty, AgentPresence, Channel } from "@collabagent/shared";
 import { defineStore } from "pinia";
 import { ref } from "vue";
 import { apiGet, apiPatch, apiPost } from "../api";
+import { lastChannelKey } from "../lib/nav";
 import { toast } from "./toastStore";
 
 export interface ChannelMember {
@@ -55,6 +56,29 @@ export const useChannelStore = defineStore("channels", () => {
     } catch (err: any) {
       toast.error("加载频道列表失败：" + (err?.message || "网络错误"));
     }
+  }
+
+  /**
+   * 解析某 server 的落点频道名（切 server / 各类落地页共用）：
+   * preferred（如当前活跃频道）→ localStorage 记忆 → 频道列表首个 → 兜底 "general"。
+   * 候选项必须仍在该 server 的频道列表里才算命中——新建 server 没有
+   * general（只有私有 onboarding-owner），硬编码落点会 404；已归档/删除/
+   * 不可见的记忆值同理跳过。私有频道在 /api/server/info 仅对 channel_members
+   * 可见，返回列表天然按成员身份过滤，无需特判。
+   */
+  async function resolveLandingChannel(sid: string, preferred?: string | null): Promise<string> {
+    await fetchChannels(sid);
+    const list = channels.value;
+    const hit = (n?: string | null): n is string => !!n && list.some((c) => c.name === n);
+    if (hit(preferred)) return preferred;
+    let last: string | null = null;
+    try {
+      last = typeof localStorage === "undefined" ? null : localStorage.getItem(lastChannelKey(sid));
+    } catch {
+      /* ignore */
+    }
+    if (hit(last)) return last;
+    return list[0]?.name || "general";
   }
 
   /** 切换活跃 server：频道列表换成新 server 的上下文，旧列表立即清掉
@@ -129,6 +153,7 @@ export const useChannelStore = defineStore("channels", () => {
     activeChannelName,
     unreadCounts,
     fetchChannels,
+    resolveLandingChannel,
     resetForServer,
     createChannel,
     updateChannel,

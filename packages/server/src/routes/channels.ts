@@ -1,11 +1,11 @@
 import type { FastifyInstance } from "fastify";
 import { canAccessChannel, canManageChannel, invalidateChannel, invalidateMember } from "../lib/access.js";
 import { decorateAgentPresence } from "../lib/agent-duty.js";
+import { removeUnreferencedAttachmentKeys } from "../lib/attachment-gc.js";
 import { resolveChannel } from "../lib/channel.js";
 import { getOrCreateDmChannel, type Party, resolvePeer } from "../lib/dm.js";
-import { getStorage } from "../lib/storage.js";
+import { isOrgOwner } from "../lib/orgs.js";
 import { isServerMember, resolveTenant } from "../lib/tenant.js";
-import { thumbKeyFor } from "../lib/thumbnail.js";
 import { getLastAgentRuntime, revalidateTerminalWatchersByChannel } from "../ws/handler.js";
 
 export async function channelRoutes(app: FastifyInstance) {
@@ -37,11 +37,14 @@ export async function channelRoutes(app: FastifyInstance) {
     if (!cleanName) return reply.status(400).send({ error: "name required" });
     if (cleanName.length > 100) return reply.status(400).send({ error: "channel name too long (max 100)" });
     const tenant = await resolveTenant(app, req, { serverId: serverId as string | undefined });
-    if (tenant.explicit && !(await isServerMember(app, tenant.serverId, req.user.sub))) {
-      return reply.status(403).send({ error: "not a member of that server" });
-    }
     const resolvedServerId = tenant.serverId;
     if (!resolvedServerId) return reply.status(400).send({ error: "no server available" });
+    // 2026-09-18 权限模型：建频道收敛到 server owner（owner/member 二元，
+    // member 只参与频道不可建频道）。isServerMember 校验已不足——统一走
+    // isOrgOwner 口径（servers.owner_id 或 server_members role='owner'）。
+    if (!(await isOrgOwner(app, resolvedServerId, req.user.sub))) {
+      return reply.status(403).send({ error: "only org owner can create channels" });
+    }
     const vis = visibility || type || "public";
     // P1.32：type 枚举校验——用户可建 public/private；dm 只能由 dm 链路（getOrCreateDmChannel）创建，
     // 任意字符串入库会让 canAccessChannel/列表谓词（type<>'dm'、type<>'private'）判定失真
@@ -363,20 +366,7 @@ export async function channelRoutes(app: FastifyInstance) {
     });
     void revalidateTerminalWatchersByChannel(channelId); // 频道删除后复核全部观看权
     // 事务提交后再删对象字节：引用关系已断；失败仅告警（best-effort），不影响频道删除结果
-    // F10：去重后多行可共享同一 storage_key——只清已无任何 attachments 行引用的 key
-    for (const key of orphanedKeys) {
-      const ref = await app.pg.query("SELECT 1 FROM attachments WHERE storage_key = $1 LIMIT 1", [key]);
-      if (ref.rows.length > 0) continue;
-      try {
-        await getStorage().remove(key);
-        // F11：缩略图与主对象同生命周期（派生键 <key>.thumb.webp，幂等删除）
-        await getStorage()
-          .remove(thumbKeyFor(key))
-          .catch(() => {});
-      } catch (err) {
-        req.log.warn({ err, key }, "attachment storage cleanup failed");
-      }
-    }
+    await removeUnreferencedAttachmentKeys(app, orphanedKeys);
     // O7：频道已删，失效其类型与全部成员角色缓存
     invalidateChannel(channelId);
     invalidateMember(channelId);
@@ -397,7 +387,7 @@ export async function channelRoutes(app: FastifyInstance) {
       const peer = await resolvePeer(app, target.slice(3).split(":")[0], scope, req.user.sub);
       if (!peer) return reply.status(404).send({ error: "peer not found" });
       const me: Party = { id: userId, type: "human", handle: req.user.handle ?? "unknown" };
-      const channelId = await getOrCreateDmChannel(app, me, peer);
+      const channelId = await getOrCreateDmChannel(app, me, peer, scope);
       // dmKey：浏览器侧统一会话键，与 WS 投递 channelId 一致
       return { type: "dm", channelId, dmKey: "dm:" + channelId, peer };
     }
@@ -414,9 +404,22 @@ export async function channelRoutes(app: FastifyInstance) {
     return { type: "channel", ...ch };
   });
 
-  // 我的 DM 会话列表（含对端信息与最近一条消息）
-  app.get("/dms", { preHandler: [app.authenticate] }, async (req) => {
+  // 我的 DM 会话列表（含对端信息与最近一条消息）。
+  // dm 频道有归属 server：显式租户（x-server-id 等）下按该 server 过滤——
+  // 否则私信区列的是全局聚合，新建 server 下也会显示全部历史私信（bug）。
+  // 非显式调用方（无租户头的旧客户端）保持原全局行为。
+  app.get("/dms", { preHandler: [app.authenticate] }, async (req, reply) => {
     const userId = req.user.sub;
+    const tenant = await resolveTenant(app, req);
+    if (tenant.explicit && !(await isServerMember(app, tenant.serverId, req.user.sub))) {
+      return reply.status(403).send({ error: "not a member of that server" });
+    }
+    const params: unknown[] = [userId];
+    let serverFilter = "";
+    if (tenant.explicit && tenant.serverId) {
+      params.push(tenant.serverId);
+      serverFilter = ` AND c.server_id::text = $${params.length}`;
+    }
     const r = await app.pg.query(
       `SELECT c.id as "channelId",
               peer.member_id as "peerId", peer.member_type as "peerType",
@@ -433,9 +436,9 @@ export async function channelRoutes(app: FastifyInstance) {
            SELECT content, created_at, seq FROM messages
             WHERE channel_id = c.id AND thread_id IS NULL ORDER BY seq DESC LIMIT 1
          ) lm ON true
-        WHERE c.type = 'dm'
+        WHERE c.type = 'dm'${serverFilter}
         ORDER BY lm.seq DESC NULLS LAST`,
-      [userId],
+      params,
     );
     return { dms: r.rows };
   });

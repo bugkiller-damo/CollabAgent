@@ -5,12 +5,13 @@ import Button from "../components/ui/Button.vue";
 import Card from "../components/ui/Card.vue";
 import Input from "../components/ui/Input.vue";
 import { channelPath } from "../lib/nav";
-import { hasOwnServer, useAuthStore, useServerStore } from "../stores";
+import { hasOwnServer, useAuthStore, useChannelStore, useServerStore } from "../stores";
 
 /**
- * 新注册强制向导：给「自己的服务器」命名后落地其 #general。
- * 实现：GET /api/orgs 会惰性建 personal server——向导 = 找到 personal org
- * 并 PATCH 改名；找不到（异常态）才走 POST /api/orgs 新建。
+ * 新注册强制向导：给「自己的服务器」命名后落地其首个频道（新建 server
+ * 只有私有 onboarding-owner 频道）。
+ * 实现：2026-09-19 personal 特例取消后 GET /api/orgs 不再懒建空间——
+ * 向导恒走 POST /api/orgs 新建。
  * 受邀注册用户不经此页（InviteAcceptPage 直接落地被邀 server，顶部引导条
  * 稍后再来建自己的 server）；存量用户手动进来时若已有自有 server 直接放行。
  */
@@ -18,6 +19,7 @@ import { hasOwnServer, useAuthStore, useServerStore } from "../stores";
 const router = useRouter();
 const authStore = useAuthStore();
 const serverStore = useServerStore();
+const channelStore = useChannelStore();
 
 const name = ref("");
 const error = ref("");
@@ -30,16 +32,15 @@ onMounted(async () => {
   } catch {
     /* 列表拉失败不挡向导，提交时再兜底 */
   }
-  // 已有自有 server（向导已完成/手动建过/存量非 personal owner）→ 不再走向导。
-  // 不能用 role==='owner' 单判：personal server 用户天然 owner，会把新用户直接放行
-  if (hasOwnServer(serverStore.orgs, authStore.user?.handle)) {
-    const target = serverStore.orgs.find((o) => o.role === "owner") ?? serverStore.orgs[0];
-    if (target) void router.replace(channelPath(target.id, "general"));
+  // 已有自有 server（向导已完成/手动建过/受邀后被擢升 owner）→ 不再走向导。
+  // hasOwnServer = owns 非公共 server——广场 owner（实例 admin）不算自有。
+  if (hasOwnServer(serverStore.orgs)) {
+    const target = serverStore.orgs.find((o) => o.role === "owner" && !o.is_public) ?? serverStore.orgs[0];
+    // 落点按真实频道列表解析：新建 server 无 general（只有私有 onboarding-owner）
+    if (target) void router.replace(channelPath(target.id, await channelStore.resolveLandingChannel(target.id)));
     return;
   }
-  const personal = serverStore.orgs.find((o) => o.personal);
-  // 预填：personal server 现名（默认 "<handle> 的私有空间"）或 handle 兜底
-  name.value = personal?.name?.trim() || `${authStore.user?.handle ?? "我"} 的服务器`;
+  name.value = `${authStore.user?.handle ?? "我"} 的服务器`;
   checking.value = false;
 });
 
@@ -52,19 +53,11 @@ async function submit() {
   busy.value = true;
   error.value = "";
   try {
-    let orgs = serverStore.orgs;
-    if (orgs.length === 0) orgs = await serverStore.fetchOrgs();
-    const personal = orgs.find((o) => o.personal);
-    let serverId: string;
-    if (personal) {
-      await serverStore.renameServer(personal.id, n);
-      serverId = personal.id;
-    } else {
-      const created = await serverStore.createServer(n);
-      serverId = created.id;
-    }
-    serverStore.setActive(serverId);
-    void router.replace(channelPath(serverId, "general"));
+    const created = await serverStore.createServer(n);
+    serverStore.setActive(created.id);
+    // 新建 server 落点是私有 onboarding-owner，不是 general
+    const ch = await channelStore.resolveLandingChannel(created.id);
+    void router.replace(channelPath(created.id, ch));
   } catch (e: any) {
     error.value = e?.message || "创建失败，请重试";
     busy.value = false;

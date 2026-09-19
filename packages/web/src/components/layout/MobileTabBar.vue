@@ -23,9 +23,7 @@ function isActive(id: string): boolean {
   if (id === "tasks-page") return !!parseTasksRoute(route.path);
   if (id === "chat") return !!parseChannelRoute(route.path) || route.path.startsWith("/dm");
   if (id === "people") {
-    return (
-      route.path === "/people" || route.path.startsWith("/settings/members") || route.path.startsWith("/computers")
-    );
+    return route.path === "/people" || route.path.startsWith("/computers");
   }
   if (id === "activity") return route.path === "/activity";
   return false;
@@ -48,9 +46,12 @@ function onTab(id: string) {
   if (id === "chat") {
     const sid = serverStore.activeServerId;
     const ch = channelStore.activeChannelName;
-    void router.push(
-      sid ? channelPath(sid, ch || "general") : ch ? `/channels/${encodeURIComponent(ch)}` : "/channels/general",
-    );
+    // 落点按真实频道列表解析——新建 server 无 general，硬编码会 404
+    if (sid) {
+      void channelStore.resolveLandingChannel(sid, ch).then((name) => router.push(channelPath(sid, name)));
+    } else {
+      void router.push(ch ? `/channels/${encodeURIComponent(ch)}` : "/channels/general");
+    }
     return;
   }
   if (id === "activity") {

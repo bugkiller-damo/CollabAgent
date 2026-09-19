@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { api, cleanupTestData, closeSql, registerUser } from "./helpers.js";
+import { api, cleanupTestData, closeSql, makeOrgOwner, registerUser } from "./helpers.js";
 
 // O15：POST /api/messages/send 的 clientNonce 幂等——
 // 同频道同 nonce 重放返回首条消息（deduplicated:true），不产生任何重复副作用。
@@ -19,6 +19,7 @@ describe("messages: clientNonce 发送幂等", () => {
 
   beforeAll(async () => {
     const u = await registerUser();
+    await makeOrgOwner(u); // 2026-09-18：默认社区建频道需 server owner
     ck = u.cookie;
     const ch = await api("/api/channels/resolve?target=" + encodeURIComponent("#general"), { cookie: ck });
     if (ch.status !== 200) await api("/api/channels", { method: "POST", cookie: ck, body: { name: "general" } });

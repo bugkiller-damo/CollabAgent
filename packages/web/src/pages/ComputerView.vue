@@ -38,9 +38,12 @@ interface AgentRow {
   model?: string;
   avatar_url?: string;
   user_id?: string;
+  /** server 端解析出的宿主机（绑定机优先，存量 agent 回落属主同 server 任一机） */
+  computer?: { id: string; name: string; hostname: string | null; online: boolean } | null;
 }
 
 const route = useRoute();
+const router = useRouter();
 const computerStore = useComputerStore();
 const authStore = useAuthStore();
 const agentStore = useAgentStore();
@@ -74,6 +77,10 @@ const confirmDeleteAgent = ref<AgentRow | null>(null);
 const togglingDuty = ref<string | null>(null);
 const confirmOffDuty = ref<AgentRow | null>(null);
 
+/** 详情页直取（member 可读任意 server 的行）——列表只覆盖活跃 server，深链可能跨界 */
+const detailRow = ref<ComputerRecord | null>(null);
+const detailMissing = ref(false);
+
 const catalog = runtimeCatalog();
 const WIRED_RUNTIMES = new Set(["claude"]);
 const CLAUDE_MODELS = [
@@ -82,26 +89,49 @@ const CLAUDE_MODELS = [
   { value: "haiku", label: "Claude Haiku" },
 ];
 
-const computer = computed(() => computerStore.computer);
-const connected = computed(() => computerStore.connected);
+const routeId = computed(() => (typeof route.params.id === "string" ? route.params.id : ""));
+const detailMode = computed(() => !!routeId.value);
+
+const computers = computed(() => computerStore.computers);
+const myComputers = computed(() => computerStore.myComputers);
+const otherComputers = computed(() => computers.value.filter((c) => !c.mine));
+
+const computer = computed<ComputerRecord | null>(() => {
+  if (!detailMode.value) return null;
+  return detailRow.value ?? computers.value.find((c) => c.id === routeId.value) ?? null;
+});
+const isMine = computed(() => !!computer.value?.mine);
+const online = computed(() => !!computer.value?.online);
 const runtimes = computed(() => {
-  const live = computerStore.runtimes;
-  if (live.length) return live;
+  const live = computer.value?.runtimes;
+  if (live && live.length) return live;
   return catalog.map((c) => ({ id: c.id, status: "not_installed" as const, version: undefined }));
 });
-const snapshot = computed(() => !connected.value && !!computer.value?.lastReadyAt);
+const snapshot = computed(() => !online.value && !!computer.value?.lastReadyAt);
 
-const myAgents = computed(() => {
-  const uid = authStore.user?.id;
-  if (!uid) return agents.value;
-  return agents.value.filter((a) => !a.user_id || a.user_id === uid);
+/** server 归属查询（orgs 未覆盖时回落 serverId 本身——例如我不是该 server 成员的边缘态） */
+function serverNameOf(serverId: string): string {
+  return serverStore.orgs.find((o) => o.id === serverId)?.name || "该 server";
+}
+/** 令牌签发是 owner-only：活跃 server 我是 owner 才可生成接入命令 */
+const canAttachActive = computed(() => serverStore.activeServer?.role === "owner");
+/** 详情页该机所在 server 我是否 owner（理论上我的机器必在我 own 的 server，转让后是边缘态） */
+const canAttachDetail = computed(
+  () => isMine.value && serverStore.orgs.find((o) => o.id === computer.value?.serverId)?.role === "owner",
+);
+
+const boundAgents = computed(() => {
+  const id = computer.value?.id;
+  if (!id) return [];
+  return agents.value.filter((a) => a.computer?.id === id);
 });
-
 const claude = computed(() => runtimes.value.find((r) => r.id === "claude"));
 const creatableRuntimes = computed(() =>
   runtimes.value.filter((r) => r.status === "installed" && WIRED_RUNTIMES.has(r.id)),
 );
-const canCreate = computed(() => connected.value && creatableRuntimes.value.length > 0);
+const canCreate = computed(
+  () => isMine.value && online.value && canAttachDetail.value && creatableRuntimes.value.length > 0,
+);
 const createReady = computed(() => canCreate.value && !!newName.value.trim() && !!newDisplayName.value.trim());
 const modelOptions = computed(() => CLAUDE_MODELS);
 
@@ -125,7 +155,7 @@ function chipHint(status: string): string {
 
 function fmtTime(v: string | number | null | undefined): string {
   if (v == null) return "—";
-  const d = typeof v === "number" ? new Date(v) : new Date(v);
+  const d = new Date(v);
   if (Number.isNaN(d.getTime())) return "—";
   return d.toLocaleString();
 }
@@ -150,16 +180,32 @@ async function loadAgents() {
   }
 }
 
+async function loadDetail() {
+  detailRow.value = null;
+  detailMissing.value = false;
+  if (!routeId.value) return;
+  try {
+    const d = await apiGet<{ computer: ComputerRecord }>(`/api/computers/${routeId.value}`);
+    detailRow.value = d.computer;
+  } catch {
+    detailMissing.value = true;
+  }
+}
+
 async function bootstrap() {
   error.value = "";
   try {
-    await computerStore.ensure();
-    const id = typeof route.params.id === "string" ? route.params.id : "";
-    if (id && computerStore.computer && computerStore.computer.id !== id) {
-      error.value = "无权查看这台计算机";
-      return;
+    if (!serverStore.loaded) await serverStore.fetchOrgs();
+    await computerStore.refresh();
+    if (detailMode.value) {
+      await loadDetail();
+      if (!computer.value) {
+        error.value = detailMissing.value ? "计算机不存在或无权查看" : "";
+        if (!error.value) error.value = "计算机不在当前 server，或无访问权";
+      } else {
+        syncDrafts();
+      }
     }
-    syncDrafts();
     await loadAgents();
   } catch (err: any) {
     error.value = err?.message || "加载失败";
@@ -167,10 +213,12 @@ async function bootstrap() {
 }
 
 async function saveIdentity() {
+  const c = computer.value;
+  if (!c) return;
   saving.value = true;
   try {
-    await apiPatch("/api/computers/me", { name: nameDraft.value.trim(), description: descDraft.value });
-    await computerStore.refresh();
+    await apiPatch(`/api/computers/${c.id}`, { name: nameDraft.value.trim(), description: descDraft.value });
+    await Promise.all([computerStore.refresh(), loadDetail()]);
     editing.value = false;
     toast.success("已保存");
   } catch (err: any) {
@@ -180,20 +228,28 @@ async function saveIdentity() {
   }
 }
 
+/** 生成接入命令——scope 由调用点决定：列表页=活跃 server；详情页=该机所在 server */
+const rotateScope = ref<string | null>(null);
 async function rotateToken() {
+  const serverId = rotateScope.value;
   confirmRotate.value = false;
+  if (!serverId) return;
   generating.value = true;
   error.value = "";
   try {
-    const r = await apiPost<{ token: string; command: string }>("/api/computers/me/token", {});
+    const r = await apiPost<{ token: string; command: string }>("/api/computers/me/token", { serverId });
     tokenCommand.value = r.command;
-    toast.success("已生成新连接命令（现有连接器会断开）");
-    await computerStore.refresh();
+    toast.success("已生成新连接命令");
   } catch (err: any) {
     error.value = err?.message || "生成失败";
   } finally {
     generating.value = false;
   }
+}
+
+function requestRotate(serverId: string) {
+  rotateScope.value = serverId;
+  confirmRotate.value = true;
 }
 
 async function copyCommand() {
@@ -220,7 +276,7 @@ function resetCreateForm() {
 
 function openCreate() {
   if (!canCreate.value) {
-    toast.error("请先连接计算机并安装 Claude Code");
+    toast.error("需要该机在线、装了 Claude Code，且你是其 server 所有者");
     return;
   }
   resetCreateForm();
@@ -228,11 +284,12 @@ function openCreate() {
 }
 
 async function createAgent() {
+  const c = computer.value;
   const n = newName.value.trim();
   const dn = newDisplayName.value.trim();
-  if (!n || !dn) return;
+  if (!n || !dn || !c) return;
   if (!canCreate.value) {
-    toast.error("请先连接计算机并安装 Claude Code");
+    toast.error("需要该机在线、装了 Claude Code，且你是其 server 所有者");
     return;
   }
   creating.value = true;
@@ -244,9 +301,10 @@ async function createAgent() {
       avatarUrl: newAvatarUrl.value.trim(),
       runtime: newRuntime.value,
       model: newModel.value,
-      // guild 化：agent 是 server 级记录——创建到当前活跃 server（成员页/私信候选
-      // 均按 server 过滤）；无活跃语境时回落 server 端默认（personal org）
-      serverId: serverStore.activeServerId || undefined,
+      // server-scoped computers：显式绑定该机——serverId 与 computerId 同出自行数据，
+      // 服务端复核 (user, server, computer) 一致性后落 agents.computer_id
+      serverId: c.serverId,
+      computerId: c.id,
     });
     showCreate.value = false;
     resetCreateForm();
@@ -272,15 +330,18 @@ async function deleteAgent() {
 }
 
 async function deleteComputer() {
+  const c = computer.value;
+  if (!c) return;
   deleting.value = true;
   try {
-    await apiClient("/api/computers/me", { method: "DELETE" });
+    await apiClient(`/api/computers/${c.id}`, { method: "DELETE" });
     confirmDelete.value = false;
     toast.success("已删除计算机");
-    await computerStore.refresh();
-    syncDrafts();
     tokenCommand.value = "";
+    await computerStore.refresh();
+    void router.push("/computers");
   } catch (err: any) {
+    confirmDelete.value = false;
     toast.error(err?.message || "删除失败");
   } finally {
     deleting.value = false;
@@ -289,7 +350,7 @@ async function deleteComputer() {
 
 const workspaceAgentId = ref<string | null>(null);
 
-const workspaceAgent = computed(() => myAgents.value.find((a) => a.id === workspaceAgentId.value) || null);
+const workspaceAgent = computed(() => boundAgents.value.find((a) => a.id === workspaceAgentId.value) || null);
 
 function openAgent(name: string) {
   uiStore.openProfile({ handle: name });
@@ -303,7 +364,7 @@ function agentPresence(a: AgentRow): AgentPresence {
   const live = agentStore.agents[a.name];
   if (live?.presence) return live.presence;
   if (a.presence) return a.presence;
-  return composePresence(a.duty ?? "on", !!a.isOnline || connected.value, live?.status);
+  return composePresence(a.duty ?? "on", !!(a.computer?.online ?? a.isOnline), live?.status);
 }
 
 function agentLive(a: AgentRow): string {
@@ -328,7 +389,7 @@ async function setDuty(a: AgentRow, duty: "on" | "off") {
       agentName: a.name,
       agentId: a.id,
       duty: r.duty,
-      computerOnline: connected.value,
+      computerOnline: !!a.computer?.online,
       presence: r.presence,
     });
     toast.success(duty === "off" ? `@${a.name} 已停班` : `@${a.name} 开始值班`);
@@ -354,11 +415,21 @@ function confirmDutyOff() {
   if (a) void setDuty(a, "off");
 }
 
+function goComputer(id: string) {
+  void router.push("/computers/" + id);
+}
+
+function goComputersBack() {
+  void router.push("/computers");
+}
+
 onMounted(() => {
   void bootstrap();
 });
 usePolling(() => {
-  void computerStore.refresh();
+  void computerStore.refresh().then(() => {
+    if (detailMode.value) void loadDetail();
+  });
   void loadAgents();
 }, 4000);
 
@@ -370,23 +441,43 @@ watch(
 watch(
   () => route.params.id,
   () => {
+    editing.value = false;
+    workspaceAgentId.value = null;
     void bootstrap();
+  },
+);
+
+// 列表是活跃 server 语境——切 server 即换一批机器
+watch(
+  () => serverStore.activeServerId,
+  () => {
+    if (!detailMode.value) void computerStore.refresh();
   },
 );
 </script>
 
 <template>
   <div class="flex min-h-0 flex-1 flex-col">
-    <PageHeader :title="computer?.name || '我的计算机'" subtitle="在这台电脑上跑连接器，再创建 Agent">
+    <PageHeader
+      :title="detailMode ? computer?.name || '计算机' : `计算机 · ${serverStore.activeServer?.name || ''}`"
+      :subtitle="
+        detailMode
+          ? isMine
+            ? '这台机器上跑连接器，再创建 Agent'
+            : `属主：${computer?.ownerName || computer?.ownerHandle || '成员'}`
+          : '本 server 里注册的机器——daemon 跑起来才会出现'
+      "
+    >
       <span
+        v-if="detailMode && computer"
         :class="[
           'rounded-full px-2 py-0.5 text-xs',
-          connected
+          online
             ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300'
             : 'bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-300',
         ]"
       >
-        {{ connected ? "在线" : "离线" }}
+        {{ online ? "在线" : "离线" }}
       </span>
     </PageHeader>
 
@@ -395,184 +486,289 @@ watch(
         {{ error }}
       </div>
 
-      <Card class="flex items-start gap-4">
-        <div class="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl bg-gray-200 dark:bg-gray-700">
-          <Monitor class="h-7 w-7" aria-hidden="true" />
-        </div>
-        <div class="min-w-0 flex-1">
-          <div class="flex flex-wrap items-center gap-2">
-            <h2 class="text-lg font-semibold text-ink">{{ computer?.name || "我的计算机" }}</h2>
-            <span :class="['h-2.5 w-2.5 rounded-full', connected ? 'bg-green-500' : 'bg-gray-400']" />
-          </div>
-          <p class="mt-0.5 text-xs text-muted">{{ computer?.hostname || "尚未上报主机名" }}</p>
-          <p v-if="!editing" class="mt-2 text-sm text-gray-600 dark:text-gray-300">
-            {{ computer?.description || "还没有描述" }}
+      <!-- ======================= 列表模式 ======================= -->
+      <template v-if="!detailMode">
+        <Card class="space-y-3">
+          <p class="text-xs font-semibold uppercase tracking-wide text-muted">接入</p>
+          <p class="text-sm text-gray-600 dark:text-gray-300">
+            在要接入「{{ serverStore.activeServer?.name || "本 server" }}」的电脑上执行连接命令——一台机器一条 daemon
+            进程，同时只服务一个 server。
           </p>
-          <div v-else class="mt-3 space-y-2">
-            <Input :value="nameDraft" placeholder="名称" @input="nameDraft = ($event.target as HTMLInputElement).value" />
-            <Input :value="descDraft" placeholder="描述" @input="descDraft = ($event.target as HTMLInputElement).value" />
-            <div class="flex gap-2">
-              <Button size="sm" :loading="saving" @click="saveIdentity">保存</Button>
-              <Button size="sm" variant="secondary" @click="editing = false">取消</Button>
-            </div>
-          </div>
-          <button
-            v-if="!editing"
-            type="button"
-            class="mt-2 text-xs text-blue-600 hover:underline dark:text-blue-400"
-            @click="editing = true"
-          >
-            编辑名称 / 描述
-          </button>
-        </div>
-      </Card>
-
-      <Card>
-        <p class="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">信息</p>
-        <dl class="grid gap-2 text-sm sm:grid-cols-2">
-          <div>
-            <dt class="text-xs text-muted">系统</dt>
-            <dd class="text-gray-800 dark:text-gray-200">{{ computer?.os || "—" }} · {{ computer?.arch || "—" }}</dd>
-          </div>
-          <div>
-            <dt class="text-xs text-muted">连接器版本</dt>
-            <dd class="text-gray-800 dark:text-gray-200">{{ computer?.daemonVersion || computerStore.status?.daemonVersion || "—" }}</dd>
-          </div>
-          <div>
-            <dt class="text-xs text-muted">创建时间</dt>
-            <dd class="text-gray-800 dark:text-gray-200">{{ fmtTime(computer?.createdAt) }}</dd>
-          </div>
-          <div>
-            <dt class="text-xs text-muted">最近就绪</dt>
-            <dd class="text-gray-800 dark:text-gray-200">{{ fmtTime(computer?.lastReadyAt || computerStore.status?.connectedAt) }}</dd>
-          </div>
-        </dl>
-        <p v-if="snapshot" class="mt-2 text-xs text-amber-600 dark:text-amber-400">以下探测为上次连接的快照。</p>
-      </Card>
-
-      <Card>
-        <p class="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">检测到的运行时</p>
-        <div class="grid gap-2 sm:grid-cols-2">
-          <div
-            v-for="r in runtimes"
-            :key="r.id"
-            :class="['rounded-lg border px-3 py-2 text-sm', chipClass(r.status)]"
-          >
-            <div class="flex items-center justify-between gap-2">
-              <span class="font-medium">{{ labelFor(r.id) }}</span>
-              <span class="text-[10px]">{{ chipHint(r.status) }}</span>
-            </div>
-            <p v-if="r.version" class="mt-0.5 truncate text-[11px] opacity-80">{{ r.version }}</p>
-          </div>
-        </div>
-        <p
-          v-if="connected && claude?.status !== 'installed'"
-          class="mt-3 text-xs text-amber-700 dark:text-amber-300"
-        >
-          已连上计算机，但 Claude 未装，@ 不会响应。安装：
-          <code class="rounded bg-black/10 px-1 dark:bg-white/10">npm install -g @anthropic-ai/claude-code</code>
-        </p>
-      </Card>
-
-      <Card class="space-y-3">
-        <p class="text-xs font-semibold uppercase tracking-wide text-muted">接入</p>
-        <p class="text-sm text-gray-600 dark:text-gray-300">
-          在你要跑 Agent 的这台电脑上执行（就是你正在用的这台，不是别人的机器）。
-        </p>
-        <p class="text-xs text-muted">生成新命令会吊销当前机器令牌，现有连接器会断开。</p>
-        <Button size="sm" :loading="generating" @click="confirmRotate = true">生成连接命令</Button>
-        <div v-if="tokenCommand" class="space-y-2">
-          <div class="break-all rounded bg-gray-900 p-3 font-mono text-xs text-green-400 dark:bg-black">{{ tokenCommand }}</div>
-          <div class="flex items-center gap-2">
-            <Button size="sm" variant="secondary" @click="copyCommand">
-              <Check v-if="copied" class="mr-0.5 inline h-3.5 w-3.5" aria-hidden="true" />
-              {{ copied ? "已复制" : "复制命令" }}
+          <template v-if="canAttachActive">
+            <Button size="sm" :loading="generating" @click="requestRotate(serverStore.activeServer!.id)">
+              生成连接命令
             </Button>
-          </div>
-          <p class="text-xs text-muted">令牌只显示这一次。密钥不会回放。</p>
-          <div v-if="!connected" class="flex items-center gap-2 text-sm text-gray-500">
-            <span class="inline-block h-4 w-4 animate-spin rounded-full border-2 border-blue-500 border-t-transparent" />
-            等待连接器就绪…
-          </div>
-        </div>
-      </Card>
-
-      <Card class="space-y-3">
-        <div class="flex items-center justify-between">
-          <p class="text-xs font-semibold uppercase tracking-wide text-muted">
-            这台计算机上的 Agent · {{ myAgents.length }}
-          </p>
-          <Button size="sm" :disabled="!canCreate" @click="openCreate">创建</Button>
-        </div>
-        <p v-if="!canCreate" class="text-xs text-muted">
-          {{ connected ? "安装 Claude Code 后才能创建。" : "先连接这台计算机，再创建 Agent。" }}
-        </p>
-        <p v-if="createdNote" class="text-xs text-blue-600 dark:text-blue-400">{{ createdNote }}</p>
-        <p v-if="myAgents.length === 0" class="text-sm text-muted">还没有 Agent</p>
-        <div
-          v-for="a in myAgents"
-          :key="a.id"
-          class="group flex w-full items-center gap-3 rounded-lg border border-gray-200 bg-white px-3 py-2 dark:border-gray-700 dark:bg-gray-800"
-        >
-          <button
-            type="button"
-            class="flex min-w-0 flex-1 items-center gap-3 text-left hover:opacity-90"
-            @click="openAgent(a.name)"
-          >
-            <span :class="['h-2 w-2 shrink-0 rounded-full', presenceDot(a)]" />
-            <Avatar :name="a.display_name || a.name" :src="a.avatar_url" size="sm" />
-            <div class="min-w-0 flex-1">
-              <p class="truncate text-sm font-medium text-ink">{{ a.display_name || a.name }}</p>
-              <p class="truncate text-xs text-muted">{{ a.runtime || "claude" }} · {{ agentLive(a) }}</p>
+            <div v-if="tokenCommand" class="space-y-2">
+              <div class="break-all rounded bg-gray-900 p-3 font-mono text-xs text-green-400 dark:bg-black">
+                {{ tokenCommand }}
+              </div>
+              <div class="flex items-center gap-2">
+                <Button size="sm" variant="secondary" @click="copyCommand">
+                  <Check v-if="copied" class="mr-0.5 inline h-3.5 w-3.5" aria-hidden="true" />
+                  {{ copied ? "已复制" : "复制命令" }}
+                </Button>
+              </div>
+              <p class="text-xs text-muted">令牌只显示这一次。命令里的 --server 会与本 server 校验，写错会拒连。</p>
             </div>
-          </button>
-          <button
-            type="button"
-            class="shrink-0 rounded-md border border-gray-200 px-2 py-0.5 text-[11px] text-gray-600 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
-            :class="workspaceAgentId === a.id ? 'border-blue-300 text-blue-600 dark:border-blue-700 dark:text-blue-300' : ''"
-            title="查看 MEMORY.md / notes"
-            @click="toggleWorkspace(a.id)"
-          >
-            工作区
-          </button>
-          <button
-            type="button"
-            class="shrink-0 rounded-md border border-gray-200 px-2 py-0.5 text-[11px] text-gray-600 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
-            :disabled="!connected || togglingDuty === a.id"
-            :title="connected ? (a.duty === 'off' ? '开始值班' : '停班后仍是成员，只是不接活') : '先连上这台计算机'"
-            @click="a.duty === 'off' ? setDuty(a, 'on') : requestDutyOff(a)"
-          >
-            {{ a.duty === "off" ? "已停班" : "值班中" }}
-          </button>
-          <Button
-            variant="ghost"
-            size="sm"
-            class="shrink-0 text-red-500 opacity-0 hover:text-red-600 group-hover:opacity-100"
-            @click="confirmDeleteAgent = a"
-          >
-            删除
-          </Button>
-        </div>
-        <AgentWorkspacePanel
-          v-if="workspaceAgent"
-          :agent-id="workspaceAgent.id"
-          :agent-name="workspaceAgent.name"
-          :computer-online="connected"
-        />
-      </Card>
+          </template>
+          <p v-else class="text-xs text-muted">只有本 server 的所有者可以接入计算机。</p>
+        </Card>
 
-      <Card class="space-y-2 border-red-200 dark:border-red-900/50">
-        <p class="text-xs font-semibold uppercase tracking-wide text-red-500">危险区</p>
-        <p class="text-sm text-gray-600 dark:text-gray-300">删除计算机前必须先清空这台上的 Agent。</p>
-        <Button variant="danger" size="sm" :disabled="myAgents.length > 0" @click="confirmDelete = true">
-          删除计算机
-        </Button>
-      </Card>
+        <Card>
+          <p class="mb-3 text-xs font-semibold uppercase tracking-wide text-muted">
+            我的计算机 · {{ myComputers.length }}
+          </p>
+          <p v-if="myComputers.length === 0" class="text-sm text-muted">
+            {{ canAttachActive ? "还没有你的机器接入本 server——用上面的命令跑起来。" : "你还没有机器接入本 server。" }}
+          </p>
+          <div class="grid gap-2 sm:grid-cols-2">
+            <button
+              v-for="c in myComputers"
+              :key="c.id"
+              type="button"
+              class="flex items-center gap-3 rounded-lg border border-gray-200 bg-white px-3 py-2.5 text-left hover:border-blue-300 dark:border-gray-700 dark:bg-gray-800 dark:hover:border-blue-700"
+              @click="goComputer(c.id)"
+            >
+              <Monitor class="h-5 w-5 shrink-0 text-gray-400" aria-hidden="true" />
+              <div class="min-w-0 flex-1">
+                <p class="truncate text-sm font-medium text-ink">{{ c.name }}</p>
+                <p class="truncate text-xs text-muted">{{ c.hostname || "—" }}</p>
+              </div>
+              <span :class="['h-2 w-2 shrink-0 rounded-full', c.online ? 'bg-green-500' : 'bg-gray-400']" />
+            </button>
+          </div>
+        </Card>
+
+        <Card v-if="otherComputers.length > 0">
+          <p class="mb-3 text-xs font-semibold uppercase tracking-wide text-muted">
+            成员的计算机 · {{ otherComputers.length }}
+          </p>
+          <div class="grid gap-2 sm:grid-cols-2">
+            <button
+              v-for="c in otherComputers"
+              :key="c.id"
+              type="button"
+              class="flex items-center gap-3 rounded-lg border border-gray-200 bg-white px-3 py-2.5 text-left hover:border-blue-300 dark:border-gray-700 dark:bg-gray-800 dark:hover:border-blue-700"
+              @click="goComputer(c.id)"
+            >
+              <Monitor class="h-5 w-5 shrink-0 text-gray-400" aria-hidden="true" />
+              <div class="min-w-0 flex-1">
+                <p class="truncate text-sm font-medium text-ink">{{ c.name }}</p>
+                <p class="truncate text-xs text-muted">
+                  {{ c.ownerName || c.ownerHandle || "成员" }} · {{ c.hostname || "—" }}
+                </p>
+              </div>
+              <span :class="['h-2 w-2 shrink-0 rounded-full', c.online ? 'bg-green-500' : 'bg-gray-400']" />
+            </button>
+          </div>
+        </Card>
+      </template>
+
+      <!-- ======================= 详情模式 ======================= -->
+      <template v-else-if="computer">
+        <button type="button" class="text-xs text-blue-600 hover:underline dark:text-blue-400" @click="goComputersBack">
+          ← 全部计算机
+        </button>
+
+        <Card class="flex items-start gap-4">
+          <div class="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl bg-gray-200 dark:bg-gray-700">
+            <Monitor class="h-7 w-7" aria-hidden="true" />
+          </div>
+          <div class="min-w-0 flex-1">
+            <div class="flex flex-wrap items-center gap-2">
+              <h2 class="text-lg font-semibold text-ink">{{ computer.name }}</h2>
+              <span :class="['h-2.5 w-2.5 rounded-full', online ? 'bg-green-500' : 'bg-gray-400']" />
+              <span v-if="!isMine" class="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-muted dark:bg-gray-700">
+                {{ computer.ownerName || computer.ownerHandle || "成员" }} 的机器
+              </span>
+            </div>
+            <p class="mt-0.5 text-xs text-muted">{{ computer.hostname || "尚未上报主机名" }}</p>
+            <p v-if="!editing" class="mt-2 text-sm text-gray-600 dark:text-gray-300">
+              {{ computer.description || "还没有描述" }}
+            </p>
+            <div v-else class="mt-3 space-y-2">
+              <Input
+                :value="nameDraft"
+                placeholder="名称"
+                @input="nameDraft = ($event.target as HTMLInputElement).value"
+              />
+              <Input
+                :value="descDraft"
+                placeholder="描述"
+                @input="descDraft = ($event.target as HTMLInputElement).value"
+              />
+              <div class="flex gap-2">
+                <Button size="sm" :loading="saving" @click="saveIdentity">保存</Button>
+                <Button size="sm" variant="secondary" @click="editing = false">取消</Button>
+              </div>
+            </div>
+            <button
+              v-if="!editing && isMine"
+              type="button"
+              class="mt-2 text-xs text-blue-600 hover:underline dark:text-blue-400"
+              @click="editing = true"
+            >
+              编辑名称 / 描述
+            </button>
+          </div>
+        </Card>
+
+        <Card>
+          <p class="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">信息</p>
+          <dl class="grid gap-2 text-sm sm:grid-cols-2">
+            <div>
+              <dt class="text-xs text-muted">系统</dt>
+              <dd class="text-gray-800 dark:text-gray-200">{{ computer.os || "—" }} · {{ computer.arch || "—" }}</dd>
+            </div>
+            <div>
+              <dt class="text-xs text-muted">连接器版本</dt>
+              <dd class="text-gray-800 dark:text-gray-200">{{ computer.daemonVersion || "—" }}</dd>
+            </div>
+            <div>
+              <dt class="text-xs text-muted">所在 server</dt>
+              <dd class="text-gray-800 dark:text-gray-200">{{ serverNameOf(computer.serverId) }}</dd>
+            </div>
+            <div>
+              <dt class="text-xs text-muted">最近就绪</dt>
+              <dd class="text-gray-800 dark:text-gray-200">{{ fmtTime(computer.lastReadyAt || computer.connectedAt) }}</dd>
+            </div>
+          </dl>
+          <p v-if="snapshot" class="mt-2 text-xs text-amber-600 dark:text-amber-400">以下探测为上次连接的快照。</p>
+        </Card>
+
+        <Card>
+          <p class="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">检测到的运行时</p>
+          <div class="grid gap-2 sm:grid-cols-2">
+            <div
+              v-for="r in runtimes"
+              :key="r.id"
+              :class="['rounded-lg border px-3 py-2 text-sm', chipClass(r.status)]"
+            >
+              <div class="flex items-center justify-between gap-2">
+                <span class="font-medium">{{ labelFor(r.id) }}</span>
+                <span class="text-[10px]">{{ chipHint(r.status) }}</span>
+              </div>
+              <p v-if="r.version" class="mt-0.5 truncate text-[11px] opacity-80">{{ r.version }}</p>
+            </div>
+          </div>
+          <p v-if="online && claude?.status !== 'installed'" class="mt-3 text-xs text-amber-700 dark:text-amber-300">
+            已连上计算机，但 Claude 未装，@ 不会响应。安装：
+            <code class="rounded bg-black/10 px-1 dark:bg-white/10">npm install -g @anthropic-ai/claude-code</code>
+          </p>
+        </Card>
+
+        <Card v-if="isMine && canAttachDetail" class="space-y-3">
+          <p class="text-xs font-semibold uppercase tracking-wide text-muted">接入</p>
+          <p class="text-sm text-gray-600 dark:text-gray-300">
+            为「{{ serverNameOf(computer.serverId) }}」生成新的连接命令——可在本机或其他电脑上执行，每台机器一条
+            daemon 进程。
+          </p>
+          <Button size="sm" :loading="generating" @click="requestRotate(computer.serverId)">生成连接命令</Button>
+          <div v-if="tokenCommand" class="space-y-2">
+            <div class="break-all rounded bg-gray-900 p-3 font-mono text-xs text-green-400 dark:bg-black">
+              {{ tokenCommand }}
+            </div>
+            <div class="flex items-center gap-2">
+              <Button size="sm" variant="secondary" @click="copyCommand">
+                <Check v-if="copied" class="mr-0.5 inline h-3.5 w-3.5" aria-hidden="true" />
+                {{ copied ? "已复制" : "复制命令" }}
+              </Button>
+            </div>
+            <p class="text-xs text-muted">令牌只显示这一次。换 server 接入请回到对应 server 再生成。</p>
+          </div>
+        </Card>
+
+        <Card class="space-y-3">
+          <div class="flex items-center justify-between">
+            <p class="text-xs font-semibold uppercase tracking-wide text-muted">
+              这台计算机上的 Agent · {{ boundAgents.length }}
+            </p>
+            <Button v-if="isMine" size="sm" :disabled="!canCreate" @click="openCreate">创建</Button>
+          </div>
+          <p v-if="isMine && !canCreate" class="text-xs text-muted">
+            {{
+              !online
+                ? "先让这台机器的 daemon 上线，再创建 Agent。"
+                : !canAttachDetail
+                  ? "只有 server 所有者能在本 server 放置 Agent。"
+                  : "安装 Claude Code 后才能创建。"
+            }}
+          </p>
+          <p v-if="createdNote" class="text-xs text-blue-600 dark:text-blue-400">{{ createdNote }}</p>
+          <p v-if="boundAgents.length === 0" class="text-sm text-muted">还没有 Agent 绑定这台机器</p>
+          <div
+            v-for="a in boundAgents"
+            :key="a.id"
+            class="group flex w-full items-center gap-3 rounded-lg border border-gray-200 bg-white px-3 py-2 dark:border-gray-700 dark:bg-gray-800"
+          >
+            <button
+              type="button"
+              class="flex min-w-0 flex-1 items-center gap-3 text-left hover:opacity-90"
+              @click="openAgent(a.name)"
+            >
+              <span :class="['h-2 w-2 shrink-0 rounded-full', presenceDot(a)]" />
+              <Avatar :name="a.display_name || a.name" :src="a.avatar_url" size="sm" />
+              <div class="min-w-0 flex-1">
+                <p class="truncate text-sm font-medium text-ink">{{ a.display_name || a.name }}</p>
+                <p class="truncate text-xs text-muted">{{ a.runtime || "claude" }} · {{ agentLive(a) }}</p>
+              </div>
+            </button>
+            <template v-if="isMine">
+              <button
+                type="button"
+                class="shrink-0 rounded-md border border-gray-200 px-2 py-0.5 text-[11px] text-gray-600 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+                :class="workspaceAgentId === a.id ? 'border-blue-300 text-blue-600 dark:border-blue-700 dark:text-blue-300' : ''"
+                title="查看 MEMORY.md / notes"
+                @click="toggleWorkspace(a.id)"
+              >
+                工作区
+              </button>
+              <button
+                type="button"
+                class="shrink-0 rounded-md border border-gray-200 px-2 py-0.5 text-[11px] text-gray-600 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+                :disabled="!online || togglingDuty === a.id"
+                :title="online ? (a.duty === 'off' ? '开始值班' : '停班后仍是成员，只是不接活') : '先让这台机器上线'"
+                @click="a.duty === 'off' ? setDuty(a, 'on') : requestDutyOff(a)"
+              >
+                {{ a.duty === "off" ? "已停班" : "值班中" }}
+              </button>
+              <Button
+                variant="ghost"
+                size="sm"
+                class="shrink-0 text-red-500 opacity-0 hover:text-red-600 group-hover:opacity-100"
+                @click="confirmDeleteAgent = a"
+              >
+                删除
+              </Button>
+            </template>
+          </div>
+          <AgentWorkspacePanel
+            v-if="workspaceAgent"
+            :agent-id="workspaceAgent.id"
+            :agent-name="workspaceAgent.name"
+            :computer-online="online"
+          />
+        </Card>
+
+        <Card v-if="isMine" class="space-y-2 border-red-200 dark:border-red-900/50">
+          <p class="text-xs font-semibold uppercase tracking-wide text-red-500">危险区</p>
+          <p class="text-sm text-gray-600 dark:text-gray-300">
+            删除计算机前必须先清空绑定其上的 Agent（{{ boundAgents.length }} 个）。
+          </p>
+          <Button variant="danger" size="sm" :disabled="boundAgents.length > 0" @click="confirmDelete = true">
+            删除计算机
+          </Button>
+        </Card>
+      </template>
+
+      <p v-else-if="!error" class="text-sm text-muted">加载中…</p>
     </div>
 
     <Modal :open="showCreate" width-class="max-w-md" @close="showCreate = false">
       <h3 class="text-base font-bold text-ink">创建 Agent</h3>
-      <p class="mt-1 text-xs text-gray-500">会挂在你这台计算机上。被 @ 时才会拉起。</p>
+      <p class="mt-1 text-xs text-gray-500">
+        将创建于「{{ serverNameOf(computer?.serverId || "") }}」，绑定在 {{ computer?.name }} 上。被 @ 时才会拉起。
+      </p>
       <div class="mt-3 space-y-2">
         <Input
           type="text"
@@ -628,9 +824,8 @@ watch(
     <ConfirmDialog
       v-if="confirmRotate"
       title="生成新的连接命令？"
-      message="会吊销当前机器令牌，正在运行的连接器会断开，需要用新命令重新启动。"
+      message="会为该 server 签发一枚机器令牌（同 server 可有多枚，分别给不同机器用）。"
       confirm-label="生成"
-      danger
       @confirm="rotateToken"
       @cancel="confirmRotate = false"
     />

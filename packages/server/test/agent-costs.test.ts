@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { api, cleanupTestData, closeSql, registerUser, sql, type TestUser } from "./helpers.js";
+import { api, cleanupTestData, closeSql, ensureTestComputer, registerUser, sql, type TestUser } from "./helpers.js";
 
 /**
  * P1.24：daemon→server 成本上报 + people stats costUsd 接真数据。
@@ -11,8 +11,13 @@ import { api, cleanupTestData, closeSql, registerUser, sql, type TestUser } from
 
 const TODAY = new Date().toISOString().slice(0, 10);
 
-async function mintMachineToken(u: TestUser): Promise<string> {
-  const r = await api("/api/profile/machine-token", { method: "POST", cookie: u.cookie, csrf: u.csrf, body: {} });
+async function mintMachineToken(u: TestUser, serverId: string): Promise<string> {
+  const r = await api("/api/profile/machine-token", {
+    method: "POST",
+    cookie: u.cookie,
+    csrf: u.csrf,
+    body: { serverId },
+  });
   expect(r.status).toBe(200);
   return r.data.token as string;
 }
@@ -27,18 +32,22 @@ describe("POST /api/agent-costs/sync（P1.24）", () => {
   let owner: TestUser, other: TestUser;
   let ownerToken: string, otherToken: string;
   let agentId: string, agentName: string;
+  let ownerServerId = "";
 
   beforeAll(async () => {
     owner = await registerUser();
     other = await registerUser();
-    ownerToken = await mintMachineToken(owner);
-    otherToken = await mintMachineToken(other);
+    const ownerComp = await ensureTestComputer(owner);
+    const otherComp = await ensureTestComputer(other);
+    ownerServerId = ownerComp.serverId;
+    ownerToken = await mintMachineToken(owner, ownerComp.serverId);
+    otherToken = await mintMachineToken(other, otherComp.serverId);
     agentName = "zzcost_" + Date.now().toString(36);
     const created = await api("/api/agents", {
       method: "POST",
       cookie: owner.cookie,
       csrf: owner.csrf,
-      body: { name: agentName, displayName: "Cost Agent" },
+      body: { name: agentName, displayName: "Cost Agent", serverId: ownerComp.serverId },
     });
     expect(created.status).toBe(200);
     const listed = await api("/api/agents", { cookie: owner.cookie });
@@ -136,7 +145,7 @@ describe("POST /api/agent-costs/sync（P1.24）", () => {
       method: "POST",
       cookie: owner.cookie,
       csrf: owner.csrf,
-      body: { name: agentName + "_b", displayName: "Broke Agent" },
+      body: { name: agentName + "_b", displayName: "Broke Agent", serverId: ownerServerId },
     });
     expect(created2.status).toBe(200);
 

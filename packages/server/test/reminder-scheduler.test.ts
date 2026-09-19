@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { startReminderScheduler } from "../src/lib/reminder-scheduler.js";
-import { daemonClients } from "../src/ws/handler.js";
+import { daemonClients, daemonMeta } from "../src/ws/handler.js";
 import { closeSql, sql, TEST_PREFIX } from "./helpers.js";
 
 // P1.28：reminder-scheduler tick 逻辑（评估零覆盖清单 ④，194 行此前仅手动 E2E）。
@@ -50,6 +50,30 @@ function fakeWs() {
     },
     on: () => {},
   } as any;
+}
+
+/**
+ * 注一条假 daemon 连接。2026-09-19 scope 守护（handleEnvelope daemon 分支）要求
+ * 连接带 daemonMeta 且 serverId 与事件 scope 相符才投递——生产里 meta 随注册必有，
+ * 测试只注 daemonClients 不注 meta 会被守护拦下（视同「机器已切到别的 scope」）。
+ * 键用裸 userId（旧单槽形），meta.serverId = agent 所属 server。
+ */
+function connectFakeDaemon() {
+  daemonClients.set(userId, fakeWs());
+  daemonMeta.set(userId, {
+    userId,
+    serverId,
+    machineUuid: null,
+    hostname: "test-host",
+    daemonVersion: "test",
+    runtimes: [],
+    connectedAt: Date.now(),
+  });
+}
+
+function disconnectFakeDaemon() {
+  daemonClients.delete(userId);
+  daemonMeta.delete(userId);
 }
 
 /** 假 app：pg 用 helpers.sql 真库（事务经 sql.begin 适配出 {rows} 包装，对齐 pgPlugin 形状）；
@@ -128,7 +152,7 @@ beforeAll(async () => {
     RETURNING id`;
   userId = u[0].id;
   const sv = await sql<{ id: string }[]>`
-    INSERT INTO servers (name, created_by, owner_id, personal) VALUES (${TAG + "_sv"}, ${userId}, ${userId}, true)
+    INSERT INTO servers (name, created_by, owner_id) VALUES (${TAG + "_sv"}, ${userId}, ${userId})
     RETURNING id`;
   serverId = sv[0].id;
   const ag = await sql<{ id: string }[]>`
@@ -138,12 +162,12 @@ beforeAll(async () => {
 });
 
 afterEach(async () => {
-  daemonClients.delete(userId);
+  disconnectFakeDaemon();
   await cleanupReminders();
 });
 
 afterAll(async () => {
-  daemonClients.delete(userId);
+  disconnectFakeDaemon();
   await cleanupReminders();
   await sql`DELETE FROM notifications WHERE user_id = ${userId}`;
   // FK 顺序：servers.created_by/owner_id → users，先删 servers 再删 users
@@ -164,7 +188,7 @@ describe("reminder-scheduler tick（真库认领 + 轮询终态）", () => {
   });
 
   it("一次性提醒：认领 → fired + reminder.fire 定向投递 + 不重排", async () => {
-    daemonClients.set(userId, fakeWs());
+    connectFakeDaemon();
     const id = await insertReminder({ title: TAG + "_oneshot" });
     await startAndAwait(fakeApp(), () => claimed(id));
 
@@ -184,7 +208,7 @@ describe("reminder-scheduler tick（真库认领 + 轮询终态）", () => {
   });
 
   it("every:1m 周期提醒：fire 后重排 scheduled，锚定原 fire_at + 60s（消漂移）", async () => {
-    daemonClients.set(userId, fakeWs());
+    connectFakeDaemon();
     const id = await insertReminder({ title: TAG + "_rep", repeat_rule: "every:1m" });
     const before = await stateOf(id);
     const origFireAt = new Date(before.fire_at).getTime();
@@ -209,7 +233,7 @@ describe("reminder-scheduler tick（真库认领 + 轮询终态）", () => {
   });
 
   it("duty=off 的 agent 到期行不认领", async () => {
-    daemonClients.set(userId, fakeWs());
+    connectFakeDaemon();
     await sql`UPDATE agents SET duty = 'off' WHERE id = ${agentId}`;
     try {
       const id = await insertReminder({ title: TAG + "_dutyoff" });
@@ -223,7 +247,7 @@ describe("reminder-scheduler tick（真库认领 + 轮询终态）", () => {
   });
 
   it("paused 行不认领（D3 独立布尔列）", async () => {
-    daemonClients.set(userId, fakeWs());
+    connectFakeDaemon();
     const id = await insertReminder({ title: TAG + "_paused", paused: true });
     await startAndAwait(fakeApp(), async () => false, 600);
     const st = await stateOf(id);
@@ -232,7 +256,7 @@ describe("reminder-scheduler tick（真库认领 + 轮询终态）", () => {
   });
 
   it("patrol 沉默：连续无产出累计，达上限自动暂停 + auto_paused 事件 + owner 通知", async () => {
-    daemonClients.set(userId, fakeWs());
+    connectFakeDaemon();
     const maxSilent = 2;
     const id = await insertReminder({
       title: TAG + "_patrol_silent",
@@ -269,7 +293,7 @@ describe("reminder-scheduler tick（真库认领 + 轮询终态）", () => {
   });
 
   it("patrol 有产出：目标频道内 agent 发过言 → consecutive_silent 清零，不暂停", async () => {
-    daemonClients.set(userId, fakeWs());
+    connectFakeDaemon();
     // 目标频道 + agent 在 last_fired_at 之后的一条发言
     const ch = await sql<{ id: string }[]>`
       INSERT INTO channels (server_id, name, type) VALUES (${serverId}, ${TAG + "_ch"}, 'public') RETURNING id`;

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { api, cleanupTestData, closeSql, registerUser } from "./helpers.js";
+import { api, cleanupTestData, closeSql, makeOrgOwner, registerUser } from "./helpers.js";
 
 afterAll(async () => {
   await cleanupTestData();
@@ -12,6 +12,9 @@ describe("channels: 创建 / 列取 / 成员 / 权限 / 邀请 / DM", () => {
 
   beforeAll(async () => {
     const u = await registerUser();
+    // 2026-09-18 权限模型：建频道收敛 server owner——ck 的频道都建在默认社区，
+    // 立其为默认社区 owner（isInstanceAdmin 同口径）
+    await makeOrgOwner(u);
     ck = u.cookie;
     cs = u.csrf;
     // 建一个测试用户为 owner 的频道，供管理操作测试
@@ -40,6 +43,19 @@ describe("channels: 创建 / 列取 / 成员 / 权限 / 邀请 / DM", () => {
     });
     expect(r.status).toBe(200);
     expect(r.data.channel.name).toBe(testCh);
+  });
+
+  it("member 建频道 → 403（2026-09-18：建频道收敛 server owner）", async () => {
+    // 注册用户自动入圈广场但只是 member——不可建频道
+    const m = await registerUser();
+    const r = await api("/api/channels", {
+      method: "POST",
+      cookie: m.cookie,
+      csrf: m.csrf,
+      body: { name: "m_ch_" + Date.now().toString(36) },
+    });
+    expect(r.status).toBe(403);
+    expect(r.data.error).toBe("only org owner can create channels");
   });
 
   it("重复名 409", async () => {

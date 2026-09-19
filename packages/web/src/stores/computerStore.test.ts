@@ -3,75 +3,77 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../api", () => ({
   apiGet: vi.fn(),
-  apiPost: vi.fn(),
 }));
 
-import { apiGet, apiPost } from "../api";
+import { apiGet } from "../api";
 import { claudeInstalled, runtimeCatalog, useComputerStore } from "./computerStore";
 
 const apiGetMock = vi.mocked(apiGet);
-const apiPostMock = vi.mocked(apiPost);
 
 beforeEach(() => {
   setActivePinia(createPinia());
   vi.clearAllMocks();
 });
 
-// 双端点降级链（审计 §2.3：computerStore 双端点降级）
-describe("computerStore.refresh 三级降级", () => {
-  it("主端点 /api/computers/me 成功 → 直用且 loading 复位", async () => {
-    const me = { connected: true, runtimes: [], computer: { id: "c1" } };
-    apiGetMock.mockResolvedValueOnce(me as any);
-
-    const store = useComputerStore();
-    const r = await store.refresh();
-
-    expect(apiGetMock).toHaveBeenCalledWith("/api/computers/me");
-    expect(r).toEqual(me);
-    expect(store.status).toEqual(me);
-    expect(store.loading).toBe(false);
-    expect(store.connected).toBe(true);
-  });
-
-  it("主端点失败 → 降级 /api/daemon/status，computer 字段 null 归一", async () => {
-    const d = { connected: true, runtimes: [] }; // 无 computer 字段
-    apiGetMock.mockRejectedValueOnce(new Error("404")).mockResolvedValueOnce(d as any);
-
-    const store = useComputerStore();
-    const r = await store.refresh();
-
-    expect(apiGetMock).toHaveBeenNthCalledWith(1, "/api/computers/me");
-    expect(apiGetMock).toHaveBeenNthCalledWith(2, "/api/daemon/status");
-    expect(r?.computer).toBeNull(); // d.computer ?? null
-    expect(store.connected).toBe(true);
-    expect(store.loading).toBe(false);
-  });
-
-  it("双端点均失败 → connected:false 兜底对象（不抛错）", async () => {
-    apiGetMock.mockRejectedValue(new Error("down"));
-
-    const store = useComputerStore();
-    const r = await store.refresh();
-
-    expect(r?.connected).toBe(false);
-    expect(r?.runtimes).toEqual([]);
-    expect(r?.computer).toBeNull();
-    expect(store.connected).toBe(false);
-    expect(store.loading).toBe(false);
-  });
+const row = (over: Record<string, unknown>) => ({
+  id: "c1",
+  userId: "u1",
+  serverId: "s1",
+  machineUuid: "mu-1",
+  name: "灵耀14air",
+  description: "",
+  hostname: "host",
+  os: "win32",
+  arch: "x64",
+  daemonVersion: "0.1.0",
+  lastReadyAt: null,
+  createdAt: null,
+  online: false,
+  runtimes: [],
+  connectedAt: null,
+  ownerHandle: null,
+  ownerName: null,
+  mine: true,
+  ...over,
 });
 
-describe("computerStore.ensure", () => {
-  it("POST /api/computers 并更新 status", async () => {
-    const created = { connected: true, computer: { id: "new" } };
-    apiPostMock.mockResolvedValueOnce(created as any);
+// 2026-09-19 server-scoped computers：store 从单机状态对象改为「活跃 server 计算机列表」
+describe("computerStore.refresh（server 语境列表）", () => {
+  it("GET /api/computers 成功 → 列表落 store，mine 分组就绪", async () => {
+    apiGetMock.mockResolvedValueOnce({
+      computers: [row({ id: "a" }), row({ id: "b", mine: false, online: true }), row({ id: "c", online: true })],
+    } as any);
 
     const store = useComputerStore();
-    const r = await store.ensure();
+    const r = await store.refresh();
 
-    expect(apiPostMock).toHaveBeenCalledWith("/api/computers", {});
-    expect(r).toEqual(created);
-    expect(store.computer).toEqual({ id: "new" });
+    expect(apiGetMock).toHaveBeenCalledWith("/api/computers");
+    expect(r).toHaveLength(3);
+    expect(store.computers).toHaveLength(3);
+    expect(store.myComputers.map((c) => c.id)).toEqual(["a", "c"]);
+    expect(store.connected).toBe(true); // c 在线
+    expect(store.loaded).toBe(true);
+    expect(store.loading).toBe(false);
+  });
+
+  it("端点失败 → 空列表不抛错（空态交给页面引导）", async () => {
+    apiGetMock.mockRejectedValueOnce(new Error("400 serverId required"));
+
+    const store = useComputerStore();
+    const r = await store.refresh();
+
+    expect(r).toEqual([]);
+    expect(store.computers).toEqual([]);
+    expect(store.myComputers).toEqual([]);
+    expect(store.connected).toBe(false);
+    expect(store.loaded).toBe(true);
+  });
+
+  it("connected = 我在本 server 任一机器在线；他人机器不计", async () => {
+    apiGetMock.mockResolvedValueOnce({ computers: [row({ mine: false, online: true })] } as any);
+    const store = useComputerStore();
+    await store.refresh();
+    expect(store.connected).toBe(false);
   });
 });
 

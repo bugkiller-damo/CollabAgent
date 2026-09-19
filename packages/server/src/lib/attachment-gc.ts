@@ -45,6 +45,36 @@ export interface GcSweepResult {
 }
 
 /**
+ * 删「已无任何 attachments 行引用」的 storage_key 对应对象字节。
+ * F10：去重后多行可共享同一 key——行删了不等于字节能删，逐 key 重检引用；
+ * F11：缩略图与主对象同生命周期（派生键 <key>.thumb.webp，幂等删除）。
+ * GC sweep / 频道删除 / server 删除共用：attachments 行删完之后调用，
+ * best-effort——字节删除失败仅告警不重试，磁盘残留由目录巡检兜底。
+ */
+export async function removeUnreferencedAttachmentKeys(
+  app: GcApp,
+  keys: string[],
+): Promise<{ bytes: number; bytesFailed: number }> {
+  let bytes = 0;
+  let bytesFailed = 0;
+  for (const key of keys) {
+    const ref = await app.pg.query("SELECT 1 FROM attachments WHERE storage_key = $1 LIMIT 1", [key]);
+    if (ref.rows.length > 0) continue;
+    try {
+      await getStorage().remove(key);
+      await getStorage()
+        .remove(thumbKeyFor(key))
+        .catch(() => {});
+      bytes++;
+    } catch (err) {
+      bytesFailed++;
+      app.log.warn({ err, key }, "[AttachmentGC] storage cleanup failed");
+    }
+  }
+  return { bytes, bytesFailed };
+}
+
+/**
  * 单轮清扫：删一批孤儿附件行并 best-effort 清对象字节。
  * graceHours 宽限、batch 限量（防单次长事务/长删除阻塞）。
  */
@@ -69,25 +99,7 @@ export async function runGcSweep(
     [graceHours, batch],
   );
   const keys = removed.rows.map((r) => String((r as { storage_key: string }).storage_key));
-  // F10：去重后多行可共享同一 storage_key——行删了不等于字节能删，
-  // 只清「删除后已无任何 attachments 行引用」的 key，其余保留字节。
-  let bytes = 0;
-  let bytesFailed = 0;
-  for (const key of keys) {
-    const ref = await app.pg.query("SELECT 1 FROM attachments WHERE storage_key = $1 LIMIT 1", [key]);
-    if (ref.rows.length > 0) continue;
-    try {
-      await getStorage().remove(key);
-      // F11：缩略图与主对象同生命周期（派生键 <key>.thumb.webp，幂等删除）
-      await getStorage()
-        .remove(thumbKeyFor(key))
-        .catch(() => {});
-      bytes++;
-    } catch (err) {
-      bytesFailed++;
-      app.log.warn({ err, key }, "[AttachmentGC] storage cleanup failed");
-    }
-  }
+  const { bytes, bytesFailed } = await removeUnreferencedAttachmentKeys(app, keys);
   return { rows: keys.length, bytes, bytesFailed };
 }
 

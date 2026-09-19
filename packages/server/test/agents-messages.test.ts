@@ -1,5 +1,15 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { api, BASE, cleanupTestData, closeSql, registerUser, sql, type TestUser, uniqHandle } from "./helpers.js";
+import {
+  api,
+  BASE,
+  cleanupTestData,
+  closeSql,
+  ensureTestComputer,
+  registerUser,
+  sql,
+  type TestUser,
+  uniqHandle,
+} from "./helpers.js";
 
 // P1.28：agent 侧消息面（/internal/agent/:agentId/…）集成测试——此前 12 个端点约 330
 // 行零覆盖（评估 §2.6 零覆盖清单 ①）。覆盖：send（公开/私有/越权/未入圈）、
@@ -18,11 +28,12 @@ let agentServerId = ""; // 频道所在 server（O3：human 侧显式租户头�
 let machineToken = "";
 
 async function mkAgent(user: TestUser): Promise<{ id: string; server_id: string }> {
+  const comp = await ensureTestComputer(user);
   const r = await api("/api/agents", {
     method: "POST",
     cookie: user.cookie,
     csrf: user.csrf,
-    body: { name: "msg_" + uniqHandle(), displayName: "MsgTest" },
+    body: { name: "msg_" + uniqHandle(), displayName: "MsgTest", serverId: comp.serverId },
   });
   expect(r.status).toBe(200);
   return r.data.agent;
@@ -73,7 +84,7 @@ describe("agent 消息面：send + requireOwnAgent 越权矩阵", () => {
       method: "POST",
       cookie: owner.cookie,
       csrf: owner.csrf,
-      body: {},
+      body: { serverId: agentServerId },
     });
     expect(mt.status).toBe(200);
     machineToken = mt.data.token;
@@ -170,12 +181,14 @@ describe("agent 消息面：send + requireOwnAgent 越权矩阵", () => {
     // intruder 自己的 agent 上同路径 → 200（403 只拦「别人的 agent」）。
     // 2026-09-17 收紧语义：公开频道不再跨 server 全局可达，改在 intruder 自己的
     // 个人空间建同名频道验证「自有 agent 正常访问自己 server 的频道」。
+    // 2026-09-18 权限模型：建频道收敛 server owner——显式指定 mine.server_id
+    // （intruder 的个人 org，intruder 是 owner）；缺省落默认社区会被 403。
     const mine = await mkAgent(intruder);
     const chMine = await api("/api/channels", {
       method: "POST",
       cookie: intruder.cookie,
       csrf: intruder.csrf,
-      body: { name: CH + "_mine", type: "public" },
+      body: { name: CH + "_mine", type: "public", serverId: mine.server_id },
     });
     expect(chMine.status).toBe(200);
     const own = await api(`/internal/agent/${mine.id}/history?channel=${CH + "_mine"}`, { cookie: intruder.cookie });

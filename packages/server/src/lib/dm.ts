@@ -71,32 +71,70 @@ export function dmChannelName(idA: string, idB: string): string {
   return "dm_" + [String(idA), String(idB)].sort().join("_");
 }
 
-// 找到或创建两个实体之间的 DM 频道，返回频道 id（并确保双方都是成员）
-export async function getOrCreateDmChannel(app: FastifyInstance, me: Party, peer: Party): Promise<string> {
+// 找到或创建两个实体之间的 DM 频道，返回频道 id（并确保双方都是成员）。
+// serverId（可选）：调用方的租户语境（显式 server），仅参与「新建」频道的落点
+// 决策——dm_<idA>_<idB> 全局唯一，已存在的频道位置不动。
+// 已知取舍：对端退出 dm 所在 server 后，其 /dms 在该 server 语境下不再列出该
+// 会话（显式租户的成员校验先拒；channel_members 行仍在，重回 server 即恢复），
+// 直接拿 channelId 访问不受 server 边界影响——server 边界的一致代价。
+export async function getOrCreateDmChannel(
+  app: FastifyInstance,
+  me: Party,
+  peer: Party,
+  serverId?: string | null,
+): Promise<string> {
   const name = dmChannelName(me.id, peer.id);
   const existing = await app.pg.query<{ id: number }>("SELECT id FROM channels WHERE name = $1", [name]);
   let channelId: string;
   if (existing.rows.length) {
     channelId = String(existing.rows[0].id);
   } else {
-    // server_id：优先取 agent 一方所属组织，否则退回默认服务器
-    let serverId: string | null = null;
+    // server_id：有 agent 一方仍取 agent 所属组织（agent 的 DM 天然属于 agent
+    // 所在 server）；human↔human 走三级落点（见下）；兜底默认服务器。
+    let targetServerId: string | null = null;
     const agentParty = me.type === "agent" ? me : peer.type === "agent" ? peer : null;
     if (agentParty) {
       const r = await app.pg.query<{ server_id: number }>("SELECT server_id FROM agents WHERE id = $1", [
         agentParty.id,
       ]);
-      if (r.rows[0]) serverId = String(r.rows[0].server_id);
+      if (r.rows[0]) targetServerId = String(r.rows[0].server_id);
+    } else {
+      // human↔human ①：调用方语境 server 且双方都是成员 → 会话停进当前 server
+      if (serverId) {
+        const both = await app.pg.query<{ n: number }>(
+          `SELECT COUNT(DISTINCT user_id)::int AS n FROM server_members
+            WHERE server_id = $1 AND user_id::text IN ($2, $3)`,
+          [serverId, me.id, peer.id],
+        );
+        if ((both.rows[0]?.n ?? 0) === 2) targetServerId = serverId;
+      }
+      // human↔human ②：双方共有的最早私有 server（is_public 广场不算「共有」——
+      // 全员共有会让此级恒命中广场而架空本级，兜底交给 ③；2026-09-19 personal
+      // 特例取消后所有私有 server 同口径参与）
+      if (!targetServerId) {
+        const shared = await app.pg.query<{ server_id: string }>(
+          `SELECT a.server_id FROM server_members a
+             JOIN server_members b ON b.server_id = a.server_id
+             JOIN servers s ON s.id = a.server_id
+            WHERE a.user_id::text = $1 AND b.user_id::text = $2
+              AND s.is_public = false
+            ORDER BY s.created_at ASC
+            LIMIT 1`,
+          [me.id, peer.id],
+        );
+        if (shared.rows[0]) targetServerId = String(shared.rows[0].server_id);
+      }
     }
-    if (!serverId) {
-      serverId = await getDefaultServerId(app);
+    // human↔human ③（以及 agent server 缺失的兜底）：默认社区=广场，全员成员恒成立
+    if (!targetServerId) {
+      targetServerId = await getDefaultServerId(app);
     }
     // created_by 外键指向 users：仅当存在人类一方时填，agent↔agent 留空
     const createdBy = me.type === "human" ? me.id : peer.type === "human" ? peer.id : null;
     try {
       const ins = await app.pg.query<{ id: number }>(
         "INSERT INTO channels (server_id, name, description, type, created_by) VALUES ($1, $2, '', 'dm', $3) RETURNING id",
-        [serverId, name, createdBy],
+        [targetServerId, name, createdBy],
       );
       channelId = String(ins.rows[0].id);
     } catch {
@@ -126,7 +164,8 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * 把一个 DM 目标串解析成频道 id（相对调用方 me）。
  * 支持：dm:@handle、dm:@handle:threadShortId、dm:<uuid>、dm:<uuid>:threadShortId
  * 返回 { channelId, peer? }；handle 解析不到对端时返回 null。
- * serverId（可选）：显式租户下把 agent 对端解析限定在该社区（O3）。
+ * serverId（可选）：显式租户下把 agent 对端解析限定在该社区（O3）；
+ * 同时透传给 getOrCreateDmChannel 作为新建 dm 频道的落点语境。
  */
 export async function resolveDmTarget(
   app: FastifyInstance,
@@ -139,7 +178,7 @@ export async function resolveDmTarget(
   if (first.startsWith("@")) {
     const peer = await resolvePeer(app, first, serverId, me.id);
     if (!peer) return null;
-    const channelId = await getOrCreateDmChannel(app, me, peer);
+    const channelId = await getOrCreateDmChannel(app, me, peer, serverId);
     return { channelId, peer };
   }
   if (UUID_RE.test(first)) {

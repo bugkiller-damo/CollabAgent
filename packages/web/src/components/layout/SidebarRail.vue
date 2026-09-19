@@ -48,10 +48,13 @@ function badgeFor(id: SidebarPane): number {
   return 0;
 }
 
-function lastChatPath(): string {
+/** 聊天 pane 落点：活跃频道优先（须仍在频道列表里），否则记忆/首频道——
+ * 新建 server 无 general（只有私有 onboarding-owner），必须按真实
+ * 列表解析，硬编码 general 会落到 404 */
+async function chatLandingPath(): Promise<string> {
   const sid = serverStore.activeServerId;
   const ch = channelStore.activeChannelName;
-  if (sid) return channelPath(sid, ch || "general");
+  if (sid) return channelPath(sid, await channelStore.resolveLandingChannel(sid, ch));
   if (ch) return `/channels/${encodeURIComponent(ch)}`;
   return "/channels/general";
 }
@@ -64,7 +67,6 @@ function lastTasksPath(): string {
 }
 
 function pathForPane(id: SidebarPane): string | null {
-  if (id === "chat") return lastChatPath();
   if (id === "activity") return "/activity";
   if (id === "tasks") return lastTasksPath();
   if (id === "people") return "/people";
@@ -79,7 +81,7 @@ function onSelect(id: SidebarPane) {
   if (same) return;
   if (id === "chat") {
     if (!parseChannelRoute(route.path) && !route.path.startsWith("/dm/")) {
-      void router.push(lastChatPath());
+      void chatLandingPath().then((p) => router.push(p));
     }
     return;
   }

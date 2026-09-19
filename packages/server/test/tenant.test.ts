@@ -1,6 +1,15 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parseHostMap, resolveHostServerId } from "../src/lib/tenant.js";
-import { api, cleanupTestData, closeSql, registerUser, sql, TEST_PREFIX, type TestUser } from "./helpers.js";
+import {
+  api,
+  cleanupTestData,
+  closeSql,
+  makeOrgOwner,
+  registerUser,
+  sql,
+  TEST_PREFIX,
+  type TestUser,
+} from "./helpers.js";
 
 const U1 = "11111111-1111-4111-8111-111111111111";
 const U2 = "22222222-2222-4222-8222-222222222222";
@@ -70,7 +79,7 @@ describe("tenant: 多租户边界（双 server 数据互不串号）", () => {
     outsider = await registerUser(RUN + "_x");
     const s = await sql<
       { id: string }[]
-    >`INSERT INTO servers (name, created_by, owner_id, personal) VALUES (${RUN + "_社区B"}, ${owner.userId}, ${owner.userId}, false) RETURNING id`;
+    >`INSERT INTO servers (name, created_by, owner_id) VALUES (${RUN + "_社区B"}, ${owner.userId}, ${owner.userId}) RETURNING id`;
     serverB = String(s[0].id);
     await sql`INSERT INTO server_members (server_id, user_id, role) VALUES (${serverB}, ${owner.userId}, 'owner')`;
     const ch = await sql<
@@ -113,17 +122,29 @@ describe("tenant: 多租户边界（双 server 数据互不串号）", () => {
     expect(denied.status).toBe(403);
   });
 
-  it("兼容：前端把 /server/info 的默认 serverId 原样回传仍可建频道（单租户降级豁免）", async () => {
+  it("兼容：默认 serverId 原样回传——member 建频道 403，owner 放行（2026-09-18 收紧）", async () => {
     // 复刻 web channelStore 的行为：fetchChannels 拿到的 serverId 原样回传建频道。
-    // 注册不自动加入默认 server，但单租户模式默认社区是开放社区，成员校验应豁免。
+    // 2026-09-18 权限模型：建频道收敛 server owner——单租户降级豁免不再覆盖
+    // 建频道（member 只参与不可建），outsider 作为默认社区 member 被 403。
     const info = await api("/api/server/info", { cookie: outsider.cookie });
     expect(info.status).toBe(200);
     const defaultServerId = String(info.data.serverId);
     expect(defaultServerId).not.toBe(serverB);
-    const r = await api("/api/channels", {
+    const denied = await api("/api/channels", {
       method: "POST",
       cookie: outsider.cookie,
       csrf: outsider.csrf,
+      body: { serverId: defaultServerId, name: RUN + "_legacycompat" },
+    });
+    expect(denied.status).toBe(403);
+    expect(denied.data.error).toBe("only org owner can create channels");
+
+    // 同一路径对 server owner 仍放行（owner 可同时拥有多个 server）
+    await makeOrgOwner(owner);
+    const r = await api("/api/channels", {
+      method: "POST",
+      cookie: owner.cookie,
+      csrf: owner.csrf,
       body: { serverId: defaultServerId, name: RUN + "_legacycompat" },
     });
     expect(r.status).toBe(200);
@@ -194,6 +215,7 @@ describe("tenant: 多租户边界（双 server 数据互不串号）", () => {
 
   it("创建频道：同名频道可在两个社区各自存在（per-server 唯一）", async () => {
     const name = RUN + "_dup";
+    await makeOrgOwner(owner); // 默认社区建频道需 owner（2026-09-18；幂等）
     const inB = await api("/api/channels", {
       method: "POST",
       cookie: owner.cookie,

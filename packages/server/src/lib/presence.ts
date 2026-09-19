@@ -44,10 +44,12 @@ const KEY_TTL_SEC = 45; // 崩溃实例残留键的自愈上界
 const processKey = randomUUID();
 const presenceKey = () => PRESENCE_PREFIX + processKey;
 
-// 本实例持有 daemon 连接的用户（ws/handler 镜像维护）
-const localUsers = new Set<string>();
-// 全部实例（含本实例键）在线用户并集缓存——由同步循环重建
-const remoteUsers = new Set<string>();
+// 本实例持有 daemon 连接的机器成员（ws/handler ready/close 镜像维护）。
+// 成员串 = `${userId}|${machineUuid}|${serverId}`——三维在线身份：
+// 同一用户多台机器各自一条成员；同一台机器换 scope 重连后成员串随 scope 变化。
+const localMembers = new Set<string>();
+// 全部实例（含本实例键）在线成员并集缓存——由同步循环重建
+const remoteMembers = new Set<string>();
 
 let client: PresenceRedisClient | null = null;
 let ownsClient = false;
@@ -62,31 +64,50 @@ function warnOnce(err: unknown): void {
   console.warn(`[Presence] redis error (suppressed future repeats): ${e?.message ?? err}`);
 }
 
-/** daemon 连接建立（ws/handler registerConnection daemon 分支调用）。 */
-export function presenceAdd(userId: string): void {
-  const uid = String(userId);
-  localUsers.add(uid);
-  remoteUsers.add(uid); // 本实例写入即时生效，不等下一轮扫描
-  if (client) void client.sadd(presenceKey(), uid).catch(warnOnce);
+/** daemon ready 完成（ws/handler finalizeDaemonReady 调用）。member = `userId|machineUuid|serverId` */
+export function presenceAdd(member: string): void {
+  const m = String(member);
+  localMembers.add(m);
+  remoteMembers.add(m); // 本实例写入即时生效，不等下一轮扫描
+  if (client) void client.sadd(presenceKey(), m).catch(warnOnce);
 }
 
 /** daemon 断开（ws/handler close 调用）。 */
-export function presenceRemove(userId: string): void {
-  const uid = String(userId);
-  localUsers.delete(uid);
-  remoteUsers.delete(uid); // 立即收敛；若他实例真仍持有（双连），下一轮扫描会加回
-  if (client) void client.srem(presenceKey(), uid).catch(warnOnce);
+export function presenceRemove(member: string): void {
+  const m = String(member);
+  localMembers.delete(m);
+  remoteMembers.delete(m); // 立即收敛；若他实例真仍持有（双连），下一轮扫描会加回
+  if (client) void client.srem(presenceKey(), m).catch(warnOnce);
 }
 
-/** 该用户的 daemon 是否在线（任意实例）。同步读缓存，供既有同步读路径无缝替换。 */
+/** 该用户是否有任一机器 daemon 在线（任意实例）。同步读缓存，供既有同步读路径无缝替换。
+ *  成员串正常为 `userId|machineUuid|serverId`；兼容无 `|` 的裸 userId 成员（测试直注/旧调用）。 */
 export function isComputerOnline(userId: string): boolean {
   const uid = String(userId);
-  return localUsers.has(uid) || remoteUsers.has(uid);
+  const prefix = `${uid}|`;
+  for (const m of localMembers) if (m === uid || m.startsWith(prefix)) return true;
+  for (const m of remoteMembers) if (m === uid || m.startsWith(prefix)) return true;
+  return false;
 }
 
-/** 全局在线 daemon 用户并集快照（metrics 聚合用）。 */
+/** 指定 (user, server, machine) 三维在线判定——server-scoped computers 的逐机口径 */
+export function isMachineOnline(userId: string, machineUuid: string, serverId: string): boolean {
+  const member = `${userId}|${machineUuid}|${serverId}`;
+  return localMembers.has(member) || remoteMembers.has(member);
+}
+
+/** 该用户在指定 server scope 是否有任一机器在线（unbound agent 的 scope 在线判定） */
+export function isUserScopeOnline(userId: string, serverId: string): boolean {
+  const prefix = `${userId}|`;
+  const suffix = `|${serverId}`;
+  for (const m of localMembers) if (m.startsWith(prefix) && m.endsWith(suffix)) return true;
+  for (const m of remoteMembers) if (m.startsWith(prefix) && m.endsWith(suffix)) return true;
+  return false;
+}
+
+/** 全局在线机器成员快照（metrics 聚合用；每条成员=一条机器连接）。 */
 export function onlineUserSnapshot(): Set<string> {
-  return new Set([...localUsers, ...remoteUsers]);
+  return new Set([...localMembers, ...remoteMembers]);
 }
 
 /**
@@ -116,7 +137,7 @@ export function startPresenceSync(intervalMs = 3000, opts?: { client?: PresenceR
   const tick = async () => {
     try {
       // 1) 自愈刷新：重写本实例成员（SADD 幂等，补回 Redis 抖动期间丢失的写）+ 续 TTL
-      if (localUsers.size > 0) await c.sadd(presenceKey(), ...[...localUsers]);
+      if (localMembers.size > 0) await c.sadd(presenceKey(), ...[...localMembers]);
       await c.expire(presenceKey(), KEY_TTL_SEC);
       // 2) 全量扫描重建远端缓存（小规模部署实例键个位数，SCAN 代价可忽略）
       const union = new Set<string>();
@@ -128,8 +149,8 @@ export function startPresenceSync(intervalMs = 3000, opts?: { client?: PresenceR
           for (const m of await c.smembers(k)) union.add(String(m));
         }
       } while (cursor !== "0");
-      remoteUsers.clear();
-      for (const u of union) remoteUsers.add(u);
+      remoteMembers.clear();
+      for (const u of union) remoteMembers.add(u);
     } catch (err) {
       warnOnce(err); // 缓存保持最后已知值，下一轮重试
     }
@@ -164,8 +185,8 @@ export async function shutdownPresence(): Promise<void> {
 
 /** 测试用：清空全部模块状态（vitest 同文件多场景隔离）。 */
 export function __resetPresenceForTests(): void {
-  localUsers.clear();
-  remoteUsers.clear();
+  localMembers.clear();
+  remoteMembers.clear();
   client = null;
   ownsClient = false;
   if (timer) {

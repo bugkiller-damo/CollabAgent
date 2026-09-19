@@ -338,9 +338,13 @@ if (serverCount[0].c === 0) {
 // 幂等：owner_id 非空或 owner 成员行已存在时两句均为 no-op；每次启动都执行。
 // 注意注册路径刻意不做即时擢升——并发首注册与测试时序会引入不确定性（谁抢到谁 admin），
 // 启动期单点执行是确定性的。
+// 默认社区子查询与 getDefaultServerId/isInstanceAdmin 同口径：最早 is_public
+// server，无命中回退最早 server（031 后原「非 personal」子句恒真，化简）。
 await sql`
   UPDATE servers SET owner_id = (SELECT id FROM users ORDER BY created_at ASC LIMIT 1)
-   WHERE id = (SELECT id FROM servers WHERE personal = false ORDER BY created_at ASC LIMIT 1)
+   WHERE id = COALESCE(
+     (SELECT id FROM servers WHERE is_public = true ORDER BY created_at ASC LIMIT 1),
+     (SELECT id FROM servers ORDER BY created_at ASC LIMIT 1))
      AND owner_id IS NULL
      AND NOT EXISTS (SELECT 1 FROM server_members sm WHERE sm.server_id = servers.id AND sm.role = 'owner')
      AND EXISTS (SELECT 1 FROM users)
@@ -348,7 +352,10 @@ await sql`
 await sql`
   INSERT INTO server_members (server_id, user_id, role)
   SELECT s.id, s.owner_id, 'owner' FROM servers s
-   WHERE s.personal = false AND s.owner_id IS NOT NULL
+   WHERE s.id = COALESCE(
+     (SELECT id FROM servers WHERE is_public = true ORDER BY created_at ASC LIMIT 1),
+     (SELECT id FROM servers ORDER BY created_at ASC LIMIT 1))
+     AND s.owner_id IS NOT NULL
    ON CONFLICT (server_id, user_id) DO UPDATE SET role = 'owner'
 `;
 

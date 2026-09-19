@@ -15,7 +15,7 @@ import { appendEvent } from "../lib/audit.js";
 import { verifyBrowserToken, verifyMachineToken } from "../lib/auth-token.js";
 import { inc } from "../lib/metrics.js";
 // P1.27：daemon 连接/断开镜像进跨实例在线注册表（Redis SET，其他实例的读路径可见）
-import { presenceAdd, presenceRemove } from "../lib/presence.js";
+import { isComputerOnline, isMachineOnline, isUserScopeOnline, presenceAdd, presenceRemove } from "../lib/presence.js";
 import type { PubSub } from "../lib/pubsub.js";
 import { normalizeRuntimes } from "../lib/runtime-probe.js";
 // P1.28：入站帧运行时校验（此前 JSON.parse as X 零校验）——畸形/未知 type 帧整帧丢弃
@@ -23,11 +23,21 @@ import { parseWsInbound, wsFromBrowserSchema, wsFromDaemonSchema } from "./valid
 
 // Anonymous browser clients (keyed by userId)
 export const browserClients = new Map<string, Set<WebSocket>>();
-// Daemon connections (keyed by userId — one per user machine)
+// Daemon connections — keyed by machineKey = `${userId}:${machineUuid}`（每台机器一槽：
+// 同一用户的多台机器各自持连接、可同 server 同时在场；同一台机器换 scope 重连时
+// 同 machineKey 顶掉旧连接，兑现「一机同时只在一个 server」）。
+// ready 帧携 machineUuid 到达前挂 provisional 键 `${userId}:~pending:<n>`；
+// 缺省 machineUuid 的旧 daemon 按 `legacy-<userId>` 合成（等价旧版一人一机单槽）。
 export const daemonClients = new Map<string, WebSocket>();
-// Daemon 元数据（握手 ready 上报）：用于运维仪表盘展示逐个 daemon 明细
+// Daemon 元数据（握手 ready 上报 + token scope）：用于运维仪表盘展示逐个 daemon 明细
 export interface DaemonMeta {
   userId: string;
+  /** 连接的权威 server scope（machine_tokens.server_id）——每条连接一个 scope */
+  serverId: string | null;
+  /** ready 上报的本机稳定身份（.slock/machine-id）；null = 尚未 ready */
+  machineUuid: string | null;
+  /** 当前 presence 成员串（register=`u|~pending|s`，ready 后=`u|machineUuid|s`）；断开按它移除 */
+  presenceMember?: string;
   hostname: string;
   daemonVersion: string;
   runtimes: RuntimeProbe[];
@@ -36,18 +46,64 @@ export interface DaemonMeta {
   arch?: string;
 }
 export const daemonMeta = new Map<string, DaemonMeta>();
+// socket → 当前注册键（provisional 键在 ready 时会换成 machineKey，断开时靠它找回）
+const daemonKeyOf = new Map<WebSocket, string>();
+let pendingConnSeq = 0;
 
-// 终端观察（G3）：ownerUserId -> agentName -> 观众 socket 集合。
+/** target 为 machineKey 时精确命中；为 userId 时取该用户任一连接（旧调用方兼容） */
+function resolveDaemonConn(target: string): WebSocket | undefined {
+  const direct = daemonClients.get(target);
+  if (direct) return direct;
+  const prefix = `${target}:`;
+  for (const [key, ws] of daemonClients) {
+    if (key === target || key.startsWith(prefix)) return ws;
+  }
+  return undefined;
+}
+
+/** 同 resolveDaemonConn 的 meta 版（routes 侧探测/展示用） */
+export function findDaemonMeta(target: string): DaemonMeta | undefined {
+  const direct = daemonMeta.get(target);
+  if (direct) return direct;
+  const prefix = `${target}:`;
+  for (const [key, meta] of daemonMeta) {
+    if (key === target || key.startsWith(prefix)) return meta;
+  }
+  return undefined;
+}
+
+/** 本实例持有 daemon 连接的 userId 去重集合（认领门控/订阅补齐用）。
+ *  从连接键推导而非 daemonMeta——测试可只注 daemonClients 不注 meta。 */
+export function localDaemonUserIds(): string[] {
+  const out = new Set<string>();
+  for (const key of daemonClients.keys()) out.add(key.split(":")[0]!);
+  return [...out];
+}
+
+function userHasLocalDaemon(userId: string): boolean {
+  const prefix = `${userId}:`;
+  for (const key of daemonClients.keys()) {
+    if (key === userId || key.startsWith(prefix)) return true;
+  }
+  return false;
+}
+
+// 终端观察（G3）：daemonTarget -> agentName -> 观众 socket 集合。
+// daemonTarget = resolveTerminalWatchTarget 的返回值（绑定机 machineKey 或 owner userId）。
 // 观众可以是「频道同事」（非 owner，见 resolveTerminalWatchTarget 的鉴权口径）——
-// socket 一律挂在被观察 agent 的 owner 键下，daemon 帧按 owner userId 发布天然到达。
+// socket 一律挂在被观察 agent 的投递目标键下，daemon 帧按该目标发布天然到达。
 // 引用计数：第一个观众出现才通知 daemon 开始推帧，最后一个断开才停止——
 // 无人观看时这条链路零开销。
 const terminalWatchers = new Map<string, Map<string, Set<WebSocket>>>();
 // 反向索引：观众 socket -> 它挂着的 (owner, agentName) 集合——非 owner 观众的 socket
 // 不在「自己的 userId」键下，断连/unwatch 时靠它 O(1) 找回，不用全表扫描。
 const socketWatches = new Map<WebSocket, Array<{ owner: string; agentName: string }>>();
+// (owner|agentName) → agent 的 server scope——watch/unwatch 转发给 daemon 时的 scope 守护参数；
+// 断开路径是同步的，没法回库重解析，注册 watcher 时顺手记下。
+const terminalScopes = new Map<string, string | null>();
+const watchScopeKey = (owner: string, agentName: string) => `${owner}${agentName}`;
 
-function addTerminalWatcher(owner: string, agentName: string, ws: WebSocket): void {
+function addTerminalWatcher(owner: string, agentName: string, ws: WebSocket, scope: string | null): void {
   let byAgent = terminalWatchers.get(owner);
   if (!byAgent) {
     byAgent = new Map();
@@ -59,10 +115,11 @@ function addTerminalWatcher(owner: string, agentName: string, ws: WebSocket): vo
     byAgent.set(agentName, set);
   }
   set.add(ws);
+  terminalScopes.set(watchScopeKey(owner, agentName), scope);
   socketWatches.set(ws, [...(socketWatches.get(ws) ?? []), { owner, agentName }]);
   // 每个观众上线都转发一次 watch：daemon 对重复 watch 只补发回放（obs-history/history），
   // 不重启推帧节拍（daemon handlers/terminal.ts）——后到的观众也能看到打开面板前的内容。
-  sendToDaemon(owner, { type: "terminal:watch", agentName });
+  sendToDaemon(owner, { type: "terminal:watch", agentName }, { scope });
 }
 
 function removeWatcherFrom(owner: string, agentName: string, ws: WebSocket): void {
@@ -71,7 +128,10 @@ function removeWatcherFrom(owner: string, agentName: string, ws: WebSocket): voi
   set.delete(ws);
   if (set.size === 0) {
     terminalWatchers.get(owner)?.delete(agentName);
-    sendToDaemon(owner, { type: "terminal:unwatch", agentName });
+    const scopeKey = watchScopeKey(owner, agentName);
+    const scope = terminalScopes.get(scopeKey) ?? null;
+    terminalScopes.delete(scopeKey);
+    sendToDaemon(owner, { type: "terminal:unwatch", agentName }, { scope });
   }
 }
 
@@ -107,16 +167,28 @@ export function getLastAgentRuntime(ownerUserId: string, agentName: string): str
 }
 
 /**
- * 终端观察目标解析 + 鉴权：返回被观察 agent 的 owner userId。
+ * 终端观察目标解析 + 鉴权：返回被观察 agent 的 daemon 投递目标（machineKey 或 owner userId）。
  * 2026-09-17 审计 Q1：owner 本人，或（属主开关 allow_terminal_watch 开启时）与 agent
  * 共频道的人类成员（频道同事）。此前「频道同事」门槛可被零成本满足（公开频道自加入 /
  * 单方面建 DM），现加属主开关（默认关）——开关经 agent 档案 PATCH 端点由属主设置。
+ * 2026-09-19：返回值从 owner userId 升级为投递目标——绑定机的 agent 的终端帧
+ * （watch/unwatch/history/resize）必须精确路由到托管它的那台机器。
  */
-async function resolveTerminalWatchTarget(watcherUserId: string, agentName: string): Promise<string | null> {
+async function resolveTerminalWatchTarget(
+  watcherUserId: string,
+  agentName: string,
+): Promise<{ target: string; scope: string | null; isOwner: boolean } | null> {
   if (!wsPg) return null;
   try {
-    const r = await wsPg.query<{ user_id: string }>(
-      `SELECT a.user_id FROM agents a
+    const r = await wsPg.query<{
+      user_id: string;
+      server_id: string | null;
+      computer_id: string | null;
+      machine_uuid: string | null;
+    }>(
+      `SELECT a.user_id, a.server_id, a.computer_id, c.machine_uuid
+         FROM agents a
+         LEFT JOIN computers c ON c.id = a.computer_id
         WHERE a.name = $1 AND (
           a.user_id::text = $2
           OR (a.allow_terminal_watch = true AND EXISTS (
@@ -129,7 +201,12 @@ async function resolveTerminalWatchTarget(watcherUserId: string, agentName: stri
         LIMIT 1`,
       [agentName, watcherUserId],
     );
-    return r.rows[0] ? String(r.rows[0].user_id) : null;
+    const row = r.rows[0];
+    if (!row) return null;
+    const uid = String(row.user_id);
+    const scope = row.server_id ? String(row.server_id) : null;
+    const target = row.machine_uuid ? `${uid}:${row.machine_uuid}` : (machineKeyForScope(uid, scope) ?? uid);
+    return { target, scope, isOwner: uid === watcherUserId };
   } catch {
     return null;
   }
@@ -170,23 +247,17 @@ export function wsHandler(connection: WebSocket, req: any) {
   // 兜底 raw req 的 socket.remoteAddress）。
   const clientIp = String(req?.ip || req?.socket?.remoteAddress || "");
 
-  void resolveUserId(token, isDaemon, clientIp, req)
-    .then((userId) => {
+  void resolveIdentity(token, isDaemon, clientIp, req)
+    .then((ident) => {
       connection.off("message", bufferEarly);
-      // daemon 令牌无效/被吊销 → resolveUserId 返回 "anon"。明确用 4001 关闭，
+      // daemon 令牌无效/被吊销 → resolveIdentity 返回 "anon"。明确用 4001 关闭，
       // 而不是把它当匿名 daemon 登记，否则 daemon 会误以为已连上并无限重连。
-      if (isDaemon && userId === "anon") {
-        console.warn("[WS] Daemon auth failed (invalid/revoked machine token); closing with 4001");
-        try {
-          connection.close(4001, "unauthorized");
-        } catch {
-          /* ignore */
-        }
-        return;
-      }
       // 浏览器 token 无效同样拒绝：此前降级为 "anon" 登记，导致未登录连接也能
       // 收到所有公开频道的消息广播（内容泄露）。统一按未授权关闭。
-      if (!isDaemon && userId === "anon") {
+      if (ident === "anon") {
+        if (isDaemon) {
+          console.warn("[WS] Daemon auth failed (invalid/revoked machine token); closing with 4001");
+        }
         try {
           connection.close(4001, "unauthorized");
         } catch {
@@ -194,7 +265,7 @@ export function wsHandler(connection: WebSocket, req: any) {
         }
         return;
       }
-      registerConnection(connection, userId, isDaemon);
+      registerConnection(connection, ident, isDaemon);
       for (const raw of earlyBuffer) connection.emit("message", raw);
     })
     .catch(() => {
@@ -206,7 +277,18 @@ export function wsHandler(connection: WebSocket, req: any) {
     });
 }
 
-async function resolveUserId(token: string | null, isDaemon: boolean, clientIp = "", req?: any): Promise<string> {
+/** 握手解析结果：daemon 带 token 的权威 server scope；浏览器无 scope（null） */
+interface ResolvedIdentity {
+  userId: string;
+  serverId: string | null;
+}
+
+async function resolveIdentity(
+  token: string | null,
+  isDaemon: boolean,
+  clientIp = "",
+  req?: any,
+): Promise<ResolvedIdentity | "anon"> {
   if (!token) return "anon";
   if (isDaemon) {
     if (!wsPg) return "anon";
@@ -222,7 +304,7 @@ async function resolveUserId(token: string | null, isDaemon: boolean, clientIp =
         renewal: "always",
         log: { warn: (obj, msg) => console.warn("[WS] " + msg, obj) },
       });
-      return v.ok ? v.userId : "anon";
+      return v.ok ? { userId: v.userId, serverId: v.serverId } : "anon";
     } catch {
       /* fall through to anon */
     }
@@ -233,18 +315,36 @@ async function resolveUserId(token: string | null, isDaemon: boolean, clientIp =
     // P1.15 session 回查 + 强制 sid）——此前 jsonwebtoken 直验且不回查，
     // logout-all 后 WS 长连接仍有效。
     const u = await verifyBrowserToken(req?.server?.jwt?.access, wsPg, token);
-    return u ? u.userId : "anon";
+    return u ? { userId: u.userId, serverId: null } : "anon";
   } catch {
     return "anon"; // Invalid token — treat as anonymous browser client
   }
 }
 
-function registerConnection(connection: WebSocket, userId: string, isDaemon: boolean) {
+function registerConnection(connection: WebSocket, ident: ResolvedIdentity, isDaemon: boolean) {
   if (isDaemon) {
-    daemonClients.set(userId, connection);
-    presenceAdd(userId);
-    daemonMeta.set(userId, { userId, hostname: "unknown", daemonVersion: "?", runtimes: [], connectedAt: Date.now() });
-    console.log(`[WS] Daemon connected: user=${userId}`);
+    const { userId, serverId } = ident;
+    // ready 携 machineUuid 到达前挂 provisional 键——不顶任何人（多台机器可同时
+    // 处于 pre-ready 窗口）；转正时同 machineKey 的旧连接才会被顶掉。
+    // presence 注册推迟到 ready（成员串需要 machineUuid + serverId）。
+    const pendingKey = `${userId}:~pending:${++pendingConnSeq}`;
+    daemonClients.set(pendingKey, connection);
+    daemonKeyOf.set(connection, pendingKey);
+    // presence 连接即注册（临时成员 ~pending）——「daemon 在线」= 进程已连上，
+    // 与旧版 register 即在线语义一致；ready 转正时换真成员串（含 machineUuid）。
+    const pendingMember = `${userId}|~pending|${serverId}`;
+    presenceAdd(pendingMember);
+    daemonMeta.set(pendingKey, {
+      userId,
+      serverId,
+      machineUuid: null,
+      presenceMember: pendingMember,
+      hostname: "unknown",
+      daemonVersion: "?",
+      runtimes: [],
+      connectedAt: Date.now(),
+    });
+    console.log(`[WS] Daemon connected: user=${userId} server=${serverId}`);
     // P1.22：本实例持有该用户连接期间订阅其定向频道（多实例下按需扇出）
     refreshUserSubscription(userId);
 
@@ -257,25 +357,50 @@ function registerConnection(connection: WebSocket, userId: string, isDaemon: boo
         switch (msg.type) {
           case "ready": {
             const runtimes = normalizeRuntimes(msg.runtimes);
-            console.log(`[WS] Daemon ready: runtimes=${runtimes.map((r) => r.id).join(",")}`);
-            const meta = daemonMeta.get(userId);
-            if (meta) {
-              if (msg.hostname) meta.hostname = String(msg.hostname);
-              if (msg.daemonVersion) meta.daemonVersion = String(msg.daemonVersion);
-              meta.runtimes = runtimes;
-              if (typeof msg.os === "string") meta.os = msg.os;
-              if (typeof msg.arch === "string") meta.arch = msg.arch;
+            // 缺省 machineUuid 的旧 daemon：合成 legacy-<userId> 单机身份——
+            // 等价旧版一人一机单槽语义（同 user 第二连顶掉第一连）。
+            const machineUuid =
+              typeof msg.machineUuid === "string" && msg.machineUuid ? String(msg.machineUuid) : `legacy-${userId}`;
+            const machineKey = `${userId}:${machineUuid}`;
+            const curKey = daemonKeyOf.get(connection);
+            if (curKey !== machineKey) {
+              // 同 machineKey 已有别的活跃连接 → 顶掉（崩溃重连 / 换 scope 重跑：
+              // 一台机器同时只持一条连接在场）
+              const prev = daemonClients.get(machineKey);
+              if (prev && prev !== connection) {
+                try {
+                  prev.close(4000, "superseded by same machine");
+                } catch {
+                  /* ignore */
+                }
+              }
+              if (curKey) {
+                daemonClients.delete(curKey);
+                daemonMeta.delete(curKey);
+              }
+              daemonClients.set(machineKey, connection);
+              daemonKeyOf.set(connection, machineKey);
             }
-            persistComputerReady(userId, {
-              hostname: msg.hostname,
-              os: typeof msg.os === "string" ? msg.os : undefined,
-              arch: typeof msg.arch === "string" ? msg.arch : undefined,
-              daemonVersion: msg.daemonVersion,
-              runtimes,
-            });
-            void import("../lib/agent-duty.js").then(({ broadcastOwnerPresence }) =>
-              broadcastOwnerPresence(wsPg, userId),
+            const meta: DaemonMeta = daemonMeta.get(machineKey) ?? {
+              userId,
+              serverId,
+              machineUuid,
+              hostname: "unknown",
+              daemonVersion: "?",
+              runtimes: [],
+              connectedAt: Date.now(),
+            };
+            meta.machineUuid = machineUuid;
+            if (msg.hostname) meta.hostname = String(msg.hostname);
+            if (msg.daemonVersion) meta.daemonVersion = String(msg.daemonVersion);
+            meta.runtimes = runtimes;
+            if (typeof msg.os === "string") meta.os = msg.os;
+            if (typeof msg.arch === "string") meta.arch = msg.arch;
+            daemonMeta.set(machineKey, meta);
+            console.log(
+              `[WS] Daemon ready: machine=${machineUuid} scope=${serverId} runtimes=${runtimes.map((r) => r.id).join(",")}`,
             );
+            void finalizeDaemonReady(connection, meta, msg, runtimes);
             break;
           }
           case "agent:status":
@@ -347,23 +472,28 @@ function registerConnection(connection: WebSocket, userId: string, isDaemon: boo
           case "terminal:frame": {
             // daemon 推来的终端帧 → 只发给这个 agent 的观众（不是所有浏览器连接）。
             // O1：经 pub/sub 发布，观众无论在哪个实例都能收到（本地观众由发布者直投覆盖）。
+            // 观众集合挂在投递目标键（绑定机 machineKey）下——按本连接的注册键寻址，
+            // 只有 agent 绑定的那台机器推帧才命中（同用户别的机器推同 agentName 不投）。
             const agentName = (msg as Record<string, unknown>).agentName as string | undefined;
-            if (agentName) publish({ kind: "terminal-frame", userId, agentName, event: msg });
+            const connKey = daemonKeyOf.get(connection) ?? userId;
+            if (agentName) publish({ kind: "terminal-frame", userId: connKey, agentName, event: msg });
             break;
           }
           case "terminal:obs-frame": {
             // B1 结构化观察帧：与 terminal:frame 同一条观众定向通道（按 agentName 引用计数）
             const agentName = (msg as Record<string, unknown>).agentName as string | undefined;
-            if (agentName) publish({ kind: "terminal-frame", userId, agentName, event: msg });
+            const connKey = daemonKeyOf.get(connection) ?? userId;
+            if (agentName) publish({ kind: "terminal-frame", userId: connKey, agentName, event: msg });
             break;
           }
           case "terminal:obs-history":
           case "terminal:history": {
             // daemon 回传的历史日志 / 观察帧 replay buffer → 发给该 agent 的观众集合
-            // （观众含频道同事，socket 统一挂在 owner 键下；低频小负载，整集合投放）。
+            // （观众含频道同事，socket 统一挂在投递目标键下；低频小负载，整集合投放）。
             // 无观众时退回 owner 全端兜底（面板已关但响应在途的旧行为）。
             const agentName = (msg as Record<string, unknown>).agentName as string | undefined;
-            const set = agentName ? terminalWatchers.get(userId)?.get(agentName) : undefined;
+            const connKey = daemonKeyOf.get(connection) ?? userId;
+            const set = agentName ? terminalWatchers.get(connKey)?.get(agentName) : undefined;
             if (set && set.size > 0) deliver(set, JSON.stringify(msg));
             else sendToUser(userId, msg);
             break;
@@ -380,10 +510,21 @@ function registerConnection(connection: WebSocket, userId: string, isDaemon: boo
     });
 
     connection.on("close", () => {
-      daemonClients.delete(userId);
-      presenceRemove(userId);
-      daemonMeta.delete(userId);
-      console.log(`[WS] Daemon disconnected: user=${userId}`);
+      const key = daemonKeyOf.get(connection);
+      daemonKeyOf.delete(connection);
+      const meta = key ? daemonMeta.get(key) : undefined;
+      // 仅当本 socket 仍是该键的注册连接时才清槽——被同 machineKey 新连接顶掉的
+      // 旧连接 close 迟到时不得误删新连接条目，也不得移除它刚注册的 presence 成员
+      const stillOwner = key !== undefined && daemonClients.get(key) === connection;
+      if (key && stillOwner) {
+        daemonClients.delete(key);
+        daemonMeta.delete(key);
+      }
+      // presence 成员在 register/ready 两处维护；断开按当前成员串移除（被顶者跳过）
+      if (stillOwner && meta?.presenceMember) {
+        presenceRemove(meta.presenceMember);
+      }
+      console.log(`[WS] Daemon disconnected: user=${userId} machine=${meta?.machineUuid ?? "pre-ready"}`);
       refreshUserSubscription(userId);
       void import("../lib/agent-duty.js").then(({ broadcastOwnerPresence }) => broadcastOwnerPresence(wsPg, userId));
     });
@@ -392,6 +533,7 @@ function registerConnection(connection: WebSocket, userId: string, isDaemon: boo
     connection.send(JSON.stringify({ type: "connected", serverTime: new Date().toISOString() }));
   } else {
     // Browser client
+    const { userId } = ident;
     if (!browserClients.has(userId)) browserClients.set(userId, new Set());
     browserClients.get(userId)!.add(connection);
     // P1.22：本实例持有该用户连接期间订阅其定向频道（同用户多标签页共用一条订阅）
@@ -408,8 +550,8 @@ function registerConnection(connection: WebSocket, userId: string, isDaemon: boo
           // 终端观察（G3）：鉴权解析到被观察 agent 的 owner，观众 socket 挂 owner 键下、
           // watch 转发给 owner 的 daemon——此前挂自己键下发给自己的 daemon，频道同事
           // 永远看不到他人 agent 的终端
-          void resolveTerminalWatchTarget(userId, msg.agentName).then((owner) => {
-            if (owner) addTerminalWatcher(owner, msg.agentName, connection);
+          void resolveTerminalWatchTarget(userId, msg.agentName).then((t) => {
+            if (t) addTerminalWatcher(t.target, msg.agentName, connection, t.scope);
           });
         } else if (msg.type === "terminal:unwatch" && typeof msg.agentName === "string") {
           // 观众 socket 可能挂在他人 owner 键下——按反向索引找，不假定是自己名下
@@ -419,20 +561,25 @@ function registerConnection(connection: WebSocket, userId: string, isDaemon: boo
         } else if (msg.type === "terminal:history" && typeof msg.agentName === "string") {
           // 历史日志请求：鉴权后转发给 owner 的 daemon（响应发给该 agent 的观众集合，
           // 见 daemon 分支 terminal:history 的观众定向）
-          void resolveTerminalWatchTarget(userId, msg.agentName).then((owner) => {
-            if (owner) sendToDaemon(owner, { type: "terminal:history", agentName: msg.agentName });
+          void resolveTerminalWatchTarget(userId, msg.agentName).then((t) => {
+            if (t) sendToDaemon(t.target, { type: "terminal:history", agentName: msg.agentName }, { scope: t.scope });
           });
         } else if (msg.type === "terminal:resize" && typeof msg.agentName === "string") {
           // 面板尺寸协商：浏览器把期望的 cols/rows 转发给 daemon（实时 resize PTY）。
-          // resize 是主动控制（改对方 PTY 尺寸 + 记偏好尺寸），仅限 owner——观察只读
-          void resolveTerminalWatchTarget(userId, msg.agentName).then((owner) => {
-            if (owner === userId) {
-              sendToDaemon(owner, {
-                type: "terminal:resize",
-                agentName: msg.agentName,
-                cols: msg.cols,
-                rows: msg.rows,
-              });
+          // resize 是主动控制（改对方 PTY 尺寸 + 记偏好尺寸），仅限 owner——观察只读。
+          // isOwner 由解析返回（target 可能是 machineKey，不能直接和 userId 比）
+          void resolveTerminalWatchTarget(userId, msg.agentName).then((t) => {
+            if (t?.isOwner) {
+              sendToDaemon(
+                t.target,
+                {
+                  type: "terminal:resize",
+                  agentName: msg.agentName,
+                  cols: msg.cols,
+                  rows: msg.rows,
+                },
+                { scope: t.scope },
+              );
             }
           });
         }
@@ -466,12 +613,68 @@ export function setWsPg(pg: typeof wsPg) {
   wsPg = pg;
 }
 
-/** 首次 ready：没有 computers 行就按 hostname 插一条；已有则刷新探测字段 */
+/**
+ * ready 后的异步收口：
+ * 1. `--server` 声明校验（可选）：daemon 声明的 server 名与 token scope 实际名
+ *    不一致 → 拒连（拿错 token 立刻报，不静默连错 server；token 仍是唯一权威 scope）
+ * 2. presence 注册（成员串 `userId|machineUuid|serverId`——三维在线身份）
+ * 3. persistComputerReady：upsert (user, server, machine) 行
+ */
+async function finalizeDaemonReady(
+  connection: WebSocket,
+  meta: DaemonMeta,
+  msg: { serverName?: unknown; hostname?: unknown; os?: unknown; arch?: unknown; daemonVersion?: unknown },
+  runtimes: RuntimeProbe[],
+): Promise<void> {
+  const { userId, serverId, machineUuid } = meta;
+  if (typeof msg.serverName === "string" && msg.serverName && wsPg && serverId) {
+    try {
+      const r = await wsPg.query<{ name: string }>("SELECT name FROM servers WHERE id = $1", [serverId]);
+      const actual = r.rows[0]?.name;
+      if (actual && actual !== msg.serverName) {
+        console.warn(`[WS] daemon --server mismatch: declared="${msg.serverName}" token scope="${actual}" — closing`);
+        try {
+          connection.close(4001, "server scope mismatch");
+        } catch {
+          /* ignore */
+        }
+        return;
+      }
+    } catch {
+      /* 校验查询失败不阻断（name 比对只是防御性检查） */
+    }
+  }
+  // presence 转正：临时成员（~pending）换真成员串（含 machineUuid）
+  if (serverId && machineUuid) {
+    const member = `${userId}|${machineUuid}|${serverId}`;
+    if (meta.presenceMember !== member) {
+      if (meta.presenceMember) presenceRemove(meta.presenceMember);
+      meta.presenceMember = member;
+      presenceAdd(member);
+    }
+  }
+  persistComputerReady(userId, serverId, machineUuid ?? `legacy-${userId}`, {
+    hostname: typeof msg.hostname === "string" ? msg.hostname : undefined,
+    os: typeof msg.os === "string" ? msg.os : undefined,
+    arch: typeof msg.arch === "string" ? msg.arch : undefined,
+    daemonVersion: typeof msg.daemonVersion === "string" ? msg.daemonVersion : undefined,
+    runtimes,
+  });
+  void import("../lib/agent-duty.js").then(({ broadcastOwnerPresence }) => broadcastOwnerPresence(wsPg, userId));
+}
+
+/**
+ * (user, server, machine) 三维 upsert——computers 行只在 daemon ready 时写。
+ * serverId 来自 token scope（非请求方指定）；用户已不在该 server（token 是旧签的）
+ * → 不写库。上报真 uuid 且 (user,server) 只有迁移占位行（legacy-<id>）时原地回填。
+ */
 function persistComputerReady(
   userId: string,
+  serverId: string | null,
+  machineUuid: string,
   probe: { hostname?: string; os?: string; arch?: string; daemonVersion?: string; runtimes?: RuntimeProbe[] },
 ): void {
-  if (!wsPg) return;
+  if (!wsPg || !serverId) return;
   const hostname = probe.hostname ? String(probe.hostname) : null;
   const os = probe.os ? String(probe.os) : null;
   const arch = probe.arch ? String(probe.arch) : null;
@@ -479,48 +682,47 @@ function persistComputerReady(
   const name = (hostname && hostname !== "unknown" ? hostname : "我的计算机").slice(0, 80);
   void (async () => {
     try {
-      const existing = await wsPg!.query<{ id: string }>("SELECT id FROM computers WHERE user_id::text = $1", [userId]);
-      if (existing.rows.length > 0) {
-        await wsPg!.query(
-          `UPDATE computers SET
-             hostname = COALESCE($2, hostname),
-             os = COALESCE($3, os),
-             arch = COALESCE($4, arch),
-             daemon_version = COALESCE($5, daemon_version),
-             runtimes = $6::jsonb,
-             last_ready_at = now()
-           WHERE user_id::text = $1`,
-          [userId, hostname, os, arch, daemonVersion, JSON.stringify(probe.runtimes ?? [])],
-        );
+      const mem = await wsPg!.query("SELECT 1 FROM server_members WHERE server_id = $1 AND user_id::text = $2", [
+        serverId,
+        userId,
+      ]);
+      if (mem.rows.length === 0) {
+        console.warn(`[WS] persist computer ready skipped: user=${userId} not a member of server=${serverId}`);
         return;
       }
-      const orgs = await wsPg!.query<{ server_id: string }>(
-        "SELECT server_id FROM server_members WHERE user_id::text = $1 LIMIT 1",
-        [userId],
-      );
-      let serverId = orgs.rows[0]?.server_id;
-      if (!serverId) {
-        const created = await wsPg!.query<{ id: string }>(
-          "INSERT INTO servers (name, created_by, owner_id, personal) VALUES ($1, $2, $3, true) RETURNING id",
-          ["我的私有空间", userId, userId],
+      // 占位回填：存量迁移行 machine_uuid='legacy-<id>' 视为「已注册待认主」——
+      // 首个上报真 uuid 的机器原地认领（不产生第二行）。
+      if (!machineUuid.startsWith("legacy-")) {
+        const claimed = await wsPg!.query<{ id: string }>(
+          `UPDATE computers SET
+             machine_uuid = $3,
+             hostname = COALESCE($4, hostname),
+             os = COALESCE($5, os),
+             arch = COALESCE($6, arch),
+             daemon_version = COALESCE($7, daemon_version),
+             runtimes = $8::jsonb,
+             last_ready_at = now()
+           WHERE user_id::text = $1 AND server_id::text = $2 AND machine_uuid LIKE 'legacy-%'
+             AND NOT EXISTS (
+               SELECT 1 FROM computers
+               WHERE user_id::text = $1 AND server_id::text = $2 AND machine_uuid = $3
+             )
+           RETURNING id`,
+          [userId, serverId, machineUuid, hostname, os, arch, daemonVersion, JSON.stringify(probe.runtimes ?? [])],
         );
-        serverId = created.rows[0]!.id;
-        await wsPg!.query(
-          "INSERT INTO server_members (server_id, user_id, role) VALUES ($1, $2, 'owner') ON CONFLICT DO NOTHING",
-          [serverId, userId],
-        );
+        if (claimed.rows.length > 0) return;
       }
       await wsPg!.query(
-        `INSERT INTO computers (user_id, server_id, name, description, hostname, os, arch, daemon_version, runtimes, last_ready_at)
-         VALUES ($1, $2, $3, '', $4, $5, $6, $7, $8::jsonb, now())
-         ON CONFLICT (user_id) DO UPDATE SET
+        `INSERT INTO computers (user_id, server_id, machine_uuid, name, description, hostname, os, arch, daemon_version, runtimes, last_ready_at)
+         VALUES ($1, $2, $3, $4, '', $5, $6, $7, $8, $9::jsonb, now())
+         ON CONFLICT (user_id, server_id, machine_uuid) DO UPDATE SET
            hostname = COALESCE(EXCLUDED.hostname, computers.hostname),
            os = COALESCE(EXCLUDED.os, computers.os),
            arch = COALESCE(EXCLUDED.arch, computers.arch),
            daemon_version = COALESCE(EXCLUDED.daemon_version, computers.daemon_version),
            runtimes = EXCLUDED.runtimes,
            last_ready_at = now()`,
-        [userId, serverId, name, hostname, os, arch, daemonVersion, JSON.stringify(probe.runtimes ?? [])],
+        [userId, serverId, machineUuid, name, hostname, os, arch, daemonVersion, JSON.stringify(probe.runtimes ?? [])],
       );
     } catch (err) {
       console.warn("[WS] persist computer ready failed:", (err as Error)?.message ?? err);
@@ -547,11 +749,16 @@ function persistComputerReady(
 export async function broadcast(channelId: string, event: WsChannelBroadcast) {
   let allowedHumanIds: string[] | null = null; // null = 不限制（公开）
   let allowedDaemonUserIds: string[] | null = null; // null = daemon 不限制（公开频道全发）
+  let channelServerId: string | null = null; // daemon 扇出的 scope 过滤键
   let resolved = false;
   try {
     if (wsPg && channelId) {
-      const ch = await wsPg.query<{ type: string }>("SELECT type FROM channels WHERE id = $1", [channelId]);
+      const ch = await wsPg.query<{ type: string; server_id: string }>(
+        "SELECT type, server_id::text AS server_id FROM channels WHERE id = $1",
+        [channelId],
+      );
       const t = ch.rows[0]?.type;
+      channelServerId = ch.rows[0]?.server_id ?? null;
       if (t === "private" || t === "dm") {
         // 私有频道与 DM 都按成员定向：仅其人类成员的浏览器收到
         const m = await wsPg.query<{ member_id: string }>(
@@ -574,15 +781,10 @@ export async function broadcast(channelId: string, event: WsChannelBroadcast) {
         // 改为「频道所在 server 成员 ∪ 频道人类/agent 成员」（与 canAccessChannel
         // 收紧口径一致；管理员邀请入圈的跨社区成员仍可达；跨社区浏览器与
         // daemon 不再收到本社区公开频道明文）。
-        const info = await wsPg.query<{ server_id: string }>(
-          "SELECT server_id::text AS server_id FROM channels WHERE id = $1",
-          [channelId],
-        );
-        const serverId = info.rows[0]?.server_id;
-        if (!serverId) {
+        if (!channelServerId) {
           resolved = false;
         } else {
-          const sm = await getServerMemberIdSet(wsPg, serverId);
+          const sm = await getServerMemberIdSet(wsPg, channelServerId);
           const cm = await wsPg.query<{ member_id: string; user_id: string | null }>(
             `SELECT cm.member_id, a.user_id FROM channel_members cm
              LEFT JOIN agents a ON cm.member_type = 'agent' AND cm.member_id = a.id
@@ -612,12 +814,76 @@ export async function broadcast(channelId: string, event: WsChannelBroadcast) {
     return;
   }
 
-  publish({ kind: "channel", channelId, allowedHumanIds, allowedDaemonUserIds, event });
+  publish({ kind: "channel", channelId, serverId: channelServerId, allowedHumanIds, allowedDaemonUserIds, event });
 }
 
-/** Send a message to a specific daemon */
-export function sendToDaemon(userId: string, event: WsToDaemonMessage) {
-  publish({ kind: "daemon", userId, event });
+/**
+ * 投递到指定 daemon。target 可为 machineKey（`userId:machineUuid`，精确到机器）
+ * 或 userId（兼容旧调用方：解析为该用户任一连接——单机场景等价旧行为）。
+ * agent 级事件的调用方应逐步迁移为传 agent.computer_id 解析出的 machineKey。
+ */
+export function sendToDaemon(target: string, event: WsToDaemonMessage, opts?: { scope?: string | null }) {
+  publish({ kind: "daemon", target, scope: opts?.scope ?? null, event });
+}
+
+/** 属主在指定 server scope 的在线连接键——多机时按 scope 区分（daemonMeta 扫描） */
+export function machineKeyForScope(userId: string, serverId: string | null | undefined): string | null {
+  const sid = serverId ?? null;
+  for (const [key, meta] of daemonMeta) {
+    if (meta.userId === String(userId) && meta.serverId === sid) return key;
+  }
+  return null;
+}
+
+type AgentIdentity = { user_id?: unknown; server_id?: unknown; computer_id?: unknown };
+type PgQueryable = {
+  query: <T = Record<string, unknown>>(text: string, params?: unknown[]) => Promise<{ rows: T[] }>;
+};
+
+/**
+ * agent 级事件的投递目标解析（server-scoped computers，2026-09-19 设计稿 §3.2）：
+ * - 已绑定（agents.computer_id）→ 该计算机行的 machineKey（`u:machine_uuid`）精确到机器；
+ * - 未绑定（存量 NULL）→ 属主在同 scope 的连接，再没有则属主任一连接（旧行为兜底）。
+ * 解析失败/行缺失时回落 unbound 分支，绝不静默错投其他 scope。
+ */
+export async function daemonTargetForAgent(pg: PgQueryable, agent: AgentIdentity): Promise<string> {
+  const uid = String(agent.user_id);
+  if (agent.computer_id) {
+    const r = await pg
+      .query<{ machine_uuid: string }>("SELECT machine_uuid FROM computers WHERE id = $1", [String(agent.computer_id)])
+      .catch(() => ({ rows: [] as { machine_uuid: string }[] }));
+    const m = r.rows[0]?.machine_uuid;
+    if (m) return `${uid}:${m}`;
+  }
+  return machineKeyForScope(uid, agent.server_id ? String(agent.server_id) : null) ?? uid;
+}
+
+/** agent 绑定机的在线判定（与 daemonTargetForAgent 同解析口径）：bound → isMachineOnline；unbound → scope 在线 or 任一在线（legacy） */
+export async function agentMachineOnline(pg: PgQueryable, agent: AgentIdentity): Promise<boolean> {
+  const uid = String(agent.user_id);
+  if (agent.computer_id) {
+    const r = await pg
+      .query<{ machine_uuid: string; server_id: string }>(
+        "SELECT machine_uuid, server_id FROM computers WHERE id = $1",
+        [String(agent.computer_id)],
+      )
+      .catch(() => ({ rows: [] as { machine_uuid: string; server_id: string }[] }));
+    const row = r.rows[0];
+    if (row) return isMachineOnline(uid, row.machine_uuid, String(row.server_id));
+  }
+  const sid = agent.server_id ? String(agent.server_id) : null;
+  if (sid && isUserScopeOnline(uid, sid)) return true;
+  return isComputerOnline(uid);
+}
+
+/** agent 级事件的统一投递入口：解析绑定机目标 + 带 scope 守护发送（调用方不再手拼 machineKey） */
+export async function sendToAgentDaemon(
+  pg: PgQueryable,
+  agent: AgentIdentity,
+  event: WsToDaemonMessage,
+): Promise<void> {
+  const target = await daemonTargetForAgent(pg, agent);
+  sendToDaemon(target, event, { scope: agent.server_id ? String(agent.server_id) : null });
 }
 
 type WorkspaceResult = Extract<WsFromDaemonMessage, { type: "workspace:result" }>;
@@ -631,14 +897,25 @@ function resolveWorkspaceResult(msg: WsFromDaemonMessage): void {
   waiter(msg);
 }
 
-/** 向本机 daemon 要工作区文件；daemon 离线或超时返回 null */
+/** 向本机 daemon 要工作区文件；daemon 离线或超时返回 null。target=machineKey/userId；scope 限定连接 scope */
 export function requestDaemonWorkspace(
-  userId: string,
+  target: string,
   agentName: string,
   path?: string,
   timeoutMs = 4000,
+  opts?: { scope?: string | null },
 ): Promise<WorkspaceResult | null> {
-  if (!daemonClients.has(userId)) return Promise.resolve(null);
+  const scope = opts?.scope ?? null;
+  if (scope) {
+    // scope 投递前的轻量预检：存在「target 命中且连接 scope 相符」才发送（与 handleEnvelope 同口径）
+    const keys = target.includes(":")
+      ? [target]
+      : [...daemonClients.keys()].filter((k) => k === target || k.startsWith(`${target}:`));
+    const ok = keys.some((k) => daemonClients.has(k) && daemonMeta.get(k)?.serverId === scope);
+    if (!ok) return Promise.resolve(null);
+  } else if (!resolveDaemonConn(target)) {
+    return Promise.resolve(null);
+  }
   const requestId = `ws-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
@@ -650,8 +927,9 @@ export function requestDaemonWorkspace(
       resolve(msg);
     });
     sendToDaemon(
-      userId,
+      target,
       path ? { type: "workspace:read", requestId, agentName, path } : { type: "workspace:read", requestId, agentName },
+      { scope },
     );
   });
 }
@@ -679,7 +957,8 @@ export async function revalidateTerminalWatchersByChannel(channelId: string): Pr
       if (!isMemberHere) continue;
       for (const ws of [...(byAgent.get(agentName) ?? [])]) {
         const watcherId = socketOwnerOf(ws);
-        if (!watcherId || watcherId === owner) continue; // owner 恒有权
+        // owner 恒有权——owner 键可能是 machineKey（`u:uuid`），前缀比较兼容两种键形
+        if (!watcherId || watcherId === owner || owner.startsWith(`${watcherId}:`)) continue;
         const stillAllowed = await resolveTerminalWatchTarget(watcherId, agentName);
         if (!stillAllowed) removeTerminalWatcher(owner, agentName, ws);
       }
@@ -713,12 +992,16 @@ type WsEnvelope =
   | {
       kind: "channel";
       channelId: string;
+      /** 频道所在 server——daemon 扇出的 scope 过滤键（连错 scope 的机器不投递） */
+      serverId: string | null;
       allowedHumanIds: string[] | null;
       allowedDaemonUserIds: string[] | null;
       event: any;
     }
   | { kind: "user"; userId: string; event: any }
-  | { kind: "daemon"; userId: string; event: any }
+  // target=machineKey 或 userId；scope=期望的 server scope（null=不校验）——
+  // agent 级事件必带 scope：绑定机当前连了别的 server 时绝不误投（投递层隔离）
+  | { kind: "daemon"; target: string; scope?: string | null; event: any }
   | { kind: "all-daemons"; event: any }
   | { kind: "terminal-frame"; userId: string; agentName: string; event: any };
 
@@ -732,6 +1015,14 @@ function envelopeChannel(env: WsEnvelope): string {
       return PUBSUB_CHANNEL_BROADCAST;
     case "all-daemons":
       return PUBSUB_CHANNEL_ALL_DAEMONS;
+    case "daemon":
+      // target 可为 machineKey（userId:machineUuid）——定向频道仍按 userId 分，
+      // 接收实例在本地 socket 表上再按 machineKey/scope 精确解析
+      return userChannelName(env.target.split(":")[0]!);
+    case "terminal-frame":
+      // userId 字段承载发布连接的注册键（可为 machineKey）——订阅频道按 userId 分，
+      // 本地观众表才按完整键寻址
+      return userChannelName(env.userId.split(":")[0]!);
     default:
       return userChannelName(env.userId);
   }
@@ -740,7 +1031,7 @@ function envelopeChannel(env: WsEnvelope): string {
 /** 本实例持有该用户的连接（browser 或 daemon）才需要订阅其定向频道；幂等，连接增减处调用 */
 function refreshUserSubscription(userId: string): void {
   if (!pubsub) return;
-  const needed = browserClients.has(userId) || daemonClients.has(userId);
+  const needed = browserClients.has(userId) || userHasLocalDaemon(userId);
   if (needed && !userSubs.has(userId)) {
     userSubs.set(
       userId,
@@ -761,7 +1052,7 @@ export function setPubSub(p: PubSub): void {
   p.subscribe(PUBSUB_CHANNEL_BROADCAST, (payload) => handleEnvelope(payload as WsEnvelope));
   p.subscribe(PUBSUB_CHANNEL_ALL_DAEMONS, (payload) => handleEnvelope(payload as WsEnvelope));
   // 已在线用户的定向频道补订阅（进程重启后 setPubSub 晚于首条连接 / 测试重复注入）
-  for (const userId of new Set([...browserClients.keys(), ...daemonClients.keys()])) {
+  for (const userId of new Set([...browserClients.keys(), ...localDaemonUserIds()])) {
     refreshUserSubscription(userId);
   }
 }
@@ -809,8 +1100,14 @@ function handleEnvelope(env: WsEnvelope): void {
       // 成员」的用户 daemon。成员解析在 broadcast() 完成；解析失败 fail-closed 为空数组
       // → 不投任何 daemon（与 P0.2 同语义，事件可经 REST 按 seq 游标补拉）。
       const daemonAllowed = env.allowedDaemonUserIds ? new Set(env.allowedDaemonUserIds) : null;
-      for (const [userId, ws] of daemonClients) {
-        if (daemonAllowed && !daemonAllowed.has(userId)) continue;
+      for (const [key, ws] of daemonClients) {
+        const meta = daemonMeta.get(key);
+        const uid = meta?.userId ?? key.split(":")[0]!;
+        if (daemonAllowed && !daemonAllowed.has(uid)) continue;
+        // scope 过滤（server-scoped computers）：连接只收自己 token scope server 的
+        // 频道事件——scope 不符（连了别的 server）或尚未 ready（serverId 未就位
+        // 时 meta.serverId 已有 token scope，provisional 连接同样受过滤）
+        if (env.serverId && meta?.serverId !== env.serverId) continue;
         deliver([ws], payload);
       }
       break;
@@ -821,7 +1118,25 @@ function handleEnvelope(env: WsEnvelope): void {
       break;
     }
     case "daemon": {
-      const daemon = daemonClients.get(env.userId);
+      let daemon: WebSocket | undefined;
+      if (env.scope) {
+        // scope 守护：只投给「当前 scope 相符」的连接。target=machineKey 时校验该机
+        // 连接的 scope；target=裸 userId 时在该用户的连接里挑同 scope 的一条——
+        // 机器已切到其他 server 时宁可不投也不误投（隔离语义）。
+        const candidates = env.target.includes(":")
+          ? [env.target]
+          : [...daemonClients.keys()].filter((k) => k === env.target || k.startsWith(`${env.target}:`));
+        for (const k of candidates) {
+          const ws = daemonClients.get(k);
+          if (!ws) continue;
+          if (daemonMeta.get(k)?.serverId === env.scope) {
+            daemon = ws;
+            break;
+          }
+        }
+      } else {
+        daemon = resolveDaemonConn(env.target);
+      }
       if (daemon) deliver([daemon], JSON.stringify(env.event));
       break;
     }

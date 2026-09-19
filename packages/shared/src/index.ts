@@ -463,6 +463,10 @@ export type WsFromDaemonMessage =
       daemonVersion: string;
       os?: string;
       arch?: string;
+      /** server-scoped computers：本机稳定身份（.slock/machine-id 首启生成）；缺省按 legacy 单机处理 */
+      machineUuid?: string;
+      /** daemon --server 参数声明：server 端比对 token scope，不一致拒连 */
+      serverName?: string;
     }
   | { type: "agent:status"; agentId: string; agentName: string; status: string; detail: string }
   | { type: "agent:delivery-queued"; agentName: string; channelName: string }

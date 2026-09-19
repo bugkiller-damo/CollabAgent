@@ -1,7 +1,17 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { api, BASE, cleanupTestData, closeSql, registerUser, sql, type TestUser, uniqHandle } from "./helpers.js";
+import {
+  api,
+  BASE,
+  cleanupTestData,
+  closeSql,
+  makeOrgOwner,
+  registerUser,
+  sql,
+  type TestUser,
+  uniqHandle,
+} from "./helpers.js";
 
 // O4 存储路由加固的黑盒回归测试：
 // 1. 上传返回 attachmentId + /api/attachments/<id> url（F7 收敛后为 ACL 端点），带 cookie 可直接下载同字节
@@ -50,6 +60,9 @@ async function downloadBytes(user: TestUser, path: string): Promise<{ status: nu
 beforeAll(async () => {
   alice = await registerUser();
   bob = await registerUser();
+  // 2026-09-18：建频道收敛 server owner——两人的频道都建在默认社区
+  await makeOrgOwner(alice);
+  await makeOrgOwner(bob);
 });
 
 afterAll(async () => {

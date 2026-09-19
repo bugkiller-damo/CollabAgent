@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
-import { apiGet, apiPost } from "../api";
+import { apiGet } from "../api";
 
 export type RuntimeProbeStatus = "installed" | "not_installed" | "installed_unsupported";
 
@@ -10,10 +10,15 @@ export interface RuntimeProbe {
   version?: string;
 }
 
+/**
+ * 2026-09-19 server-scoped computers：一行 = 某用户在活跃 server 注册的一台机器。
+ * 身份键 (userId, serverId, machineUuid)；member 可读全表，操作仅属主（mine）。
+ */
 export interface ComputerRecord {
   id: string;
   userId: string;
   serverId: string;
+  machineUuid: string;
   name: string;
   description: string;
   hostname: string | null;
@@ -25,17 +30,10 @@ export interface ComputerRecord {
   online: boolean;
   runtimes: RuntimeProbe[];
   connectedAt: number | null;
-}
-
-export interface ComputerStatus {
-  connected: boolean;
-  hostname: string | null;
-  os: string | null;
-  arch: string | null;
-  daemonVersion: string | null;
-  runtimes: RuntimeProbe[];
-  connectedAt: number | null;
-  computer: ComputerRecord | null;
+  /** 该机属主的账号信息（他人机器时展示用） */
+  ownerHandle: string | null;
+  ownerName: string | null;
+  mine: boolean;
 }
 
 const CATALOG: { id: string; label: string }[] = [
@@ -53,49 +51,34 @@ export function claudeInstalled(runtimes: RuntimeProbe[]): boolean {
   return runtimes.some((r) => r.id === "claude" && r.status === "installed");
 }
 
+/**
+ * 活跃 server 的计算机列表（apiClient 自动携 x-server-id——切 server 后须 refresh）。
+ * 不再有懒建行/单机状态对象：机器行只在 daemon ready 时由服务端落库。
+ */
 export const useComputerStore = defineStore("computer", () => {
-  const status = ref<ComputerStatus | null>(null);
+  const computers = ref<ComputerRecord[]>([]);
   const loading = ref(false);
+  const loaded = ref(false);
 
-  const connected = computed(() => !!status.value?.connected);
-  const computer = computed(() => status.value?.computer ?? null);
-  const runtimes = computed(() => status.value?.runtimes ?? []);
-  const hasClaude = computed(() => claudeInstalled(runtimes.value));
+  const myComputers = computed(() => computers.value.filter((c) => c.mine));
+  /** 我在本 server 至少一台机器在线——rail 圆点/老「已连接」语义的新形态 */
+  const connected = computed(() => myComputers.value.some((c) => c.online));
 
-  async function refresh(): Promise<ComputerStatus | null> {
+  async function refresh(): Promise<ComputerRecord[]> {
     loading.value = true;
     try {
-      const me = await apiGet<ComputerStatus>("/api/computers/me");
-      status.value = me;
-      return me;
+      const d = await apiGet<{ computers: ComputerRecord[] }>("/api/computers");
+      computers.value = d.computers || [];
+      return computers.value;
     } catch {
-      try {
-        const d = await apiGet<ComputerStatus>("/api/daemon/status");
-        status.value = { ...d, computer: d.computer ?? null };
-        return status.value;
-      } catch {
-        status.value = {
-          connected: false,
-          hostname: null,
-          os: null,
-          arch: null,
-          daemonVersion: null,
-          runtimes: [],
-          connectedAt: null,
-          computer: null,
-        };
-        return status.value;
-      }
+      // 无活跃 server / 非成员 / 端点失败 → 空态（页面自己渲染接入引导）
+      computers.value = [];
+      return [];
     } finally {
+      loaded.value = true;
       loading.value = false;
     }
   }
 
-  async function ensure(): Promise<ComputerStatus> {
-    const created = await apiPost<ComputerStatus>("/api/computers", {});
-    status.value = created;
-    return created;
-  }
-
-  return { status, loading, connected, computer, runtimes, hasClaude, refresh, ensure };
+  return { computers, myComputers, connected, loading, loaded, refresh };
 });

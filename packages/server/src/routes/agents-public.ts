@@ -3,8 +3,16 @@ import type { FastifyInstance } from "fastify";
 import { sql } from "../db/connection.js";
 import { computerOnlineFor, decorateAgentPresence, setAgentDuty } from "../lib/agent-duty.js";
 import { requireOwnAgent } from "../lib/agent-helpers.js";
-import { getOrCreatePersonalOrg, getUserOrgIds } from "../lib/orgs.js";
-import { daemonMeta, requestDaemonWorkspace, sendToDaemon } from "../ws/handler.js";
+import { getUserOrgIds, isOrgOwner } from "../lib/orgs.js";
+import { isMachineOnline } from "../lib/presence.js";
+import {
+  agentMachineOnline,
+  daemonTargetForAgent,
+  findDaemonMeta,
+  requestDaemonWorkspace,
+  sendToAgentDaemon,
+  sendToDaemon,
+} from "../ws/handler.js";
 
 /**
  * runtime_profile 可能是正确的 jsonb 对象，也可能是历史遗留的「双重编码字符串」，统一解析。
@@ -52,12 +60,23 @@ export async function agentPublicRoutes(app: FastifyInstance) {
       computer_id: string | null;
       computer_name: string | null;
       computer_hostname: string | null;
+      computer_machine_uuid: string | null;
     }>(
+      // 计算机解析二级：① agents.computer_id 精确命中（绑定机）② NULL 兜底取属主在
+      // 同 server 的任一机器行（存量数据展示）。多机时 ② 只用于展示，派发走绑定键。
       `SELECT a.id, a.user_id, a.name, a.display_name, a.description, a.avatar_url, a.status, a.duty,
               a.runtime_profile, a.server_id, a.created_at,
-              c.id AS computer_id, c.name AS computer_name, c.hostname AS computer_hostname
+              c.id AS computer_id, c.name AS computer_name, c.hostname AS computer_hostname,
+              c.machine_uuid AS computer_machine_uuid
          FROM agents a
-         LEFT JOIN computers c ON c.user_id = a.user_id
+         LEFT JOIN LATERAL (
+           SELECT c.id, c.name, c.hostname, c.machine_uuid
+             FROM computers c
+            WHERE c.id = a.computer_id
+               OR (a.computer_id IS NULL AND c.user_id = a.user_id AND c.server_id = a.server_id)
+            ORDER BY (c.id = a.computer_id) DESC, c.last_ready_at DESC NULLS LAST
+            LIMIT 1
+         ) c ON true
         WHERE a.server_id::text = ANY($1)${filter}
         ORDER BY a.created_at DESC`,
       params,
@@ -66,6 +85,9 @@ export async function agentPublicRoutes(app: FastifyInstance) {
       agents: agents.rows.map((a) => {
         const rp = parseRuntimeProfile(a.runtime_profile);
         const decorated = decorateAgentPresence(a);
+        const computerOnline = a.computer_machine_uuid
+          ? isMachineOnline(String(a.user_id), a.computer_machine_uuid, String(a.server_id))
+          : computerOnlineFor(String(a.user_id));
         return {
           ...a,
           ...decorated,
@@ -77,7 +99,7 @@ export async function agentPublicRoutes(app: FastifyInstance) {
                 id: String(a.computer_id),
                 name: a.computer_name || a.computer_hostname || "计算机",
                 hostname: a.computer_hostname,
-                online: computerOnlineFor(String(a.user_id)),
+                online: computerOnline,
               }
             : null,
         };
@@ -105,24 +127,60 @@ export async function agentPublicRoutes(app: FastifyInstance) {
 
   // POST /agents — 创建
   app.post("/agents", { preHandler: [app.authenticate] }, async (req: any, reply: any) => {
-    const { name, displayName, description, avatarUrl, runtime, model, serverId } = req.body;
+    const { name, displayName, description, avatarUrl, runtime, model, serverId, computerId } = req.body;
     if (!name) return reply.status(400).send({ error: "name required" });
 
-    // serverId 省略 → 落到创建者的个人组织；若指定，必须是创建者所属的组织
-    let orgId: string;
-    if (serverId) {
-      const myOrgs = await getUserOrgIds(app, req.user.sub);
-      if (!myOrgs.includes(String(serverId))) return reply.status(403).send({ error: "not a member of that org" });
-      orgId = String(serverId);
-    } else {
-      orgId = await getOrCreatePersonalOrg(app, req.user.sub, req.user.handle);
-    }
+    // serverId 显式必填（2026-09-19 取消个人空间兜底后与 computers 端点同口径）；
+    // 必须是创建者所 owner 的组织——member 只能参与频道，不可向 server 添加 agent
+    if (!serverId) return reply.status(400).send({ error: "serverId required" });
+    if (!(await isOrgOwner(app, String(serverId), req.user.sub)))
+      return reply.status(403).send({ error: "only org owner can add agents" });
+    const orgId = String(serverId);
 
     const runtimeId = String(runtime || "claude");
     if (!(WIRED_RUNTIME_IDS as readonly string[]).includes(runtimeId)) {
       return reply.status(400).send({ error: "runtime not wired", runtime: runtimeId });
     }
-    const meta = daemonMeta.get(String(req.user.sub));
+
+    // 2026-09-19 server-scoped computers：目标 server 必须有我的计算机行（已注册，
+    // 不强求在线）。单机自动绑定；多机须显式 computerId；绑定行必须同 (user,server)。
+    const machines = await app.pg.query<{ id: string; machine_uuid: string; name: string; hostname: string | null }>(
+      `SELECT id, machine_uuid, name, hostname FROM computers
+        WHERE user_id::text = $1 AND server_id = $2
+        ORDER BY last_ready_at DESC NULLS LAST, created_at ASC`,
+      [req.user.sub, orgId],
+    );
+    if (machines.rows.length === 0) {
+      return reply.status(400).send({
+        error: "register a computer in this server first (run the daemon with a token scoped to this server)",
+        code: "no_computer_in_server",
+      });
+    }
+    let bound: (typeof machines.rows)[number] | undefined;
+    if (computerId) {
+      bound = machines.rows.find((m) => String(m.id) === String(computerId));
+      if (!bound) {
+        return reply.status(400).send({
+          error: "computerId does not match any of your computers registered in this server",
+          candidates: machines.rows.map((m) => ({ id: m.id, name: m.name, hostname: m.hostname })),
+        });
+      }
+    } else if (machines.rows.length === 1) {
+      bound = machines.rows[0];
+    } else {
+      return reply.status(400).send({
+        error: "multiple computers registered in this server — computerId required",
+        code: "computer_required",
+        candidates: machines.rows.map((m) => ({ id: m.id, name: m.name, hostname: m.hostname })),
+      });
+    }
+
+    // runtime 探测用绑定机的 meta（该机的连接须同 scope 才算归属——metaForRow 同口径内联）
+    const boundKey = `${req.user.sub}:${bound.machine_uuid}`;
+    const meta = (() => {
+      const m = findDaemonMeta(boundKey);
+      return m && (!m.serverId || m.serverId === orgId) ? m : undefined;
+    })();
     if (meta) {
       const probe = meta.runtimes.find((r) => r.id === runtimeId);
       if (probe && probe.status !== "installed") {
@@ -142,10 +200,11 @@ export async function agentPublicRoutes(app: FastifyInstance) {
       avatar_url: string;
       runtime_profile: unknown;
     }>(
-      "INSERT INTO agents (user_id, server_id, name, display_name, description, avatar_url, runtime_profile) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb) RETURNING *",
+      "INSERT INTO agents (user_id, server_id, computer_id, name, display_name, description, avatar_url, runtime_profile) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb) RETURNING *",
       [
         req.user.sub,
         orgId,
+        bound.id,
         name,
         displayName || name,
         description || "",
@@ -157,18 +216,22 @@ export async function agentPublicRoutes(app: FastifyInstance) {
 
     // Auto-start: notify this agent's owning daemon to spawn it（不广播——见 agents.ts
     // 对应 call site 的注释：广播会让别的 daemon 误注册这个 agent，hasAgent() 谎报，
-    // 真正 @/派发时在 spawn 阶段 403 "not your agent"）。
-    sendToDaemon(String(req.user.sub), {
-      type: "agent:start",
-      agent: {
-        id: agent.id,
-        name: agent.name,
-        displayName: agent.display_name,
-        runtime: runtimeId,
-        model: model || "sonnet",
+    // 真正 @/派发时在 spawn 阶段 403 "not your agent"）。投递精确到绑定机的 machineKey。
+    sendToDaemon(
+      boundKey,
+      {
+        type: "agent:start",
+        agent: {
+          id: agent.id,
+          name: agent.name,
+          displayName: agent.display_name,
+          runtime: runtimeId,
+          model: model || "sonnet",
+        },
+        config: { runtime_profile: agent.runtime_profile },
       },
-      config: { runtime_profile: agent.runtime_profile },
-    });
+      { scope: orgId },
+    );
 
     return { agent };
   });
@@ -229,7 +292,7 @@ export async function agentPublicRoutes(app: FastifyInstance) {
     const rp = parseRuntimeProfile(agent.runtime_profile);
     // 停班中禁止 agent:start，否则会把人重新注册进 daemon
     if (!wasOff && parseAgentDuty(agent.duty) !== "off") {
-      sendToDaemon(String(agent.user_id), {
+      await sendToAgentDaemon(app.pg, agent, {
         type: "agent:start",
         agentId: agent.id,
         config: {
@@ -247,10 +310,16 @@ export async function agentPublicRoutes(app: FastifyInstance) {
   // DELETE /agents/:agentId — 删除（连带频道成员关系；保留历史消息）
   app.delete("/agents/:agentId", { preHandler: [app.authenticate, requireOwnAgent] }, async (req: any) => {
     const { agentId } = req.params;
-    // P0.11：requireOwnAgent 已保证 agent 存在且属于调用者，sendToDaemon 目标即调用者本人。
+    // P0.11：requireOwnAgent 已保证 agent 存在且属于调用者。绑定信息先取出——
+    // 行删后 computer_id 随之消失，stop 事件的投递目标要靠它解析。
+    const row = await app.pg.query<{ user_id: string; server_id: string; computer_id: string | null }>(
+      "SELECT user_id, server_id, computer_id FROM agents WHERE id = $1",
+      [agentId],
+    );
+    const agent = row.rows[0];
     await app.pg.query("DELETE FROM channel_members WHERE member_id = $1 AND member_type = 'agent'", [agentId]);
     await app.pg.query("DELETE FROM agents WHERE id = $1", [agentId]);
-    sendToDaemon(String(req.user.sub), { type: "agent:stop", agentId });
+    if (agent) await sendToAgentDaemon(app.pg, agent, { type: "agent:stop", agentId });
     return { ok: true };
   });
 
@@ -261,16 +330,20 @@ export async function agentPublicRoutes(app: FastifyInstance) {
     async (req: any, reply: any) => {
       const { agentId } = req.params as { agentId: string };
       const path = typeof req.query?.path === "string" ? req.query.path : undefined;
-      const agent = await app.pg.query<{ name: string; user_id: string }>(
-        "SELECT name, user_id FROM agents WHERE id = $1",
-        [agentId],
-      );
+      const agent = await app.pg.query<{
+        name: string;
+        user_id: string;
+        server_id: string;
+        computer_id: string | null;
+      }>("SELECT name, user_id, server_id, computer_id FROM agents WHERE id = $1", [agentId]);
       if (agent.rows.length === 0) return reply.status(404).send({ error: "agent not found" });
       const row = agent.rows[0]!;
-      if (!daemonMeta.get(String(row.user_id))) {
+      // 工作区在绑定机上——在线判定与请求目标都按绑定机解析（连接须在 agent scope）
+      if (!(await agentMachineOnline(app.pg, row))) {
         return reply.status(503).send({ error: "computer offline", exists: false, files: [] });
       }
-      const result = await requestDaemonWorkspace(String(row.user_id), row.name, path);
+      const target = await daemonTargetForAgent(app.pg, row);
+      const result = await requestDaemonWorkspace(target, row.name, path, 4000, { scope: String(row.server_id) });
       if (!result) return reply.status(504).send({ error: "workspace timeout", exists: false, files: [] });
       if (result.error && result.error !== "not found") {
         const status = result.error === "path not allowed" ? 400 : result.error === "file too large" ? 413 : 404;

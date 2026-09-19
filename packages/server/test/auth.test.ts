@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it } from "vitest";
-import { api, cleanupTestData, closeSql, makeOrgOwner, registerUser, sql, uniqHandle } from "./helpers.js";
+import { api, cleanupTestData, closeSql, registerUser, sql, uniqHandle } from "./helpers.js";
 
 afterAll(async () => {
   await cleanupTestData();
@@ -233,7 +233,16 @@ describe("auth: P1.31 register 加固（email 校验 / 23505→409 / invite 事�
   };
   async function createInvite(maxUses: number | null, expiresInDays?: number) {
     const owner = await registerUser();
-    const orgId = await makeOrgOwner(owner);
+    // 邀请必须建在「非默认社区」上：注册流程本身会自动把新用户拉进默认社区
+    // （广场），invite 若也挂默认社区，「不入圈」断言会被自动入圈污染——
+    // memberRole(默认社区) 恒命中，过期/吊销/耗尽用例无法区分两条入圈路径。
+    const org = await api("/api/orgs", {
+      method: "POST",
+      cookie: owner.cookie,
+      body: { name: "zz_auth_inv_" + uniqHandle() },
+    });
+    expect(org.status).toBe(200);
+    const orgId = org.data.org.id as string;
     const r = await api(`/api/orgs/${orgId}/invites`, {
       method: "POST",
       cookie: owner.cookie,

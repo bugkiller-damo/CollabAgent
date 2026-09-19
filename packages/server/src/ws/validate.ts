@@ -33,6 +33,8 @@ const readySchema = z
     daemonVersion: str.optional(),
     os: str.optional(),
     arch: str.optional(),
+    machineUuid: str.optional(),
+    serverName: str.optional(),
   })
   .passthrough();
 

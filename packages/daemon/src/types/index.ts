@@ -98,6 +98,10 @@ export interface DaemonConfig {
   serverUrl: string;
   apiKey: string;
   dataDir?: string;
+  /** --server 参数：声明本进程为哪个 server 干活，握手时服务端与 token scope 比对 */
+  serverName?: string;
+  /** 测试注入的本机身份；缺省走 SLOCK_MACHINE_ID / ~/.slock/machine-id 解析 */
+  machineUuid?: string;
 }
 
 /** 一条待分发的消息 */

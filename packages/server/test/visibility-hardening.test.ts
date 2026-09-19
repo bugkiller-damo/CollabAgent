@@ -1,5 +1,16 @@
 import { afterAll, describe, expect, it } from "vitest";
-import { api, BASE, cleanupTestData, closeSql, registerUser, sql, type TestUser, uniqHandle } from "./helpers.js";
+import {
+  api,
+  BASE,
+  cleanupTestData,
+  closeSql,
+  ensureTestComputer,
+  makeOrgOwner,
+  registerUser,
+  sql,
+  type TestUser,
+  uniqHandle,
+} from "./helpers.js";
 
 // 2026-09-17 用户级可见性审计修复回归测试：
 // 附件绑定授权 / @提及通知过滤 / resolve 收口 / meta 白名单 / join 成员门槛。
@@ -33,17 +44,20 @@ const uploadProbe = async (u: TestUser, name: string, content: string) => {
 const makeOutsider = async () => {
   const handle = "zz_test_out_" + uniqHandle().slice(-6);
   const hash = (await import("bcryptjs")).default.hashSync("Test1234", 10);
-  await sql`INSERT INTO users (handle, display_name, email, password_hash)
-            VALUES (${handle}, ${handle}, ${handle + "@test.local"}, ${hash})`;
+  const ins = await sql`INSERT INTO users (handle, display_name, email, password_hash)
+            VALUES (${handle}, ${handle}, ${handle + "@test.local"}, ${hash}) RETURNING id`;
   const login = await api("/api/auth/login", { method: "POST", body: { login: handle, password: "Test1234" } });
   expect(login.status).toBe(200);
-  return { handle, cookie: login.cookieHeader };
+  return { handle, userId: String(ins[0].id), cookie: login.cookieHeader };
 };
 
 // 附件绑定授权
 const idorBlock = async () => {
   const alice = await registerUser();
   const bob = await registerUser();
+  // 2026-09-18：默认社区建频道需 server owner——alice/bob 都要建频道
+  await makeOrgOwner(alice);
+  await makeOrgOwner(bob);
   const ch = await call(alice, "/api/channels", "POST", { name: "zz_test_vh_" + uniqHandle(), type: "private" });
   const chId = ch.data.channel.id as string;
   const attId = await uploadProbe(alice, "zz-vh.txt", "vh probe bytes");
@@ -85,6 +99,7 @@ describe("visibility hardening: attachment bind authorization", () => {
 describe("visibility hardening: @mention notification filter", () => {
   it("私有频道 @非成员 → 不产生通知", async () => {
     const alice = await registerUser();
+    await makeOrgOwner(alice); // 默认社区建频道/放 agent 需 server owner（2026-09-18）
     const bob = await registerUser();
     const ch = await call(alice, "/api/channels", "POST", { name: "zz_test_vh_" + uniqHandle(), type: "private" });
     await call(alice, "/api/messages/send", "POST", {
@@ -100,6 +115,7 @@ describe("visibility hardening: @mention notification filter", () => {
 describe("visibility hardening: resolve / meta / join", () => {
   it("GET /api/channels/resolve 私有频道按名解析 → 404（成员 200）", async () => {
     const alice = await registerUser();
+    await makeOrgOwner(alice); // 默认社区建频道/放 agent 需 server owner（2026-09-18）
     const bob = await registerUser();
     const name = "zz_test_vh_" + uniqHandle();
     await call(alice, "/api/channels", "POST", { name, type: "private" });
@@ -123,6 +139,7 @@ describe("visibility hardening: resolve / meta / join", () => {
 
   it("无 server 成员身份的用户 join 公开频道 → 403", async () => {
     const alice = await registerUser();
+    await makeOrgOwner(alice); // 默认社区建频道需 server owner（2026-09-18）
     const ch = await call(alice, "/api/channels", "POST", { name: "zz_test_vh_" + uniqHandle(), type: "public" });
     const outsider = await makeOutsider();
     const r = await api(`/api/channels/${ch.data.channel.id}/join`, { method: "POST", cookie: outsider.cookie });
@@ -146,6 +163,7 @@ describe("visibility hardening: 公开频道 server 成员口径（canAccessChan
 
   it("被频道管理员邀请入圈的非 server 成员：成员行放行（跨社区协作语义保留）", async () => {
     const alice = await registerUser();
+    await makeOrgOwner(alice); // 默认社区建频道需 server owner（2026-09-18）
     const ch = await call(alice, "/api/channels", "POST", { name: "zz_test_vh_" + uniqHandle(), type: "public" });
     const outsider = await makeOutsider();
     // 邀请前：resolve 收紧判定（成员行 + server 成员都不沾）→ 404
@@ -169,11 +187,12 @@ describe("visibility hardening: 公开频道 server 成员口径（canAccessChan
 
   it("非 server 成员名下 agent 写默认社区公开频道 → 403（agentCanAccessChannel 同口径）", async () => {
     const outsider = await makeOutsider();
-    // agent 落在 outsider 个人空间；#general 经默认社区兜底可解析，但访问判定拒绝
+    // agent 落在 outsider 自己的 owned server；#general 经默认社区兜底可解析，但访问判定拒绝
+    const outComp = await ensureTestComputer(outsider);
     const ag = await api("/api/agents", {
       method: "POST",
       cookie: outsider.cookie,
-      body: { name: "zz_out_ag_" + uniqHandle().slice(-6) },
+      body: { name: "zz_out_ag_" + uniqHandle().slice(-6), serverId: outComp.serverId },
     });
     expect(ag.status).toBe(200);
     const r = await api(`/internal/agent/${ag.data.agent.id}/send`, {
@@ -189,11 +208,14 @@ describe("visibility hardening: 公开频道 server 成员口径（canAccessChan
 describe("visibility hardening: consent_channel_invite（公开频道 @自动入圈收窄）", () => {
   it("同 server 的他人 agent 未开 consent → @ 不入圈不唤醒；开后入圈", async () => {
     const alice = await registerUser();
+    await makeOrgOwner(alice); // 默认社区建频道/放 agent 需 server owner（2026-09-18）
     const bob = await registerUser();
+    await makeOrgOwner(bob); // bob 建频道也需 server owner
     // alice 的 agent 建到默认社区（与 bob 的频道同 server——收窄前这一条件即自动入圈）
     const gen = await api(`/api/channels/resolve?target=${encodeURIComponent("#general")}`, { cookie: alice.cookie });
     expect(gen.status).toBe(200);
     const serverId = gen.data.server_id as string;
+    await ensureTestComputer(alice, serverId); // server-scoped：agent 建到默认社区需该 server 有计算机行
     const agentName = "zzconsent" + uniqHandle().slice(-6);
     const ag = await call(alice, "/api/agents", "POST", { name: agentName, serverId });
     expect(ag.status).toBe(200);

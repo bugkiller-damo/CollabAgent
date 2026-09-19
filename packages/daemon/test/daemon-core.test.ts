@@ -56,7 +56,7 @@ describe("daemon-core 消息路由", () => {
     delete process.env.SLOCK_USE_PTY;
     obsBus = createObservationBus();
     // 真实构造（headless 懒加载，无 node-pty / 无 spawn），随后换掉 runtime 与 sendWs
-    core = new DaemonCore({ serverUrl: "http://fake-server.test", apiKey: "test-key" });
+    core = new DaemonCore({ serverUrl: "http://fake-server.test", apiKey: "test-key", machineUuid: "test-mu" });
     runtime = makeFakeRuntime(obsBus);
     sent = [];
     Object.assign(core as unknown as Record<string, unknown>, {

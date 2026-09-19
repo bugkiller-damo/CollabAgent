@@ -69,10 +69,10 @@ const router = createRouter({
               component: () => import("../pages/settings/SettingsLayout.vue"),
               children: [
                 { path: "profile", component: () => import("../pages/settings/ProfileSettings.vue") },
+                { path: "server", component: () => import("../pages/settings/ServerSettings.vue") },
                 { path: "security", component: () => import("../pages/settings/SecuritySettings.vue") },
                 { path: "integrations", component: () => import("../pages/settings/IntegrationSettings.vue") },
                 { path: "notifications", component: () => import("../pages/settings/NotificationSettings.vue") },
-                { path: "members", component: () => import("../pages/settings/WorkspaceMembers.vue") },
                 { path: "metrics", component: () => import("../pages/settings/MetricsDashboard.vue") },
               ],
             },
@@ -80,7 +80,9 @@ const router = createRouter({
             // 旧 /admin 深链兼容重定向（书签/外部链接；站内引用已全部改指 /settings/*）
             { path: "admin", redirect: "/settings" },
             { path: "admin/channels", redirect: "/channels/general" },
-            { path: "admin/members", redirect: "/settings/members" },
+            { path: "admin/members", redirect: "/people" },
+            // 成员管理已融合进侧边栏成员页（PeopleView）——旧深链落到 /people
+            { path: "settings/members", redirect: "/people" },
             { path: "admin/metrics", redirect: "/settings/metrics" },
             {
               path: "admin/agents",

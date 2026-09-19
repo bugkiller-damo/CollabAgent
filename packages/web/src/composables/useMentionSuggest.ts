@@ -81,7 +81,7 @@ export function useMentionSuggest(
       }
     } catch {}
     // 公开频道：并入「已加入本频道」的 agent 成员。/api/agents 按调用者 org 过滤，
-    // 会漏掉被邀请入圈的他人 agent（落在主人私有空间）；服务端公开频道唤醒口径
+    // 会漏掉被邀请入圈的他人 agent（落在主人自有 server）；服务端公开频道唤醒口径
     // 同样认频道成员（messages.ts 公开分支），两端对齐，看见即可叫醒。
     if (scopeChannelId.value) {
       try {

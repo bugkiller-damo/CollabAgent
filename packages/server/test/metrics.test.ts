@@ -94,12 +94,12 @@ describe("P1.30 admin 门禁（org owner）", () => {
     expect(h.status).toBe(403);
   });
 
-  it("仅持个人空间的用户不算 admin（个人 org owner 不放行，否则门禁形同虚设）", async () => {
+  it("仅广场 membership 的用户不算 admin（无任何 owner 角色不放行）", async () => {
     const plain = await registerUser();
-    // GET /api/orgs 触发 getOrCreatePersonalOrg——确保其确实持有个人空间 owner 身份
+    // personal 懒建取消后新用户只有广场 member 身份——任何 owned server 都无
     const o = await api("/api/orgs", { cookie: plain.cookie });
     expect(o.status).toBe(200);
-    expect(o.data.orgs.some((x: any) => x.personal && x.role === "owner")).toBe(true);
+    expect(o.data.orgs.every((x: any) => x.role !== "owner")).toBe(true);
     const r = await api("/api/metrics", { cookie: plain.cookie });
     expect(r.status).toBe(403);
   });
@@ -109,8 +109,8 @@ describe("P1.30 admin 门禁（org owner）", () => {
     const owner = await registerUser();
     // 2026-09-18 guild 化收紧回归：自建非默认社区的 owner 不再授予实例 admin
     // （POST /api/orgs 放开后，旧「任一非个人 server owner」口径等于全员放行）
-    const own = await sql`INSERT INTO servers (name, created_by, owner_id, personal)
-                          VALUES (${owner.handle + "_org"}, ${owner.userId}, ${owner.userId}, false) RETURNING id`;
+    const own = await sql`INSERT INTO servers (name, created_by, owner_id)
+                          VALUES (${owner.handle + "_org"}, ${owner.userId}, ${owner.userId}) RETURNING id`;
     await sql`INSERT INTO server_members (server_id, user_id, role) VALUES (${own[0].id}, ${owner.userId}, 'owner') ON CONFLICT DO NOTHING`;
     const ownRes = await api("/api/metrics", { cookie: owner.cookie });
     expect(ownRes.status).toBe(403);

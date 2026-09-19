@@ -1,5 +1,14 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { api, cleanupTestData, closeSql, registerUser, sql, uniqHandle } from "./helpers.js";
+import {
+  api,
+  cleanupTestData,
+  closeSql,
+  ensureTestComputer,
+  makeOrgOwner,
+  registerUser,
+  sql,
+  uniqHandle,
+} from "./helpers.js";
 
 afterAll(async () => {
   await cleanupTestData();
@@ -7,13 +16,14 @@ afterAll(async () => {
 });
 
 describe("agent/profile/org: 综合集成测试", () => {
-  let ck: string, cs: string, handle: string;
+  let ck: string, cs: string, handle: string, uid: string;
 
   beforeAll(async () => {
     const u = await registerUser();
     ck = u.cookie;
     cs = u.csrf;
     handle = u.handle;
+    uid = u.userId;
   });
 
   it("GET /api/agents — 列取", async () => {
@@ -51,9 +61,29 @@ describe("agent/profile/org: 综合集成测试", () => {
   });
 
   it("POST /api/profile/machine-token — 生成令牌", async () => {
-    const r = await api("/api/profile/machine-token", { method: "POST", cookie: ck, csrf: cs, body: {} });
+    const comp = await ensureTestComputer({ userId: uid, cookie: ck });
+    const r = await api("/api/profile/machine-token", {
+      method: "POST",
+      cookie: ck,
+      csrf: cs,
+      body: { serverId: comp.serverId },
+    });
     expect(r.status).toBe(200);
     expect(r.data.token).toMatch(/^sk_machine_/);
+  });
+
+  it("POST /api/agents + machine-token 缺 serverId → 400（个人空间兜底取消）", async () => {
+    const ag = await api("/api/agents", {
+      method: "POST",
+      cookie: ck,
+      csrf: cs,
+      body: { name: "zz_nosid_" + Date.now().toString(36) },
+    });
+    expect(ag.status).toBe(400);
+    expect(ag.data.error).toMatch(/serverId/);
+    const mt = await api("/api/profile/machine-token", { method: "POST", cookie: ck, csrf: cs, body: {} });
+    expect(mt.status).toBe(400);
+    expect(mt.data.error).toMatch(/serverId/);
   });
 
   it("POST /api/profile/change-password — 修改密码", async () => {
@@ -147,11 +177,12 @@ describe("agent/profile/org: 综合集成测试", () => {
 
   it("POST /api/agents/:id/duty — owner 可停班/值班", async () => {
     const name = "duty_" + Date.now().toString(36);
+    const comp = await ensureTestComputer({ userId: uid, cookie: ck });
     const created = await api("/api/agents", {
       method: "POST",
       cookie: ck,
       csrf: cs,
-      body: { name, displayName: "Duty" },
+      body: { name, displayName: "Duty", serverId: comp.serverId },
     });
     expect(created.status).toBe(200);
     const id = created.data.agent.id as string;
@@ -176,12 +207,13 @@ describe("agent/profile/org: 综合集成测试", () => {
 // P0.4：join/leave 租户收敛——频道名只在 (server_id, lower(name)) 内唯一，
 // 裸名解析不得命中其他租户的同名频道（跨租户串频道）。
 describe("P0.4: agent join/leave 租户收敛", () => {
-  async function mkAgent(cookie: string, csrf: string) {
+  async function mkAgent(u: { userId: string; cookie: string; csrf: string }) {
+    const comp = await ensureTestComputer(u);
     const r = await api("/api/agents", {
       method: "POST",
-      cookie,
-      csrf,
-      body: { name: "join_" + uniqHandle(), displayName: "JoinTest" },
+      cookie: u.cookie,
+      csrf: u.csrf,
+      body: { name: "join_" + uniqHandle(), displayName: "JoinTest", serverId: comp.serverId },
     });
     expect(r.status).toBe(200);
     return r.data.agent as { id: string; server_id: string };
@@ -202,8 +234,8 @@ describe("P0.4: agent join/leave 租户收敛", () => {
   it("同名频道命中 agent 自己的 org；leave 移除成员行", async () => {
     const a = await registerUser();
     const b = await registerUser();
-    const agA = await mkAgent(a.cookie, a.csrf);
-    const agB = await mkAgent(b.cookie, b.csrf);
+    const agA = await mkAgent(a);
+    const agB = await mkAgent(b);
     const chName = "zz_join_" + Date.now().toString(36);
     const chA = await mkChannel(a.cookie, a.csrf, { name: chName, type: "public", serverId: agA.server_id });
     const chB = await mkChannel(b.cookie, b.csrf, { name: chName, type: "public", serverId: agB.server_id });
@@ -229,8 +261,8 @@ describe("P0.4: agent join/leave 租户收敛", () => {
   it("跨租户频道 join → 404（不泄露存在性）", async () => {
     const a = await registerUser();
     const b = await registerUser();
-    const agA = await mkAgent(a.cookie, a.csrf);
-    const agB = await mkAgent(b.cookie, b.csrf);
+    const agA = await mkAgent(a);
+    const agB = await mkAgent(b);
     const chName = "zz_only_" + Date.now().toString(36);
     await mkChannel(a.cookie, a.csrf, { name: chName, type: "public", serverId: agA.server_id });
 
@@ -244,7 +276,9 @@ describe("P0.4: agent join/leave 租户收敛", () => {
 
   it("默认社区公开频道 join 保持放行（单租户豁免回归）", async () => {
     const c = await registerUser();
-    const agC = await mkAgent(c.cookie, c.csrf);
+    // 2026-09-18：默认社区建频道需 owner——立 c 为默认社区 owner（join 豁免语义不变）
+    await makeOrgOwner(c);
+    const agC = await mkAgent(c);
     // 不带 serverId 建频道 → resolveTenant 兜底默认 server（web 建频道的实际形态）
     const chName = "zz_def_" + Date.now().toString(36);
     const ch = await mkChannel(c.cookie, c.csrf, { name: chName, type: "public" });
@@ -259,7 +293,7 @@ describe("P0.4: agent join/leave 租户收敛", () => {
 
   it("私有频道 join 仍 403（须邀请）", async () => {
     const c = await registerUser();
-    const agC = await mkAgent(c.cookie, c.csrf);
+    const agC = await mkAgent(c);
     const chName = "zz_priv_" + Date.now().toString(36);
     await mkChannel(c.cookie, c.csrf, { name: chName, type: "private", serverId: agC.server_id });
     const j = await api(`/internal/agent/${agC.id}/channels/${chName}/join`, {
@@ -277,8 +311,11 @@ describe("P0.11: agent 编辑/删除所有权", () => {
   it("同 org 非 owner PATCH/DELETE 他人 agent → 403；owner 正常编辑/删除", async () => {
     const owner = await registerUser();
     const member = await registerUser();
-    const orgId = (await (await api("/api/orgs", { cookie: owner.cookie })).data.orgs[0]?.id) || "";
-    // member 加入 owner 的个人 org：org 校验本会放行，所有权校验必须拦下
+    // owner 的自有 server（orgs[0] 现在是广场——拉 member 进公共 server 会因
+    // 非 owner 被 403，必须拿到 owned server）
+    const comp = await ensureTestComputer(owner);
+    const orgId = comp.serverId;
+    // member 加入 owner 的自有 org：org 校验本会放行，所有权校验必须拦下
     expect(
       (
         await api(`/api/orgs/${orgId}/members`, {
@@ -340,11 +377,12 @@ describe("P0.11: agent 编辑/删除所有权", () => {
   it("非 org 成员 DELETE 他人 agent → 403（不泄露删除能力）", async () => {
     const owner = await registerUser();
     const outsider = await registerUser();
+    const comp = await ensureTestComputer(owner);
     const created = await api("/api/agents", {
       method: "POST",
       cookie: owner.cookie,
       csrf: owner.csrf,
-      body: { name: "own_" + uniqHandle(), displayName: "Owned" },
+      body: { name: "own_" + uniqHandle(), displayName: "Owned", serverId: comp.serverId },
     });
     expect(created.status).toBe(200);
     const id = created.data.agent.id as string;

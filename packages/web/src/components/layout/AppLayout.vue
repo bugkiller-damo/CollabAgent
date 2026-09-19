@@ -72,7 +72,6 @@ function useRouteTitle(pathname: string): { title: string; subtitle: string } {
   if (pathname.startsWith("/settings/security")) return { title: "安全与账户", subtitle: "设置" };
   if (pathname.startsWith("/settings/integrations")) return { title: "集成", subtitle: "设置" };
   if (pathname.startsWith("/settings/notifications")) return { title: "通知", subtitle: "设置" };
-  if (pathname.startsWith("/settings/members")) return { title: "成员管理", subtitle: "设置" };
   if (pathname.startsWith("/settings/metrics")) return { title: "运行指标", subtitle: "设置" };
   if (pathname === "/settings") return { title: "设置", subtitle: "" };
   return { title: "", subtitle: "" };
@@ -96,7 +95,7 @@ function paneForPath(pathname: string): SidebarPane | null {
   if (parseTasksRoute(pathname)) return "tasks";
   if (pathname === "/activity") return "activity";
   if (pathname === "/search") return "search";
-  if (pathname === "/people" || pathname.startsWith("/settings/members")) {
+  if (pathname === "/people") {
     return "people";
   }
   if (pathname.startsWith("/computers")) return "computers";
@@ -126,7 +125,14 @@ watch(
     if (serverStore.orgs.some((o) => o.id === sid)) {
       if (sid !== serverStore.activeServerId) serverStore.setActive(sid);
     } else if (serverStore.activeServerId) {
-      void router.replace(channelPath(serverStore.activeServerId, "general"));
+      // 回落到活跃 server 的合法落点：按真实频道列表解析——新建 server
+      // 没有 general（只有私有 onboarding-owner），硬编码会 404。解析是
+      // async，落地前复核 URL 上的 serverId 仍是那个非法值再替换。
+      const bad = sid;
+      const target = serverStore.activeServerId;
+      void channelStore.resolveLandingChannel(target).then((name) => {
+        if (String(route.params.serverId || "") === bad) void router.replace(channelPath(target, name));
+      });
     }
   },
   { immediate: true },
@@ -150,11 +156,25 @@ watch(
     if (!sid) return;
     const cr = parseChannelRoute(path);
     if (cr && !cr.serverId) {
-      void router.replace({
-        path: cr.threadId ? threadPath(sid, cr.channelName, cr.threadId) : channelPath(sid, cr.channelName),
-        query: route.query,
-        hash: route.hash,
-      });
+      const doReplace = (name: string) =>
+        void router.replace({
+          path: cr.threadId ? threadPath(sid, name, cr.threadId) : channelPath(sid, name),
+          query: route.query,
+          hash: route.hash,
+        });
+      // 新建 server 没有 general（只有私有 onboarding-owner）——/、
+      // /channels、/admin/channels、登录与 404 页的落点统一是
+      // /channels/general，先经 resolveLandingChannel 校验：存在则原样
+      // 规范化，不存在落到记忆/首频道。其余旧频道名（含 dm:<uuid> 伪频道
+      // 名）维持直通。
+      if (cr.channelName === "general") {
+        void channelStore.resolveLandingChannel(sid, cr.channelName).then((name) => {
+          const now = parseChannelRoute(route.path);
+          if (now && !now.serverId && now.channelName === cr.channelName) doReplace(name);
+        });
+      } else {
+        doReplace(cr.channelName);
+      }
       return;
     }
     const tr = parseTasksRoute(path);
@@ -166,12 +186,12 @@ watch(
 );
 
 // D1：受邀/存量用户没有自有 server 时的持久引导条（每会话可暂关）
-// hasOwnServer 而非 ownedCount：personal server 用户天然 owner，单看 role 会让
-// 判定恒为「已有」，受邀用户永远看不到引导（serverStore.hasOwnServer 注释详述）
+// hasOwnServer 而非 ownedCount：广场 owner（实例 admin）天然 owner，单看
+// role 会把无自有 server 的用户误判为「已有」（serverStore.hasOwnServer 注释详述）
 const HINT_DISMISS_KEY = "slock.hideCreateServerHint";
 const hintDismissed = ref(typeof sessionStorage !== "undefined" && sessionStorage.getItem(HINT_DISMISS_KEY) === "1");
 const showCreateServerHint = computed(
-  () => serverStore.loaded && !hasOwnServer(serverStore.orgs, authStore.user?.handle) && !hintDismissed.value,
+  () => serverStore.loaded && !hasOwnServer(serverStore.orgs) && !hintDismissed.value,
 );
 function dismissCreateServerHint() {
   hintDismissed.value = true;

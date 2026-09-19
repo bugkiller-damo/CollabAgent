@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { api, cleanupTestData, closeSql, registerUser } from "./helpers.js";
+import { api, cleanupTestData, closeSql, makeOrgOwner, registerUser } from "./helpers.js";
 
 afterAll(async () => {
   await cleanupTestData();
@@ -13,6 +13,7 @@ describe("actions: /api/actions/prepare 加固（P0.8）", () => {
 
   beforeAll(async () => {
     const u = await registerUser();
+    await makeOrgOwner(u); // 2026-09-18：默认社区建频道需 server owner
     ck = u.cookie;
     const o = await registerUser();
     otherCk = o.cookie;

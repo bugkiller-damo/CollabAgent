@@ -1,10 +1,9 @@
 import type { FastifyInstance } from "fastify";
-import { computerOnlineFor } from "../lib/agent-duty.js";
 import { getAgent, isChannelManager, requireOwnAgent, resolveAgentChannelByName } from "../lib/agent-helpers.js";
 import { resolvePeer } from "../lib/dm.js";
 import { recordTaskEvent } from "../lib/task-events.js";
 import { acquireTaskNumberLock } from "../lib/task-numbering.js";
-import { broadcast, sendToUser } from "../ws/handler.js";
+import { agentMachineOnline, broadcast, sendToUser } from "../ws/handler.js";
 
 const STATUSES = ["open", "reported", "cancelled", "completed"];
 
@@ -75,14 +74,17 @@ async function insertAndDeliver(
  * P1.27 起 computerOnlineFor 已跨实例（Redis 在线并集，传播 ≤3s）——
  * 告警预检的漏报窗口从「永挂」收敛到秒级陈旧。
  */
-function alarmIfDaemonOffline(
+async function alarmIfDaemonOffline(
+  app: FastifyInstance,
   channelName: string,
   manager: { user_id?: string; name?: string } | null,
-  target: { name?: string; user_id?: string } | null,
+  target: { name?: string; user_id?: string; server_id?: string; computer_id?: string | null } | null,
   what: string,
-): void {
+): Promise<void> {
   if (!manager?.user_id || !target?.name || !target?.user_id) return;
-  if (computerOnlineFor(String(target.user_id))) return;
+  // server-scoped computers：在线判定按绑定机解析——绑定机连了别的 server 时
+  // 该 agent 在本 scope 视为离线，告警不误报也不漏报
+  if (await agentMachineOnline(app.pg, target)) return;
   sendToUser(String(manager.user_id), {
     type: "agent:delivery-dead-letter",
     agentName: target.name,
@@ -115,10 +117,13 @@ export async function agentDispatchRoutes(app: FastifyInstance) {
     if (member.rows.length === 0)
       return reply.status(400).send({ error: "worker agent is not a member of this channel" });
 
-    const workerDuty = await app.pg.query<{ duty: string; user_id: string; name: string }>(
-      "SELECT duty, user_id, name FROM agents WHERE id = $1",
-      [peer.id],
-    );
+    const workerDuty = await app.pg.query<{
+      duty: string;
+      user_id: string;
+      name: string;
+      server_id: string;
+      computer_id: string | null;
+    }>("SELECT duty, user_id, name, server_id, computer_id FROM agents WHERE id = $1", [peer.id]);
     if (workerDuty.rows[0]?.duty === "off") {
       return reply.status(409).send({ error: "worker is off duty" });
     }
@@ -149,7 +154,13 @@ export async function agentDispatchRoutes(app: FastifyInstance) {
       peer.handle,
     );
     // P1.26：离线黑洞告警——worker daemon 离线时任务消息不会被唤醒消费，经理侧立即 toast
-    alarmIfDaemonOffline(ch.name as string, manager, workerDuty.rows[0] ?? null, `派给 @${peer.handle} 的任务`);
+    await alarmIfDaemonOffline(
+      app,
+      ch.name as string,
+      manager,
+      workerDuty.rows[0] ?? null,
+      `派给 @${peer.handle} 的任务`,
+    );
 
     // P1 同步：dispatch 通知消息同时成为看板卡片（in_progress + assignee=worker），
     // 台账记 task_message_id 供 report/cancel 联动
@@ -268,7 +279,7 @@ export async function agentDispatchRoutes(app: FastifyInstance) {
         manager.name,
       );
       // P1.26：经理 daemon 离线时回报不会被唤醒消费——经理 owner 侧立即 toast
-      alarmIfDaemonOffline(ch.rows[0].name, manager, manager, "worker 的任务回报");
+      await alarmIfDaemonOffline(app, ch.rows[0].name, manager, manager, "worker 的任务回报");
 
       return { ok: true };
     },
@@ -338,7 +349,7 @@ export async function agentDispatchRoutes(app: FastifyInstance) {
         worker.name,
       );
       // P1.26：worker daemon 离线时撤回不会被唤醒消费——经理 owner 侧立即 toast
-      alarmIfDaemonOffline(ch.rows[0].name, manager, worker, "撤回通知");
+      await alarmIfDaemonOffline(app, ch.rows[0].name, manager, worker, "撤回通知");
 
       return { ok: true };
     },
@@ -412,7 +423,7 @@ export async function agentDispatchRoutes(app: FastifyInstance) {
         worker.name,
       );
       // P1.26：worker daemon 离线时验收通知不会被唤醒消费——经理 owner 侧立即 toast
-      alarmIfDaemonOffline(ch.rows[0].name, manager, worker, "验收通知");
+      await alarmIfDaemonOffline(app, ch.rows[0].name, manager, worker, "验收通知");
 
       return { ok: true };
     },

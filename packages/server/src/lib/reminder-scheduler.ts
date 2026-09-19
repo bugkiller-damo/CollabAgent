@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { daemonClients, sendToDaemon } from "../ws/handler.js";
+import { daemonClients, daemonMeta, localDaemonUserIds, sendToAgentDaemon } from "../ws/handler.js";
 import { createNotification } from "./notifications.js";
 import { nextFireNoDrift } from "./reminders.js";
 
@@ -38,6 +38,8 @@ interface ClaimedReminder {
   consecutive_silent: number;
   max_consecutive_silent: number;
   owner_user_id: string; // JOIN agents 带出（P1.23：认领门控 + 投递目标，免逐行回查）
+  agent_server_id: string | null; // agent 归属 server——投递 scope 守护与机器级认领门控用
+  agent_computer_id: string | null; // 绑定机行 id（NULL=存量未绑定）
   // 事务内判定、提交后使用的扩展字段
   outcome: "posted" | "silent" | null;
   newConsecutiveSilent: number;
@@ -83,23 +85,36 @@ export function startReminderScheduler(app: FastifyInstance, intervalMs = 20000)
       }
       // 原子认领：单事务 SKIP LOCKED 选出到期行（paused 不认领），持锁逐行更新。
       // 沉默判定必须在 UPDATE 之前做——认领会覆盖 last_fired_at，判定依赖旧值。
-      // P1.23：JOIN agents 带出 user_id，并以本地 daemonClients 的用户集合做认领门控
+      // P1.23：JOIN agents 带出 user_id，并以本地 daemon 连接的用户集合做认领门控
       // （`FOR UPDATE SKIP LOCKED OF r` 只锁 reminders 行，不与 agents 行锁耦合）。
+      // daemonClients 键为 machineKey（一机一槽）——按 meta.userId 去重取用户集合。
       const claimed = await app.pg.transaction(async (tx) => {
-        const localDaemonUserIds = [...daemonClients.keys()];
+        const daemonUserIds = localDaemonUserIds();
+        // 机器级认领门控（server-scoped computers）：绑定 agent 只在其绑定机的
+        // 「scope 相符连接」在场时认领——键形 `u:machineUuid|serverId`；否则认领即
+        // fired 而投递被 scope 守护丢弃，一次性提醒永久丢失。unbound（存量 NULL）
+        // 维持 owner 级门控（旧行为，投递端仍有 scope 守护兜底）。
+        const scopedMachineKeys = [...daemonMeta.entries()]
+          .filter(([, m]) => m.serverId)
+          .map(([k, m]) => `${k}|${m.serverId}`);
         const due = await tx.query(
           `SELECT r.id, r.owner_id, r.title, r.channel_ref, r.repeat_rule, r.kind, r.instructions,
                   r.fire_at, r.timezone, r.last_fired_at, r.consecutive_silent, r.max_consecutive_silent,
-                  a.user_id AS owner_user_id
+                  a.user_id AS owner_user_id, a.server_id AS agent_server_id, a.computer_id AS agent_computer_id
              FROM reminders r
              JOIN agents a ON a.id = r.owner_id
+             LEFT JOIN computers c ON c.id = a.computer_id
             WHERE r.status = 'scheduled' AND r.fire_at <= now() AND NOT r.paused
               AND a.duty = 'on'
-              AND a.user_id = ANY($1::uuid[])
+              AND (
+                (a.computer_id IS NOT NULL
+                  AND (a.user_id::text || ':' || c.machine_uuid || '|' || a.server_id::text) = ANY($2::text[]))
+                OR (a.computer_id IS NULL AND a.user_id = ANY($1::uuid[]))
+              )
             ORDER BY r.fire_at ASC
             LIMIT 20
             FOR UPDATE OF r SKIP LOCKED`,
-          [localDaemonUserIds],
+          [daemonUserIds, scopedMachineKeys],
         );
         const rows = due.rows as unknown as ClaimedReminder[];
         for (const r of rows) {
@@ -140,17 +155,22 @@ export function startReminderScheduler(app: FastifyInstance, intervalMs = 20000)
         // 需 daemon ack 协议，不在本项。
         const ownerUserId = r.owner_user_id ? String(r.owner_user_id) : null;
         if (ownerUserId) {
-          sendToDaemon(String(ownerUserId), {
-            type: "reminder.fire",
-            agentId: r.owner_id,
-            reminder: {
-              id: r.id,
-              title: r.title,
-              channel: r.channel_ref || null,
-              kind: r.kind || "reminder",
-              instructions: r.instructions || null,
+          // 投递精确到绑定机 + scope 守护——绑定机连了别的 server 时绝不误投
+          await sendToAgentDaemon(
+            app.pg,
+            { user_id: ownerUserId, server_id: r.agent_server_id, computer_id: r.agent_computer_id },
+            {
+              type: "reminder.fire",
+              agentId: r.owner_id,
+              reminder: {
+                id: r.id,
+                title: r.title,
+                channel: r.channel_ref || null,
+                kind: r.kind || "reminder",
+                instructions: r.instructions || null,
+              },
             },
-          });
+          );
         }
         // 周期性提醒：认领后立即排下一次（翻回 scheduled）。
         // P1.23 消漂移：以刚触发的原定 fire_at 为基准（此前用处理时刻，every:1h 实际 >1h），

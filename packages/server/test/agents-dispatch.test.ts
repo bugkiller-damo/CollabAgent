@@ -1,6 +1,17 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
-import { api, BASE, cleanupTestData, closeSql, registerUser, sql, type TestUser, uniqHandle } from "./helpers.js";
+import {
+  api,
+  BASE,
+  cleanupTestData,
+  closeSql,
+  ensureTestComputer,
+  makeOrgOwner,
+  registerUser,
+  sql,
+  type TestUser,
+  uniqHandle,
+} from "./helpers.js";
 
 /**
  * P1.26：dispatch completed 终态 + 经理验收端点 + 看板卡片双向同步 + daemon 离线告警。
@@ -85,11 +96,12 @@ function connectCollectorWs(cookie: string): {
 }
 
 async function createAgent(owner: TestUser, name: string): Promise<string> {
+  const comp = await ensureTestComputer(owner);
   const r = await api("/api/agents", {
     method: "POST",
     cookie: owner.cookie,
     csrf: owner.csrf,
-    body: { name, displayName: "Disp " + name },
+    body: { name, displayName: "Disp " + name, serverId: comp.serverId },
   });
   expect(r.status).toBe(200);
   return r.data.agent.id as string;
@@ -103,6 +115,7 @@ describe("agents dispatch P1.26（completed 终态 + 验收 + 双向同步 + 离
 
   beforeAll(async () => {
     manager = await registerUser();
+    await makeOrgOwner(manager); // 2026-09-18：默认社区建频道需 server owner
     worker = await registerUser();
     managerAgentName = uniqHandle();
     workerAgentName = uniqHandle();

@@ -9,7 +9,7 @@ import {
   setAccessPubSub,
 } from "../src/lib/access.js";
 import { createPubSub } from "../src/lib/pubsub.js";
-import { api, cleanupTestData, closeSql, registerUser, uniqHandle } from "./helpers.js";
+import { api, cleanupTestData, closeSql, makeOrgOwner, registerUser, uniqHandle } from "./helpers.js";
 
 // ===================== 单测：fake app（内存 DB + 查询计数） =====================
 
@@ -174,6 +174,7 @@ describe("access: 权限变更立即生效（真服务器）", () => {
 
   it("私有→公开立即生效：非成员无需等待即可读", async () => {
     const owner = await registerUser();
+    await makeOrgOwner(owner); // 建频道收敛 server owner（2026-09-18）
     const outsider = await registerUser();
     const name = `acc_${uniqHandle()}`;
     const created = await api("/api/channels", {
@@ -201,6 +202,7 @@ describe("access: 权限变更立即生效（真服务器）", () => {
 
   it("移除成员立即生效：被移除者马上 403", async () => {
     const owner = await registerUser();
+    await makeOrgOwner(owner); // 建频道收敛 server owner（2026-09-18）
     const member = await registerUser();
     const name = `acc_${uniqHandle()}`;
     const created = await api("/api/channels", {

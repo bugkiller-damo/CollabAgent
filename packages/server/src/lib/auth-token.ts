@@ -39,6 +39,8 @@ export type MachineTokenVerdict =
   | {
       ok: true;
       userId: string;
+      /** server-scoped computers：token 的权威 server scope（machine_tokens.server_id） */
+      serverId: string;
       scope: string;
       tokenId: string;
       expiresAt: Date | null;
@@ -61,8 +63,14 @@ export async function verifyMachineToken(
   const { clientIp = "", renewal, log } = opts;
   // 快路径：sha256 哈希直接按唯一索引命中（新签发的令牌都走这里）。
   // P1.12：过期谓词拒绝超期令牌（NULL 豁免存量行，见 lib/machine-token-policy.ts）。
-  const fast = await pg.query<{ id: string; user_id: string; scope: string; expires_at: Date | null }>(
-    `SELECT id, user_id, scope, expires_at FROM machine_tokens
+  const fast = await pg.query<{
+    id: string;
+    user_id: string;
+    server_id: string;
+    scope: string;
+    expires_at: Date | null;
+  }>(
+    `SELECT id, user_id, server_id, scope, expires_at FROM machine_tokens
       WHERE token_hash = $1 AND revoked_at IS NULL AND ${ACTIVE_TOKEN_PREDICATE}`,
     [sha256Token(token)],
   );
@@ -86,6 +94,7 @@ export async function verifyMachineToken(
     return {
       ok: true,
       userId: String(row.user_id),
+      serverId: String(row.server_id),
       scope: row.scope,
       tokenId: row.id,
       expiresAt: row.expires_at,
@@ -115,8 +124,8 @@ export async function verifyMachineToken(
     const bcrypt = (await import("bcryptjs")).default;
     // SQL 侧按 bcrypt 哈希形态预过滤（P1.14，与退役审计 SQL 同口径）：存量
     // 全部轮换为 sha256 后此查询稳定 0 行；JS 侧 isBcryptHash 保留作纵深防御。
-    const legacy = await pg.query<{ user_id: string; scope: string; token_hash: string }>(
-      `SELECT user_id, scope, token_hash FROM machine_tokens
+    const legacy = await pg.query<{ user_id: string; server_id: string; scope: string; token_hash: string }>(
+      `SELECT user_id, server_id, scope, token_hash FROM machine_tokens
         WHERE revoked_at IS NULL AND ${ACTIVE_TOKEN_PREDICATE} AND ${BCRYPT_TOKEN_PREDICATE}`,
     );
     for (const row of legacy.rows) {
@@ -133,6 +142,7 @@ export async function verifyMachineToken(
           return {
             ok: true,
             userId: String(row.user_id),
+            serverId: String(row.server_id),
             scope: row.scope,
             tokenId: "",
             expiresAt: null,

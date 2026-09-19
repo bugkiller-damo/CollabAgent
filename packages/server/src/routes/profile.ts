@@ -200,15 +200,13 @@ export async function profileRoutes(app: FastifyInstance) {
     const { serverId } = req.body as Record<string, unknown>;
     const userId = req.user.sub;
 
-    const { getOrCreatePersonalOrg, getUserOrgIds } = await import("../lib/orgs.js");
-    let orgId: string;
-    if (serverId) {
-      const myOrgs = await getUserOrgIds(app, userId);
-      if (!myOrgs.includes(String(serverId))) return reply.status(403).send({ error: "not a member of that org" });
-      orgId = String(serverId);
-    } else {
-      orgId = await getOrCreatePersonalOrg(app, userId, req.user.handle);
-    }
+    const { isOrgOwner } = await import("../lib/orgs.js");
+    // serverId 显式必填（2026-09-19 取消个人空间兜底，与 computers/me/token 同口径）；
+    // 挂算力 = owner 权限——member 级校验会让该端点成为 owner 闸的旁路。
+    if (!serverId) return reply.status(400).send({ error: "serverId required" });
+    if (!(await isOrgOwner(app, String(serverId), userId)))
+      return reply.status(403).send({ error: "only server owner can attach computers" });
+    const orgId = String(serverId);
 
     const prefix = "sk_machine_";
     // 24 字节 CSPRNG → base64url 32 字符（192 bit 熵）；Math.random 是可预测的

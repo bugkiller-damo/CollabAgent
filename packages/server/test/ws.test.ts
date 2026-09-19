@@ -1,6 +1,31 @@
 import { afterAll, describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
-import { api, BASE, cleanupTestData, closeSql, registerUser, sql, uniqHandle } from "./helpers.js";
+import {
+  api,
+  BASE,
+  cleanupTestData,
+  closeSql,
+  ensureTestComputer,
+  makeOrgOwner,
+  registerUser,
+  uniqHandle,
+} from "./helpers.js";
+
+// machine-token 需显式 serverId（2026-09-19 personal 兜底取消）——给注册用户
+// 建 owned server + 计算机行并铸 scoped token；返回 machineUuid 供 fake daemon
+// 发 ready 报身份（server-scoped 后 status 按机器行判定，未 ready 的 provisional
+// 连接不算在线——与生产 daemon 连上即 ready 一致）
+async function mintMachineToken(u: { cookie: string; csrf: string; userId: string }) {
+  const comp = await ensureTestComputer(u);
+  const tr = await api("/api/profile/machine-token", {
+    method: "POST",
+    cookie: u.cookie,
+    csrf: u.csrf,
+    body: { serverId: comp.serverId },
+  });
+  expect(tr.status).toBe(200);
+  return { token: tr.data.token as string, machineUuid: comp.machineUuid };
+}
 
 const WS_BASE = BASE.replace(/^http/, "ws") + "/ws";
 
@@ -139,14 +164,7 @@ describe("WS: connection auth", () => {
 
   it("daemon with valid machine token connects and receives serverTime", async () => {
     const u = await registerUser();
-    const tr = await api("/api/profile/machine-token", {
-      method: "POST",
-      cookie: u.cookie,
-      csrf: u.csrf,
-      body: {},
-    });
-    expect(tr.status).toBe(200);
-    const machineToken: string = tr.data.token;
+    const { token: machineToken } = await mintMachineToken(u);
 
     const { ws, connected } = connectWs({ Authorization: `Bearer ${machineToken}` });
     const msg = await connected;
@@ -176,19 +194,15 @@ describe("WS: connection auth", () => {
 describe("WS: daemon ready & status", () => {
   it("daemon ready message is accepted; /api/daemon/status returns connected", async () => {
     const u = await registerUser();
-    const tr = await api("/api/profile/machine-token", {
-      method: "POST",
-      cookie: u.cookie,
-      csrf: u.csrf,
-      body: {},
-    });
-    const { ws, connected } = connectWs({ Authorization: `Bearer ${tr.data.token}` });
+    const { token: machineToken, machineUuid } = await mintMachineToken(u);
+    const { ws, connected } = connectWs({ Authorization: `Bearer ${machineToken}` });
     await connected; // "connected"
 
-    // Send ready metadata
+    // Send ready metadata（带机器身份——server-scoped 后 status 按机器行判定）
     ws.send(
       JSON.stringify({
         type: "ready",
+        machineUuid,
         hostname: "ws-test-host",
         daemonVersion: "0.1.0-ws-test",
         runtimes: ["node:20"],
@@ -207,14 +221,12 @@ describe("WS: daemon ready & status", () => {
 
   it("daemon disconnect clears status", async () => {
     const u = await registerUser();
-    const tr = await api("/api/profile/machine-token", {
-      method: "POST",
-      cookie: u.cookie,
-      csrf: u.csrf,
-      body: {},
-    });
-    const { ws, connected } = connectWs({ Authorization: `Bearer ${tr.data.token}` });
+    const { token: machineToken, machineUuid } = await mintMachineToken(u);
+    const { ws, connected } = connectWs({ Authorization: `Bearer ${machineToken}` });
     await connected;
+    // ready 报到后机器才计在线（与生产 daemon 行为一致）
+    ws.send(JSON.stringify({ type: "ready", machineUuid }));
+    await tick(100);
     expect((await api("/api/daemon/status", { cookie: u.cookie })).data.connected).toBe(true);
 
     ws.close();
@@ -225,13 +237,8 @@ describe("WS: daemon ready & status", () => {
 
   it("daemon frames: 合法帧中继到浏览器；畸形/未知 type 帧被丢弃但不断连（P1.28 校验）", async () => {
     const u = await registerUser();
-    const tr = await api("/api/profile/machine-token", {
-      method: "POST",
-      cookie: u.cookie,
-      csrf: u.csrf,
-      body: {},
-    });
-    const { ws, connected } = connectWs({ Authorization: `Bearer ${tr.data.token}` });
+    const { token: machineToken } = await mintMachineToken(u);
+    const { ws, connected } = connectWs({ Authorization: `Bearer ${machineToken}` });
     await connected;
 
     // 同用户的浏览器连接：合法 agent:status 应被中继
@@ -260,14 +267,17 @@ describe("WS: daemon ready & status", () => {
     const u1 = await registerUser();
     const u2 = await registerUser();
 
-    const t1 = await api("/api/profile/machine-token", { method: "POST", cookie: u1.cookie, csrf: u1.csrf, body: {} });
-    const t2 = await api("/api/profile/machine-token", { method: "POST", cookie: u2.cookie, csrf: u2.csrf, body: {} });
+    const d1 = await mintMachineToken(u1);
+    const d2 = await mintMachineToken(u2);
 
     // Connect sequentially to avoid any WS upgrade concurrency edge case
-    const { ws: ws1, connected: c1 } = connectWs({ Authorization: `Bearer ${t1.data.token}` });
+    const { ws: ws1, connected: c1 } = connectWs({ Authorization: `Bearer ${d1.token}` });
     await c1;
-    const { ws: ws2, connected: c2 } = connectWs({ Authorization: `Bearer ${t2.data.token}` });
+    ws1.send(JSON.stringify({ type: "ready", machineUuid: d1.machineUuid }));
+    const { ws: ws2, connected: c2 } = connectWs({ Authorization: `Bearer ${d2.token}` });
     await c2;
+    ws2.send(JSON.stringify({ type: "ready", machineUuid: d2.machineUuid }));
+    await tick(150);
 
     expect((await api("/api/daemon/status", { cookie: u1.cookie })).data.connected).toBe(true);
     expect((await api("/api/daemon/status", { cookie: u2.cookie })).data.connected).toBe(true);
@@ -336,8 +346,9 @@ describe("WS: broadcast delivery", () => {
     const chList = await api("/api/channels", { cookie: owner.cookie });
     const serverId: string = chList.data.channels[0]?.server_id;
     // O3：显式 serverId 建频道要求调用者是该 server 成员（server 级 RBAC）。
-    // 注册默认只创建个人组织，需显式加入默认社区。
-    await sql`INSERT INTO server_members (server_id, user_id, role) VALUES (${serverId}, ${owner.userId}, 'member') ON CONFLICT DO NOTHING`;
+    // 2026-09-18 权限模型：建频道收敛 server owner——member 身份已不够，
+    // makeOrgOwner 立 owner 成员行（isInstanceAdmin 同口径，幂等）。
+    await makeOrgOwner(owner);
 
     // Create a private channel
     const chName = `priv-${uniqHandle()}`;

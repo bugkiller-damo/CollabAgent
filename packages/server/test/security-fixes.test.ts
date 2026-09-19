@@ -1,5 +1,14 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { api, BASE, cleanupTestData, closeSql, registerUser, type TestUser } from "./helpers.js";
+import {
+  api,
+  BASE,
+  cleanupTestData,
+  closeSql,
+  ensureTestComputer,
+  makeOrgOwner,
+  registerUser,
+  type TestUser,
+} from "./helpers.js";
 
 // 与 ws.test.ts 一致：WS 地址从 BASE 派生，不写死 3001（本地可用 SLOCK_TEST_BASE_URL 指定端口）
 const WS_BASE = BASE.replace(/^http/, "ws") + "/ws";
@@ -12,9 +21,15 @@ const WS_BASE = BASE.replace(/^http/, "ws") + "/ws";
 
 let alice: TestUser;
 let bob: TestUser;
+let aliceMachineUuid = ""; // alice owned server 的计算机行身份——daemon 连同一 machineKey 才算绑定机在场
+let aliceServerId = ""; // alice 最早 owned server——agent 显式落点 + daemon scope
 
 beforeAll(async () => {
   alice = await registerUser();
+  await makeOrgOwner(alice); // 2026-09-18：建频道收敛 server owner，alice 的频道都在默认社区
+  const comp = await ensureTestComputer(alice); // server-scoped：POST /agents 需目标 server 有计算机行
+  aliceMachineUuid = comp.machineUuid;
+  aliceServerId = comp.serverId;
   bob = await registerUser();
   // alice 建一个私有频道供 join/附件测试
   await api("/api/channels", {
@@ -123,7 +138,11 @@ describe("security fixes 2026-07-17", () => {
   });
 
   it("机器令牌：sha256 签发后可直接认证（快路径）", async () => {
-    const mint = await api("/api/profile/machine-token", { method: "POST", cookie: alice.cookie, body: {} });
+    const mint = await api("/api/profile/machine-token", {
+      method: "POST",
+      cookie: alice.cookie,
+      body: { serverId: aliceServerId },
+    });
     expect(mint.status).toBe(200);
     const token = mint.data.token as string;
     expect(token.startsWith("sk_machine_")).toBe(true);
@@ -158,11 +177,11 @@ describe("security fixes 2026-07-17", () => {
   });
 
   it("私有频道 @非成员 agent：不自动入圈，mentionAgents 为空（daemon 不会唤醒）", async () => {
-    // alice 创建 agent（落在个人 org，与频道跨 server）
+    // alice 创建 agent（落在自己的 owned server，与频道跨 server）
     const ag = await api("/api/agents", {
       method: "POST",
       cookie: alice.cookie,
-      body: { name: "secbot", runtime: "claude", model: "sonnet" },
+      body: { name: "secbot", runtime: "claude", model: "sonnet", serverId: aliceServerId },
     });
     expect(ag.status).toBe(200);
 
@@ -249,7 +268,7 @@ describe("security fixes 2026-07-17", () => {
     const ag = await api("/api/agents", {
       method: "POST",
       cookie: alice.cookie,
-      body: { name: "716测试机", runtime: "claude", model: "sonnet" },
+      body: { name: "716测试机", runtime: "claude", model: "sonnet", serverId: aliceServerId },
     });
     expect(ag.status).toBe(200);
 
@@ -286,11 +305,11 @@ describe("security fixes 2026-07-17", () => {
   });
 
   it("公开频道 @他人邀请入圈的 agent：频道成员可唤醒（成员口径，不再只看 org 归属）", async () => {
-    // alice 的 agent 落在 alice 个人私有空间——对 bob 而言 server_id/user_id 两条旧口径都不成立
+    // alice 的 agent 落在 alice 自己的 owned server——对 bob 而言 server_id/user_id 两条旧口径都不成立
     const ag = await api("/api/agents", {
       method: "POST",
       cookie: alice.cookie,
-      body: { name: "teambot", runtime: "claude", model: "sonnet" },
+      body: { name: "teambot", runtime: "claude", model: "sonnet", serverId: aliceServerId },
     });
     expect(ag.status).toBe(200);
 
@@ -367,13 +386,24 @@ describe("security fixes 2026-07-17", () => {
 
     // agent:status 实时态补投频道同事：模拟 alice 的 daemon 上报 teambot「工作中」——
     // bob 收到状态帧且 detail 被剥离（最后一行输出可能含其它频道/DM 内容，非 owner 不共享）
-    const mint = await api("/api/profile/machine-token", { method: "POST", cookie: alice.cookie, body: {} });
+    const mint = await api("/api/profile/machine-token", {
+      method: "POST",
+      cookie: alice.cookie,
+      body: { serverId: aliceServerId },
+    });
     expect(mint.status).toBe(200);
     const daemonWs = new WebSocket(WS_BASE, { headers: { Authorization: `Bearer ${mint.data.token}` } });
     await new Promise((res, rej) => {
       daemonWs.once("open", res);
       daemonWs.once("error", rej);
     });
+    // server-scoped computers：绑定 agent 的终端/watch 只路由到其绑定机的 machineKey——
+    // daemon 须 ready 上报同一 machineUuid 落键（token scope 已是 alice 兜底空间，与
+    // teambot.server_id 一致；不发 ready 连接停在 provisional 键，永远等不到投递）。
+    daemonWs.send(
+      JSON.stringify({ type: "ready", hostname: "sec-fix-host", machineUuid: aliceMachineUuid, runtimes: [] }),
+    );
+    await new Promise((r) => setTimeout(r, 500));
     const statusP = new Promise<any>((resolve, reject) => {
       const t = setTimeout(() => reject(new Error("status timeout")), 8000);
       ws.on("message", (raw) => {

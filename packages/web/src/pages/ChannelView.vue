@@ -340,9 +340,12 @@ function closeMembers() {
 function closeSettings() {
   showSettings.value = false;
 }
+// 频道被归档/删除后的落点：按真实频道列表重解析——原频道已不在列表，
+// 且新建 server 本无 general，硬编码会 404
 function goGeneral() {
   const sid = routeServerId.value;
-  router.push(sid ? channelPath(sid, "general") : "/channels/general");
+  if (sid) void channelStore.resolveLandingChannel(sid).then((name) => router.push(channelPath(sid, name)));
+  else void router.push("/channels/general");
 }
 </script>
 

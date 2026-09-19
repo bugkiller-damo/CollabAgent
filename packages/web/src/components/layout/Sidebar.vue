@@ -6,7 +6,6 @@ import { hasSidebarDetailPane, useUiStore } from "../../stores";
 import ChatPane from "./panes/ChatPane.vue";
 import ComputersPane from "./panes/ComputersPane.vue";
 import TasksPane from "./panes/TasksPane.vue";
-import ServerRail from "./ServerRail.vue";
 import SidebarPane from "./SidebarPane.vue";
 import SidebarRail from "./SidebarRail.vue";
 import UserAvatarButton from "./UserAvatarButton.vue";
@@ -26,8 +25,7 @@ function goSearch() {
 
 <template>
   <div class="flex h-full">
-    <!-- 最左 server 列（桌面常驻 + 移动抽屉内可见），产品 rail 其后 -->
-    <ServerRail />
+    <!-- 产品 rail（server 管理已收进左下角头像二级菜单，不再独立成列） -->
     <SidebarRail />
     <div
       :class="[
@@ -46,7 +44,7 @@ function goSearch() {
         >
           <Search class="h-4 w-4" />
         </button>
-        <UserAvatarButton />
+        <UserAvatarButton direction="down" />
       </div>
       <div class="min-h-0 w-60 flex-1">
         <SidebarPane>

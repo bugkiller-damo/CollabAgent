@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { api, cleanupTestData, closeSql, registerUser, sql, uniqHandle } from "./helpers.js";
+import { api, cleanupTestData, closeSql, ensureTestComputer, registerUser, sql, uniqHandle } from "./helpers.js";
 
 // T2 patrol 路由集成测试(设计:docs/2026-08-19/02-t2-agent-patrol-design.md §5 L2)。
 // 覆盖:patrol 创建校验(频率下限/非法语法/数量上限)、kind 分流、pause/resume、
@@ -18,7 +18,12 @@ describe("patrol: agent 定时巡检路由", () => {
     const name = `pat${uniqHandle()
       .replace(/[^a-zA-Z0-9]/g, "")
       .slice(-20)}`;
-    const r = await api("/api/agents", { method: "POST", cookie, body: { name, runtime: "claude", model: "sonnet" } });
+    const comp = await ensureTestComputer(u);
+    const r = await api("/api/agents", {
+      method: "POST",
+      cookie,
+      body: { name, runtime: "claude", model: "sonnet", serverId: comp.serverId },
+    });
     expect(r.status).toBe(200);
     agentId = r.data.agent.id;
   });

@@ -13,6 +13,7 @@ import { probeClaude } from "./drivers/probe.js";
 import { errMessage } from "./errors.js";
 import { dispatchDaemonMessage, type HandlerContext, parseWsToDaemonMessage } from "./handlers/index.js";
 import { createLiveRunRegistry } from "./live-run-registry.js";
+import { resolveMachineUuid } from "./machine-id.js";
 import { mkdirPrivateSync } from "./private-dir.js";
 import { buildReadyPayload } from "./ready-payload.js";
 import { setupSlockWrapper } from "./setup-slock-wrapper.js";
@@ -22,6 +23,10 @@ export class DaemonCore {
   private ws: WebSocket | null = null;
   private serverUrl: string;
   private apiKey: string;
+  /** 本机稳定身份（~/.slock/machine-id 或 config/env 覆盖）——ready 上报，server 侧定位 computers 行 */
+  private machineUuid: string;
+  /** --server 声明：服务端比对 token scope 一致性；undefined = 未声明（旧行为） */
+  private serverName?: string;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelay = 1000;
   private authFailed = false;
@@ -40,6 +45,8 @@ export class DaemonCore {
   constructor(private config: DaemonConfig) {
     this.serverUrl = config.serverUrl;
     this.apiKey = config.apiKey;
+    this.serverName = config.serverName?.trim() || undefined;
+    this.machineUuid = resolveMachineUuid(config.machineUuid);
     const tokenRegistry = createAgentTokenRegistry();
     const liveRunRegistry = createLiveRunRegistry();
     const runStore = createJsonRunStore(defaultStorePath());
@@ -204,6 +211,10 @@ export class DaemonCore {
 
   async start(): Promise<void> {
     console.log(`[Daemon] Starting with server ${this.config.serverUrl}`);
+    console.log(
+      `[Daemon] Machine ${this.machineUuid.slice(0, 8)}…` +
+        (this.serverName ? `，scope: ${this.serverName}` : "，scope: token 内置（未声明 --server）"),
+    );
     this.checkClaude();
     await this.setupSlockWrapper();
     this.connect();
@@ -342,7 +353,7 @@ export class DaemonCore {
     this.ws.on("open", () => {
       console.log("[Daemon] Connected to server");
       this.reconnectDelay = 1000;
-      this.sendWs(buildReadyPayload());
+      this.sendWs(buildReadyPayload(undefined, { machineUuid: this.machineUuid, serverName: this.serverName }));
     });
     this.ws.on("message", (data) => {
       try {
@@ -353,16 +364,18 @@ export class DaemonCore {
       }
     });
     this.ws.on("close", (code, reason) => {
-      // 4001 = 服务端鉴权拒绝（机器令牌无效/被吊销）。无限重连无意义，直接退出并提示。
+      // 4001 = 服务端鉴权拒绝（机器令牌无效/被吊销/--server 与 token scope 不符）。
+      // 无限重连无意义，直接退出并提示。
       if (code === 4001) {
         console.error(
           [
             "",
             "──────────────────────────────────────────────",
-            "[Daemon] ❌ 鉴权失败：机器令牌无效或已被吊销。",
+            "[Daemon] ❌ 鉴权失败：机器令牌无效、已被吊销，或 --server 与令牌所属 server 不符。",
             `  服务端关闭原因：${reason?.toString() || "unauthorized"}`,
-            "  daemon 不会重连。请在网页端重新生成机器令牌，",
-            "  用新的 --api-key 重启 daemon。",
+            `  本次声明：--server ${this.serverName ?? "(未携带)"}`,
+            "  daemon 不会重连。请核对 --server 参数，或在网页端",
+            "  为目标 server 重新生成机器令牌后用新的 --api-key 重启。",
             "──────────────────────────────────────────────",
             "",
           ].join("\n"),

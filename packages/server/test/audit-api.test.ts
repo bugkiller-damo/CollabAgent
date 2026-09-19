@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { api, cleanupTestData, closeSql, registerUser, type TestUser } from "./helpers.js";
+import { api, cleanupTestData, closeSql, makeOrgOwner, registerUser, type TestUser } from "./helpers.js";
 
 /**
  * O2 审计 API 回归测试（黑盒，跑在 CI L3 真 PG 上）。
@@ -13,6 +13,7 @@ describe("audit API（O2 哈希链端到端）", () => {
 
   beforeAll(async () => {
     user = await registerUser();
+    await makeOrgOwner(user); // 2026-09-18：兜底建频道需 server owner
   });
 
   afterAll(async () => {

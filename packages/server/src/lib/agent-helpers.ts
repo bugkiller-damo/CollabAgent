@@ -6,7 +6,7 @@ import { getTenantHostMap, isServerMember } from "./tenant.js";
 
 export async function getAgent(app: FastifyInstance, agentId: string): Promise<any | null> {
   const r = await app.pg.query(
-    "SELECT id, user_id, name, display_name, avatar_url, server_id, last_seen_seq FROM agents WHERE id = $1",
+    "SELECT id, user_id, name, display_name, avatar_url, server_id, computer_id, last_seen_seq FROM agents WHERE id = $1",
     [agentId],
   );
   return r.rows[0] || null;

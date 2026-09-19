@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { api, cleanupTestData, closeSql, registerUser } from "./helpers.js";
+import { api, cleanupTestData, closeSql, makeOrgOwner, registerUser } from "./helpers.js";
 
 // O9：messages.seq 并发正确性——
 // seq 是 BIGSERIAL（PG 序列）：nextval 原子、全局唯一、按取值单调，空洞允许（回滚/跨频道）。
@@ -41,6 +41,7 @@ describe("messages: seq 并发正确性（O9）", () => {
 
   beforeAll(async () => {
     const u = await registerUser();
+    await makeOrgOwner(u); // 2026-09-18：默认社区建频道需 server owner
     ck = u.cookie;
     for (const name of [chanA, chanB]) {
       const c = await api("/api/channels", { method: "POST", cookie: ck, body: { name } });
