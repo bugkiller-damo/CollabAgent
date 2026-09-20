@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { mkdirPrivateSync } from "./private-dir.js";
+import { mkdirPrivateSync, slockDir } from "./private-dir.js";
 import type { AgentRunRecord, AgentRuntimeState, IAgentRunStore } from "./types/index.js";
 
 /**
@@ -135,5 +135,5 @@ export const createJsonRunStore = (filePath: string): IAgentRunStore => {
 
 /** 默认文件路径 */
 export function defaultStorePath(): string {
-  return join(process.cwd(), ".slock", "daemon-state.json");
+  return join(slockDir(), "daemon-state.json");
 }

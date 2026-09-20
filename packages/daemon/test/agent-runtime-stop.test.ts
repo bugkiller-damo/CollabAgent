@@ -3,8 +3,8 @@ import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAgentRuntime, type IAgentRuntime } from "../src/agent-runtime.js";
-import { createAgentTokenRegistry } from "../src/agent-tokens.js";
 import { createLiveRunRegistry } from "../src/live-run-registry.js";
+import { slockDir } from "../src/private-dir.js";
 import { createFakeAgentManager, type FakeAgentManager } from "./fakes/fake-agent-manager.js";
 import { installFakeFetch } from "./fakes/fake-fetch.js";
 
@@ -53,15 +53,21 @@ describe("P0.3 stopAgent / stopAll / unregisterAgent state machine", () => {
   let fakeFetch: ReturnType<typeof installFakeFetch> | null = null;
   let manager: FakeAgentManager;
   let runtime: IAgentRuntime;
+  let agentSessionStore: {
+    remember: ReturnType<typeof vi.fn>;
+    lookup: ReturnType<typeof vi.fn>;
+    forget: ReturnType<typeof vi.fn>;
+    list: ReturnType<typeof vi.fn>;
+  };
 
   const cleanupWorkspace = (name: string) => {
     try {
-      rmSync(join(process.cwd(), ".slock", `sysprompt-${name}.md`), { force: true });
+      rmSync(join(slockDir(), `sysprompt-${name}.md`), { force: true });
     } catch {
       /* best-effort */
     }
     try {
-      rmSync(join(process.cwd(), ".slock", "workspaces", name), { recursive: true, force: true });
+      rmSync(join(slockDir(), "workspaces", name), { recursive: true, force: true });
     } catch {
       /* best-effort */
     }
@@ -71,9 +77,14 @@ describe("P0.3 stopAgent / stopAll / unregisterAgent state machine", () => {
     process.env.SLOCK_USE_PTY = "1";
     fakeFetch = installFakeFetch();
     manager = createFakeAgentManager();
+    agentSessionStore = {
+      remember: vi.fn(() => null),
+      lookup: vi.fn(() => null),
+      forget: vi.fn(() => false),
+      list: vi.fn(() => []),
+    };
     runtime = createAgentRuntime(
-      { serverUrl: "http://fake-server.test", apiKey: "test-api-key" },
-      createAgentTokenRegistry(),
+      { serverUrl: "http://fake-server.test", apiKey: "test-api-key", agentSessionStore },
       createLiveRunRegistry(),
       undefined,
       manager,
@@ -104,6 +115,50 @@ describe("P0.3 stopAgent / stopAll / unregisterAgent state machine", () => {
     runtime.unregisterAgent(AGENT);
     expect(runtime.getAgentState(AGENT)).toBe("stopped");
     expect(runtime.hasAgent(AGENT)).toBe(false);
+  });
+
+  it("A2：unregisterAgent 清除续接 session id（含 duty off 路径）", () => {
+    runtime.registerAgent(AGENT_ID, AGENT, { displayName: "Stop Test" });
+    runtime.unregisterAgent(AGENT);
+    expect(agentSessionStore.forget).toHaveBeenCalledWith(AGENT);
+  });
+
+  it("A2：stopAgent 显式停也清 session id（下次冷启动全新会话）", () => {
+    runtime.registerAgent(AGENT_ID, AGENT, { displayName: "Stop Test" });
+    runtime.stopAgent(AGENT);
+    expect(agentSessionStore.forget).toHaveBeenCalledWith(AGENT);
+  });
+
+  it("A2：stopAll 不清 session id——daemon 重启后应能 resume", () => {
+    runtime.registerAgent(AGENT_ID, AGENT, { displayName: "A" });
+    runtime.registerAgent(OTHER_ID, OTHER, { displayName: "B" });
+    runtime.stopAll();
+    expect(agentSessionStore.forget).not.toHaveBeenCalled();
+  });
+
+  it("A4：已注册 agent 的元数据重推不 tearDown——working 保留、进程不杀、队列不清", async () => {
+    runtime.registerAgent(AGENT_ID, AGENT, { displayName: "Stop Test", model: "sonnet" });
+    await runtime.dispatchToAgent(AGENT, "general", "hello");
+    expect(runtime.getAgentState(AGENT)).toBe("working");
+    const runId = runtime.__getRunId(AGENT);
+    expect(runId).toBeTruthy();
+
+    // PATCH 编辑重推 agent:start——只合并元数据
+    runtime.registerAgent(AGENT_ID, AGENT, { displayName: "Renamed", description: "new desc" });
+
+    expect(runtime.getAgentState(AGENT)).toBe("working"); // 回合不被打断
+    expect(runtime.__getRunId(AGENT)).toBe(runId); // 进程不杀
+    expect(runtime.getAgentInfo(AGENT)?.displayName).toBe("Renamed");
+    expect(runtime.getAgentInfo(AGENT)?.model).toBe("sonnet"); // 缺省字段保留旧值
+  });
+
+  it("A4：unregister 后再注册仍走显式停路径（bump 代次 + 清理）", () => {
+    runtime.registerAgent(AGENT_ID, AGENT, { displayName: "Stop Test" });
+    runtime.unregisterAgent(AGENT);
+    expect(agentSessionStore.forget).toHaveBeenCalledWith(AGENT);
+    runtime.registerAgent(AGENT_ID, AGENT, { displayName: "Back" });
+    expect(runtime.getAgentState(AGENT)).toBe("idle");
+    expect(runtime.hasAgent(AGENT)).toBe(true);
   });
 
   it("working 时 stopAgent 回 idle 并杀掉进程（无幽灵 working）", async () => {

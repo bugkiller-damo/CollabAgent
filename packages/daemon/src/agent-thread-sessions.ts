@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { mkdirPrivateSync } from "./private-dir.js";
+import { mkdirPrivateSync, slockDir } from "./private-dir.js";
 
 /**
  * D2 thread↔session 映射（Step 6，prompt 隔离批）。
@@ -27,7 +27,7 @@ interface StoreFile {
 
 const recordKey = (agentName: string, threadId: string): string => `${agentName}\0${threadId}`;
 
-export const defaultThreadSessionStorePath = (): string => join(process.cwd(), ".slock", "daemon-thread-sessions.json");
+export const defaultThreadSessionStorePath = (): string => join(slockDir(), "daemon-thread-sessions.json");
 
 export const createJsonThreadSessionStore = (filePath: string, opts?: { now?: () => number }): IThreadSessionStore => {
   const now = opts?.now ?? (() => Date.now());

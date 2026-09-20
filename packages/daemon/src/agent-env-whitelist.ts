@@ -10,7 +10,10 @@
  * WINDOWS_SHELL_RESOLUTION_ENV 显式转发（见 02 对比文档 §1.4），本模块对齐。
  *
  * 模式：
- * - 默认 whitelist：只转发 BASE_WHITELIST + 已存在的代理键 + 调用方 overrides。
+ * - 默认 whitelist：转发 BASE_WHITELIST（含跨平台 HOME/USER/SHELL/LANG/TERM）
+ *   + DEV_TOOLCHAIN_KEYS（A7.5 开发工具链：MSVC/Java/Rust/Go/Python 等）
+ *   + LC_* / XDG_* / VSCMD_* 前缀键 + 已存在的代理键 + SLOCK_ENV_EXTRA 显式追加
+ *   + 调用方 overrides。
  * - SLOCK_ENV_INHERIT=1：显式回到全量继承（排障回退；明文 token 仍剔除）。
  * - SLOCK_ENV_WHITELIST=1：兼容别名，与默认同为 whitelist（A2 灰度期开关，现为 no-op）。
  */
@@ -41,7 +44,44 @@ const BASE_WHITELIST = new Set([
   "PROGRAMW6432", // 同上（64 位重定向）
   "PROGRAMDATA", // 机器级配置目录
   "PUBLIC", // 公共目录，少数安装器引用
+  // A7.5：跨平台基础键（POSIX 侧必需；Windows 上不存在则无影响）
+  "HOME", // POSIX home，git/ssh/node 通用
+  "USER", // POSIX 用户名
+  "SHELL", // 登录 shell 路径
+  "LANG", // locale（缺了 CLI 输出易乱码）
+  "TERM", // 终端类型
 ]);
+
+/**
+ * A7.5：开发工具链键——agent 在本机跑构建/编译时需要工具链自定位，
+ * 缺了这些 cl.exe/javac/cargo/go 等找不到自己的安装根。按大写精确匹配。
+ */
+const DEV_TOOLCHAIN_KEYS = new Set([
+  "INCLUDE", // MSVC 头文件搜索路径（vsvars 注入）
+  "LIB", // MSVC 库搜索路径
+  "LIBPATH", // MSVC / .NET 引用程序集路径
+  "VCINSTALLDIR", // VS 安装根
+  "VCTOOLSINSTALLDIR", // VC 工具集根
+  "WINDOWSSDKDIR", // Windows SDK 根
+  "JAVA_HOME", // JDK 根（javac/maven/gradle）
+  "CARGO_HOME", // cargo 家目录（registry/toolchain bin）
+  "RUSTUP_HOME", // rustup toolchain 根
+  "GOPATH", // go workspace
+  "GOROOT", // go 安装根
+  "VCPKG_ROOT", // vcpkg C++ 包管理根
+  "CMAKE_PREFIX_PATH", // cmake 包查找前缀
+  "PYTHONPATH", // python 模块搜索路径
+  "CONDA_PREFIX", // conda 环境根
+  "NVM_HOME", // nvm-windows 根
+  "NODE_PATH", // node 全局模块路径
+]);
+
+/** A7.5：按前缀放行的键族（大写比较）——locale、XDG 目录、vsvars 动态键 */
+const WHITELIST_PREFIXES = ["LC_", "XDG_", "VSCMD_"];
+
+/** A7.5：SLOCK_ENV_EXTRA 不允许追加的名字——防把凭据/密钥类变量名义上「加白」外泄 */
+const isUnsafeExtraName = (upper: string): boolean =>
+  upper.startsWith("SLOCK_") || upper.endsWith("_KEY") || upper.endsWith("_TOKEN") || upper.endsWith("_SECRET");
 
 /** 代理变量：仅当 daemon 自身 env 里存在才转发（公司网络/本地代理场景） */
 const PROXY_KEYS = ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy"];
@@ -63,11 +103,38 @@ export const buildAgentEnv = (
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(fullEnv)) {
     if (value === undefined) continue;
-    if (BASE_WHITELIST.has(key.toUpperCase())) env[key] = value;
+    const upper = key.toUpperCase();
+    if (
+      BASE_WHITELIST.has(upper) ||
+      DEV_TOOLCHAIN_KEYS.has(upper) ||
+      WHITELIST_PREFIXES.some((p) => upper.startsWith(p))
+    ) {
+      env[key] = value;
+    }
   }
   for (const key of PROXY_KEYS) {
     const v = fullEnv[key];
     if (v !== undefined) env[key] = v;
+  }
+  // A7.5：SLOCK_ENV_EXTRA 显式追加的键名——在 fullEnv 里大小写不敏感查找并
+  // 按原始拼写拷贝；SLOCK_* 开头 / _KEY、_TOKEN、_SECRET 结尾的名字拒绝
+  //（防止运维误把凭据变量加白外泄）。追加发生在 overrides 合并之前，
+  // 调用方显式 overrides 仍然最后胜出。
+  const extraNames = loadDaemonEnv(fullEnv).agentEnvExtra;
+  if (extraNames.length > 0) {
+    const keyByUpper = new Map<string, string>();
+    for (const key of Object.keys(fullEnv)) {
+      const upper = key.toUpperCase();
+      if (!keyByUpper.has(upper)) keyByUpper.set(upper, key);
+    }
+    for (const name of extraNames) {
+      const upper = name.toUpperCase();
+      if (isUnsafeExtraName(upper)) continue;
+      const actual = keyByUpper.get(upper);
+      if (actual === undefined) continue;
+      const v = fullEnv[actual];
+      if (v !== undefined) env[actual] = v;
+    }
   }
   Object.assign(env, overrides);
   // O11：明文 token 不进子进程 env（经 token 文件传递，见 agent-token-file.ts）。

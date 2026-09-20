@@ -11,6 +11,8 @@
  * - 非法 / 非正数回落到默认值（`Number.isFinite`），避免 `NaN` 静默关掉超时。
  * - 子进程注入键（`SLOCK_AGENT_ID` / `TOKEN` / `SERVER_URL` 等）不在此列：
  *   它们由 spawn 路径显式写入，MCP server / slock CLI 作为独立进程各自读取。
+ * - `SLOCK_STATE_DIR`（H6，`.slock` 状态树整体搬迁）由 `private-dir.ts`
+ *   的 `slockDir()` 在调用时直读——路径解析不是行为开关，不进本表。
  *
  * 不读的历史别名：`SLOCK_PERSISTENT_CLAUDE=1`（2026-08-18 起与默认 headless
  * 等价，保留兼容但不消费）；`SLOCK_ENV_WHITELIST=1`（P0.4 后与默认同为
@@ -19,8 +21,11 @@
 
 export type AgentEffort = "low" | "medium" | "high";
 
-/** claude `--allowedTools` 默认集合（O12）。`SLOCK_AGENT_ALLOWED_TOOLS` 可覆盖。 */
-export const DEFAULT_AGENT_ALLOWED_TOOLS = "Bash,Read,Write,Edit,MultiEdit,Glob,Grep,LS,TodoWrite,mcp__slock";
+/** claude `--allowedTools` 默认集合（O12）。`SLOCK_AGENT_ALLOWED_TOOLS` 可覆盖。
+ *  A7.4：补 Task/WebFetch/WebSearch/NotebookEdit/NotebookRead——A0 实测权限
+ *  拒绝会即时返回（不挂回合），放行这些工具不再有无响应风险。 */
+export const DEFAULT_AGENT_ALLOWED_TOOLS =
+  "Bash,Read,Write,Edit,MultiEdit,Glob,Grep,LS,TodoWrite,Task,WebFetch,WebSearch,NotebookEdit,NotebookRead,mcp__slock";
 
 export const DAEMON_ENV_DEFAULTS = {
   usePty: false,
@@ -42,11 +47,14 @@ export const DAEMON_ENV_DEFAULTS = {
   sessionCaptureDelayMs: 5_000,
   contextMaxMessages: 40,
   contextMaxChars: 8_000,
+  contextToplevelMaxMessages: 8,
+  contextToplevelMaxChars: 2_000,
   progressThrottleMs: 2_000,
   costBudgetUsd: null as number | null,
   costReport: true,
   agentAllowedTools: DEFAULT_AGENT_ALLOWED_TOOLS,
   agentEffort: "medium" as AgentEffort,
+  agentEnvExtra: [] as string[],
 } as const;
 
 export type DaemonEnv = {
@@ -60,19 +68,19 @@ export type DaemonEnv = {
   channelProgress: boolean;
   /** `SLOCK_CONTEXT_BUILDER=0` 关闭线程追问历史注入 */
   contextBuilder: boolean;
-  /** `SLOCK_SESSION_RESUME=0` 关闭 PTY `--resume`（捕获仍开） */
+  /** `SLOCK_SESSION_RESUME=0` 关闭 `--resume`（PTY 与 headless persistent 共用；捕获仍开） */
   sessionResume: boolean;
   /** `SLOCK_ENV_INHERIT=1`：子进程全量继承 daemon env（排障回退） */
   envInherit: boolean;
-  /** `SLOCK_VERBOSE_PTY=1`：把 PTY 字节镜像到 stdout */
+  /** `SLOCK_VERBOSE_PTY=1`：把 PTY 字节镜像到 stdout（PTY only，headless 无效） */
   verbosePty: boolean;
-  /** `SLOCK_VERBOSE_PTY=0` 关闭 daemon-core 的 PTY bus 就绪日志；默认开 */
+  /** `SLOCK_VERBOSE_PTY=0` 关闭 daemon-core 的 PTY bus 就绪日志；默认开（PTY only） */
   logPtyBus: boolean;
   /** `SLOCK_IDLE_RECLAIM_MS`：空闲回收超时 */
   idleReclaimMs: number;
-  /** `SLOCK_STUCK_WARN_MS`：PTY working 过久警告 */
+  /** `SLOCK_STUCK_WARN_MS`：PTY working 过久警告（PTY only，headless 无效） */
   stuckWarnMs: number;
-  /** `SLOCK_QUIESCE_MS`：PTY 静默兜底回合结束窗口 */
+  /** `SLOCK_QUIESCE_MS`：PTY 静默兜底回合结束窗口（PTY only，headless 无效） */
   quiesceMs: number;
   /** `SLOCK_DISPATCH_INFLIGHT_MS`：A1 队列 in-flight 截止（默认 6min） */
   dispatchInflightMs: number;
@@ -80,14 +88,18 @@ export type DaemonEnv = {
   dispatchMaxRetries: number;
   /** `SLOCK_PERSISTENT_TURN_MS`：PersistentClaude 沉默超时 */
   persistentTurnMs: number;
-  /** `SLOCK_RESUME_GRACE_MS`：PTY resume 快速失败窗口（测试向） */
+  /** `SLOCK_RESUME_GRACE_MS`：resume 快速失败判定窗口（PTY 与 headless persistent 共用；测试向） */
   resumeGraceMs: number;
-  /** `SLOCK_SESSION_CAPTURE_DELAY_MS`：捕获 sessionId 前等待（测试向） */
+  /** `SLOCK_SESSION_CAPTURE_DELAY_MS`：捕获 sessionId 前等待（PTY only——headless 从流事件学 id，无捕获延迟；测试向） */
   sessionCaptureDelayMs: number;
   /** `SLOCK_CONTEXT_MAX_MESSAGES`：D1 线程历史条数上限 */
   contextMaxMessages: number;
   /** `SLOCK_CONTEXT_MAX_CHARS`：D1 线程历史字符上限 */
   contextMaxChars: number;
+  /** `SLOCK_CONTEXT_TOPLEVEL_MAX_MESSAGES`：A3/§8.6 顶层 @ / DM 小预算上下文条数上限 */
+  contextToplevelMaxMessages: number;
+  /** `SLOCK_CONTEXT_TOPLEVEL_MAX_CHARS`：顶层 @ / DM 小预算上下文字符上限 */
+  contextToplevelMaxChars: number;
   /** `SLOCK_PROGRESS_THROTTLE_MS`：频道进度条刷新节流 */
   progressThrottleMs: number;
   /** `SLOCK_COST_BUDGET_USD`：每 agent 每 UTC 日预算；未设 / 非正数 → 不熔断 */
@@ -98,6 +110,12 @@ export type DaemonEnv = {
   agentAllowedTools: string;
   /** `SLOCK_AGENT_EFFORT`：`low` / `medium` / `high`，非法回落 medium */
   agentEffort: AgentEffort;
+  /**
+   * `SLOCK_ENV_EXTRA`：逗号/空格分隔的额外 env 键名白名单（A7.5）——
+   * 在 agent-env-whitelist 基础上追加放行这些键的当前值；`SLOCK_*` 开头或
+   * `_KEY`/`_TOKEN`/`_SECRET` 结尾的名字会被拒（防凭据外泄）。
+   */
+  agentEnvExtra: string[];
 };
 
 /** 正整数（含「必须 >0」的毫秒/条数）。非法 / ≤0 → fallback。 */
@@ -118,6 +136,17 @@ export const parseCostBudgetUsd = (raw: string | undefined = process.env.SLOCK_C
   const n = Number(raw);
   return Number.isFinite(n) && n > 0 ? n : null;
 };
+
+/** A7.5：解析 `SLOCK_ENV_EXTRA` 这类「键名列表」env——逗号/空格分隔、
+ *  去重、只保留合法环境变量名（`[A-Za-z_][A-Za-z0-9_]*`），非法项静默丢弃。 */
+export const parseEnvNameList = (raw: string | undefined): string[] => [
+  ...new Set(
+    (raw ?? "")
+      .split(/[\s,]+/)
+      .map((v) => v.trim())
+      .filter((v) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(v)),
+  ),
+];
 
 const parseAgentEffort = (raw: string | undefined): AgentEffort => {
   const v = (raw || DAEMON_ENV_DEFAULTS.agentEffort).toLowerCase();
@@ -153,10 +182,19 @@ export const loadDaemonEnv = (env: NodeJS.ProcessEnv = process.env): DaemonEnv =
     ),
     contextMaxMessages: parsePositiveInt(env.SLOCK_CONTEXT_MAX_MESSAGES, DAEMON_ENV_DEFAULTS.contextMaxMessages),
     contextMaxChars: parsePositiveInt(env.SLOCK_CONTEXT_MAX_CHARS, DAEMON_ENV_DEFAULTS.contextMaxChars),
+    contextToplevelMaxMessages: parsePositiveInt(
+      env.SLOCK_CONTEXT_TOPLEVEL_MAX_MESSAGES,
+      DAEMON_ENV_DEFAULTS.contextToplevelMaxMessages,
+    ),
+    contextToplevelMaxChars: parsePositiveInt(
+      env.SLOCK_CONTEXT_TOPLEVEL_MAX_CHARS,
+      DAEMON_ENV_DEFAULTS.contextToplevelMaxChars,
+    ),
     progressThrottleMs: parseNonNegativeInt(env.SLOCK_PROGRESS_THROTTLE_MS, DAEMON_ENV_DEFAULTS.progressThrottleMs),
     costBudgetUsd: parseCostBudgetUsd(env.SLOCK_COST_BUDGET_USD),
     costReport: env.SLOCK_COST_REPORT !== "0",
     agentAllowedTools: tools.length > 0 ? tools : DEFAULT_AGENT_ALLOWED_TOOLS,
     agentEffort: parseAgentEffort(env.SLOCK_AGENT_EFFORT),
+    agentEnvExtra: parseEnvNameList(env.SLOCK_ENV_EXTRA),
   };
 };

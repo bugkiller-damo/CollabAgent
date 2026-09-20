@@ -1,10 +1,9 @@
 #!/usr/bin/env node
-import { spawn } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { DaemonCore } from "./daemon-core.js";
-import { mkdirPrivateSync } from "./private-dir.js";
+import { mkdirPrivateSync, slockDir } from "./private-dir.js";
 
 /**
  * 单实例守卫：.slock/daemon.pid 里若躺着一个还活着的旧 daemon，先整树杀掉再
@@ -14,10 +13,10 @@ import { mkdirPrivateSync } from "./private-dir.js";
  * （2026-07-29 实测事故，见 supervisor.ts killTree 注释。）
  */
 function enforceSingleInstance(): void {
-  const slockDir = join(dirname(fileURLToPath(import.meta.url)), "..", ".slock");
-  const pidFile = join(slockDir, "daemon.pid");
+  const stateDir = slockDir();
+  const pidFile = join(stateDir, "daemon.pid");
   try {
-    mkdirPrivateSync(slockDir);
+    mkdirPrivateSync(stateDir);
     if (existsSync(pidFile)) {
       const oldPid = Number(readFileSync(pidFile, "utf-8").trim());
       if (oldPid && oldPid !== process.pid) {
@@ -31,8 +30,10 @@ function enforceSingleInstance(): void {
         if (alive) {
           console.log(`[Daemon] Another daemon instance (pid ${oldPid}) is alive — killing it before start`);
           if (process.platform === "win32") {
+            // H8：spawnSync 阻塞到 taskkill 退出——树死透才继续，否则新 daemon
+            // 写 pid/连 WS 时旧进程还在收尾（双 daemon 并存窗口）。
             try {
-              spawn("taskkill", ["/pid", String(oldPid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+              spawnSync("taskkill", ["/pid", String(oldPid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
             } catch {
               try {
                 process.kill(oldPid);
@@ -43,6 +44,22 @@ function enforceSingleInstance(): void {
           } else {
             try {
               process.kill(oldPid, "SIGTERM");
+              // SIGTERM 是优雅退出，给它最多 3s；还活着再 SIGKILL。
+              const deadline = Date.now() + 3000;
+              while (Date.now() < deadline) {
+                try {
+                  process.kill(oldPid, 0);
+                } catch {
+                  break; // 已死
+                }
+                Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+              }
+              try {
+                process.kill(oldPid, 0);
+                process.kill(oldPid, "SIGKILL");
+              } catch {
+                /* 已退出 */
+              }
             } catch {
               /* ignore */
             }

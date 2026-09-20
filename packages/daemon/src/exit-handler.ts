@@ -1,11 +1,12 @@
-import type { IAgentRunStore, IAgentTokenRegistry, LiveAgentRun } from "./types/index.js";
+import type { IAgentRunStore, LiveAgentRun } from "./types/index.js";
 
 /**
- * 完整退出处理链（Full Exit Handler）。
+ * 退出处理链（Exit Handler）。
  *
- * 进程退出时一次性完成所有清理：
- * 1. tokenRegistry.revokeIfMatches — 吊销 token（仅匹配时，防止竞态）
- * 2. runStore.updateAgentRun — 写入结束时间 + 退出码
+ * 进程退出时落盘 run 终态（结束时间 + 退出码）。
+ * token 吊销不在本地做——scoped runtime token 由 server 侧
+ * `credentialsClient.revokeAgentCredential` 撤销（H1：本地注册表
+ * `issue()` 自 server 托管 mint 后零调用，已于 2026-09-20 删除）。
  *
  * 设计原则：handler 接收所有上下文，不持有任何状态。
  */
@@ -13,7 +14,6 @@ import type { IAgentRunStore, IAgentTokenRegistry, LiveAgentRun } from "./types/
 export interface ExitContext {
   runId: string;
   agentId: string;
-  token: string;
   exitCode: number | null;
   signal?: NodeJS.Signals | null;
   startedAt: number;
@@ -24,10 +24,6 @@ export type ExitHandler = (ctx: ExitContext) => LiveAgentRun | null;
 
 export const createExitHandler = (opts: ExitHandlerOptions): ExitHandler => {
   return (ctx: ExitContext): LiveAgentRun | null => {
-    if (ctx.token) {
-      opts.tokenRegistry.revokeIfMatches(ctx.agentId, ctx.token);
-    }
-
     const endedAt = Date.now();
     const result: LiveAgentRun = {
       runId: ctx.runId,
@@ -62,11 +58,5 @@ export const createExitHandler = (opts: ExitHandlerOptions): ExitHandler => {
 };
 
 export interface ExitHandlerOptions {
-  tokenRegistry: IAgentTokenRegistry;
   runStore?: IAgentRunStore;
 }
-
-/** 零依赖版 handler（仅吊销 token，无持久化） */
-export const createMinimalExitHandler = (tokenRegistry: IAgentTokenRegistry): ExitHandler => {
-  return createExitHandler({ tokenRegistry });
-};

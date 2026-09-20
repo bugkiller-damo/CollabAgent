@@ -1,9 +1,9 @@
-import { existsSync, rmSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createAgentRuntime, type IAgentRuntime } from "../src/agent-runtime.js";
-import { createAgentTokenRegistry } from "../src/agent-tokens.js";
 import { createLiveRunRegistry } from "../src/live-run-registry.js";
+import { slockDir } from "../src/private-dir.js";
 import { createFakeAgentManager, type FakeAgentManager } from "./fakes/fake-agent-manager.js";
 import { installFakeFetch } from "./fakes/fake-fetch.js";
 
@@ -65,7 +65,6 @@ describe("agent-runtime round-end detection (integration, fake PTY)", () => {
     manager = createFakeAgentManager();
     runtime = createAgentRuntime(
       { serverUrl: "http://fake-server.test", apiKey: "test-api-key" },
-      createAgentTokenRegistry(),
       createLiveRunRegistry(),
       undefined,
       manager,
@@ -80,9 +79,9 @@ describe("agent-runtime round-end detection (integration, fake PTY)", () => {
   });
 
   afterAll(() => {
-    // 清理 writeSystemPromptFile/createWorkspaceDir 在 process.cwd()/.slock 下
+    // 清理 writeSystemPromptFile/createWorkspaceDir 在 .slock 状态树下
     // 真实写入的测试产物（.slock 本身已 gitignore，这里只是保持本地目录干净）
-    const dir = join(process.cwd(), ".slock");
+    const dir = slockDir();
     try {
       rmSync(join(dir, `sysprompt-${TEST_AGENT_NAME}.md`), { force: true });
     } catch {

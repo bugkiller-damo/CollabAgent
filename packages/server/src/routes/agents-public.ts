@@ -322,7 +322,7 @@ export async function agentPublicRoutes(app: FastifyInstance) {
   });
 
   // DELETE /agents/:agentId — 删除（连带频道成员关系；保留历史消息）
-  app.delete("/agents/:agentId", { preHandler: [app.authenticate, requireOwnAgent] }, async (req: any) => {
+  app.delete("/agents/:agentId", { preHandler: [app.authenticate, requireOwnAgent] }, async (req: any, reply: any) => {
     const { agentId } = req.params;
     // P0.11：requireOwnAgent 已保证 agent 存在且属于调用者。绑定信息先取出——
     // 行删后 computer_id 随之消失，stop 事件的投递目标要靠它解析。
@@ -331,8 +331,33 @@ export async function agentPublicRoutes(app: FastifyInstance) {
       [agentId],
     );
     const agent = row.rows[0];
-    await app.pg.query("DELETE FROM channel_members WHERE member_id = $1 AND member_type = 'agent'", [agentId]);
-    await app.pg.query("DELETE FROM agents WHERE id = $1", [agentId]);
+    // agent_credentials / agent_logins / dispatches 对 agents 均无 ON DELETE
+    // CASCADE——与 orgs.ts 删服级联、test helpers 同口径显式删，缺一即 23503；
+    // agent_cost_daily 随 FK CASCADE；历史消息（sender_id 多态无 FK）按口径保留。
+    let removed: { channel_id: string }[];
+    try {
+      removed = await app.pg.transaction(async (tx) => {
+        await tx.query("DELETE FROM agent_credentials WHERE agent_id = $1", [agentId]);
+        await tx.query("DELETE FROM agent_logins WHERE agent_id = $1", [agentId]);
+        await tx.query("DELETE FROM dispatches WHERE from_agent_id = $1 OR to_agent_id = $1", [agentId]);
+        const r = await tx.query<{ channel_id: string }>(
+          "DELETE FROM channel_members WHERE member_id = $1 AND member_type = 'agent' RETURNING channel_id",
+          [agentId],
+        );
+        await tx.query("DELETE FROM agents WHERE id = $1", [agentId]);
+        return r.rows;
+      });
+    } catch (e) {
+      // 残余竞态窗（删 credentials 后、删 agents 前 daemon 重新签发/dispatch 插入）
+      // → FK 23503 → 409 让客户端重试；此刻事务已回滚，agent 原样保留
+      if ((e as { code?: string })?.code === "23503")
+        return reply.status(409).send({ error: "agent busy, please retry" });
+      throw e;
+    }
+    if (removed.length > 0) {
+      const { invalidateMember } = await import("../lib/access.js");
+      for (const r of removed) invalidateMember(String(r.channel_id), String(agentId));
+    }
     if (agent) await sendToAgentDaemon(app.pg, agent, { type: "agent:stop", agentId });
     return { ok: true };
   });

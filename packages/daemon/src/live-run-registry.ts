@@ -13,8 +13,9 @@ import type { ILiveRunRegistry, LiveAgentRun } from "./types/index.js";
  *                                  │
  *                            add() 后检查 pending → 立即处理退出
  *
- * ### 竞态：旧 exit_cb vs 新 spawn（由 agent-tokens 处理）
- * revokeIfMatches 负责 token 隔离，本注册表仅做运行记录管理。
+ * ### 竞态：旧 exit_cb vs 新 spawn
+ * token 吊销由 server 侧 revokeAgentCredential 承担（H1，2026-09-20 起
+ * 本地注册表已删），本注册表仅做运行记录管理。
  */
 export const createLiveRunRegistry = (): ILiveRunRegistry => {
   const runs = new Map<string, LiveAgentRun>();

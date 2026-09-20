@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAgentRuntime, type IAgentRuntime } from "../src/agent-runtime.js";
-import { createAgentTokenRegistry } from "../src/agent-tokens.js";
 import { createLiveRunRegistry } from "../src/live-run-registry.js";
 import { createFakeAgentManager, type FakeAgentManager } from "./fakes/fake-agent-manager.js";
 
@@ -45,7 +44,6 @@ describe("agent-runtime 注册表与 mention 解析", () => {
     manager = createFakeAgentManager();
     runtime = createAgentRuntime(
       { serverUrl: "http://fake-server.test", apiKey: "test-api-key" },
-      createAgentTokenRegistry(),
       createLiveRunRegistry(),
       undefined,
       manager,
@@ -114,7 +112,6 @@ describe("agent-runtime loadExistingAgents", () => {
     manager = createFakeAgentManager();
     runtime = createAgentRuntime(
       { serverUrl: "http://fake-server.test", apiKey: "test-api-key" },
-      createAgentTokenRegistry(),
       createLiveRunRegistry(),
       undefined,
       manager,

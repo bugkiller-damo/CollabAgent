@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, rmSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createJsonRunStore } from "../src/agent-run-store.js";
 import { createAgentRuntime, type IAgentRuntime } from "../src/agent-runtime.js";
-import { createAgentTokenRegistry } from "../src/agent-tokens.js";
 import { createLiveRunRegistry } from "../src/live-run-registry.js";
+import { slockDir } from "../src/private-dir.js";
 import type { IAgentRunStore } from "../src/types/index.js";
 import { createFakeAgentManager, type FakeAgentManager } from "./fakes/fake-agent-manager.js";
 import { installFakeFetch } from "./fakes/fake-fetch.js";
@@ -50,7 +50,6 @@ describe("session resume (agent-runtime-spawn.ts, fake PTY)", () => {
     runStore = createJsonRunStore(storePath);
     runtime = createAgentRuntime(
       { serverUrl: "http://fake-server.test", apiKey: "test-api-key" },
-      createAgentTokenRegistry(),
       createLiveRunRegistry(),
       runStore,
       manager,
@@ -76,12 +75,12 @@ describe("session resume (agent-runtime-spawn.ts, fake PTY)", () => {
       /* best-effort */
     }
     try {
-      rmSync(join(process.cwd(), ".slock", `sysprompt-${AGENT_NAME}.md`), { force: true });
+      rmSync(join(slockDir(), `sysprompt-${AGENT_NAME}.md`), { force: true });
     } catch {
       /* best-effort */
     }
     try {
-      rmSync(join(process.cwd(), ".slock", "workspaces", AGENT_NAME), { recursive: true, force: true });
+      rmSync(join(slockDir(), "workspaces", AGENT_NAME), { recursive: true, force: true });
     } catch {
       /* best-effort */
     }

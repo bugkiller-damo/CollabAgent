@@ -42,6 +42,12 @@ export const readContextBudget = (env: NodeJS.ProcessEnv = process.env): Context
   return { maxMessages: cfg.contextMaxMessages, maxChars: cfg.contextMaxChars };
 };
 
+/** A3/§8.6：顶层 @ / DM 的小预算上下文（比线程预算小一个量级——只给「别人刚说了什么」的体感） */
+export const readToplevelContextBudget = (env: NodeJS.ProcessEnv = process.env): ContextBudget => {
+  const cfg = loadDaemonEnv(env);
+  return { maxMessages: cfg.contextToplevelMaxMessages, maxChars: cfg.contextToplevelMaxChars };
+};
+
 export const normalizeThreadId = (raw: unknown): string | undefined => {
   if (typeof raw !== "string") return undefined;
   const t = raw.trim();
@@ -66,6 +72,8 @@ export const packThreadContext = (
     triggerContent?: string;
     maxMessages?: number;
     maxChars?: number;
+    /** 块首行标签（默认「线程上下文」）；顶层/私信注入用各自的标签 */
+    header?: string;
   },
 ): ContextPack | null => {
   const maxMessages = opts?.maxMessages ?? DEFAULT_CONTEXT_MAX_MESSAGES;
@@ -93,7 +101,7 @@ export const packThreadContext = (
     const chars = lines.reduce((n, l) => n + l.length + 1, 0);
     if (chars <= maxChars) {
       const dropped = chronological.length - kept.length;
-      const block = ["【线程上下文】（按时间升序，超窗已丢最旧）", ...lines].join("\n");
+      const block = [`【${opts?.header ?? "线程上下文"}】（按时间升序，超窗已丢最旧）`, ...lines].join("\n");
       return { block, kept: kept.length, dropped, chars };
     }
     kept = kept.slice(1);
@@ -117,15 +125,19 @@ export interface FetchThreadHistoryInput {
   serverUrl: string;
   apiKey: string;
   agentId: string;
+  /** 频道名（bare 或 # 开头均可）或私信目标（"dm:@handle"） */
   channelName: string;
-  threadId: string;
+  /** 缺省 = 顶层消息（thread_id IS NULL）；给出则取该线程 */
+  threadId?: string;
   limit?: number;
 }
 
 export const fetchThreadHistory = async (input: FetchThreadHistoryInput): Promise<HistoryMessage[]> => {
   const url = new URL(`/internal/agent/${encodeURIComponent(input.agentId)}/history`, input.serverUrl);
-  url.searchParams.set("channel", `#${input.channelName.replace(/^#/, "").split(":")[0]}`);
-  url.searchParams.set("threadId", input.threadId);
+  // dm:@x 原样传给服务端解析；频道名去 # 与 :thread 后缀后补回 #
+  const ch = input.channelName.trim();
+  url.searchParams.set("channel", ch.startsWith("dm:") ? ch : `#${ch.replace(/^#/, "").split(":")[0]}`);
+  if (input.threadId) url.searchParams.set("threadId", input.threadId);
   url.searchParams.set("limit", String(input.limit ?? 100));
   const res = await fetch(url, { headers: { Authorization: `Bearer ${input.apiKey}` } });
   if (!res.ok) {
@@ -175,4 +187,48 @@ export const buildThreadContextEnvelope = async (input: {
   });
   if (!packed) return null;
   return { ...packed, threadId, envelope: wrapWithIsolation(packed.block, threadId) };
+};
+
+/**
+ * A3/§8.6：顶层 @ / DM 的小预算上下文。同一个 /history 端点不带 threadId
+ * 即返回顶层消息（DM 传 "dm:@x" 取私信历史）。不做线程隔离信封——顶层消息
+ * 的语境是「这个频道/对话里别人刚说了什么」，不是「只处理本线程」。
+ * 失败 / 关闭 / 无历史 → null（调用方用裸 prompt，不阻断唤醒）。
+ */
+export const buildChannelContextEnvelope = async (input: {
+  serverUrl: string;
+  apiKey: string;
+  agentId: string;
+  channelName: string;
+  triggerId?: string;
+  triggerContent?: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<(ContextPack & { envelope: string }) | null> => {
+  const env = input.env ?? process.env;
+  if (!contextBuilderEnabled(env)) return null;
+  const ch = input.channelName.trim();
+  if (!ch) return null;
+  const budget = readToplevelContextBudget(env);
+  let messages: HistoryMessage[];
+  try {
+    messages = await fetchThreadHistory({
+      serverUrl: input.serverUrl,
+      apiKey: input.apiKey,
+      agentId: input.agentId,
+      channelName: ch,
+      limit: Math.max(budget.maxMessages * 2, 20),
+    });
+  } catch (err: any) {
+    console.warn(`[ContextBuilder] channel ${ch} fetch failed:`, err?.message ?? err);
+    return null;
+  }
+  const packed = packThreadContext(messages, {
+    triggerId: input.triggerId,
+    triggerContent: input.triggerContent,
+    maxMessages: budget.maxMessages,
+    maxChars: budget.maxChars,
+    header: ch.startsWith("dm:") ? "私信近期上下文" : "频道近期上下文",
+  });
+  if (!packed) return null;
+  return { ...packed, envelope: packed.block };
 };

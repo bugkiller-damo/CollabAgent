@@ -3,10 +3,10 @@ import type { CommandPreset } from "./types/index.js";
 
 /**
  * O12：claude 主路径权限收敛——从「--dangerously-skip-permissions 全放行」改为
- * 显式工具白名单。白名单内的工具免确认执行；未列出的工具（WebFetch/WebSearch/
- * Notebook 系/Task 等）在 PTY 里会弹权限确认框，无人应答 → 回合超时回收，
- * 即 fail-closed。MCP slock 工具的放行由 .claude/settings.local.json 的
- * enableAllProjectMcpServers 承担，与本白名单正交。
+ * 显式工具白名单。白名单内的工具免确认执行；配置集合之外的工具在默认
+ * headless 路径会即时返回 permission_denied（A0/A7.4 实测，不挂回合），冻结
+ * PTY 路径可能弹确认但无人值守最终 fail-closed。MCP slock 工具的放行由
+ * .claude/settings.local.json 的 enableAllProjectMcpServers 承担，与本白名单正交。
  *
  * 默认集合 = 协作开发最小工具面（对照 buzz-dev-mcp 只暴露 shell+文件编辑）：
  * Bash 任意命令（agent 要跑构建/测试/git，收不了）+ 文件读写检索 + 待办

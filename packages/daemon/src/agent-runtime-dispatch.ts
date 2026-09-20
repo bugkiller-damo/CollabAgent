@@ -1,11 +1,11 @@
-import { buildThreadContextEnvelope } from "./agent-context-builder.js";
+import { buildChannelContextEnvelope, buildThreadContextEnvelope } from "./agent-context-builder.js";
 import {
   type CostGateDecision,
   createSessionCostDelta,
   evaluateCostGate,
   type ICostTracker,
 } from "./agent-cost-tracker.js";
-import { createAgentDispatchQueue } from "./agent-dispatch-queue.js";
+import { createAgentDispatchQueue, type DispatchQueueItem } from "./agent-dispatch-queue.js";
 import { createSeqAllocator, type ObservationBus } from "./agent-observation.js";
 import type { ProgressTurn } from "./agent-progress.js";
 import type { AgentRuntimeOptions } from "./agent-runtime.js";
@@ -17,6 +17,7 @@ import type { IExitChain } from "./agent-runtime-exit.js";
 import type { SpawnPtyForAgent } from "./agent-runtime-spawn.js";
 import type { IAgentStateMachine } from "./agent-runtime-state.js";
 import type { ITurnTracker } from "./agent-runtime-turn-tracker.js";
+import type { IAgentSessionStore } from "./agent-session-store.js";
 import type { IThreadSessionStore } from "./agent-thread-sessions.js";
 import { loadDaemonEnv } from "./config.js";
 import type { PersistentClaude } from "./drivers/persistent-claude.js";
@@ -87,7 +88,17 @@ export function pickLocalTriageAgent(triageAgents: unknown, hasAgent: (name: str
 }
 
 export interface IDispatch {
-  dispatchToAgent(agentName: string, channelName: string, userMsg: string, threadId?: string): Promise<void>;
+  /**
+   * A4：kind 标注消息语义——入桶判别（分诊/巡检/守卫追问不与 @ 消息合并）
+   * 并随 item 传到 armTurnGuard。缺省 "message"。
+   */
+  dispatchToAgent(
+    agentName: string,
+    channelName: string,
+    userMsg: string,
+    threadId?: string,
+    kind?: DispatchQueueItem["kind"],
+  ): Promise<void>;
   runAgent(
     agentName: string,
     channelName: string,
@@ -131,8 +142,8 @@ export interface DispatchDeps {
   getStopGeneration?(agentName: string): number;
   /** P0.3：spawn 完成后才发现已被 stop 时，拆掉刚拉起的进程 */
   abortAgentProcess?(agentName: string): void;
-  /** agentName -> displayName/description（PTY 环境准备用） */
-  agentInfo: Map<string, { displayName?: string; description?: string }>;
+  /** agentName -> displayName/description/model（PTY 环境准备 + headless --model 用） */
+  agentInfo: Map<string, { displayName?: string; description?: string; model?: string }>;
   /** agentName -> runId 缓存（常驻 PTY） */
   runIdByAgent: Map<string, string>;
   /** 旧 PersistentClaude 路径（兜底）常驻会话 */
@@ -142,8 +153,18 @@ export interface DispatchDeps {
    * 测试注入时可不传。
    */
   sessionCreates?: Map<string, Promise<PersistentClaude>>;
+  /**
+   * A5：agentName → scoped token 签发时间戳（ms）。生产由 agent-runtime
+   * 注入并在 tearDown/回收时清条目；缺省由工厂自建（测试用）。
+   */
+  credentialIssuedAt?: Map<string, number>;
   /** claudePrint 一次性模式的 session 缓存 */
   agentSessions: Map<string, string>;
+  /**
+   * A2：agent→sessionId 持久化（daemon-agent-sessions.json）——persistent
+   * 路径 spawn 的 --resume 数据源 + init 事件回写目标。测试可不传（不续接）。
+   */
+  agentSessionStore?: IAgentSessionStore;
   /**
    * 门控投递反馈：消息因 agent 忙碌被排队时回调一次（daemon-core 经 WS 上报
    * server → 浏览器 toast"已缓冲，空闲后投递"）。可选，测试注入时可以不传。
@@ -205,6 +226,7 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
     agentSessions,
   } = deps;
   const sessionCreates = deps.sessionCreates ?? new Map<string, Promise<PersistentClaude>>();
+  const credentialIssuedAt = deps.credentialIssuedAt ?? new Map<string, number>();
   const { transitionState, clearStartupTimer } = stateMachine;
   // P0.5：result.total_cost_usd 是会话累计；按 agent 记上次值，落库只写差值。
   const sessionCostDelta = createSessionCostDelta();
@@ -265,6 +287,7 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
     channelName: string,
     userMsg: string,
     threadId?: string,
+    kind?: DispatchQueueItem["kind"],
   ) => Promise<void> = async () => {};
   const handleStreamEvent = createStreamTurnHandler({
     observationBus: deps.observationBus,
@@ -273,6 +296,7 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
     onProgress: deps.onProgress,
     costTracker: deps.costTracker,
     threadSessions: deps.threadSessions,
+    agentSessionStore: deps.agentSessionStore,
     sessionCostDelta,
     obsSeq,
     turnGuards,
@@ -281,7 +305,7 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
     idleReclaimer,
     resolveAgentId,
     nudge: (agentName, channel, msg) => {
-      void dispatchToAgentRef(agentName, channel, msg).catch(() => {});
+      void dispatchToAgentRef(agentName, channel, msg, undefined, "nudge").catch(() => {});
     },
   });
 
@@ -290,6 +314,7 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
     channelName: string,
     userMsg: string,
     threadId?: string,
+    kind: DispatchQueueItem["kind"] = "message",
   ): Promise<void> => {
     // P0.6：执行前成本门。队列 drain 已拦过一次，这里是兜底——覆盖
     // 「drain 检查后才耗尽预算」的竞态窗口。
@@ -363,8 +388,10 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
       channelName,
       userMsg,
       threadId,
+      kind,
       haltGen,
       serverUrl: options.serverUrl,
+      apiKey: options.apiKey,
       stateMachine,
       idleReclaimer,
       mintAgentCredential,
@@ -372,6 +399,8 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
       persistentSessions,
       sessionCreates,
       agentSessions,
+      agentSessionStore: deps.agentSessionStore,
+      credentialIssuedAt,
       forgetSessionCost: (name) => sessionCostDelta.forget(name),
       threadSessions: deps.threadSessions,
       turnGuards,
@@ -391,8 +420,12 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
   // 压掉——agent 一旦忘记"必须用 send_message 回复、直接打字不会发出"，表现就是
   // "思考了但没消息发出来"。reminder 挂在尾部（recency 位置）对抗压缩，且在
   // dispatchToAgent 收口处统一追加，覆盖首次 spawn 和 PTY 复用两条写入路径。
-  const REMINDER_TAIL = (agentName: string): string =>
-    `\n\n<slock-reminder>你是 @${agentName}（CollabAgent 平台的 AI Agent）。对外回复只能用 \`send_message\` 工具（或 \`slock\` CLI），直接打字不会被发送；回合开始先读工作区里的 MEMORY.md。</slock-reminder>`;
+  const REMINDER_TAIL = (agentName: string, channelName: string, threadId?: string): string => {
+    // 本回合 target 一并附进 reminder——系统提示 A3 起去频道化，agent 的回合
+    // 落点完全靠这条尾巴与【本回合语境】行（8.5/8.9e）。
+    const target = channelName.startsWith("dm:") ? channelName : `#${channelName}${threadId ? `:${threadId}` : ""}`;
+    return `\n\n<slock-reminder>你是 @${agentName}（CollabAgent 平台的 AI Agent）。对外回复只能用 \`send_message\` 工具（或 \`slock\` CLI），直接打字不会被发送；本回合回复 target 用 "${target}"；回合开始先读工作区里的 MEMORY.md。</slock-reminder>`;
+  };
 
   // A1 派发队列（P1.16 起唯一路径）：doDispatch 作为投递执行器，重试/死信/
   // dedup/合并由队列负责。isDeliverable 把「agent stopped / 无 agentId」这类
@@ -400,19 +433,27 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
   // 已删除（评估报告 P1.16：两套错误处理/重试/死信逻辑并存，旧路径无退避与死信）。
   const envCfg = loadDaemonEnv();
   const dispatchQueue = createAgentDispatchQueue({
-    // in-flight 截止放宽到 6 分钟：persistent 路径的 deliver 是回合级的
+    // in-flight 告警阈值 6 分钟：persistent 路径的 deliver 是回合级的
     // （2026-08-18 起 await 到 result 事件），正常回合轻松超过默认 60s。
-    // 真正的看门狗是 PersistentClaude 的不活跃超时（300s 沉默必杀 → reject），
-    // 这里的截止只是「deliver Promise 泄漏」的兜底，不参与卡死检测。
+    // A4/§8.13⑦：超时不再触发重投（回合大概率还在跑，重投=重复回合+守卫
+    // 串台）——只打告警日志继续等真实 settle。真正的看门狗是
+    // PersistentClaude 的沉默超时（300s 无事件必杀 → reject → 那时重试才安全）。
     inflightMs: envCfg.dispatchInflightMs,
     maxRetries: envCfg.dispatchMaxRetries,
     deliver: async (agentName, items) => {
-      // 合并重提示：多条积压拼成一条复合 prompt，reminder tail 只追加一次
+      // 合并重提示：多条积压拼成一条复合 prompt，reminder tail 只追加一次。
+      // A4：批次同桶——channel/thread/kind 全批一致，取 items[0] 即代表整批。
       const merged = items.map((i) => i.content).join("\n\n");
       if (items.length > 1) {
         console.log(`[Daemon] @${agentName} merged ${items.length} queued messages into one dispatch`);
       }
-      await doDispatch(agentName, items[0].channelName, merged + REMINDER_TAIL(agentName), items[0].threadId);
+      await doDispatch(
+        agentName,
+        items[0].channelName,
+        merged + REMINDER_TAIL(agentName, items[0].channelName, items[0].threadId),
+        items[0].threadId,
+        items[0].kind,
+      );
     },
     isDeliverable: (agentName) => stateMachine.getState(agentName) !== "stopped" && resolveAgentId(agentName) !== null,
     // P0.6：drain 出队前再过一次成本门——入队时放行、排空时已熔断的积压/
@@ -449,6 +490,7 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
     channelName: string,
     userMsg: string,
     threadId?: string,
+    kind: DispatchQueueItem["kind"] = "message",
   ): Promise<void> => {
     const gate = evaluateCostGate(deps.costTracker, agentName);
     if (gate.blocked) {
@@ -459,7 +501,7 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
     // 「已缓冲」toast 保持旧语义：只有 agent 确实在忙（在途/积压/退避中）才提示，
     // 空闲时队列会立即排空，不打扰用户
     const wasBusy = dispatchQueue.isBusy(agentName);
-    const res = dispatchQueue.enqueue({ agentName, channelName, content: userMsg, kind: "message", threadId });
+    const res = dispatchQueue.enqueue({ agentName, channelName, content: userMsg, kind, threadId });
     if (wasBusy) {
       console.log(`[Daemon] @${agentName} busy — message queued (dispatch queue)`);
       try {
@@ -474,40 +516,71 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
   };
   dispatchToAgentRef = dispatchToAgent;
 
-  const attachThreadContext = async (
+  /**
+   * 回合上下文注入（A3/§8.6 扩到顶层 @ 与 DM）：
+   * - 有 threadId → 线程追问路径（buildThreadContextEnvelope，预算 40 条/8k，
+   *   带隔离信封）；
+   * - 无 threadId → 顶层频道 / DM 近期消息小预算注入（buildChannelContextEnvelope，
+   *   默认 8 条/2000 字符，SLOCK_CONTEXT_TOPLEVEL_MAX_* 可调）。DM 的 channel
+   *   参数传 "dm:@x" 目标。
+   * 失败/关闭/无历史 → 裸 prompt，不阻断唤醒；注入量都记 recordContext 账。
+   */
+  const attachTurnContext = async (
     agentName: string,
     channelName: string,
     taskPrompt: string,
     threadId: string | undefined,
     content: string,
     messageId?: string,
+    /** 无 threadId 时是否注入顶层/DM 小预算上下文（分诊/巡检等 nudge 关掉） */
+    topLevel = true,
   ): Promise<{ userMsg: string; threadId?: string }> => {
     const agentId = resolveAgentId(agentName);
-    if (!agentId || !threadId) return { userMsg: taskPrompt, threadId };
-    const built = await buildThreadContextEnvelope({
+    if (!agentId) return { userMsg: taskPrompt, threadId };
+    const record = (built: { chars: number; kept: number; dropped: number }) => {
+      try {
+        deps.costTracker?.recordContext?.(agentName, agentId, channelName, {
+          chars: built.chars,
+          messages: built.kept,
+          dropped: built.dropped,
+          threadId,
+        });
+      } catch (err) {
+        console.warn(`[Daemon] @${agentName} context cost record failed:`, errMessage(err));
+      }
+    };
+    if (threadId) {
+      const built = await buildThreadContextEnvelope({
+        serverUrl: options.serverUrl,
+        apiKey: options.apiKey,
+        agentId,
+        channelName,
+        threadId,
+        triggerId: messageId,
+        triggerContent: content,
+      });
+      if (!built) return { userMsg: taskPrompt, threadId };
+      record(built);
+      console.log(
+        `[Daemon] @${agentName} context packed thread ${threadId.slice(0, 8)} kept=${built.kept} dropped=${built.dropped} chars=${built.chars}`,
+      );
+      return { userMsg: `${built.envelope}\n\n${taskPrompt}`, threadId: built.threadId };
+    }
+    if (!topLevel) return { userMsg: taskPrompt };
+    const built = await buildChannelContextEnvelope({
       serverUrl: options.serverUrl,
       apiKey: options.apiKey,
       agentId,
       channelName,
-      threadId,
       triggerId: messageId,
       triggerContent: content,
     });
-    if (!built) return { userMsg: taskPrompt, threadId };
-    try {
-      deps.costTracker?.recordContext?.(agentName, agentId, channelName, {
-        chars: built.chars,
-        messages: built.kept,
-        dropped: built.dropped,
-        threadId,
-      });
-    } catch (err) {
-      console.warn(`[Daemon] @${agentName} context cost record failed:`, errMessage(err));
-    }
+    if (!built) return { userMsg: taskPrompt };
+    record(built);
     console.log(
-      `[Daemon] @${agentName} context packed thread ${threadId.slice(0, 8)} kept=${built.kept} dropped=${built.dropped} chars=${built.chars}`,
+      `[Daemon] @${agentName} context packed channel ${channelName} kept=${built.kept} dropped=${built.dropped} chars=${built.chars}`,
     );
-    return { userMsg: `${built.envelope}\n\n${taskPrompt}`, threadId: built.threadId };
+    return { userMsg: `${built.envelope}\n\n${taskPrompt}` };
   };
 
   const runAgent = async (
@@ -521,15 +594,15 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
   ): Promise<void> => {
     const inThread = Boolean(threadId) || replyTarget.includes(":");
     const where = inThread ? `#${channelName} 的一个线程里` : `#${channelName} 频道`;
+    // A3：「本次任务」段从系统提示下沉到回合 prompt——把任务做成工程师形态
+    //（干完再交付）而不只是「发一条回复」。
     const taskPrompt = [
       `你在 ${where}被 @ 了。来自 @${senderName} 的消息：${content}`,
       ``,
-      `请用 \`send_message\` 工具（target="${replyTarget}"）回复；没有该工具时退回` +
-        `\`slock message send --target "${replyTarget}"\`（内容从 stdin 传入）`,
-      inThread ? "在该线程内" : "在该频道",
-      `回复。注意 target 必须严格用 "${replyTarget}"。`,
+      `把这条消息当成交给你的任务做完整：需要动手就动手（命令 / 文件 / 编译 / 网络都可以），产出按交付协议走（代码 / 长内容 → deliverables/ + upload_attachment）。`,
+      `完成后用 \`send_message\` 工具（target="${replyTarget}"）在${inThread ? "该线程内" : "该频道"}发结果；没有该工具时退回 \`slock message send --target "${replyTarget}"\`（内容从 stdin 传入）。注意 target 必须严格用 "${replyTarget}"。`,
     ].join("\n");
-    const packed = await attachThreadContext(agentName, channelName, taskPrompt, threadId, content, messageId);
+    const packed = await attachTurnContext(agentName, channelName, taskPrompt, threadId, content, messageId);
     await dispatchToAgent(agentName, channelName, packed.userMsg, packed.threadId);
   };
 
@@ -542,18 +615,19 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
     const userMsg = [
       `你收到了一条来自 @${senderName} 的私信（DM）：${content}`,
       ``,
-      `请用 \`send_message\` 工具（target="${replyTarget}"）直接回复；没有该工具时退回` +
+      `把这条私信当成交给你的任务做完整（需要动手就动手）。完成后用 \`send_message\` 工具（target="${replyTarget}"）直接回复；没有该工具时退回` +
         `\`slock message send --target "${replyTarget}"\`（内容从 stdin 传入）。`,
-      `注意 target 必须严格用 "${replyTarget}"。`,
-      `私信是一对一的，无需被 @ 也应当回应。`,
+      `注意 target 必须严格用 "${replyTarget}"；私信是一对一的，无需被 @ 也应当回应。`,
     ].join("\n");
-    await dispatchToAgent(agentName, replyTarget, userMsg);
+    // A3/§8.6：DM 注入小预算历史（channel 参数 = "dm:@x" 目标）
+    const packed = await attachTurnContext(agentName, replyTarget, userMsg, undefined, content);
+    await dispatchToAgent(agentName, replyTarget, packed.userMsg);
   };
 
   const runAgentReminder = async (agentName: string, reminder: ReminderFirePayload): Promise<void> => {
     const channelName = (reminder.channel || "").replace(/^#/, "").split(":")[0] || "general";
     if (reminder.kind === "patrol") {
-      await dispatchToAgent(agentName, channelName, buildPatrolPrompt(reminder));
+      await dispatchToAgent(agentName, channelName, buildPatrolPrompt(reminder), undefined, "reminder");
       return;
     }
     const where = reminder.channel
@@ -565,7 +639,7 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
       where,
       `请据此完成相应跟进；处理完即结束本回合。`,
     ].join("\n");
-    await dispatchToAgent(agentName, channelName, userMsg);
+    await dispatchToAgent(agentName, channelName, userMsg, undefined, "reminder");
   };
 
   const runAgentTriage = async (
@@ -578,8 +652,9 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
     messageId?: string,
   ): Promise<void> => {
     const taskPrompt = buildTriagePrompt({ channelName, replyTarget, senderName, content });
-    const packed = await attachThreadContext(agentName, channelName, taskPrompt, threadId, content, messageId);
-    await dispatchToAgent(agentName, channelName, packed.userMsg, packed.threadId);
+    // 分诊是 nudge 性质：只保留线程追问语境，不注顶层小预算上下文
+    const packed = await attachTurnContext(agentName, channelName, taskPrompt, threadId, content, messageId, false);
+    await dispatchToAgent(agentName, channelName, packed.userMsg, packed.threadId, "triage");
   };
 
   return {

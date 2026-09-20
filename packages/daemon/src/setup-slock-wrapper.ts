@@ -1,7 +1,7 @@
 import { writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { mkdirPrivateSync } from "./private-dir.js";
+import { mkdirPrivateSync, slockDir } from "./private-dir.js";
 
 /**
  * 生成 slock wrapper（slock.bat + CLI 预打包）。
@@ -13,8 +13,8 @@ import { mkdirPrivateSync } from "./private-dir.js";
  * 代设）；PTY 外手工调 slock 没有凭证时，CLI 会报明确的 MISSING_TOKEN 错误。
  */
 export async function setupSlockWrapper(agentId: string, serverUrl: string): Promise<string> {
-  const slockDir = join(process.cwd(), ".slock");
-  mkdirPrivateSync(slockDir);
+  const stateDir = slockDir();
+  mkdirPrivateSync(stateDir);
 
   // cli.ts 与本文件同目录（src/）；按源码位置解析，避免依赖 cwd
   const srcDir = dirname(fileURLToPath(import.meta.url));
@@ -25,7 +25,7 @@ export async function setupSlockWrapper(agentId: string, serverUrl: string): Pro
   const cliPathPosix = cliPath.replace(/\\/g, "/");
   try {
     const esbuild = await import("esbuild");
-    const bundlePath = join(slockDir, "slock-cli.cjs");
+    const bundlePath = join(stateDir, "slock-cli.cjs");
     await esbuild.build({
       entryPoints: [cliPath],
       bundle: true,
@@ -50,7 +50,7 @@ export async function setupSlockWrapper(agentId: string, serverUrl: string): Pro
     `if not defined SLOCK_AGENT_ACTIVE_CAPABILITIES set SLOCK_AGENT_ACTIVE_CAPABILITIES=send,read,mentions,tasks,reactions,server,channels`,
     runCmd,
   ].join("\r\n");
-  writeFileSync(join(slockDir, "slock.bat"), batContent);
+  writeFileSync(join(stateDir, "slock.bat"), batContent);
 
   // 无扩展名的 sh wrapper：Claude Code 的 Bash 工具在 Windows 上走 git-bash，
   // bash 不解析 PATHEXT，敲 `slock` 找不到 `slock.bat`（2026-07-17 实测 agent
@@ -65,13 +65,13 @@ export async function setupSlockWrapper(agentId: string, serverUrl: string): Pro
     shRunCmd,
     ``,
   ].join("\n");
-  writeFileSync(join(slockDir, "slock"), shContent);
-  console.log(`[Daemon] slock wrapper written to ${slockDir}/slock.bat + ${slockDir}/slock (sh)`);
+  writeFileSync(join(stateDir, "slock"), shContent);
+  console.log(`[Daemon] slock wrapper written to ${stateDir}/slock.bat + ${stateDir}/slock (sh)`);
 
   const currentPath = process.env.PATH || "";
-  if (!currentPath.includes(slockDir)) {
-    process.env.PATH = `${slockDir};${currentPath}`;
+  if (!currentPath.includes(stateDir)) {
+    process.env.PATH = `${stateDir};${currentPath}`;
   }
 
-  return slockDir;
+  return stateDir;
 }

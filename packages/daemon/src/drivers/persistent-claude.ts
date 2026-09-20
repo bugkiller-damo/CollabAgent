@@ -1,28 +1,52 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
 import { applyAgentEnv } from "../agent-env-whitelist.js";
+import { isValidSessionId } from "../agent-sessions.js";
 import { asClaudeStreamEvent, type ClaudeStreamEvent } from "../claude-stream.js";
 import { getClaudePermissionArgs } from "../command-presets.js";
+import { resolveClaudeBinary } from "../command-resolver.js";
 import { loadDaemonEnv } from "../config.js";
 import { errMessage } from "../errors.js";
 
-// 复用 claude-print 的命令查找逻辑
-function findClaudeCmd(): string {
-  const appData = process.env.APPDATA || join("C:/Users", process.env.USERNAME || "Default", "AppData/Roaming");
-  const candidates = [join(appData, "npm", "claude.cmd"), "C:/Program Files/Claude Code/claude.cmd", "claude.cmd"];
-  for (const c of candidates) if (existsSync(c)) return c;
-  return "claude.cmd";
-}
+// A1.2：Windows 的 .cmd/.bat shim 与裸命令名必须经 shell 启动；已解析到真实
+// 可执行文件（或非 Windows）时直接 spawn，避开 cmd.exe 引号转义层（评估 2.4）。
+const needsShell = (cmd: string): boolean =>
+  process.platform === "win32" && (cmd === "claude" || /\.(cmd|bat)$/i.test(cmd));
 function q(s: string): string {
   return /\s/.test(s) ? `"${s}"` : s;
 }
+
+/**
+ * A2：stream-json 事件的 error 判定（resume 首事件探测用）。
+ * 覆盖 `result.is_error` 与任何 `subtype` 含 error 的形态；
+ * `system/permission_denied` 之类正常事件不误判。
+ */
+const isStreamErrorEvent = (ev: ClaudeStreamEvent): boolean => {
+  const sub = (ev as { subtype?: unknown }).subtype;
+  if (typeof sub === "string" && /error/i.test(sub)) return true;
+  return (ev as { is_error?: unknown }).is_error === true;
+};
 
 export interface PersistentClaudeOpts {
   cwd: string;
   systemPromptFile?: string;
   env: Record<string, string>;
   label?: string; // 日志用
+  /** A1.1：runtime_profile.model（web 端 sonnet/opus/haiku 选择）→ --model */
+  model?: string;
+  /**
+   * A2：会话续接——首次 spawn 时带 `--resume <id>` 的 stream-json session_id
+   *（来自 daemon-agent-sessions.json）。进程在 resumeGraceMs 内退出、或首个
+   * 流事件为 error → 判 resume 失败：清 id、回调 onResumeFailed（上层清
+   * store）、在途回合回队后由全新会话继续（不 reject 给 A1 重试）。
+   * spawn 成功后 init 学到的 session_id 会更新内部值，同实例 crash/被杀后的
+   * 下一次 spawn 也续接同一会话。
+   */
+  resumeSessionId?: string;
+  /** A2：resume 判失败时回调（参数为被丢弃的 sessionId；上层应 forget store） */
+  onResumeFailed?: (sessionId: string) => void;
+  /** A2：resume 早退判定窗口（默认 SLOCK_RESUME_GRACE_MS=3000；测试可调小） */
+  resumeGraceMs?: number;
   turnTimeoutMs?: number; // 单回合卡死保护（默认 300s，SLOCK_PERSISTENT_TURN_MS 覆盖）
   startupDelayMs?: number; // 启动后等待时间（默认 1s）
   /**
@@ -75,6 +99,14 @@ export class PersistentClaude {
   } | null = null;
   private busy = false;
   private starting = false;
+  /** A2：下次 spawn 要 --resume 的会话 id（init 学到后更新；resume 失败清零） */
+  private sessionId: string | undefined;
+  /** A2：本次 spawn 实际带上的 --resume id（早退/首事件判定用）；undefined = 全新会话 */
+  private spawnResumeId: string | undefined;
+  private spawnedAt = 0;
+  /** A2：本次 spawn 是否已见首个合法流事件（首事件 error 判定用） */
+  private spawnSawEvent = false;
+  private spawnResumeLogged = false;
   // 回合级交付（2026-08-18 真机修正）：send() 返回的 Promise 挂在回合上——
   // result 事件 resolve，进程 mid-turn 退出 reject。此前「写入 stdin 即返回」
   // 导致 A1 派发队列的 in-flight 窗口不覆盖真实回合：busy 检测/合并/重试全部
@@ -86,7 +118,9 @@ export class PersistentClaude {
   private startupTimer: ReturnType<typeof setTimeout> | null = null;
   alive = false;
 
-  constructor(private opts: PersistentClaudeOpts) {}
+  constructor(private opts: PersistentClaudeOpts) {
+    this.sessionId = opts.resumeSessionId;
+  }
 
   private tag(): string {
     return `[Persistent${this.opts.label ? " " + this.opts.label : ""}]`;
@@ -104,7 +138,7 @@ export class PersistentClaude {
   }
 
   private spawnProc(): boolean {
-    const cmd = findClaudeCmd();
+    const cmd = resolveClaudeBinary();
     // O12：显式工具白名单替代 --dangerously-skip-permissions（见 command-presets.ts）
     const args = [
       "--input-format",
@@ -114,20 +148,57 @@ export class PersistentClaude {
       "--verbose",
       ...getClaudePermissionArgs(),
     ];
+    // A1.1：沿用 agent-runtime-spawn.ts 的保守校验，防注入/坏值。
+    const configuredModel = this.opts.model;
+    if (configuredModel && /^[a-z0-9._-]+$/i.test(configuredModel)) {
+      args.push("--model", configuredModel);
+      console.log(`${this.tag()} spawning with --model ${configuredModel}`);
+    } else if (configuredModel) {
+      console.warn(`${this.tag()} ignoring invalid --model value: ${configuredModel}`);
+    }
+    // A2：温启动——恢复上次 stream-json 会话（空闲回收 / daemon 重启 / crash
+    // 后不走全量失忆冷启动）。SLOCK_SESSION_RESUME=0 关闭（与 PTY 同语义）。
+    // id 非法等同 resume 必失败，直接丢弃走全新会话（onResumeFailed 让上层清 store）。
+    this.spawnedAt = Date.now();
+    this.spawnResumeId = undefined;
+    this.spawnSawEvent = false;
+    this.spawnResumeLogged = false;
+    const resumeId = this.sessionId;
+    if (resumeId && loadDaemonEnv().sessionResume) {
+      if (isValidSessionId(resumeId)) {
+        args.push("--resume", resumeId);
+        this.spawnResumeId = resumeId;
+        console.log(`${this.tag()} spawning with --resume ${resumeId.slice(0, 8)}`);
+      } else {
+        console.warn(`${this.tag()} ignoring invalid resume session id: ${resumeId}`);
+        this.sessionId = undefined;
+        try {
+          this.opts.onResumeFailed?.(resumeId);
+        } catch {
+          /* 上层清理是旁路 */
+        }
+      }
+    }
     if (this.opts.systemPromptFile && existsSync(this.opts.systemPromptFile)) {
       args.push("--append-system-prompt-file", this.opts.systemPromptFile);
     }
-    const fullCmd = [q(cmd), ...args.map(q)].join(" ");
+    const env = applyAgentEnv(this.opts.env, `Persistent${this.opts.label ? " " + this.opts.label : ""}`);
     this.procGen += 1;
     const gen = this.procGen;
     try {
-      this.proc = spawn(fullCmd, {
-        cwd: this.opts.cwd,
-        shell: true,
-        windowsHide: true,
-        // A2 / P0.4：默认 whitelist；SLOCK_ENV_INHERIT=1 才全量继承。
-        env: applyAgentEnv(this.opts.env, `Persistent${this.opts.label ? " " + this.opts.label : ""}`),
-      });
+      this.proc = needsShell(cmd)
+        ? spawn([q(cmd), ...args.map(q)].join(" "), {
+            cwd: this.opts.cwd,
+            shell: true,
+            windowsHide: true,
+            // A2 / P0.4：默认 whitelist；SLOCK_ENV_INHERIT=1 才全量继承。
+            env,
+          })
+        : spawn(cmd, args, {
+            cwd: this.opts.cwd,
+            windowsHide: true,
+            env,
+          });
     } catch (err) {
       console.error(`${this.tag()} spawn error:`, errMessage(err));
       this.proc = null;
@@ -174,17 +245,32 @@ export class PersistentClaude {
       }
       return;
     }
+    // A2：带 --resume 的进程在宽限期内、且还没吐出任何合法流事件就退出 =
+    // resume 失败（坏/过期 session id，Claude Code 打错误立即退出）。清 id +
+    // 在途回合放回队首——随后的 pump 用全新会话重 spawn，用户消息不经 A1 重试
+    // 照常送达；上层状态机/守卫/进度条无感（不触发 onExit，否则会把刚 arm 的
+    // 回合守卫拆掉）。spawnSawEvent 已亮说明会话确实打开过——那是普通 crash，
+    // 保留已学到的 sessionId 让下次 spawn 继续续接。
+    const resumeFailed =
+      this.spawnResumeId !== undefined && !this.spawnSawEvent && Date.now() - this.spawnedAt < this.resumeGraceMs();
+    if (resumeFailed) this.discardFailedResume(`exited within ${this.resumeGraceMs()}ms (code=${code})`);
     const wasBusy = this.busy;
-    console.log(`${this.tag()} exited code=${code}${wasBusy ? " (mid-turn, turn rejected for retry)" : ""}`);
+    console.log(
+      `${this.tag()} exited code=${code}${wasBusy ? (resumeFailed ? " (mid-turn, requeued after failed resume)" : " (mid-turn, turn rejected for retry)") : ""}`,
+    );
     this.activeTurn = null;
     this.cleanup();
-    if (wasBusy || turnForGen) {
-      this.settleTurn(turnForGen, "reject", new Error(`persistent process exited mid-turn (code=${code})`));
-    }
-    try {
-      this.opts.onExit?.();
-    } catch {
-      /* 回调失败不阻断退出处理 */
+    if (resumeFailed) {
+      this.requeueTurn(turnForGen);
+    } else {
+      if (wasBusy || turnForGen) {
+        this.settleTurn(turnForGen, "reject", new Error(`persistent process exited mid-turn (code=${code})`));
+      }
+      try {
+        this.opts.onExit?.();
+      } catch {
+        /* 回调失败不阻断退出处理 */
+      }
     }
     this.pump();
   }
@@ -201,16 +287,53 @@ export class PersistentClaude {
     console.error(`${this.tag()} proc error:`, err.message);
     // 防御「只 error 不 exit」导致回合 Promise 永久挂起。先 cleanup 让随后
     // 的 exit 走 stale 分支，因此本路径必须自己 onExit + pump。
+    // A2：resume 宽限期内的 error 视同 resume 失败（同 handleProcExit 早退
+    // 路径）；已见合法流事件的按普通 crash 处理，保留 sessionId 续接。
+    const resumeFailed =
+      this.spawnResumeId !== undefined && !this.spawnSawEvent && Date.now() - this.spawnedAt < this.resumeGraceMs();
+    if (resumeFailed) this.discardFailedResume(`proc error: ${err.message}`);
     const turn = this.activeTurn?.gen === gen ? this.activeTurn : null;
     this.activeTurn = null;
-    this.settleTurn(turn, "reject", err);
     this.cleanup();
-    try {
-      this.opts.onExit?.();
-    } catch {
-      /* 回调失败不阻断错误处理 */
+    if (resumeFailed) {
+      this.requeueTurn(turn);
+    } else {
+      this.settleTurn(turn, "reject", err);
+      try {
+        this.opts.onExit?.();
+      } catch {
+        /* 回调失败不阻断错误处理 */
+      }
     }
     this.pump();
+  }
+
+  private resumeGraceMs(): number {
+    return this.opts.resumeGraceMs ?? loadDaemonEnv().resumeGraceMs;
+  }
+
+  /**
+   * A2：resume 失败判定收口——清本实例持有的 id 并通知上层清 store；
+   * spawnResumeId 清零后下一次 spawnProc 自然落全新会话。
+   */
+  private discardFailedResume(why: string): void {
+    const failed = this.spawnResumeId;
+    this.spawnResumeId = undefined;
+    if (!failed) return;
+    if (this.sessionId === failed) this.sessionId = undefined;
+    console.warn(
+      `${this.tag()} resume of session ${failed.slice(0, 8)} failed (${why}); continuing with a fresh session`,
+    );
+    try {
+      this.opts.onResumeFailed?.(failed);
+    } catch {
+      /* 上层清理是旁路 */
+    }
+  }
+
+  /** A2：resume 失败时在途回合不放逐——放回队首，由 fresh spawn 继续送达。 */
+  private requeueTurn(turn: QueuedTurn | null): void {
+    if (turn && !turn.settled) this.queue.unshift(turn);
   }
 
   /** P1.12：卸掉当前进程上我们挂的监听。已入队 emit 仍靠 isCurrent/gen 忽略。 */
@@ -292,6 +415,9 @@ export class PersistentClaude {
    *   而 curl 无 --max-time 挂死又要等满整个阈值才恢复（第二轮实测）。
    * - stream-json verbose 模式下干活的 agent 几乎持续有事件（assistant block /
    *   tool_result / result），沉默 N 秒 ≈ 工具调用挂死，是强卡死信号。
+   * - Claude Code 2.1.274 在长 Bash 工具执行中约每 30s 发一次 `tool_progress`
+   *   JSON 心跳（40s Bash 实测）；重置发生在 `asClaudeStreamEvent` 收窄之前，
+   *   这类未知心跳类型同样能续命回合，300s 默认不变。
    * 已知边界：单个超大 thinking block 若超过阈值无输出会被误杀——真遇到了
    * 调大 SLOCK_PERSISTENT_TURN_MS，不要改回绝对时长。
    *
@@ -343,14 +469,56 @@ export class PersistentClaude {
       if (!line) continue;
       try {
         const parsed: unknown = JSON.parse(line);
-        // 不活跃超时续命：回合进行中任何合法 JSON 行都重置计时（见 armTurnTimer 注释）
+        // 不活跃超时续命：回合进行中任何合法 JSON 行都重置计时（见 armTurnTimer 注释）。
+        // 重置刻意发生在 asClaudeStreamEvent 收窄之前——Claude Code 2.1.274 的
+        // `tool_progress` 心跳（长 Bash 约 30s 一次）不在已知联合内，若先收窄
+        // 再重置，长工具会被误判沉默而误杀。
         if (this.busy) this.armTurnTimer();
         const ev = asClaudeStreamEvent(parsed);
-        if (ev && this.opts.onStreamEvent) {
-          try {
-            this.opts.onStreamEvent(ev);
-          } catch {
-            /* 观察旁路抛错不影响主链路 */
+        if (ev) {
+          // A2：resume 的进程首个流事件就是 error = 会话没打开（坏 --resume 的
+          // 另一种失败形态，与「宽限期内退出」等价）。清 id、杀进程、在途回合
+          // 回队——pump 换全新会话。该 error 事件不上抛：尤其 result 形 error
+          // 会被当成回合边界误 resolve 在途回合。
+          if (this.spawnResumeId && !this.spawnSawEvent && isStreamErrorEvent(ev)) {
+            this.discardFailedResume("first stream event is an error");
+            const turn = this.activeTurn;
+            this.activeTurn = null;
+            const proc = this.proc;
+            this.cleanup();
+            this.requeueTurn(turn);
+            try {
+              proc?.kill();
+            } catch {
+              /* ignore */
+            }
+            this.pump();
+            return;
+          }
+          this.spawnSawEvent = true;
+          // A2：学到本进程 session_id——之后若进程被杀（沉默超时 / crash），
+          // 下一次 spawnProc 用 --resume 接回同一会话，不丢记忆。
+          if (ev.type === "system" && typeof ev.session_id === "string" && ev.session_id) {
+            // 每个 system 事件都带 session_id——确认日志只在首个 system 事件打一次。
+            // 注意不能用 !this.sessionId 判首次：resume 合法时 sessionId 仍持有目标 id。
+            if (this.spawnResumeId && !this.spawnResumeLogged) {
+              this.spawnResumeLogged = true;
+              if (ev.session_id === this.spawnResumeId) {
+                console.log(`${this.tag()} resumed session ${ev.session_id.slice(0, 8)}`);
+              } else {
+                console.warn(
+                  `${this.tag()} resume produced new session ${ev.session_id.slice(0, 8)} (expected ${this.spawnResumeId.slice(0, 8)})`,
+                );
+              }
+            }
+            this.sessionId = ev.session_id;
+          }
+          if (this.opts.onStreamEvent) {
+            try {
+              this.opts.onStreamEvent(ev);
+            } catch {
+              /* 观察旁路抛错不影响主链路 */
+            }
           }
         }
         if (ev?.type === "result") {

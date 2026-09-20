@@ -7,6 +7,7 @@ import {
 import { type createSeqAllocator, type ObservationBus, streamEventToFrames } from "./agent-observation.js";
 import { createProgressTurn, type ProgressTurn } from "./agent-progress.js";
 import type { IAgentStateMachine } from "./agent-runtime-state.js";
+import type { IAgentSessionStore } from "./agent-session-store.js";
 import type { IThreadSessionStore } from "./agent-thread-sessions.js";
 import type { ClaudeStreamEvent } from "./claude-stream.js";
 import { loadDaemonEnv } from "./config.js";
@@ -20,6 +21,8 @@ export interface TurnGuard {
   channel: string;
   hadSend: boolean;
   isNudge: boolean;
+  /** A4：队列 item kind（message/triage/reminder/nudge/dispatch）——观测与调试用 */
+  kind?: string;
   /** 本回合最后一段正文（text 帧）——回合结束未发送时由 daemon 直接代发 */
   lastText?: string;
   /** D1/D2：本回合所属线程（无则顶层/DM/巡检） */
@@ -40,6 +43,8 @@ export interface StreamTurnHandlerOpts {
   onProgress?: (agentName: string, channelName: string, headline: string, phase: "start" | "update" | "end") => void;
   costTracker?: ICostTracker;
   threadSessions?: IThreadSessionStore;
+  /** A2：agent→sessionId 持久化（daemon-agent-sessions.json；测试可不传） */
+  agentSessionStore?: IAgentSessionStore;
   sessionCostDelta: SessionCostDelta;
   obsSeq: ReturnType<typeof createSeqAllocator>;
   turnGuards: Map<string, TurnGuard>;
@@ -85,13 +90,20 @@ export const armTurnGuard = (opts: {
   channelName: string;
   userMsg: string;
   threadId?: string;
+  /** A4：队列 item kind——nudge/triage 直接判 isNudge，不再只靠 prompt 前缀嗅探 */
+  kind?: string;
   turnGuards: Map<string, TurnGuard>;
   progressTurns: Map<string, ProgressTurn>;
   createProgressPoster?: (agentName: string) => import("./agent-progress.js").ProgressPoster;
   onProgress?: (agentName: string, channelName: string, headline: string, phase: "start" | "update" | "end") => void;
 }): void => {
-  const { agentName, channelName, userMsg, threadId, turnGuards, progressTurns } = opts;
+  const { agentName, channelName, userMsg, threadId, kind, turnGuards, progressTurns } = opts;
+  // A4：kind 显式判 nudge/triage；前缀嗅探保留——巡检走 kind:"reminder"
+  // 但【定时巡检】prompt 命中前缀（沉默是合法产出，语义不变），普通 ⏰ 提醒
+  // 仍受守卫（旧行为：提醒触发后无声无息要追一次）。
   const isNudge =
+    kind === "nudge" ||
+    kind === "triage" ||
     userMsg.startsWith(REPLY_GUARD_PREFIX) ||
     userMsg.startsWith("【频道分诊】") ||
     userMsg.startsWith("【定时巡检】") ||
@@ -133,6 +145,7 @@ export const armTurnGuard = (opts: {
     hadSend: false,
     threadId,
     isNudge,
+    kind,
     progress,
   };
   turnGuards.set(agentName, guard);
@@ -142,6 +155,10 @@ export const armTurnGuard = (opts: {
 /**
  * B1/C1：persistent 路径的 stream-json 事件处理——发布观察帧 + 工具审计 + 精确回合边界。
  * 含回复守卫判定（代发 / 追问一次）与 D3 成本差值落库。
+ *
+ * A8：工具审计（onToolCall pending/completed）、回复守卫簿记与进度条更新是安全
+ * 边界，独立于可选的 observationBus（UI 围观通道）——bus 缺席只意味着不发布
+ * 观察帧，绝不跳过审计与守卫语义。
  */
 export const createStreamTurnHandler = (
   opts: StreamTurnHandlerOpts,
@@ -153,6 +170,7 @@ export const createStreamTurnHandler = (
     onProgress,
     costTracker,
     threadSessions,
+    agentSessionStore,
     sessionCostDelta,
     obsSeq,
     turnGuards,
@@ -165,39 +183,38 @@ export const createStreamTurnHandler = (
   const { transitionState } = stateMachine;
 
   return (agentName: string, ev: ClaudeStreamEvent): void => {
-    const bus = observationBus;
-    if (bus) {
-      for (const frame of streamEventToFrames(agentName, ev, obsSeq)) {
-        bus.publish(frame);
-        // 回复守卫：记录本回合出现过发送动作
-        if (frame.kind === "tool_use") {
-          const guard = turnGuards.get(agentName);
-          if (guard && isSendToolFrame(frame)) guard.hadSend = true;
-        }
-        // 回复守卫：记下最后一段正文（代发的内容来源）
-        if (frame.kind === "text") {
-          const guard = turnGuards.get(agentName);
-          if (guard && frame.payload.text?.trim()) guard.lastText = frame.payload.text;
-        }
-        // C1：工具调用生命周期（pending = tool_use 出现，completed = tool_result 回灌）
-        if (frame.kind === "tool_use" || frame.kind === "tool_result") {
-          try {
-            onToolCall?.(agentName, {
-              toolName: frame.payload.toolName,
-              toolUseId: frame.payload.toolUseId,
-              status: frame.kind === "tool_use" ? "pending" : "completed",
-              text: frame.payload.text,
-            });
-          } catch {
-            /* 审计旁路不阻塞主链路 */
-          }
-        }
-        // D4：节流聚合进频道进度条（分诊/巡检 isNudge 不写频道，但仍推顶栏）
+    // A8：观察帧发布受 observationBus 节制（可选 UI 旁路），但守卫簿记 /
+    // 工具审计 / 进度更新无条件执行——审计边界不随围观 UI 缺席而消失。
+    for (const frame of streamEventToFrames(agentName, ev, obsSeq)) {
+      observationBus?.publish(frame);
+      // 回复守卫：记录本回合出现过发送动作
+      if (frame.kind === "tool_use") {
+        const guard = turnGuards.get(agentName);
+        if (guard && isSendToolFrame(frame)) guard.hadSend = true;
+      }
+      // 回复守卫：记下最后一段正文（代发的内容来源）
+      if (frame.kind === "text") {
+        const guard = turnGuards.get(agentName);
+        if (guard && frame.payload.text?.trim()) guard.lastText = frame.payload.text;
+      }
+      // C1：工具调用生命周期（pending = tool_use 出现，completed = tool_result 回灌）
+      if (frame.kind === "tool_use" || frame.kind === "tool_result") {
         try {
-          (progressTurns.get(agentName) ?? turnGuards.get(agentName)?.progress)?.note(frame);
+          onToolCall?.(agentName, {
+            toolName: frame.payload.toolName,
+            toolUseId: frame.payload.toolUseId,
+            status: frame.kind === "tool_use" ? "pending" : "completed",
+            text: frame.payload.text,
+          });
         } catch {
-          /* 进度旁路不阻塞 */
+          /* 审计旁路不阻塞主链路 */
         }
+      }
+      // D4：节流聚合进频道进度条（分诊/巡检 isNudge 不写频道，但仍推顶栏）
+      try {
+        (progressTurns.get(agentName) ?? turnGuards.get(agentName)?.progress)?.note(frame);
+      } catch {
+        /* 进度旁路不阻塞 */
       }
     }
     // D3 / P0.5：result.total_cost_usd 是会话累计，落库前换成相对上次的增量。
@@ -225,6 +242,14 @@ export const createStreamTurnHandler = (
     }
     // D2：system init 带 session_id 时记下本回合 thread 的亲和（无 thread 则跳过）。
     if (ev.type === "system" && typeof ev.session_id === "string" && ev.session_id) {
+      // A2：agent→sessionId 持久化——PersistentClaude 下次 spawn（空闲回收 /
+      // daemon 重启后）以 --resume 温启动的数据源。one-shot 路径也经本 handler，
+      // 顺手记上无害（其自身 resume 仍走 threadSessions/agentSessions）。
+      try {
+        agentSessionStore?.remember(agentName, ev.session_id);
+      } catch (err) {
+        console.warn(`[Daemon] @${agentName} session-store remember failed:`, errMessage(err));
+      }
       const tid = turnGuards.get(agentName)?.threadId;
       if (tid) {
         try {

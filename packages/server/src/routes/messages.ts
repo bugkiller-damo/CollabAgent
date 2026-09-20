@@ -7,6 +7,7 @@ import { dmOtherMembers, isDmTarget, type Party, resolveDmTarget } from "../lib/
 import { computeTriageAgents } from "../lib/manager-triage.js";
 import { inc } from "../lib/metrics.js";
 import { createNotification } from "../lib/notifications.js";
+import { isMachineOnline, isUserScopeOnline } from "../lib/presence.js";
 import { attachmentsJson, reactionsJson } from "../lib/query-fragments.js";
 import { resolveTenant, type TenantContext, UUID_RE } from "../lib/tenant.js";
 import { MAX_MESSAGE_CONTENT_LEN } from "../lib/validators.js";
@@ -445,7 +446,7 @@ export async function messageRoutes(app: FastifyInstance) {
     });
     inc("messagesSent");
     if (dm) inc("dmSent");
-    let skippedMentions: { handle: string; reason: "off_duty" }[] | undefined;
+    let skippedMentions: { handle: string; reason: "off_duty" | "unreachable" }[] | undefined;
     if (!dm && content && content.includes("@")) {
       try {
         const off = await app.pg.query<{ name: string }>(
@@ -456,6 +457,40 @@ export async function messageRoutes(app: FastifyInstance) {
         if (skipped.length) skippedMentions = skipped.map((handle) => ({ handle, reason: "off_duty" as const }));
       } catch {
         /* 提示失败不影响发送 */
+      }
+      // A4/§8.13⑥：频道广播事件按 serverId 做 daemon scope 过滤——被 @ 的
+      // agent 属主若在本频道 server scope 内没有任何 daemon 在线（托管机器连在
+      // 别的 server / 不在线），唤醒事件会被静默丢弃，发送方却只看到 sent。
+      // 此时把 agent 标为 unreachable 告警，让发送方知道 @ 永远不会生效。
+      if (mentionAgents?.length && resolvedServerId) {
+        try {
+          const hosts = await app.pg.query<{ name: string; user_id: string; machine_uuid: string | null }>(
+            `SELECT a.name, a.user_id, c.machine_uuid
+               FROM agents a LEFT JOIN computers c ON c.id = a.computer_id
+              WHERE a.name = ANY($1)`,
+            [mentionAgents],
+          );
+          const unreachable: { handle: string; reason: "unreachable" }[] = [];
+          for (const row of hosts.rows) {
+            const uid = String(row.user_id);
+            // bound 机：必须该机在本频道 scope 在线（机连在别的 server = 不可达）；
+            // unbound：属主在本频道 scope 内有任一机器在线即可接收广播。
+            const reachable = row.machine_uuid
+              ? isMachineOnline(uid, row.machine_uuid, resolvedServerId)
+              : isUserScopeOnline(uid, resolvedServerId);
+            if (!reachable) unreachable.push({ handle: row.name, reason: "unreachable" });
+          }
+          if (unreachable.length) {
+            console.warn(
+              `[Messages] @mention unreachable in server scope ${resolvedServerId}: ${unreachable
+                .map((u) => u.handle)
+                .join(",")} — owner daemon not online in this scope (cross-server mention would be silently dropped)`,
+            );
+            skippedMentions = [...(skippedMentions ?? []), ...unreachable];
+          }
+        } catch {
+          /* 可达性告警失败不影响发送 */
+        }
       }
     }
     return {

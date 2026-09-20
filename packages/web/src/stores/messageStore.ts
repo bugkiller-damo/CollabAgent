@@ -353,8 +353,13 @@ export const useMessageStore = defineStore("messages", () => {
             at.init,
           );
           if (sent?.skippedMentions?.length) {
-            const names = sent.skippedMentions.map((s) => `@${s.handle}`).join("、");
-            toast.info(`${names} 已停班，消息已发出但不会唤醒`);
+            const offDuty = sent.skippedMentions.filter((s) => s.reason === "off_duty").map((s) => `@${s.handle}`);
+            const unreachable = sent.skippedMentions
+              .filter((s) => s.reason === "unreachable")
+              .map((s) => `@${s.handle}`);
+            if (offDuty.length) toast.info(`${offDuty.join("、")} 已停班，消息已发出但不会唤醒`);
+            if (unreachable.length)
+              toast.info(`${unreachable.join("、")} 的 daemon 未在本频道所属 server 上线，消息已发出但不会唤醒`);
           }
           removePending(target, next.tempId);
         } catch (err: any) {

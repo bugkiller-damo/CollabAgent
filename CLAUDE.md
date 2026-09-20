@@ -6,9 +6,9 @@ AI-native team collaboration platform. The daemon (`packages/daemon/`) is a loca
 process that connects to the Slock server via WebSocket, spawns Claude Code subprocesses as
 AI agents, and routes messages between them.
 
-## 当前状态（2026-08-20 核查）
+## 当前状态（2026-09-19 核查）
 
-**已非早期单体**：`packages/daemon/src/` 50 个源文件 + `test/` 23 个测试文件。
+**已非早期单体**：`packages/daemon/src/` 92 个源文件（含 cli/ handlers/ drivers/ mcp/）+ `test/` 47 个测试文件。
 2026-07-15 路线图（26 项）与 2026-08-18 计划（A1/A2/B1/C1/B2/C2 等）**已全部落地**
 （存档：`.claude/goal-progress.json`，currentTask = ALL-DONE）。
 
@@ -22,7 +22,8 @@ AI agents, and routes messages between them.
   删除评估 2026-09 底，见 tracker Step 3。
 - **A1 派发队列**：`agent-dispatch-queue.ts` 串行派发 + 指数退避重试 + 死信上报 +
   15s 去重 + 忙碌合并。
-- **安全**：scoped runtime token（`agent-tokens.ts` + `agent-token-file.ts` 0600）、
+- **安全**：scoped runtime token（server 侧 mint/吊销 + `agent-token-file.ts` 0600；
+  本地 `agent-tokens.ts` 注册表已删——`issue()` 零调用，吊销全由 server 承担，2026-09-20 H1）、
   `--allowedTools` 白名单 fail-closed（`command-presets.ts`）、env 白名单默认开启（A2 / P0.4；`SLOCK_ENV_INHERIT=1` 排障回退）。
 - **状态机**：`agent-runtime-state.ts` 五态（uninit/idle/starting/working/stopped）。
 - **观察**：stream-json 事件 → `agent-observation.ts` 观察帧 → WS 进 web 面板；
@@ -49,10 +50,10 @@ AI agents, and routes messages between them.
 | 运行时编排 | `agent-runtime.ts`（核心）+ `agent-runtime-dispatch.ts`（工厂）+ `agent-runtime-dispatch-{pty,headless,stream}.ts` + `-spawn/-exit/-state/-credentials/-turn-tracker/-terms-dialog.ts` |
 | 驱动 | `drivers/persistent-claude.ts`（默认）/ `claude-print.ts`（one-shot）/ `drivers/probe.ts` |
 | 队列与生命周期 | `agent-dispatch-queue.ts` / `live-run-registry.ts` / `agent-run-store.ts` / `agent-cost-tracker.ts`（D3） / `agent-context-builder.ts`（D1） / `agent-thread-sessions.ts`（D2） / `agent-progress.ts`（D4 进度条） / `idle-reclaimer.ts` / `supervisor.ts` |
-| 安全 | `agent-tokens.ts` / `agent-token-file.ts` / `agent-env-whitelist.ts` / `command-presets.ts` / `command-resolver.ts` / `auth.ts` / `redact.ts`（P1.15：`sk_agent_/sk_machine_` 出口脱敏） / `private-dir.ts`（P1.15：`.slock` 0700） |
-| 启动与提示 | `agent-startup.ts` / `system-prompt.ts` / `setup-slock-wrapper.ts` / `restart-summary.ts` |
+| 安全 | `agent-token-file.ts` / `agent-env-whitelist.ts` / `command-presets.ts` / `command-resolver.ts` / `auth.ts` / `redact.ts`（P1.15：`sk_agent_/sk_machine_` 出口脱敏） / `private-dir.ts`（P1.15：`.slock` 0700；H6：`slockDir()` 状态树根，可用 `SLOCK_STATE_DIR` 覆盖） |
+| 启动与提示 | `agent-startup.ts` / `system-prompt.ts` / `setup-slock-wrapper.ts` / `restart-summary.ts` / `agent-mcp-config.ts` / `agent-workspace.ts` / `mcp-bundle.ts` + `mcp/`（slock-mcp-server / message-split / upload-payload） |
 | PTY 兜底（❄️冻结保留） | `agent-manager.ts` / `agent-manager-support.ts` / `post-start-input-writer.ts` / `pty-output-bus.ts` / `terminal-state.ts` / `terminal-log.ts`* |
-| 会话 | `agent-sessions.ts`（sessionId 捕获/恢复）/ `agent-dir-name.ts` |
+| 会话 | `agent-sessions.ts`（sessionId 捕获/恢复）/ `agent-session-store.ts`（A2：agent→sessionId 持久化，`--resume` 温启动）/ `agent-dir-name.ts` |
 | 其他 | `client.ts` / `proxy.ts` / `exit-coordinator.ts` / `exit-handler.ts` / `output.ts` / `types/index.ts` |
 
 \* `terminal-log.ts` 为共享文件（headless 的 `terminal:history` 也用它读落盘日志），不在冻结范围。
@@ -69,7 +70,7 @@ import（headless 全程不加载 node-pty）；`agent-runtime-spawn.ts` 已纯�
 
 ```
 npx tsc --noEmit -p packages/daemon/tsconfig.json
-pnpm vitest run          # packages/daemon 测试（test/ 40 文件）
+pnpm vitest run          # packages/daemon 测试（47 文件 / 497 用例）
 ```
 
 ## 历史档案（已完结，勿再按此工作）
@@ -86,10 +87,12 @@ pnpm vitest run          # packages/daemon 测试（test/ 40 文件）
 
 | 文档 | 用途 |
 |------|------|
+| `docs/2026-09-19/02-daemon-completion-report.md` | **daemon 完成情况盘点 + Agent 体验专项审计（下一批 A0~A6 依据）** |
+| `docs/2026-09-19/_daemon-inventory-raw.md` | 上文的原始采集数据（清单/tsc/vitest/env/CLI/MCP/WS/git） |
 | `docs/2026-08-23/01-member-profile-design.md` | 成员档案（Human/Agent 一等公民；P0 已落地） |
 | `docs/2026-08-23/02-computer-onboarding-design.md.md` | Computer 一等公民（P0 已落地：一人一机 /computers） |
 | `docs/2026-08-23/04-admin-agent-ia-split.md` | Admin Agent IA 拆分（Step A/B 已落地：创建在计算机，配置/巡检/删除在档案） |
-| `docs/2026-08-23/05-agent-duty-design.md` | Agent 值班（duty on/off；意愿与进程分层；审查中） |
+| `docs/2026-08-23/05-agent-duty-design.md` | Agent 值班（duty on/off；意愿与进程分层；Step A+B 已落地） |
 | `docs/2026-08-22/01-web-two-column-sidebar-design.md` | Web 侧栏两列化（rail + 可折叠 pane；图标进独立主区页） |
 | `docs/2026-08-22/02-raft-ui-visual-alignment.md` | ~~Raft 视觉对齐~~ **已废弃**（不仿 Raft UI） |
 | `docs/2026-08-21/01-d1-d2-context-session-design.md` | Step 6 D1/D2 设计（prompt 隔离，线程追问） |
@@ -120,7 +123,7 @@ pnpm vitest run          # packages/daemon 测试（test/ 40 文件）
 
 | 模块 | Hive 参考 | 行数 |
 |------|-----------|------|
-| Token | `agent-tokens.ts` | ~40 |
+| Token | ~~`agent-tokens.ts`~~ | ~40（本地注册表已删：H1，2026-09-20；吊销走 server） |
 | Live Run Registry | `live-run-registry.ts` | ~80 |
 | Agent Runtime | `agent-runtime.ts` + `agent-runtime-contract.ts` | ~200 |
 | Agent Manager (PTY) | `agent-manager.ts` | ~160 |

@@ -16,7 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  */
 
 // ---- vi.mock 的工厂被提升，假类必须经 vi.hoisted 暴露 ----
-const { FakePersistentClaude, claudePrintMock, claudePrintImpl } = vi.hoisted(() => {
+const { FakePersistentClaude, claudePrintMock, claudePrintImpl, fetchDispatchContextMock } = vi.hoisted(() => {
   class FakePersistentClaude {
     static instances: FakePersistentClaude[] = [];
     static reset(): void {
@@ -60,7 +60,8 @@ const { FakePersistentClaude, claudePrintMock, claudePrintImpl } = vi.hoisted(()
     return { reply: "ok", sessionId: "sess-1" };
   };
   const claudePrintMock = vi.fn(claudePrintImpl);
-  return { FakePersistentClaude, claudePrintMock, claudePrintImpl };
+  const fetchDispatchContextMock = vi.fn(async () => null as import("../src/agent-startup.js").DispatchContext | null);
+  return { FakePersistentClaude, claudePrintMock, claudePrintImpl, fetchDispatchContextMock };
 });
 
 vi.mock("../src/drivers/persistent-claude.js", () => ({ PersistentClaude: FakePersistentClaude }));
@@ -68,14 +69,22 @@ vi.mock("../src/claude-print.js", () => ({ claudePrint: claudePrintMock }));
 vi.mock("../src/mcp-bundle.js", () => ({ bundleSlockMcpServer: async () => null }));
 vi.mock("../src/agent-context-builder.js", () => ({
   buildThreadContextEnvelope: vi.fn(async () => null),
+  buildChannelContextEnvelope: vi.fn(async () => null),
 }));
+// A1.3：dispatchHeadlessTurn 每回合会调 fetchDispatchContext 查频道经理/worker；
+// 其余 agent-startup 行为（真实写 sysprompt/工作区文件）保持真实实现。
+vi.mock("../src/agent-startup.js", async (importActual) => {
+  const actual = await importActual<typeof import("../src/agent-startup.js")>();
+  return { ...actual, fetchDispatchContext: fetchDispatchContextMock };
+});
 
-import { buildThreadContextEnvelope } from "../src/agent-context-builder.js";
+import { buildChannelContextEnvelope, buildThreadContextEnvelope } from "../src/agent-context-builder.js";
 import { createObservationBus } from "../src/agent-observation.js";
 import { createDispatch, type DispatchDeps, type IDispatch } from "../src/agent-runtime-dispatch.js";
 import { createAgentStateMachine, type IAgentStateMachine } from "../src/agent-runtime-state.js";
 import { createTurnTracker } from "../src/agent-runtime-turn-tracker.js";
 import { createIdleReclaimer } from "../src/idle-reclaimer.js";
+import { slockDir } from "../src/private-dir.js";
 
 const AGENT = "zz_disp_agent";
 const AGENT_ID = "11111111-1111-1111-1111-111111111111";
@@ -142,6 +151,7 @@ const makeHarness = (overrides?: {
   tracker?: FakeTracker;
   resolveAgentId?: (name: string) => string | null;
   createProgressPoster?: DispatchDeps["createProgressPoster"];
+  agentSessionStore?: DispatchDeps["agentSessionStore"];
 }): Harness => {
   const stateMachine = createAgentStateMachine();
   stateMachine.transitionState(AGENT, "idle");
@@ -176,6 +186,7 @@ const makeHarness = (overrides?: {
     runIdByAgent: new Map(),
     persistentSessions: new Map(),
     agentSessions: new Map(),
+    agentSessionStore: overrides?.agentSessionStore,
     observationBus: createObservationBus(),
     costTracker: tracker as any,
     onReplyMissing,
@@ -204,12 +215,12 @@ const makeHarness = (overrides?: {
 
 const cleanupWorkspace = (name: string): void => {
   try {
-    rmSync(join(process.cwd(), ".slock", `sysprompt-${name}.md`), { force: true });
+    rmSync(join(slockDir(), `sysprompt-${name}.md`), { force: true });
   } catch {
     /* best-effort */
   }
   try {
-    rmSync(join(process.cwd(), ".slock", "workspaces", name), { recursive: true, force: true });
+    rmSync(join(slockDir(), "workspaces", name), { recursive: true, force: true });
   } catch {
     /* best-effort */
   }
@@ -221,6 +232,7 @@ describe("agent-runtime-dispatch (headless)", () => {
   beforeEach(() => {
     FakePersistentClaude.reset();
     vi.mocked(buildThreadContextEnvelope).mockReset().mockResolvedValue(null);
+    vi.mocked(buildChannelContextEnvelope).mockReset().mockResolvedValue(null);
     delete process.env.SLOCK_COST_BUDGET_USD;
     delete process.env.SLOCK_DISPATCH_MAX_RETRIES;
     delete process.env.SLOCK_REPLY_GUARD;
@@ -228,6 +240,7 @@ describe("agent-runtime-dispatch (headless)", () => {
     delete process.env.SLOCK_ONESHOT_CLAUDE;
     claudePrintMock.mockReset();
     claudePrintMock.mockImplementation(claudePrintImpl);
+    fetchDispatchContextMock.mockReset().mockResolvedValue(null);
   });
 
   afterEach(() => {
@@ -375,6 +388,21 @@ describe("agent-runtime-dispatch (headless)", () => {
       expect(FakePersistentClaude.instances[1]!.sent[0]).toContain("after-boom");
     });
 
+    it("A2：system init 的 session_id 落进 agentSessionStore（spawn --resume 数据源）", async () => {
+      const SID = "67f1f0e9-aaaa-4bbb-8ccc-dddddddddddd";
+      const store = {
+        remember: vi.fn(() => null),
+        lookup: vi.fn(() => null),
+        forget: vi.fn(() => false),
+        list: vi.fn(() => []),
+      };
+      harness = makeHarness({ agentSessionStore: store });
+      await harness.dispatch.dispatchToAgent(AGENT, "general", "hello");
+      const inst = FakePersistentClaude.instances[0]!;
+      inst.emit({ type: "system", subtype: "init", session_id: SID });
+      expect(store.remember).toHaveBeenCalledWith(AGENT, SID);
+    });
+
     it("无 agentId 的 agent 入队即死信，不 spawn", async () => {
       harness = makeHarness({ resolveAgentId: () => null });
       await harness.dispatch.dispatchToAgent("ghost", "general", "hi");
@@ -445,6 +473,24 @@ describe("agent-runtime-dispatch (headless)", () => {
         durationMs: 11,
         numTurns: 1,
       });
+    });
+
+    it("A1.1：agentInfo.model 传进 PersistentClaude opts（headless 不再无视所选模型）", async () => {
+      harness = makeHarness();
+      harness.deps.agentInfo.set(AGENT, { model: "haiku" });
+      await harness.dispatch.dispatchToAgent(AGENT, "general", "hello");
+      expect(FakePersistentClaude.instances[0]!.opts.model).toBe("haiku");
+    });
+
+    it("A1.3：经理 dispatchContext 进回合语境行（含可派发名单）", async () => {
+      fetchDispatchContextMock.mockResolvedValue({ isManager: true, otherAgents: ["worker-a"] });
+      harness = makeHarness();
+      await harness.dispatch.dispatchToAgent(AGENT, "general", "派个活");
+      const sent = FakePersistentClaude.instances[0]!.sent[0]!;
+      expect(sent).toContain("派个活");
+      expect(sent).toContain("【本回合语境】");
+      expect(sent).toContain("经理");
+      expect(sent).toContain("@worker-a");
     });
   });
 
@@ -614,13 +660,48 @@ describe("agent-runtime-dispatch (headless)", () => {
       });
     });
 
-    it("runAgent 无线程：不拉历史，顶层文案", async () => {
+    it("runAgent 无线程：拉顶层小预算历史（A3/§8.6），返回 null 时退回裸 prompt", async () => {
       harness = makeHarness();
       await harness.dispatch.runAgent(AGENT, "general", "#general", "bob", "顶层问题");
       const inst = FakePersistentClaude.instances[0]!;
       expect(inst.sent[0]).toContain("#general 频道被 @ 了");
       expect(inst.sent[0]).not.toContain("<<ctx-envelope>>");
       expect(buildThreadContextEnvelope).not.toHaveBeenCalled();
+      // 顶层 @ 现在走频道小预算上下文（DM 走 dm:@x 同路径）
+      expect(buildChannelContextEnvelope).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentId: AGENT_ID,
+          channelName: "general",
+          triggerContent: "顶层问题",
+        }),
+      );
+      expect(harness.tracker.recordContext).not.toHaveBeenCalled(); // null → 不记账
+    });
+
+    it("runAgent 无线程：顶层信封注入 prompt 并记 context 账（A3/§8.6）", async () => {
+      harness = makeHarness();
+      vi.mocked(buildChannelContextEnvelope).mockResolvedValue({
+        envelope: "<<chan-ctx>>",
+        chars: 12,
+        kept: 3,
+        dropped: 1,
+      } as any);
+
+      await harness.dispatch.runAgent(AGENT, "general", "#general", "bob", "顶层问题", undefined, "msg-7");
+      const inst = FakePersistentClaude.instances[0]!;
+      expect(inst.sent[0]).toContain("<<chan-ctx>>");
+      expect(inst.sent[0]).toContain("顶层问题");
+      expect(inst.sent[0].indexOf("<<chan-ctx>>")).toBeLessThan(inst.sent[0].indexOf("顶层问题"));
+      expect(buildChannelContextEnvelope).toHaveBeenCalledWith(
+        expect.objectContaining({ channelName: "general", triggerId: "msg-7" }),
+      );
+      expect(buildThreadContextEnvelope).not.toHaveBeenCalled();
+      expect(harness.tracker.recordContext).toHaveBeenCalledWith(AGENT, AGENT_ID, "general", {
+        chars: 12,
+        messages: 3,
+        dropped: 1,
+        threadId: undefined,
+      });
     });
 
     it("context builder 返回 null 时退回裸 prompt（不失忆也不阻断）", async () => {
@@ -632,12 +713,17 @@ describe("agent-runtime-dispatch (headless)", () => {
       expect(harness.tracker.recordContext).not.toHaveBeenCalled();
     });
 
-    it("runAgentDm：私信 prompt 与 dm 回执 target", async () => {
+    it("runAgentDm：私信 prompt 与 dm 回执 target；注入 dm 小预算上下文（A3/§8.6）", async () => {
       harness = makeHarness();
       await harness.dispatch.runAgentDm(AGENT, "dm:@bob", "bob", "在吗");
       const inst = FakePersistentClaude.instances[0]!;
       expect(inst.sent[0]).toContain("私信（DM）");
       expect(inst.sent[0]).toContain('target="dm:@bob"');
+      // DM 走同一个小预算上下文路径，channel 参数传 "dm:@bob" 目标
+      expect(buildChannelContextEnvelope).toHaveBeenCalledWith(
+        expect.objectContaining({ agentId: AGENT_ID, channelName: "dm:@bob", triggerContent: "在吗" }),
+      );
+      expect(buildThreadContextEnvelope).not.toHaveBeenCalled();
     });
 
     it("runAgentReminder patrol：巡检模板，频道取 # 后 : 前", async () => {
@@ -662,13 +748,15 @@ describe("agent-runtime-dispatch (headless)", () => {
       expect(inst.sent[0]).toContain("喝水");
     });
 
-    it("runAgentTriage：分诊模板", async () => {
+    it("runAgentTriage：分诊模板；nudge 不注顶层上下文", async () => {
       harness = makeHarness();
       await harness.dispatch.runAgentTriage(AGENT, "general", "#general", "bob", "谁能看下这个");
       const inst = FakePersistentClaude.instances[0]!;
       expect(inst.sent[0]).toContain("【频道分诊】#general");
       expect(inst.sent[0]).toContain("@bob");
       expect(inst.sent[0]).toContain("dispatch_task");
+      // 分诊是 nudge 性质：topLevel=false，不拉顶层小预算历史
+      expect(buildChannelContextEnvelope).not.toHaveBeenCalled();
     });
   });
 });

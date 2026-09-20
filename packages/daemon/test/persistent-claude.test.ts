@@ -48,6 +48,12 @@ const emitLine = (proc: FakeProc, ev: unknown) => {
   proc.stdout.emit("data", `${JSON.stringify(ev)}\n`);
 };
 
+/** spawn 第 0/1 参拼成可检索文本：shell 模式下 [0] 是整行命令；非 shell 下 [0]=bin、[1]=args 数组。 */
+const spawnArgvText = (callIdx = 0): string => {
+  const c = spawnMock.mock.calls[callIdx]!;
+  return [String(c[0]), ...(Array.isArray(c[1]) ? c[1].map(String) : [])].join(" ");
+};
+
 /** P1.12：cleanup 必须卸掉我们挂的 4 个监听，避免 kill/超时后闭包堆积。 */
 const expectDetached = (proc: FakeProc): void => {
   expect(proc.listenerCount("exit")).toBe(0);
@@ -231,6 +237,55 @@ describe("PersistentClaude", () => {
     d.stop();
   });
 
+  it("A7.6：未知类型 tool_progress 心跳同样续命沉默超时（Claude Code 2.1.274 实测约 30s 一次）", async () => {
+    const onStreamEvent = vi.fn();
+    const d = makeDriver({ turnTimeoutMs: 40, onStreamEvent });
+    const p1 = d.send("m1");
+    await flush(20);
+    // 每 ~20ms 一个 tool_progress 心跳，跨 >80ms（>2 个超时窗口）——
+    // 计时器在 asClaudeStreamEvent 收窄之前重置，未知心跳类型也续命
+    for (let i = 0; i < 5; i++) {
+      emitLine(lastProc(), { type: "tool_progress", heartbeat: true, elapsed_time_seconds: i });
+      await flush(20);
+    }
+    expect(lastProc().kill).not.toHaveBeenCalled();
+    // 未知类型不进 onStreamEvent 观察旁路（收窄后丢弃），但回合仍被续命
+    expect(onStreamEvent).not.toHaveBeenCalled();
+    emitLine(lastProc(), { type: "result" });
+    await expect(p1).resolves.toBeUndefined();
+    d.stop();
+  });
+
+  it("A1.1：opts.model 拼进 --model 启动参数", async () => {
+    const d = makeDriver({ model: "haiku" });
+    const p1 = d.send("m1");
+    await flush(20);
+    expect(spawnArgvText()).toContain("--model");
+    expect(spawnArgvText()).toContain("haiku");
+    emitLine(lastProc(), { type: "result" });
+    await expect(p1).resolves.toBeUndefined();
+    d.stop();
+  });
+
+  it("A1.1：未配置 model 不带 --model；非法值被忽略", async () => {
+    const d = makeDriver();
+    const p1 = d.send("m1");
+    await flush(20);
+    expect(spawnArgvText()).not.toContain("--model");
+    emitLine(lastProc(), { type: "result" });
+    await expect(p1).resolves.toBeUndefined();
+    d.stop();
+
+    spawnMock.mockClear();
+    const d2 = makeDriver({ model: "bad model; rm -rf" });
+    const p2 = d2.send("m2");
+    await flush(20);
+    expect(spawnArgvText()).not.toContain("--model");
+    emitLine(lastProc(), { type: "result" });
+    await expect(p2).resolves.toBeUndefined();
+    d2.stop();
+  });
+
   it("stop() 拒绝活跃回合与全部排队消息", async () => {
     const d = makeDriver();
     const p1 = d.send("m1"); // 将成 in-flight
@@ -287,6 +342,157 @@ describe("PersistentClaude", () => {
     lastProc().stdout.emit("data", "this is not json\n");
     emitLine(lastProc(), { type: "result" });
     await expect(p1).resolves.toBeUndefined();
+    d.stop();
+  });
+
+  // ---- A2：会话续接（--resume） ----
+  // isValidSessionId = /^[0-9a-f-]{8,64}$/i —— 测试 id 只用 hex 字符。
+  const SID = "67f1f0e9-aaaa-4bbb-8ccc-dddddddddddd";
+  const SID2 = "cafef00d-1111-4222-8333-abcdefabcdef";
+  const BAD_SID = "badcafe0-dead-4ead-beef-000000000001";
+
+  it("A2：resumeSessionId → spawn args 带 --resume；init 回显同 id 打 resumed 日志", async () => {
+    const d = makeDriver({ resumeSessionId: SID });
+    const p1 = d.send("m1");
+    await flush(20);
+    expect(spawnArgvText()).toContain("--resume");
+    expect(spawnArgvText()).toContain(SID);
+
+    emitLine(lastProc(), { type: "system", subtype: "init", session_id: SID });
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining(`resumed session ${SID.slice(0, 8)}`));
+    emitLine(lastProc(), { type: "result" });
+    await expect(p1).resolves.toBeUndefined();
+    d.stop();
+  });
+
+  it("A2：SLOCK_SESSION_RESUME=0 时不带 --resume", async () => {
+    process.env.SLOCK_SESSION_RESUME = "0";
+    try {
+      const d = makeDriver({ resumeSessionId: SID });
+      const p1 = d.send("m1");
+      await flush(20);
+      expect(spawnArgvText()).not.toContain("--resume");
+      emitLine(lastProc(), { type: "result" });
+      await expect(p1).resolves.toBeUndefined();
+      d.stop();
+    } finally {
+      delete process.env.SLOCK_SESSION_RESUME;
+    }
+  });
+
+  it("A2：非法 session id 不拼 --resume，并回调 onResumeFailed 清掉它", async () => {
+    const onResumeFailed = vi.fn();
+    const d = makeDriver({ resumeSessionId: "not-a-session-id!", onResumeFailed });
+    const p1 = d.send("m1");
+    await flush(20);
+    expect(spawnArgvText()).not.toContain("--resume");
+    expect(onResumeFailed).toHaveBeenCalledWith("not-a-session-id!");
+    emitLine(lastProc(), { type: "result" });
+    await expect(p1).resolves.toBeUndefined();
+    d.stop();
+  });
+
+  it("A2：resume 进程宽限期内退出 → 清 id 重 spawn 一次，在途回合不 reject", async () => {
+    const onResumeFailed = vi.fn();
+    const onExit = vi.fn();
+    const d = makeDriver({ resumeSessionId: BAD_SID, onResumeFailed, onExit, startupDelayMs: 1 });
+    const p1 = d.send("m1");
+    await flush(20); // spawn（带 --resume）+ startup 后 turn 已写出（in-flight）
+    expect(spawnArgvText(0)).toContain(BAD_SID);
+
+    lastProc().emit("exit", 1); // 宽限期（默认 3000ms）内退出 = resume 失败
+    await flush(30); // pump → 全新 spawn → startup → 回合重写
+
+    expect(onResumeFailed).toHaveBeenCalledTimes(1);
+    expect(onResumeFailed).toHaveBeenCalledWith(BAD_SID);
+    expect(onExit).not.toHaveBeenCalled(); // 对上层透明——不是真 exit
+    expect(procs).toHaveLength(2);
+    expect(spawnArgvText(1)).not.toContain("--resume");
+    emitLine(lastProc(), { type: "result" });
+    await expect(p1).resolves.toBeUndefined(); // 回合在全新会话上完成
+    d.stop();
+  });
+
+  it("A2：resume 首事件为 error → 同样清 id 换新会话（error 事件不上抛误触回合边界）", async () => {
+    const onResumeFailed = vi.fn();
+    const d = makeDriver({ resumeSessionId: BAD_SID, onResumeFailed });
+    const p1 = d.send("m1");
+    await flush(20);
+
+    emitLine(lastProc(), { type: "result", subtype: "error_during_execution", is_error: true });
+    await flush(30);
+
+    expect(onResumeFailed).toHaveBeenCalledWith(BAD_SID);
+    expect(procs).toHaveLength(2);
+    expect(spawnArgvText(1)).not.toContain("--resume");
+    emitLine(lastProc(), { type: "result" });
+    await expect(p1).resolves.toBeUndefined(); // 没被 error result 提前 resolve
+    d.stop();
+  });
+
+  it("A2：resume 进程先吐合法 init 再于宽限期内退出 → 按普通 crash（非 resume 失败），id 保留续接", async () => {
+    const onResumeFailed = vi.fn();
+    const onExit = vi.fn();
+    const d = makeDriver({ resumeSessionId: SID, onResumeFailed, onExit, startupDelayMs: 1 });
+    const p1 = d.send("m1");
+    const p1Rejected = expect(p1).rejects.toThrow(/mid-turn/);
+    await flush(20); // in-flight
+
+    // init 回显同一 id = resume 确实成功；之后才退出不算 resume 失败
+    emitLine(lastProc(), { type: "system", subtype: "init", session_id: SID });
+    lastProc().emit("exit", 1);
+    await p1Rejected;
+    expect(onExit).toHaveBeenCalledTimes(1);
+    expect(onResumeFailed).not.toHaveBeenCalled();
+
+    // 下次 spawn 仍拿保留的 sessionId 续接，而不是被误清后冷启动
+    const p2 = d.send("m2");
+    await flush(30);
+    expect(procs).toHaveLength(2);
+    expect(spawnArgvText(1)).toContain("--resume");
+    expect(spawnArgvText(1)).toContain(SID);
+    emitLine(lastProc(), { type: "result" });
+    await expect(p2).resolves.toBeUndefined();
+    d.stop();
+  });
+
+  it("A2：宽限期后退出不算 resume 失败——正常 mid-turn reject + onExit", async () => {
+    const onResumeFailed = vi.fn();
+    const onExit = vi.fn();
+    const d = makeDriver({ resumeSessionId: SID, onResumeFailed, onExit, resumeGraceMs: 30 });
+    const p1 = d.send("m1");
+    const p1Rejected = expect(p1).rejects.toThrow(/mid-turn/);
+    await flush(60); // 越过 30ms 宽限窗口
+    lastProc().emit("exit", 1);
+    await p1Rejected;
+    expect(onExit).toHaveBeenCalledTimes(1);
+    expect(onResumeFailed).not.toHaveBeenCalled();
+    d.stop();
+  });
+
+  it("A2：init 学到的 session_id 用于同实例下一次 spawn（进程被杀后续接）", async () => {
+    const d = makeDriver({ turnTimeoutMs: 80 });
+    const p1 = d.send("m1");
+    await flush(20);
+    emitLine(lastProc(), { type: "system", subtype: "init", session_id: SID2 });
+    emitLine(lastProc(), { type: "result" });
+    await expect(p1).resolves.toBeUndefined();
+
+    // 沉默超时杀掉进程（无排队回合，不立即重 spawn）
+    const p2 = d.send("m2");
+    const p2Rejected = expect(p2).rejects.toThrow(/silence-timeout|mid-turn/);
+    await flush(120);
+    await p2Rejected;
+    expect(procs).toHaveLength(1);
+
+    // 下一条消息触发新 spawn → 用 init 学到的 id 续接
+    const p3 = d.send("m3");
+    await flush(30);
+    expect(procs).toHaveLength(2);
+    expect(spawnArgvText(1)).toContain("--resume");
+    expect(spawnArgvText(1)).toContain(SID2);
+    emitLine(lastProc(), { type: "result" });
+    await expect(p3).resolves.toBeUndefined();
     d.stop();
   });
 });

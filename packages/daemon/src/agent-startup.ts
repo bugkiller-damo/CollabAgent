@@ -1,9 +1,8 @@
 import { copyFileSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { legacyAgentDirName, safeAgentDirName } from "./agent-dir-name.js";
-import { mkdirPrivateSync } from "./private-dir.js";
+import { mkdirPrivateSync, slockDir } from "./private-dir.js";
 import { generateRelaySystemPrompt, generateSystemPrompt } from "./system-prompt.js";
-import type { AgentInfo } from "./types/index.js";
 
 /**
  * Agent 启动指令与工作区管理模块。
@@ -51,28 +50,46 @@ export async function fetchDispatchContext(
   }
 }
 
-/** 生成系统提示文件并返回文件路径 */
+/**
+ * A1.3：每回合任务语境行——「你在本频道的角色 / 可派发名单」。
+ * 系统提示只在 spawn 时读一次且首频道语境会漂（见报告 8.5），角色事实必须随
+ * 回合 prompt 走；dispatchContext 为 null（查询失败 / DM）时调用方不追加本行。
+ */
+export function buildRoleContextLine(channelName: string, ctx: DispatchContext): string {
+  const role = ctx.isManager
+    ? `经理（可用 \`dispatch_task\` 派发任务${
+        ctx.otherAgents.length
+          ? `；本频道可派发：${ctx.otherAgents.map((a) => "@" + a).join("、")}`
+          : "；本频道暂无其它 agent"
+      }）`
+    : "普通成员（不是经理，不能调用 dispatch_task/cancel_dispatch）";
+  return `【本回合语境】你在 #${channelName} 的角色：${role}。`;
+}
+
+/**
+ * 生成系统提示文件并返回文件路径。
+ * A3 起去频道化：系统提示不含 channelName/「本次任务」——频道与角色事实走
+ * 每回合的【本回合语境】行（buildRoleContextLine），避免 spawn 首频道语境
+ * 漂移（报告 §8.5）。
+ */
 export function writeSystemPromptFile(
   agentName: string,
-  channelName: string,
   autonomous: boolean,
   info: { displayName?: string; description?: string },
   dispatchContext?: DispatchContext | null,
 ): string {
   const identity = { name: agentName, displayName: info.displayName, description: info.description };
-  const prompt = autonomous
-    ? generateSystemPrompt(identity, channelName, dispatchContext)
-    : generateRelaySystemPrompt(identity, channelName);
-  const dir = join(process.cwd(), ".slock");
+  const prompt = autonomous ? generateSystemPrompt(identity, dispatchContext) : generateRelaySystemPrompt(identity);
+  const dir = slockDir();
   mkdirPrivateSync(dir);
   const file = join(dir, `sysprompt-${safeAgentDirName(agentName)}.md`);
   writeFileSync(file, prompt, "utf-8");
   return file;
 }
 
-/** daemon cwd 下该 agent 的工作区根目录（与 spawn cwd 一致） */
+/** `.slock` 状态树下该 agent 的工作区根目录（与 spawn cwd 一致；H6 起经 slockDir 解析） */
 export function agentWorkspacePath(agentName: string): string {
-  return join(process.cwd(), ".slock", "workspaces", safeAgentDirName(agentName));
+  return join(slockDir(), "workspaces", safeAgentDirName(agentName));
 }
 
 /** 创建 agent 工作区目录，不存在时种入 MEMORY.md 模板 */
@@ -84,7 +101,7 @@ export function createWorkspaceDir(agentName: string, info: { displayName?: stri
     // 迁移旧命名方案的工作区：旧方案把非 ASCII 全替换成 "_"（等长中文名共用
     // 同一个目录，见 agent-dir-name.ts）。新目录还没有 MEMORY.md 且旧目录有，
     // 就把旧记忆复制过来——数据本来就是混的，复制不会让情况变更糟。
-    const legacyDir = join(process.cwd(), ".slock", "workspaces", legacyAgentDirName(agentName));
+    const legacyDir = join(slockDir(), "workspaces", legacyAgentDirName(agentName));
     const legacyMem = join(legacyDir, "MEMORY.md");
     if (legacyDir !== dir && existsSync(legacyMem)) {
       try {
@@ -113,52 +130,14 @@ export function createWorkspaceDir(agentName: string, info: { displayName?: stri
       `## 近期上下文`,
       `（最近发生了什么、聊到哪了）`,
       ``,
+      `## 交付物`,
+      `（交付给用户的产出物放 deliverables/<日期>-<主题>/，记录附件 id 与内容摘要）`,
+      ``,
     ].join("\n");
     writeFileSync(memFile, seed, "utf-8");
   }
+  // A7.2：交付目录约定——代码/多文件/长报告写这里，再经 upload_attachment 发出；
+  // web workspace:read 白名单已放开本目录（agent-workspace.ts），用户可直接浏览。
+  mkdirPrivateSync(join(dir, "deliverables"));
   return dir;
-}
-
-/**
- * 构建 Agent 启动指令（供分发时使用）。
- * 包含身份标记、角色说明和协议文档。
- */
-export function buildStartupInstructions(agent: AgentInfo, workspaceDir: string): string {
-  return [
-    `# Agent: ${agent.agentName}`,
-    `ID: ${agent.agentId}`,
-    workspaceDir ? `Workspace: ${workspaceDir}` : "",
-    `Role: ${agent.displayName || agent.agentName}`,
-    agent.description ? `Description: ${agent.description}` : "",
-    "",
-    "## Protocol",
-    "- Use `slock` CLI to interact with the platform",
-    "- Messages are dispatched via stdin in stream-json format",
-    "- Respond only when work is complete",
-  ]
-    .filter(Boolean)
-    .join("\n");
-}
-
-/** 生成身份标记行 */
-export function buildIdentityMarker(agent: AgentInfo): string {
-  return `[Agent ${agent.agentName} (${agent.agentId.slice(0, 8)})]`;
-}
-
-/** 生成协议说明文档 */
-export function buildProtocolDoc(role: string): string {
-  return [
-    `## ${role} 协议`,
-    "",
-    "1. 使用 slock CLI 与平台交互",
-    "2. 每条消息是一个回合，完成后等待下一条",
-    "3. 用 MEMORY.md 记录长期信息",
-  ].join("\n");
-}
-
-/** 生成提醒尾部内容 */
-export function buildReminderTail(role: string, dispatchId?: string): string {
-  const tail = [`⏰ ${role} 提醒`];
-  if (dispatchId) tail.push(`Dispatch: ${dispatchId}`);
-  return tail.join(" | ");
 }

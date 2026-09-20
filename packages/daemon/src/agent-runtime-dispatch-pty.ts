@@ -86,7 +86,7 @@ export const dispatchPtyTurn = async (opts: DispatchPtyTurnOpts): Promise<void> 
         assertLive();
         // O11：token 落盘（workspace/.slock/agent-token, 0600），子进程 env 只带
         // 文件路径不带明文。env 对象里保留 SLOCK_AGENT_TOKEN 是给 daemon 内部用的
-        // （spawn 侧 registerRunContext → 退出时 tokenRegistry.revokeIfMatches），
+        // （spawn 侧 registerRunContext → 退出时经 server 撤销 scoped token），
         // 真正传给 PTY 子进程前由 buildPtyEnv 剥离。
         const tokenFile = writeAgentTokenFile(workspace, runtimeToken);
         // 查一下自己是不是这个频道的经理、频道里还有哪些别的 agent——写进
@@ -94,7 +94,7 @@ export const dispatchPtyTurn = async (opts: DispatchPtyTurnOpts): Promise<void> 
         // fetchDispatchContext 注释）。查询失败时退回通用提示文案，不阻塞启动。
         const dispatchContext = await fetchDispatchContext(opts.serverUrl, opts.apiKey, agentId, channelName);
         assertLive();
-        const promptFile = writeSystemPromptFile(agentName, channelName, true, info, dispatchContext);
+        const promptFile = writeSystemPromptFile(agentName, true, info, dispatchContext);
         const env = {
           SLOCK_AGENT_ID: agentId,
           SLOCK_AGENT_TOKEN: runtimeToken,

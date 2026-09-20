@@ -391,3 +391,62 @@ describe("P0.11: agent 编辑/删除所有权", () => {
     expect(del.data.error).toBe("not your agent");
   });
 });
+
+// 回归（2026-09-19 成员页删 agent 500 实锤）：DELETE /api/agents/:id 此前只清
+// channel_members——agent_credentials / agent_logins / dispatches 对 agents 均无
+// ON DELETE CASCADE，任一悬挂行即 23503。修复后与 orgs.ts 删服级联同口径显式删。
+describe("agent 删除级联：无 CASCADE 子表悬挂行", () => {
+  it("有 credentials + logins + dispatches 行的 agent → DELETE 200，子表行随删", async () => {
+    const owner = await registerUser();
+    const comp = await ensureTestComputer(owner);
+    const created = await api("/api/agents", {
+      method: "POST",
+      cookie: owner.cookie,
+      csrf: owner.csrf,
+      body: { name: "cas_" + uniqHandle(), displayName: "Cascade", serverId: comp.serverId },
+    });
+    expect(created.status).toBe(200);
+    const id = created.data.agent.id as string;
+
+    // ① agent_credentials——走真实签发路径（spawn 时 daemon 就是这样留下行的）
+    const mt = await api("/api/profile/machine-token", {
+      method: "POST",
+      cookie: owner.cookie,
+      csrf: owner.csrf,
+      body: { serverId: comp.serverId },
+    });
+    expect(mt.status).toBe(200);
+    const mint = await api(`/internal/agent/${id}/credentials`, {
+      method: "POST",
+      token: mt.data.token,
+      body: {},
+    });
+    expect(mint.status).toBe(200);
+
+    // ② agent_logins——直插（integration_id 有 FK，须先铺 integrations 行）
+    const intg = await sql<{ id: string }[]>`
+      INSERT INTO integrations (service_id, name, provider, config)
+      VALUES ('del-svc', 'del-test', 'test', '{}'::jsonb) RETURNING id`;
+    await sql`INSERT INTO agent_logins (agent_id, integration_id) VALUES (${id}, ${intg[0].id})`;
+
+    // ③ dispatches——from/to 均指向该 agent（channel_id 有 FK，须真频道）
+    const chan = await sql<{ id: string }[]>`
+      INSERT INTO channels (server_id, name, created_by)
+      VALUES (${comp.serverId}, 'delchan', ${owner.userId}) RETURNING id`;
+    await sql`INSERT INTO dispatches (channel_id, from_agent_id, to_agent_id, text)
+              VALUES (${chan[0].id}, ${id}, ${id}, 'self-dispatch')`;
+
+    const del = await api(`/api/agents/${id}`, { method: "DELETE", cookie: owner.cookie, csrf: owner.csrf });
+    expect(del.status).toBe(200);
+    expect(del.data.ok).toBe(true);
+
+    const leftover = await sql`
+      SELECT (SELECT count(*) FROM agent_credentials WHERE agent_id = ${id})
+           + (SELECT count(*) FROM agent_logins WHERE agent_id = ${id})
+           + (SELECT count(*) FROM dispatches WHERE from_agent_id = ${id} OR to_agent_id = ${id})
+           + (SELECT count(*) FROM agents WHERE id = ${id}) AS n`;
+    expect(Number(leftover[0].n)).toBe(0);
+    // integrations 不在 cleanupTestData 回收范围——用完即删，别留孤儿行
+    await sql`DELETE FROM integrations WHERE id = ${intg[0].id}`;
+  });
+});

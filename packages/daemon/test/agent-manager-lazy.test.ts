@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createLazyAgentManager } from "../src/agent-manager-lazy.js";
 import { createAgentRuntime } from "../src/agent-runtime.js";
-import { createAgentTokenRegistry } from "../src/agent-tokens.js";
 import { createLiveRunRegistry } from "../src/live-run-registry.js";
 import type { IAgentManager } from "../src/types/index.js";
 import { createFakeAgentManager } from "./fakes/fake-agent-manager.js";
@@ -117,7 +116,6 @@ describe("P0.7：headless runtime 生命周期不触发 PTY 加载", () => {
     // 不传 agentManagerOverride、不设 SLOCK_USE_PTY——生产 headless 默认形态
     const runtime = createAgentRuntime(
       { serverUrl: "http://fake-server.test", apiKey: "test-api-key" },
-      createAgentTokenRegistry(),
       createLiveRunRegistry(),
     );
     try {

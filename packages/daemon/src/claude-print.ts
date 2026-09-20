@@ -4,15 +4,8 @@ import { join } from "node:path";
 import { applyAgentEnv } from "./agent-env-whitelist.js";
 import { asClaudeStreamEvent, type ClaudeStreamEvent, isPlainObject } from "./claude-stream.js";
 import { getClaudePermissionArgs } from "./command-presets.js";
-
-function findClaudeCmd(): string {
-  const appData = process.env.APPDATA || join("C:/Users", process.env.USERNAME || "Default", "AppData/Roaming");
-  const candidates = [join(appData, "npm", "claude.cmd"), "C:/Program Files/Claude Code/claude.cmd", "claude.cmd"];
-  for (const c of candidates) {
-    if (existsSync(c)) return c;
-  }
-  return "claude.cmd";
-}
+import { resolveClaudeBinary } from "./command-resolver.js";
+import { slockDir } from "./private-dir.js";
 
 export interface ClaudePrintResult {
   reply: string | null;
@@ -24,6 +17,11 @@ function q(s: string): string {
   return /\s/.test(s) ? `"${s}"` : s;
 }
 
+// A1.2：Windows 的 .cmd/.bat shim 与裸命令名必须经 shell 启动；已解析到真实
+// 可执行文件（或非 Windows）时直接 spawn，避开 cmd.exe 引号转义层。
+const needsShell = (cmd: string): boolean =>
+  process.platform === "win32" && (cmd === "claude" || /\.(cmd|bat)$/i.test(cmd));
+
 export function claudePrint(
   prompt: string,
   sessionId?: string,
@@ -31,14 +29,22 @@ export function claudePrint(
   extraEnv?: Record<string, string>,
   cwd?: string,
   onStreamEvent?: (ev: ClaudeStreamEvent) => void,
+  model?: string,
 ): Promise<ClaudePrintResult> {
   return new Promise((resolve) => {
-    const cmd = findClaudeCmd();
+    const cmd = resolveClaudeBinary();
     // O12：显式工具白名单替代 --dangerously-skip-permissions（见 command-presets.ts）
     const args = ["--print", "--output-format", "stream-json", "--verbose", ...getClaudePermissionArgs()];
     if (sessionId) args.push("--resume", sessionId);
+    // A1.1：与 persistent 路径同一校验，防注入/坏值。
+    if (model && /^[a-z0-9._-]+$/i.test(model)) {
+      args.push("--model", model);
+      console.log(`[ClaudePrint] spawning with --model ${model}`);
+    } else if (model) {
+      console.warn(`[ClaudePrint] ignoring invalid --model value: ${model}`);
+    }
 
-    const promptFile = systemPromptFile || join(process.cwd(), ".slock", "system-prompt.md");
+    const promptFile = systemPromptFile || join(slockDir(), "system-prompt.md");
     if (existsSync(promptFile)) {
       args.push("--append-system-prompt-file", promptFile);
     }
@@ -46,15 +52,21 @@ export function claudePrint(
 
     console.log("[ClaudePrint] Calling Claude...");
 
-    // Windows 下 .cmd 必须经 shell 启动，否则 spawn EINVAL；用引号包裹含空格的命令/路径
-    const fullCmd = [q(cmd), ...args.map(q)].join(" ");
-    const child = spawn(fullCmd, {
-      cwd: cwd || process.cwd(),
-      shell: true,
-      windowsHide: true,
-      // A2 / P0.4：默认 whitelist；SLOCK_ENV_INHERIT=1 才全量继承。
-      env: applyAgentEnv(extraEnv || {}, "ClaudePrint"),
-    });
+    const childEnv = applyAgentEnv(extraEnv || {}, "ClaudePrint");
+    const childCwd = cwd || process.cwd();
+    const child = needsShell(cmd)
+      ? spawn([q(cmd), ...args.map(q)].join(" "), {
+          cwd: childCwd,
+          shell: true,
+          windowsHide: true,
+          // A2 / P0.4：默认 whitelist；SLOCK_ENV_INHERIT=1 才全量继承。
+          env: childEnv,
+        })
+      : spawn(cmd, args, {
+          cwd: childCwd,
+          windowsHide: true,
+          env: childEnv,
+        });
 
     let stdout = "";
     let stderr = "";
@@ -116,5 +128,6 @@ export function claudePrint(
 }
 
 export function isClaudeAvailable(): boolean {
-  return findClaudeCmd() !== "claude.cmd" || existsSync("claude.cmd");
+  // A1.2：解析到真实路径即视为可用；裸 "claude" 表示各级探测均未命中。
+  return resolveClaudeBinary() !== "claude";
 }

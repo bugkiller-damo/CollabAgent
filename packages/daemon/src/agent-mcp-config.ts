@@ -61,12 +61,11 @@ export const writeMcpConfig = (
   // effort 降档：Claude Code 2.1.x 会话默认 high effort，thinking token 照付
   // （2026-07-29 实测：haiku agent 屏幕显示 "● high · /effort"，Thought for 22s）。
   // 协作平台的 agent 以执行类任务为主，medium 足够；SLOCK_AGENT_EFFORT 可覆盖。
-  // 注意：settings.json 的 effort 键名未查到官方文档确认（2026-07-29 web 检索
-  // 未证实）——Claude Code 对未知键静默忽略，写错无害；真机验证 /effort 指示
-  // 没变的话说明键名不对，需要换控制通道（如 MAX_THINKING_TOKENS env）。
+  // H7/A0.3（2026-09-19 真机验证）：合法键名是 `effortLevel`（low|medium|high|xhigh），
+  // 此前写的 `effort` 不是合法 settings 键、被静默忽略。
   const effort = loadDaemonEnv().agentEffort;
-  if (settings.effort === undefined) {
-    settings.effort = effort;
+  if (settings.effortLevel === undefined) {
+    settings.effortLevel = effort;
   }
   writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
 };

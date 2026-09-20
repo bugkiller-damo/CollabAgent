@@ -27,16 +27,21 @@ afterEach(() => {
 });
 
 describe("isAllowedWorkspaceRel", () => {
-  it("允许 MEMORY.md / 顶层 md / notes/**，拒绝密钥与穿越", () => {
+  it("允许 MEMORY.md / 顶层 md / notes/** / deliverables/**，拒绝密钥与穿越", () => {
     expect(isAllowedWorkspaceRel("MEMORY.md")).toBe(true);
     expect(isAllowedWorkspaceRel("scratch.md")).toBe(true);
     expect(isAllowedWorkspaceRel("notes/foo.md")).toBe(true);
     expect(isAllowedWorkspaceRel("notes/a/b.txt")).toBe(true);
+    // A7.2：交付目录任意深度可读（档案页展示/下载 agent 产出物）
+    expect(isAllowedWorkspaceRel("deliverables/2026-09-19-report/summary.md")).toBe(true);
+    expect(isAllowedWorkspaceRel("deliverables/x/y/z.log")).toBe(true);
     expect(isAllowedWorkspaceRel("CLAUDE.md")).toBe(false);
     expect(isAllowedWorkspaceRel(".mcp.json")).toBe(false);
     expect(isAllowedWorkspaceRel(".slock/agent-token")).toBe(false);
     expect(isAllowedWorkspaceRel("../MEMORY.md")).toBe(false);
     expect(isAllowedWorkspaceRel("notes/../.slock/agent-token")).toBe(false);
+    expect(isAllowedWorkspaceRel("deliverables/../agent-token")).toBe(false);
+    expect(isAllowedWorkspaceRel("deliverables/.hidden")).toBe(false);
   });
 });
 
@@ -58,6 +63,24 @@ describe("list/read workspace", () => {
     expect(readWorkspaceFile(name, "CLAUDE.md").ok).toBe(false);
     expect(readWorkspaceFile(name, "missing.md").ok).toBe(false);
     expect(agentWorkspacePath(name).replace(/\\/g, "/")).toContain("/.slock/workspaces/");
+  });
+
+  it("A7.2：deliverables/ 目录被列出且可读", () => {
+    const name = "ws_deliv_" + Date.now().toString(36);
+    withWorkspace(name, {
+      "MEMORY.md": "# mem",
+      "deliverables/2026-09-19-fix/report.md": "# 修复报告",
+      "deliverables/2026-09-19-fix/src/main.ts.txt": "code",
+    });
+    const listing = listWorkspaceFiles(name);
+    expect(listing.files.map((f) => f.path)).toEqual([
+      "MEMORY.md",
+      "deliverables/2026-09-19-fix/report.md",
+      "deliverables/2026-09-19-fix/src/main.ts.txt",
+    ]);
+    const r = readWorkspaceFile(name, "deliverables/2026-09-19-fix/report.md");
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.content).toContain("修复报告");
   });
 
   it("工作区不存在时 exists=false", () => {

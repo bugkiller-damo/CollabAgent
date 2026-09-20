@@ -2,7 +2,7 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { parseCostBudgetUsd } from "./config.js";
 import { errMessage } from "./errors.js";
-import { mkdirPrivateSync } from "./private-dir.js";
+import { mkdirPrivateSync, slockDir } from "./private-dir.js";
 
 export { parseCostBudgetUsd } from "./config.js";
 
@@ -216,7 +216,7 @@ export const buildCircuitBreakMessage = (agentName: string, spendUsd: number, bu
   `⚠️ 成本熔断：@${agentName} 今日（UTC ${day}）花费 $${spendUsd.toFixed(4)} 已达到预算 $${budgetUsd.toFixed(4)}` +
   `（SLOCK_COST_BUDGET_USD）。本 agent 今日不再接收新任务，UTC 次日 00:00 自动恢复。`;
 
-export const defaultCostStorePath = (): string => join(process.cwd(), ".slock", "daemon-costs.json");
+export const defaultCostStorePath = (): string => join(slockDir(), "daemon-costs.json");
 
 /** 频道归一化：去 #、丢掉 thread 后缀。`#general:thread8` → `general`。 */
 export const normalizeCostChannel = (raw: string | undefined | null): string =>

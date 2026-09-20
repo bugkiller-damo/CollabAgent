@@ -3,16 +3,10 @@ import type { IAgentStateMachine } from "./agent-runtime-state.js";
 import type { ITurnTracker } from "./agent-runtime-turn-tracker.js";
 import { removeAgentTokenFile } from "./agent-token-file.js";
 import { createExitCoordinator } from "./exit-coordinator.js";
-import { createExitHandler, createMinimalExitHandler } from "./exit-handler.js";
+import { createExitHandler } from "./exit-handler.js";
 import type { IIdleReclaimer } from "./idle-reclaimer.js";
 import { appendTerminalLog } from "./terminal-log.js";
-import type {
-  IAgentManager,
-  IAgentRunStore,
-  IAgentTokenRegistry,
-  ILiveRunRegistry,
-  LiveAgentRun,
-} from "./types/index.js";
+import type { IAgentManager, IAgentRunStore, ILiveRunRegistry, LiveAgentRun } from "./types/index.js";
 
 /**
  * PTY 退出清理链（仿照 Hive `agent-run-exit-handler.ts`）。
@@ -21,7 +15,7 @@ import type {
  * 之前完全没有清理入口，导致下一次 dispatch 仍认为该 agent "在运行"，消息被
  * postStartWriter 静默丢弃，agent 永久卡死（live bug 3 的根因之一）。这个模块
  * 把"一个 run 死掉之后要做的所有清理"串成一条链，串联了 exit-coordinator.ts
- * （时序保护）+ exit-handler.ts（token 吊销 + 落盘）+ 服务端 scoped token 撤销 +
+ * （时序保护）+ exit-handler.ts（落盘）+ 服务端 scoped token 撤销 +
  * pending/busyObserved 状态重置（live bug 9）+ agentManager 内部记录清理。
  */
 export interface RunContextEntry {
@@ -47,7 +41,6 @@ export interface IExitChain {
 }
 
 export interface ExitChainDeps {
-  tokenRegistry: IAgentTokenRegistry;
   runStore?: IAgentRunStore;
   liveRunRegistry: ILiveRunRegistry;
   agentManager: IAgentManager;
@@ -63,7 +56,6 @@ export interface ExitChainDeps {
 
 export const createExitChain = (deps: ExitChainDeps): IExitChain => {
   const {
-    tokenRegistry,
     runStore,
     liveRunRegistry,
     agentManager,
@@ -78,10 +70,9 @@ export const createExitChain = (deps: ExitChainDeps): IExitChain => {
   const runContext = new Map<string, RunContextEntry>();
   const messagesProcessedByRun = new Map<string, number>();
 
-  // 有 runStore 时用完整 handler（吊销 token + 落盘 run 记录）；否则退化为仅撤销 token
-  const exitHandler = runStore
-    ? createExitHandler({ tokenRegistry, runStore })
-    : createMinimalExitHandler(tokenRegistry);
+  // 有 runStore 时落盘 run 终态；否则仅记日志（H1：本地 token 吊销已删，
+  // scoped token 由下方 credentialsClient.revokeAgentCredential 走 server 撤销）
+  const exitHandler = createExitHandler({ runStore });
 
   const exitCoordinator = createExitCoordinator(liveRunRegistry, (runId, exitCode) => {
     const ctx = runContext.get(runId);
@@ -90,12 +81,10 @@ export const createExitChain = (deps: ExitChainDeps): IExitChain => {
     const messagesProcessed = messagesProcessedByRun.get(runId) ?? 0;
     messagesProcessedByRun.delete(runId);
 
-    // 1) 吊销本地 token 记录（仅在仍匹配时——防止新 run 已重新签发的 token 被误删）
-    //    +（若有 runStore）落盘最终状态
+    // 1) 落盘最终状态（若有 runStore）
     exitHandler({
       runId,
       agentId: ctx.agentId,
-      token: ctx.token,
       exitCode,
       startedAt: ctx.startedAt,
       messagesProcessed,

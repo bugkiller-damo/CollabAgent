@@ -7,14 +7,14 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { readdirSync, statSync, watch, writeFileSync } from "node:fs";
 import { dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { mkdirPrivateSync } from "./private-dir.js";
+import { mkdirPrivateSync, slockDir } from "./private-dir.js";
 
 const srcDir = dirname(fileURLToPath(import.meta.url));
 const entry = join(srcDir, "index.ts");
 // 「计划内重启」标记：watch 触发重启前写给 daemon——它不是崩溃，下次启动不应
 // 触发 autostart 崩溃恢复（否则每次改代码热重启都会把所有活跃 agent 拉起一遍，
 // 2026-07-18 实测：supervisor 重启后 agent 未被提问就自动 spawn）。
-const plannedRestartMarker = join(srcDir, "..", ".slock", "planned-restart");
+const plannedRestartMarker = join(slockDir(), "planned-restart");
 const passthrough = process.argv.slice(2);
 const q = (a: string) => (/\s/.test(a) ? `"${a}"` : a);
 
@@ -60,28 +60,57 @@ function mtimeChanged(fullPath: string): boolean {
   }
 }
 
-/**
- * 整树杀 daemon 子进程。Windows 上 child 是 shell:true 包出来的 cmd 包装层，
- * child.kill() 只杀 cmd，真正的 node/tsx 孙子进程变孤儿继续跑——
- * 2026-07-29 实测后果：新旧两个 daemon 并存（日志全双份）、agent 被重复
- * spawn（双倍 token）、旧 PTY 的 scoped token 被新 spawn 吊销（MCP 401）。
- * taskkill /T 把 cmd + node + 其下所有 agent PTY 整棵树拔掉。
- */
-function killTree(c: ChildProcess): void {
-  if (c.pid == null) return;
-  if (process.platform === "win32") {
-    try {
-      spawn("taskkill", ["/pid", String(c.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
-      return;
-    } catch {
-      /* fall through to plain kill */
+const KILL_TIMEOUT_MS = 5000;
+
+/** 等 child 的 exit 事件落地（已退则立即返回）；ms 超时兜底不悬挂。 */
+function waitExit(c: ChildProcess, ms: number): Promise<void> {
+  if (c.exitCode !== null || c.signalCode !== null) return Promise.resolve();
+  return new Promise((resolve) => {
+    const t = setTimeout(done, ms);
+    function done() {
+      clearTimeout(t);
+      c.off("exit", done);
+      resolve();
     }
+    c.once("exit", done);
+  });
+}
+
+/**
+ * 整树杀 daemon 子进程，并等到树死透再 resolve（H8：原为 fire-and-forget，
+ * cmd 包装层一死 'exit' 就触发 startChild，node 孙子可能还在收尾——
+ * 热重启窗口内新旧 daemon 并存）。
+ *
+ * Windows 上 child 是 shell:true 包出来的 cmd 包装层，child.kill() 只杀
+ * cmd，真正的 node/tsx 孙子进程变孤儿继续跑——2026-07-29 实测后果：新旧
+ * 两个 daemon 并存（日志全双份）、agent 被重复 spawn（双倍 token）、旧
+ * PTY 的 scoped token 被新 spawn 吊销（MCP 401）。taskkill /T 把 cmd +
+ * node + 其下所有 agent PTY 整棵树拔掉。
+ */
+function killTree(c: ChildProcess): Promise<void> {
+  if (c.pid == null) return Promise.resolve();
+  const exited = waitExit(c, KILL_TIMEOUT_MS);
+  if (process.platform === "win32") {
+    const taskkillDone = new Promise<void>((resolve) => {
+      try {
+        const tk = spawn("taskkill", ["/pid", String(c.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+        tk.once("exit", () => resolve());
+        tk.once("error", () => resolve());
+        setTimeout(resolve, KILL_TIMEOUT_MS).unref();
+      } catch {
+        resolve();
+      }
+    });
+    // taskkill 退出 = 整树已拔；再等 cmd 包装层的 exit 事件落定（监听器先于
+    // 本 promise 的 continuation 运行，保证不双拉起）。
+    return Promise.all([taskkillDone, exited]).then(() => {});
   }
   try {
     c.kill();
   } catch {
     /* already dead */
   }
+  return exited;
 }
 
 function startChild(): void {
@@ -93,9 +122,8 @@ function startChild(): void {
     if (shuttingDown) return;
     if (expectRestart) {
       expectRestart = false;
-      startChild();
       return;
-    } // 主动重启：立即拉起
+    } // 主动重启：restartForChange 等 killTree 死透后自己拉起（H8）
     // 崩溃：1 分钟内 >5 次则退避到 30s，否则 1s
     const now = Date.now();
     restartTimes = restartTimes.filter((t) => now - t < 60000);
@@ -112,17 +140,28 @@ function startChild(): void {
 
 function restartForChange(file: string): void {
   console.log(`[Supervisor] change detected (${file}), restarting daemon…`);
-  if (child) {
-    expectRestart = true;
-    // 写「计划内重启」标记：daemon 下次启动看到它就不跑 autostart
-    try {
-      mkdirPrivateSync(join(srcDir, "..", ".slock"));
-      writeFileSync(plannedRestartMarker, String(Date.now()));
-    } catch {
-      /* best-effort */
+  if (!child) {
+    // 子进程已不在（可能崩溃后 restartTimer 还在排队）——清掉延迟重启，立即拉起
+    if (restartTimer) {
+      clearTimeout(restartTimer);
+      restartTimer = null;
     }
-    killTree(child);
-  } else startChild();
+    startChild();
+    return;
+  }
+  const c = child;
+  expectRestart = true;
+  // 写「计划内重启」标记：daemon 下次启动看到它就不跑 autostart
+  try {
+    mkdirPrivateSync(slockDir());
+    writeFileSync(plannedRestartMarker, String(Date.now()));
+  } catch {
+    /* best-effort */
+  }
+  void killTree(c).then(() => {
+    expectRestart = false;
+    if (!shuttingDown) startChild();
+  });
 }
 
 // 文件监听（dev）：src 下的 .ts 变更触发重启；忽略生成物与 mtime 未变的误报
@@ -150,9 +189,13 @@ function shutdown(): void {
   if (shuttingDown) return;
   shuttingDown = true;
   if (restartTimer) clearTimeout(restartTimer);
-  if (child) killTree(child);
+  const c = child;
   console.log("[Supervisor] shutting down");
-  setTimeout(() => process.exit(0), 200);
+  const exit = () => process.exit(0);
+  // H8：等整树死透再退（killTree 自带 5s 上限；再留 6s 硬兜底防悬挂）
+  if (c) void killTree(c).then(exit, exit);
+  else exit();
+  setTimeout(exit, KILL_TIMEOUT_MS + 1000).unref();
 }
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);

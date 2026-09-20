@@ -13,6 +13,26 @@ const fakeFullEnv = () =>
     SLOCK_API_KEY: "super-secret-api-key",
     AWS_SECRET_ACCESS_KEY: "another-secret",
     HTTP_PROXY: "http://proxy:8080",
+    // A7.5：开发工具链键
+    INCLUDE: "C:\\VC\\include",
+    LIB: "C:\\VC\\lib",
+    VCINSTALLDIR: "C:\\VS\\VC",
+    VSCMD_ARG_TGT_ARCH: "x64",
+    JAVA_HOME: "C:\\jdk",
+    CARGO_HOME: "C:\\cargo",
+    PYTHONPATH: "C:\\py\\lib",
+    // A7.5：跨平台基础键与前缀族
+    HOME: "C:\\Users\\x",
+    USER: "x",
+    SHELL: "/bin/bash",
+    LANG: "en_US.UTF-8",
+    LC_ALL: "en_US.UTF-8",
+    XDG_CONFIG_HOME: "C:\\Users\\x\\.config",
+    // A7.5：仅经 SLOCK_ENV_EXTRA 显式追加才放行
+    CUDA_PATH: "C:\\cuda",
+    MY_CUSTOM: "custom-value",
+    GITHUB_TOKEN: "ghp_secret",
+    MY_SECRET: "topsecret",
   }) as NodeJS.ProcessEnv;
 
 describe("agent-env-whitelist", () => {
@@ -47,6 +67,64 @@ describe("agent-env-whitelist", () => {
     it("白名单匹配大小写不敏感（Windows env 约定）", () => {
       const env = buildAgentEnv({}, { path: "C:\\lower" } as NodeJS.ProcessEnv);
       expect(env.path).toBe("C:\\lower");
+    });
+
+    it("A7.5：开发工具链键放行（MSVC/Java/Rust/Python 等）", () => {
+      const env = buildAgentEnv({}, fakeFullEnv());
+      expect(env.INCLUDE).toBe("C:\\VC\\include");
+      expect(env.LIB).toBe("C:\\VC\\lib");
+      expect(env.VCINSTALLDIR).toBe("C:\\VS\\VC");
+      expect(env.VSCMD_ARG_TGT_ARCH).toBe("x64");
+      expect(env.JAVA_HOME).toBe("C:\\jdk");
+      expect(env.CARGO_HOME).toBe("C:\\cargo");
+      expect(env.PYTHONPATH).toBe("C:\\py\\lib");
+    });
+
+    it("A7.5：跨平台基础键与前缀族放行", () => {
+      const env = buildAgentEnv({}, fakeFullEnv());
+      expect(env.HOME).toBe("C:\\Users\\x");
+      expect(env.USER).toBe("x");
+      expect(env.SHELL).toBe("/bin/bash");
+      expect(env.LANG).toBe("en_US.UTF-8");
+      expect(env.LC_ALL).toBe("en_US.UTF-8");
+      expect(env.XDG_CONFIG_HOME).toBe("C:\\Users\\x\\.config");
+    });
+
+    it("A7.5：未配置 SLOCK_ENV_EXTRA 时，非白名单键仍被剔除", () => {
+      const env = buildAgentEnv({}, fakeFullEnv());
+      expect(env.SLOCK_API_KEY).toBeUndefined();
+      expect(env.AWS_SECRET_ACCESS_KEY).toBeUndefined();
+      expect(env.CUDA_PATH).toBeUndefined();
+      expect(env.MY_CUSTOM).toBeUndefined();
+      expect(env.GITHUB_TOKEN).toBeUndefined();
+    });
+
+    it("A7.5：SLOCK_ENV_EXTRA 放行安全名，拒绝 SLOCK_*/_KEY/_TOKEN/_SECRET", () => {
+      const full = { ...fakeFullEnv(), SLOCK_ENV_EXTRA: "CUDA_PATH,MY_CUSTOM,SLOCK_API_KEY,GITHUB_TOKEN,MY_SECRET" };
+      const env = buildAgentEnv({}, full);
+      expect(env.CUDA_PATH).toBe("C:\\cuda");
+      expect(env.MY_CUSTOM).toBe("custom-value");
+      // 名字本身就是凭据形态——即使显式追加也拒绝
+      expect(env.SLOCK_API_KEY).toBeUndefined();
+      expect(env.GITHUB_TOKEN).toBeUndefined();
+      expect(env.MY_SECRET).toBeUndefined();
+    });
+
+    it("A7.5：extra 中不存在的键与非法名静默忽略", () => {
+      const full = { ...fakeFullEnv(), SLOCK_ENV_EXTRA: "NOT_PRESENT,FOO-BAR,CUDA_PATH" };
+      const env = buildAgentEnv({}, full);
+      expect(env.CUDA_PATH).toBe("C:\\cuda");
+      expect(env.NOT_PRESENT).toBeUndefined();
+      expect(env["FOO-BAR"]).toBeUndefined();
+    });
+
+    it("A7.5：extra 大小写不敏感查找；overrides 仍最后胜出", () => {
+      const full = { ...fakeFullEnv(), SLOCK_ENV_EXTRA: "cuda_path,my_custom" };
+      const env = buildAgentEnv({ MY_CUSTOM: "override-value" }, full);
+      // 请求名大小写不同也能命中 fullEnv 里的键，按原始拼写拷贝
+      expect(env.CUDA_PATH).toBe("C:\\cuda");
+      // overrides 覆盖 extra 拷贝的值
+      expect(env.MY_CUSTOM).toBe("override-value");
     });
   });
 

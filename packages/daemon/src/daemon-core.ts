@@ -5,8 +5,8 @@ import { WebSocket } from "ws";
 import { createJsonCostTracker, defaultCostStorePath } from "./agent-cost-tracker.js";
 import { createJsonRunStore, defaultStorePath } from "./agent-run-store.js";
 import { createAgentRuntime, type IAgentRuntime } from "./agent-runtime.js";
+import { createJsonAgentSessionStore, defaultAgentSessionStorePath } from "./agent-session-store.js";
 import { createJsonThreadSessionStore, defaultThreadSessionStorePath } from "./agent-thread-sessions.js";
-import { createAgentTokenRegistry } from "./agent-tokens.js";
 import { loadDaemonEnv } from "./config.js";
 import { type CostReporter, createCostReporter } from "./cost-reporter.js";
 import { probeClaude } from "./drivers/probe.js";
@@ -14,7 +14,7 @@ import { errMessage } from "./errors.js";
 import { dispatchDaemonMessage, type HandlerContext, parseWsToDaemonMessage } from "./handlers/index.js";
 import { createLiveRunRegistry } from "./live-run-registry.js";
 import { resolveMachineUuid } from "./machine-id.js";
-import { mkdirPrivateSync } from "./private-dir.js";
+import { mkdirPrivateSync, slockDir } from "./private-dir.js";
 import { buildReadyPayload } from "./ready-payload.js";
 import { setupSlockWrapper } from "./setup-slock-wrapper.js";
 import type { DaemonConfig } from "./types/index.js";
@@ -47,7 +47,6 @@ export class DaemonCore {
     this.apiKey = config.apiKey;
     this.serverName = config.serverName?.trim() || undefined;
     this.machineUuid = resolveMachineUuid(config.machineUuid);
-    const tokenRegistry = createAgentTokenRegistry();
     const liveRunRegistry = createLiveRunRegistry();
     const runStore = createJsonRunStore(defaultStorePath());
     const costTracker = createJsonCostTracker(defaultCostStorePath());
@@ -58,11 +57,15 @@ export class DaemonCore {
       ? createCostReporter({ tracker: costTracker, serverUrl: this.serverUrl, apiKey: this.apiKey })
       : null;
     const threadSessions = createJsonThreadSessionStore(defaultThreadSessionStorePath());
+    // A2：agent→sessionId 续接盘（headless persistent 的 --resume 数据源）；
+    // daemon 重启不丢——这正是 autostartCrashedAgents 注释里「上下文由
+    // session resume 保住」的默认路径实现。
+    const agentSessionStore = createJsonAgentSessionStore(defaultAgentSessionStorePath());
     // 「计划内重启」标记（supervisor watch 重启 / 上次优雅 stop 写入）：
     // 有标记说明上次不是崩溃——run 记录虽然是 stale 的，但那是故意停掉的，
     // 不该触发 autostart 把 agent 全部拉起一遍（2026-07-18 实测：热重启后
     // agent 没被提问就自动 spawn，用户困惑）。
-    const plannedMarker = join(process.cwd(), ".slock", "planned-restart");
+    const plannedMarker = join(slockDir(), "planned-restart");
     const isPlannedRestart = existsSync(plannedMarker);
     if (isPlannedRestart) {
       try {
@@ -136,8 +139,8 @@ export class DaemonCore {
         }),
         costTracker: this.costReporter?.tracker ?? costTracker,
         threadSessions,
+        agentSessionStore,
       },
-      tokenRegistry,
       liveRunRegistry,
       runStore,
     );
@@ -284,8 +287,10 @@ export class DaemonCore {
    * 2026-07-29 起**不再主动拉起**：旧实现给每个候选 agent 注入一条"系统重启，
    * 安静等待"的恢复消息，但这是一条完整的 agent 回合（实测 55k 输出、1m23s），
    * 且 99% 的结论都是"没有真实消息，静默等待"——纯烧 token。新行为：只记日志，
-   * agent 保持 lazy 注册，下一条真实消息到来时再 spawn；上下文由 session
-   * resume（默认开）或 restart-summary 注入保住，不丢状态。
+   * agent 保持 lazy 注册，下一条真实消息到来时再 spawn。会话上下文不丢：
+   * headless 默认路径经 A2 续接盘（daemon-agent-sessions.json 记 stream-json
+   * session_id，spawn 时 `--resume` 温启动；SLOCK_SESSION_RESUME=0 可关）；
+   * 冻结 PTY fallback 则是 runStore lastSessionId + restart-summary 注入。
    */
   private async autostartCrashedAgents(): Promise<void> {
     if (!this.autostartCandidates.length) return;
@@ -431,8 +436,8 @@ export class DaemonCore {
     // 优雅停止也写「计划内重启」标记：用户主动停掉 daemon 后下次启动，
     // 同样不该把停掉的 agent 当崩溃恢复自动拉起。
     try {
-      mkdirPrivateSync(join(process.cwd(), ".slock"));
-      writeFileSync(join(process.cwd(), ".slock", "planned-restart"), String(Date.now()));
+      mkdirPrivateSync(slockDir());
+      writeFileSync(join(slockDir(), "planned-restart"), String(Date.now()));
     } catch {
       /* best-effort */
     }

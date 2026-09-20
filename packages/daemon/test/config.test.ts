@@ -27,10 +27,13 @@ const KEYS = [
   "SLOCK_SESSION_CAPTURE_DELAY_MS",
   "SLOCK_CONTEXT_MAX_MESSAGES",
   "SLOCK_CONTEXT_MAX_CHARS",
+  "SLOCK_CONTEXT_TOPLEVEL_MAX_MESSAGES",
+  "SLOCK_CONTEXT_TOPLEVEL_MAX_CHARS",
   "SLOCK_PROGRESS_THROTTLE_MS",
   "SLOCK_COST_BUDGET_USD",
   "SLOCK_AGENT_ALLOWED_TOOLS",
   "SLOCK_AGENT_EFFORT",
+  "SLOCK_ENV_EXTRA",
 ] as const;
 
 const snapshot: Record<string, string | undefined> = {};
@@ -106,6 +109,15 @@ describe("config / loadDaemonEnv", () => {
     expect(cfg.idleReclaimMs).toBe(1500);
     expect(cfg.contextMaxMessages).toBe(10);
     expect(cfg.contextMaxChars).toBe(100);
+    // A3/§8.6：顶层 @ / DM 小预算上下文（默认 8 条 / 2000 字符）
+    expect(loadDaemonEnv({}).contextToplevelMaxMessages).toBe(8);
+    expect(loadDaemonEnv({}).contextToplevelMaxChars).toBe(2000);
+    const top = loadDaemonEnv({
+      SLOCK_CONTEXT_TOPLEVEL_MAX_MESSAGES: "4",
+      SLOCK_CONTEXT_TOPLEVEL_MAX_CHARS: "600",
+    });
+    expect(top.contextToplevelMaxMessages).toBe(4);
+    expect(top.contextToplevelMaxChars).toBe(600);
     expect(cfg.dispatchMaxRetries).toBe(1);
     expect(cfg.progressThrottleMs).toBe(0);
   });
@@ -130,6 +142,15 @@ describe("config / loadDaemonEnv", () => {
     expect(loadDaemonEnv({}).agentAllowedTools).toBe(DEFAULT_AGENT_ALLOWED_TOOLS);
     expect(loadDaemonEnv({ SLOCK_AGENT_ALLOWED_TOOLS: "Bash,Read" }).agentAllowedTools).toBe("Bash,Read");
     expect(loadDaemonEnv({ SLOCK_AGENT_ALLOWED_TOOLS: "   " }).agentAllowedTools).toBe(DEFAULT_AGENT_ALLOWED_TOOLS);
+  });
+
+  it("agentEnvExtra parses comma/space lists, dedupes, drops invalid names, defaults []", () => {
+    expect(loadDaemonEnv({}).agentEnvExtra).toEqual([]);
+    expect(loadDaemonEnv({ SLOCK_ENV_EXTRA: "CUDA_PATH,MY_CUSTOM" }).agentEnvExtra).toEqual(["CUDA_PATH", "MY_CUSTOM"]);
+    // 空格 / 混合分隔 + 去重
+    expect(loadDaemonEnv({ SLOCK_ENV_EXTRA: "A B,C  A,,B" }).agentEnvExtra).toEqual(["A", "B", "C"]);
+    // 非法变量名（数字开头 / 含符号）静默丢弃
+    expect(loadDaemonEnv({ SLOCK_ENV_EXTRA: "1BAD,GOOD,X-Y,_OK" }).agentEnvExtra).toEqual(["GOOD", "_OK"]);
   });
 
   it("re-reads process.env on each call (no module-level freeze)", () => {

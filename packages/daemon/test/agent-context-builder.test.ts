@@ -1,10 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  buildChannelContextEnvelope,
   contextBuilderEnabled,
   normalizeThreadId,
   packThreadContext,
   prependContext,
   readContextBudget,
+  readToplevelContextBudget,
   wrapWithIsolation,
 } from "../src/agent-context-builder.js";
 
@@ -112,5 +114,112 @@ describe("normalizeThreadId / env gates", () => {
       maxMessages: 10,
       maxChars: 100,
     });
+  });
+
+  it("A3/§8.6：顶层小预算默认 8 条/2000 字符，env 可覆盖", () => {
+    expect(readToplevelContextBudget({})).toEqual({ maxMessages: 8, maxChars: 2000 });
+    expect(
+      readToplevelContextBudget({
+        SLOCK_CONTEXT_TOPLEVEL_MAX_MESSAGES: "4",
+        SLOCK_CONTEXT_TOPLEVEL_MAX_CHARS: "500",
+      }),
+    ).toEqual({ maxMessages: 4, maxChars: 500 });
+    // 非法值回退默认
+    expect(readToplevelContextBudget({ SLOCK_CONTEXT_TOPLEVEL_MAX_MESSAGES: "x" })).toEqual({
+      maxMessages: 8,
+      maxChars: 2000,
+    });
+  });
+});
+
+// A3/§8.6：顶层 @ / DM 的小预算上下文——同 /history 端点不带 threadId，
+// 不用线程隔离信封。fetch 用 vi.stubGlobal 打桩。
+describe("buildChannelContextEnvelope（顶层/DM 小预算）", () => {
+  const input = {
+    serverUrl: "http://fake.test",
+    apiKey: "k",
+    agentId: "agent-1",
+  };
+
+  const stubFetch = (impl: (url: string) => unknown) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (u: any) => {
+        const out = impl(String(u));
+        if (out instanceof Error) throw out;
+        return { ok: true, status: 200, json: async () => out, text: async () => "" } as Response;
+      }),
+    );
+    return vi.mocked(globalThis.fetch);
+  };
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("顶层频道：channel=#general、无 threadId、用频道标签与小预算", async () => {
+    const fetchMock = stubFetch(() => ({
+      messages: [msg("m1", 1, "bob", "刚部署了 v2"), msg("m2", 2, "alice", "看下日志")],
+    }));
+    const built = await buildChannelContextEnvelope({ ...input, channelName: "general", env: {} });
+    expect(built).not.toBeNull();
+    const url = new URL(String(fetchMock.mock.calls[0]![0]));
+    expect(url.searchParams.get("channel")).toBe("#general");
+    expect(url.searchParams.get("threadId")).toBeNull();
+    expect(url.searchParams.get("limit")).toBe("20"); // max(8*2, 20)
+    expect(built!.envelope).toContain("【频道近期上下文】");
+    expect(built!.envelope).toContain("刚部署了 v2");
+    expect(built!.envelope).not.toContain("【会话隔离】"); // 顶层不套线程隔离
+  });
+
+  it("DM：channel=dm:@bob 原样透传、用私信标签", async () => {
+    const fetchMock = stubFetch(() => ({ messages: [msg("m1", 1, "bob", "在吗")] }));
+    const built = await buildChannelContextEnvelope({ ...input, channelName: "dm:@bob", env: {} });
+    const url = new URL(String(fetchMock.mock.calls[0]![0]));
+    expect(url.searchParams.get("channel")).toBe("dm:@bob");
+    expect(built!.envelope).toContain("【私信近期上下文】");
+  });
+
+  it("触发消息按 id / 正文去重", async () => {
+    stubFetch(() => ({
+      messages: [msg("t", 1, "bob", "@alice 看下"), msg("m2", 2, "carol", "背景信息")],
+    }));
+    const built = await buildChannelContextEnvelope({
+      ...input,
+      channelName: "general",
+      triggerId: "t",
+      env: {},
+    });
+    expect(built!.envelope).not.toContain("看下");
+    expect(built!.envelope).toContain("背景信息");
+  });
+
+  it("fetch 失败 / 无历史 / 关闭 → null（裸 prompt，不阻断）", async () => {
+    stubFetch(() => new Error("network down"));
+    expect(await buildChannelContextEnvelope({ ...input, channelName: "general", env: {} })).toBeNull();
+
+    stubFetch(() => ({ messages: [] }));
+    expect(await buildChannelContextEnvelope({ ...input, channelName: "general", env: {} })).toBeNull();
+
+    const fetchMock = stubFetch(() => ({ messages: [msg("m", 1, "a", "hi")] }));
+    expect(
+      await buildChannelContextEnvelope({ ...input, channelName: "general", env: { SLOCK_CONTEXT_BUILDER: "0" } }),
+    ).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    expect(await buildChannelContextEnvelope({ ...input, channelName: "  ", env: {} })).toBeNull();
+  });
+
+  it("env 预算收紧：SLOCK_CONTEXT_TOPLEVEL_MAX_MESSAGES=1 只留最新一条", async () => {
+    stubFetch(() => ({
+      messages: [msg("m1", 1, "a", "旧消息"), msg("m2", 2, "b", "新消息")],
+    }));
+    const built = await buildChannelContextEnvelope({
+      ...input,
+      channelName: "general",
+      env: { SLOCK_CONTEXT_TOPLEVEL_MAX_MESSAGES: "1" },
+    });
+    expect(built!.envelope).not.toContain("旧消息");
+    expect(built!.envelope).toContain("新消息");
   });
 });

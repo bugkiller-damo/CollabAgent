@@ -116,6 +116,8 @@ export const reclaimIdleAgent = (opts: {
   if (session) {
     session.stop();
     persistentSessions.delete(name);
+    // A2：回收只杀进程——agent→sessionId（daemon-agent-sessions.json）刻意
+    // 保留，下次 spawn 以 --resume 温启动接回同一会话（报告 §8.3）。
     if (status && status !== "stopped" && status !== "idle") {
       try {
         stateMachine.transitionState(name, "idle");

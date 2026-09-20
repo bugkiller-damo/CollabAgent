@@ -1,9 +1,9 @@
 import { readFileSync } from "node:fs";
-import { readFile } from "node:fs/promises";
-import { basename } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { splitMessageContent } from "./message-split.js";
+import { prepareUpload } from "./upload-payload.js";
 
 /**
  * Slock 平台的 MCP server（独立进程，由 Claude Code 通过 `.mcp.json` 以 stdio
@@ -125,26 +125,51 @@ server.registerTool(
   "send_message",
   {
     title: "发送消息",
-    description: "在指定频道/线程/私信里发一条消息",
+    // A7.1：告知上限与自动分段——此前描述不提上限，agent 撞 400 后只会删内容重试
+    //（报告 §8.13 #2）。拆条按段落/代码块边界，attachmentIds 只挂最后一条。
+    description:
+      "在指定频道/线程/私信里发一条消息。单条上限约 9000 字符，超出会自动按段落/代码块边界拆成多条顺序发送（attachmentIds 只随最后一条）；代码/多文件/长报告优先走 upload_attachment 交付，不要把超长代码贴进消息。",
     inputSchema: {
       target: z
         .string()
         .describe('目标：频道（如 "#general"）、频道内线程（如 "#general:threadId"）、或私信（如 "dm:@handle"）'),
-      content: z.string().describe("消息正文"),
+      content: z.string().describe("消息正文（超长自动分段）"),
       threadId: z.string().optional().describe("可选：显式指定线程 id"),
       attachmentIds: z
         .array(z.string())
         .optional()
-        .describe("可选：随消息附带的附件 id 列表（先用 upload_attachment 上传获得）"),
+        .describe("可选：随消息附带的附件 id 列表（先用 upload_attachment 上传获得；拆条时只挂最后一条）"),
     },
   },
   async ({ target, content, threadId, attachmentIds }) => {
     try {
-      const result = await callSlock("/send", {
-        method: "POST",
-        body: JSON.stringify({ target, content, threadId, attachmentIds }),
-      });
-      return ok(result);
+      const chunks = splitMessageContent(content);
+      if (chunks.length === 1) {
+        const result = await callSlock("/send", {
+          method: "POST",
+          body: JSON.stringify({ target, content, threadId, attachmentIds }),
+        });
+        return ok(result);
+      }
+      // 顺序发保证到达顺序；附件只挂末条。任一失败即抛——已发出的不撤回
+      //（部分送达比静默失败好排查，agent 可据 messageIds 续发）。
+      const messageIds: string[] = [];
+      let lastResult: unknown = {};
+      for (let i = 0; i < chunks.length; i++) {
+        lastResult = await callSlock("/send", {
+          method: "POST",
+          body: JSON.stringify({
+            target,
+            content: chunks[i],
+            threadId,
+            attachmentIds: i === chunks.length - 1 ? attachmentIds : undefined,
+          }),
+        });
+        const id =
+          (lastResult as { messageId?: unknown; id?: unknown })?.messageId ?? (lastResult as { id?: unknown })?.id;
+        if (typeof id === "string") messageIds.push(id);
+      }
+      return ok({ ...(lastResult as Record<string, unknown>), autoSplit: chunks.length, messageIds });
     } catch (err) {
       return fail(err);
     }
@@ -155,16 +180,21 @@ server.registerTool(
   "upload_attachment",
   {
     title: "上传附件",
-    description: "上传一个本地文件，返回 attachmentId（之后用 send_message 的 attachmentIds 随消息发出）",
+    // A7.3：path 可传目录——内存里打成 zip 上传；源码类扩展名按 text/plain 上报 MIME
+    description:
+      "上传一个本地文件或目录，返回 attachmentId（之后用 send_message 的 attachmentIds 随消息发出）。传目录时自动打成 zip（隐藏文件/目录、node_modules、符号链接会被排除）；代码/多文件工程/长报告优先进 deliverables/ 目录后整体上传。",
     inputSchema: {
-      path: z.string().describe("本地文件绝对路径，如 D:\\docs\\report.pdf"),
+      path: z.string().describe("本地文件或目录的绝对路径，如 D:\\docs\\report.pdf 或 D:\\work\\deliverables\\x"),
     },
   },
   async ({ path }) => {
     try {
-      const buf = await readFile(path);
+      const payload = await prepareUpload(path);
       const form = new FormData();
-      form.append("file", new Blob([buf]), basename(path));
+      // Buffer<ArrayBufferLike> 不满足 BlobPart（可能背 SharedArrayBuffer）——
+      // 拷一份纯 ArrayBuffer 背的 Uint8Array；payload 公开 API 不变。
+      const bytes = new Uint8Array(payload.bytes);
+      form.append("file", new Blob([bytes], { type: payload.mimeType }), payload.filename);
       const result = await callSlockUpload("/upload", form);
       return ok(result);
     } catch (err) {

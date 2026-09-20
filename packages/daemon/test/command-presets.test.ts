@@ -39,7 +39,20 @@ describe("command-presets", () => {
       const args = getClaudePermissionArgs();
       expect(args).toEqual([`--allowedTools=${DEFAULT_AGENT_ALLOWED_TOOLS}`]);
       const joined = args.join(" ");
-      for (const tool of ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "mcp__slock"]) {
+      for (const tool of [
+        "Bash",
+        "Read",
+        "Write",
+        "Edit",
+        "Glob",
+        "Grep",
+        "Task",
+        "WebFetch",
+        "WebSearch",
+        "NotebookEdit",
+        "NotebookRead",
+        "mcp__slock",
+      ]) {
         expect(joined).toContain(tool);
       }
       expect(joined).not.toContain("--dangerously-skip-permissions");

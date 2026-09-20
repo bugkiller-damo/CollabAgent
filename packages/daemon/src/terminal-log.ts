@@ -1,7 +1,7 @@
 import { appendFileSync, existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { safeAgentDirName } from "./agent-dir-name.js";
-import { mkdirPrivateSync } from "./private-dir.js";
+import { mkdirPrivateSync, slockDir } from "./private-dir.js";
 import { redactSecrets } from "./redact.js";
 
 /**
@@ -12,7 +12,8 @@ import { redactSecrets } from "./redact.js";
  * 直接当文本展示，不引入任何转义序列处理问题。
  */
 
-const LOG_DIR = join(process.cwd(), ".slock", "terminal-logs");
+// H6：调用时解析（SLOCK_STATE_DIR 可整体搬迁；不冻模块级常量，测试改 env 生效）
+const LOG_DIR = (): string => join(slockDir(), "terminal-logs");
 /** 单 agent 日志上限：超过 512KB 时截断保留最后 256KB */
 const MAX_FILE_BYTES = 512 * 1024;
 const KEEP_FILE_BYTES = 256 * 1024;
@@ -23,12 +24,12 @@ function safeName(agentName: string): string {
 }
 
 function logPath(agentName: string): string {
-  return join(LOG_DIR, safeName(agentName) + ".log");
+  return join(LOG_DIR(), safeName(agentName) + ".log");
 }
 
 export function appendTerminalLog(agentName: string, runId: string, exitCode: number | null, text: string): void {
   try {
-    mkdirPrivateSync(LOG_DIR);
+    mkdirPrivateSync(LOG_DIR());
     const path = logPath(agentName);
     const header =
       `\n\n═══════════════════════════════════════════════════\n` +

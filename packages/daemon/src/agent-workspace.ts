@@ -26,7 +26,9 @@ function posixRel(rel: string): string {
 }
 
 /**
- * 人类可读工作区白名单：MEMORY.md、其它顶层 .md（不含 CLAUDE.md）、notes/**。
+ * 人类可读工作区白名单：MEMORY.md、其它顶层 .md（不含 CLAUDE.md）、notes/**、
+ * deliverables/**（A7.2 交付目录——用户能在档案页浏览/下载 agent 的产出物；
+ * 二进制内容仍被 readWorkspaceFile 的 NUL 探测挡下，走附件通道交付）。
  * 拒绝密钥目录、点文件、路径穿越。
  */
 export function isAllowedWorkspaceRel(rel: string): boolean {
@@ -37,7 +39,7 @@ export function isAllowedWorkspaceRel(rel: string): boolean {
   if (parts.length === 0 || parts.some((p) => p.startsWith(".") || p === "node_modules")) return false;
   if (n === "MEMORY.md") return true;
   if (n === "CLAUDE.md") return false;
-  if (parts[0] === "notes") return true;
+  if (parts[0] === "notes" || parts[0] === "deliverables") return true;
   if (parts.length === 1 && n.toLowerCase().endsWith(".md")) return true;
   return false;
 }

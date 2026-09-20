@@ -155,13 +155,6 @@ export interface CommandPreset {
 
 // —— 模块接口（供依赖注入/测试替身） ——
 
-export interface IAgentTokenRegistry {
-  issue(agentId: string): string;
-  peek(agentId: string): string | undefined;
-  validate(agentId: string, token: string | undefined): boolean;
-  revokeIfMatches(agentId: string, token: string): void;
-}
-
 export interface ILiveRunRegistry {
   add(run: LiveAgentRun): void;
   get(runId: string): LiveAgentRun | undefined;
@@ -204,15 +197,6 @@ export interface IAgentRunStore {
    * status 改写成 "error"，调用顺序反了会永远查到空列表。
    */
   listActiveAgents(): { agentId: string; agentName: string }[];
-}
-
-export interface IAgentStartup {
-  buildStartupInstructions(agent: AgentInfo, workspaceDir: string): string;
-  buildIdentityMarker(agent: AgentInfo): string;
-  buildProtocolDoc(role: string): string;
-  buildReminderTail(role: string, dispatchId?: string): string;
-  writeSystemPromptFile(agentName: string, content: string): string;
-  createWorkspaceDir(agentName: string): string;
 }
 
 export interface IAgentStdinDispatcher {

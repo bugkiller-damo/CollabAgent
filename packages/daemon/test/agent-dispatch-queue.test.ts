@@ -79,19 +79,57 @@ describe("agent-dispatch-queue", () => {
     q.dispose();
   });
 
-  it("in-flight 超时不 resolve 也算失败并按重试处理", async () => {
-    const deliver = vi.fn().mockImplementation(() => new Promise<void>(() => {})); // 永不 resolve
+  it("A4：in-flight 超时视为仍在跑——不重投不死信，等真实 settle（§8.13⑦）", async () => {
+    let release!: () => void;
+    const deliver = vi.fn().mockImplementation(() => new Promise<void>((r) => (release = r)));
     const onDeadLetter = vi.fn();
+    const onRetry = vi.fn();
     const q = createAgentDispatchQueue({
       deliver,
       onDeadLetter,
+      onRetry,
       inflightMs: 30,
-      maxRetries: 1, // 第一次失败即死信
+      maxRetries: 1,
+    });
+    const res = q.enqueue(makeItem());
+    if (res.status !== "queued") throw new Error("expected queued");
+    await flush(80); // 越过 inflightMs——旧语义此刻已超时重投/死信
+    expect(deliver).toHaveBeenCalledTimes(1); // 不重投
+    expect(onRetry).not.toHaveBeenCalled();
+    expect(onDeadLetter).not.toHaveBeenCalled();
+    expect(q.isBusy("alice")).toBe(true); // 仍在跑
+    release(); // 真实 settle（迟到正常完成）→ delivered
+    await res.done;
+    await flush();
+    expect(q.isBusy("alice")).toBe(false);
+    q.dispose();
+  });
+
+  it("A4：in-flight 超时后真实失败（进程死）仍按可重试路径重投", async () => {
+    let reject!: (err: Error) => void;
+    const deliver = vi
+      .fn()
+      .mockImplementationOnce(() => new Promise<void>((_, rej) => (reject = rej)))
+      .mockResolvedValue(undefined);
+    const onRetry = vi.fn();
+    const onDeadLetter = vi.fn();
+    const q = createAgentDispatchQueue({
+      deliver,
+      onRetry,
+      onDeadLetter,
+      inflightMs: 30,
+      baseDelayMs: 5,
+      maxDelayMs: 10,
+      maxRetries: 2,
     });
     q.enqueue(makeItem());
-    await flush(80);
-    expect(onDeadLetter).toHaveBeenCalledTimes(1);
-    expect(String(onDeadLetter.mock.calls[0][2])).toContain("in-flight timeout");
+    await flush(60); // 越过 inflightMs：只告警，不重投
+    expect(deliver).toHaveBeenCalledTimes(1);
+    reject(new Error("persistent process exited mid-turn (code=1)")); // 真实失败才走重试
+    await flush(50);
+    expect(deliver).toHaveBeenCalledTimes(2);
+    expect(onRetry).toHaveBeenCalledTimes(1);
+    expect(onDeadLetter).not.toHaveBeenCalled();
     q.dispose();
   });
 
@@ -310,6 +348,112 @@ describe("agent-dispatch-queue", () => {
     await flush(100);
     expect(deliver).toHaveBeenCalledTimes(2); // 与旧「一律重试」行为一致
     expect(onDeadLetter).toHaveBeenCalledTimes(1);
+    q.dispose();
+  });
+
+  it("A4：跨频道不合并——不同 channel 的 pending 各自成批、按到达序排空", async () => {
+    let release!: () => void;
+    const deliver = vi
+      .fn()
+      .mockImplementationOnce(() => new Promise<void>((r) => (release = r)))
+      .mockResolvedValue(undefined);
+    const onMerged = vi.fn();
+    const q = createAgentDispatchQueue({ deliver, onMerged });
+    q.enqueue({ ...makeItem(), content: "m1" }); // #general 在途挂住
+    await flush(5);
+    q.enqueue({ ...makeItem(), content: "m2" }); // #general 积压
+    q.enqueue({ ...makeItem(), channelName: "other", content: "m3" }); // #other 积压
+    release();
+    await flush();
+    expect(deliver).toHaveBeenCalledTimes(3);
+    const batch2: DispatchQueueItem[] = deliver.mock.calls[1][1];
+    const batch3: DispatchQueueItem[] = deliver.mock.calls[2][1];
+    // m2 与 m3 分属不同桶——绝不拼进同一批
+    expect(batch2.map((i) => i.content)).toEqual(["m2"]);
+    expect(batch2[0].channelName).toBe("general");
+    expect(batch3.map((i) => i.content)).toEqual(["m3"]);
+    expect(batch3[0].channelName).toBe("other");
+    expect(onMerged).not.toHaveBeenCalled();
+    q.dispose();
+  });
+
+  it("A4：分诊不与 @ 合并——kind 不同的同频道 pending 各自成批", async () => {
+    let release!: () => void;
+    const deliver = vi
+      .fn()
+      .mockImplementationOnce(() => new Promise<void>((r) => (release = r)))
+      .mockResolvedValue(undefined);
+    const q = createAgentDispatchQueue({ deliver });
+    q.enqueue({ ...makeItem(), content: "@alice 看下这个" });
+    await flush(5);
+    q.enqueue({ ...makeItem(), content: "【频道分诊】#general 来了一条新消息", kind: "triage" });
+    release();
+    await flush();
+    expect(deliver).toHaveBeenCalledTimes(2);
+    const batch2: DispatchQueueItem[] = deliver.mock.calls[1][1];
+    expect(batch2).toHaveLength(1);
+    expect(batch2[0].kind).toBe("triage"); // kind 随 item 透传
+    q.dispose();
+  });
+
+  it("A4：死信后重发不被吞——去重后写，死信不占 dedup 窗口", async () => {
+    const deliver = vi.fn().mockRejectedValue(new Error("always fails"));
+    const onDeadLetter = vi.fn();
+    const q = createAgentDispatchQueue({
+      deliver,
+      onDeadLetter,
+      baseDelayMs: 5,
+      maxDelayMs: 10,
+      maxRetries: 1, // 首次失败即死信
+    });
+    q.enqueue(makeItem());
+    await flush(30);
+    expect(onDeadLetter).toHaveBeenCalledTimes(1);
+    // 同一内容在 dedup 窗口内重发——必须放行（消息实际从未送达）
+    deliver.mockResolvedValue(undefined);
+    const res = q.enqueue(makeItem());
+    expect(res.status).toBe("queued");
+    await flush();
+    expect(deliver).toHaveBeenCalledTimes(2);
+    q.dispose();
+  });
+
+  it("A4：clear 丢弃 pending 走死信回调（频道可见未送达）", async () => {
+    let release!: () => void;
+    const deliver = vi.fn().mockImplementationOnce(() => new Promise<void>((r) => (release = r)));
+    const onDeadLetter = vi.fn();
+    const q = createAgentDispatchQueue({ deliver, onDeadLetter });
+    q.enqueue({ ...makeItem(), content: "m1" });
+    await flush(5);
+    q.enqueue({ ...makeItem(), content: "m2" });
+    q.enqueue({ ...makeItem(), channelName: "other", content: "m3" });
+    expect(q.clear("alice")).toBe(2);
+    expect(onDeadLetter).toHaveBeenCalledTimes(2);
+    const deadContents = onDeadLetter.mock.calls.map((c) => c[1].content);
+    expect(deadContents).toEqual(expect.arrayContaining(["m2", "m3"]));
+    release();
+    await flush();
+    expect(deliver).toHaveBeenCalledTimes(1); // 丢弃的不会再投
+    q.dispose();
+  });
+
+  it("A4：同频道不同线程不合并——threadId 参与桶键", async () => {
+    let release!: () => void;
+    const deliver = vi
+      .fn()
+      .mockImplementationOnce(() => new Promise<void>((r) => (release = r)))
+      .mockResolvedValue(undefined);
+    const q = createAgentDispatchQueue({ deliver });
+    q.enqueue({ ...makeItem(), content: "m1" });
+    await flush(5);
+    q.enqueue({ ...makeItem(), content: "m2", threadId: "t-1" });
+    q.enqueue({ ...makeItem(), content: "m3" });
+    release();
+    await flush();
+    expect(deliver).toHaveBeenCalledTimes(3);
+    expect(deliver.mock.calls[1][1].map((i: DispatchQueueItem) => i.content)).toEqual(["m3"]); // 顶层桶先到的 head
+    expect(deliver.mock.calls[2][1].map((i: DispatchQueueItem) => i.content)).toEqual(["m2"]);
+    expect(deliver.mock.calls[2][1][0].threadId).toBe("t-1");
     q.dispose();
   });
 });
