@@ -456,4 +456,49 @@ describe("agent-dispatch-queue", () => {
     expect(deliver.mock.calls[2][1][0].threadId).toBe("t-1");
     q.dispose();
   });
+
+  it("Phase 2：turnId 首次入队生成且跨重试稳定，attempts 随失败递增", async () => {
+    const deliver = vi.fn().mockRejectedValueOnce(new Error("boom")).mockResolvedValue(undefined);
+    const q = createAgentDispatchQueue({ deliver, baseDelayMs: 5, maxDelayMs: 10 });
+    const res = q.enqueue({ ...makeItem(), sender: "alice" });
+    expect(res.status).toBe("queued");
+    if (res.status !== "queued") return;
+    const turnId = res.item.turnId;
+    expect(turnId).toMatch(/^turn-/);
+    expect(res.item.sender).toBe("alice");
+    await flush(60);
+    expect(deliver).toHaveBeenCalledTimes(2);
+    // 两次投递同一 turnId（同一对象引用——首次投递后 attempts 被原地 +1，
+    // 只能断言重投时的 attempts=1 与 turnId 稳定）。
+    expect(deliver.mock.calls[0][1][0].turnId).toBe(turnId);
+    expect(deliver.mock.calls[1][1][0].turnId).toBe(turnId);
+    expect(deliver.mock.calls[1][1][0].attempts).toBe(1);
+    q.dispose();
+  });
+
+  it("Phase 2：DispatchError.retryAfterMs 抬升重试等待（§15.2 取 max(退避, 声明) 并封顶 maxDelay）", async () => {
+    const deliver = vi
+      .fn()
+      .mockRejectedValueOnce(new DispatchError("provider-rate-limited", "rate limited", { retryAfterMs: 80 }));
+    const onRetry = vi.fn();
+    const q = createAgentDispatchQueue({ deliver, onRetry, baseDelayMs: 5, maxDelayMs: 60 });
+    q.enqueue(makeItem());
+    await flush(40); // 第一次失败已发生；退避 max(~5ms,80ms)→60ms（封顶，clamp 后无 jitter）
+    expect(deliver).toHaveBeenCalledTimes(1);
+    expect(onRetry).toHaveBeenCalledTimes(1);
+    expect(onRetry.mock.calls[0][3]).toBe(60);
+    q.dispose();
+  });
+
+  it("Phase 2：retryAfterMs 未超 maxDelay 时声明值生效（大于指数退避取声明）", async () => {
+    const deliver = vi
+      .fn()
+      .mockRejectedValueOnce(new DispatchError("provider-rate-limited", "rate limited", { retryAfterMs: 40 }));
+    const onRetry = vi.fn();
+    const q = createAgentDispatchQueue({ deliver, onRetry, baseDelayMs: 5, maxDelayMs: 60 });
+    q.enqueue(makeItem());
+    await flush(30);
+    expect(onRetry.mock.calls[0][3]).toBe(40); // max(~5, 40) = 40
+    q.dispose();
+  });
 });

@@ -33,7 +33,42 @@ export type DispatchErrorCode =
   | "entrypoint-not-allowed"
   | "model-not-allowed"
   | "manifest-invalid"
-  | "pty-runtime-unsupported";
+  | "pty-runtime-unsupported"
+  // Phase 2：SARP/1 bridge worker 生命周期与协议错误（02-daemon-langchain-langgraph-runtime-design.md §15）
+  /** worker 进程在 handshake / 回合中退出——可重试（spawn 崩溃、OOM、依赖缺失） */
+  | "worker-exited"
+  /** runtime.ready 未在 startupTimeoutMs 内到达——可重试 */
+  | "runtime-start-timeout"
+  /** 回合中 silenceTimeoutMs 无任何 stdout 帧——可重试（进程被判卡死并回收） */
+  | "runtime-silence-timeout"
+  /** 握手校验失败：worker 报出的 runtime id 与 profile 不符——重试无意义 */
+  | "runtime-id-mismatch"
+  /** worker 声明不支持本协议版本——重试无意义（需升级 worker） */
+  | "protocol-version-unsupported"
+  /** profile requireDurableThreads 但 worker capabilities.durableThreads=false——重试无意义 */
+  | "durable-threads-required"
+  /** 协议违规（坏帧/越序/重复终态/未知非 optional 消息）——当前 worker 必须终止 */
+  | "protocol-violation"
+  /** wire MODEL_RATE_LIMITED——可重试；retryAfterMs 取 worker 声明值与退避较大者 */
+  | "provider-rate-limited"
+  /** wire *_AUTH_FAILED / 凭证类错误——重试无意义 */
+  | "provider-auth-failed"
+  /** wire *_NETWORK_FAILED / 供应商不可达——可重试 */
+  | "provider-network-failed"
+  /** wire GRAPH_INPUT_INVALID 等输入校验失败——重试无意义 */
+  | "graph-input-invalid"
+  /** wire MCP_START_FAILED——可重试（MCP server 拉起失败） */
+  | "mcp-start-failed"
+  /** success 但 finalText 为空且本回合无 slock send 成功——重试无意义（§8.7.8） */
+  | "empty-success"
+  /** manifest command 解析不到可执行文件——重试无意义 */
+  | "command-not-found"
+  /** manifest cwd 不是存在的绝对目录——重试无意义 */
+  | "cwd-not-found"
+  /** secretEnv 引用的环境变量在 daemon env 中缺失——重试无意义 */
+  | "secret-env-missing"
+  /** 未映射的 worker 错误码兜底——永久（worker 想要可重试必须报已知码） */
+  | "worker-error";
 
 const NON_RETRIABLE: ReadonlySet<DispatchErrorCode> = new Set([
   "agent-unknown",
@@ -48,18 +83,41 @@ const NON_RETRIABLE: ReadonlySet<DispatchErrorCode> = new Set([
   "model-not-allowed",
   "manifest-invalid",
   "pty-runtime-unsupported",
+  "runtime-id-mismatch",
+  "protocol-version-unsupported",
+  "durable-threads-required",
+  "protocol-violation",
+  "provider-auth-failed",
+  "graph-input-invalid",
+  "empty-success",
+  "command-not-found",
+  "cwd-not-found",
+  "secret-env-missing",
+  "worker-error",
 ]);
+
+/** retryAfterMs 上限——worker 声明的退避值不许无限放大（§15.2 钳制到全局最大退避） */
+export const DISPATCH_MAX_RETRY_AFTER_MS = 120_000;
 
 export class DispatchError extends Error {
   readonly code: DispatchErrorCode;
   /** 队列据此决定重试还是直接死信；由 code 推导，构造时不开放覆盖 */
   readonly retriable: boolean;
+  /**
+   * worker 声明的建议重试等待（wire error.retryAfterMs → 队列取其与指数退避
+   * 的较大值，再钳制到 maxDelayMs / DISPATCH_MAX_RETRY_AFTER_MS）。
+   */
+  readonly retryAfterMs?: number;
 
-  constructor(code: DispatchErrorCode, message: string) {
+  constructor(code: DispatchErrorCode, message: string, opts?: { retryAfterMs?: number }) {
     super(message);
     this.name = "DispatchError";
     this.code = code;
     this.retriable = !NON_RETRIABLE.has(code);
+    const ra = opts?.retryAfterMs;
+    if (typeof ra === "number" && Number.isFinite(ra) && ra > 0) {
+      this.retryAfterMs = Math.min(Math.round(ra), DISPATCH_MAX_RETRY_AFTER_MS);
+    }
   }
 }
 

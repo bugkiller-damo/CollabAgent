@@ -2,8 +2,9 @@ import { writeMcpConfig } from "./agent-mcp-config.js";
 import type { ProgressTurn } from "./agent-progress.js";
 import type { ICredentialsClient } from "./agent-runtime-credentials.js";
 import { abortTurnGuards, armTurnGuard, type TurnGuard } from "./agent-runtime-dispatch-stream.js";
-import type { AgentRuntimeDriver, AgentRuntimeSession } from "./agent-runtime-driver.js";
+import type { AgentRuntimeDriver, AgentRuntimeSession, AgentTurnRequest } from "./agent-runtime-driver.js";
 import type { AgentRuntimeEvent } from "./agent-runtime-events.js";
+import type { IRuntimeInterruptStore } from "./agent-runtime-interrupt-store.js";
 import type { AgentRegistrationInfo, ResolvedAgentRuntimeProfile } from "./agent-runtime-profile.js";
 import type { IAgentStateMachine } from "./agent-runtime-state.js";
 import type { IAgentSessionStore } from "./agent-session-store.js";
@@ -21,6 +22,7 @@ import { loadDaemonEnv } from "./config.js";
 import { DispatchError, errMessage } from "./errors.js";
 import type { IIdleReclaimer } from "./idle-reclaimer.js";
 import { bundleSlockMcpServer } from "./mcp-bundle.js";
+import { generateBridgeSystemPrompt } from "./system-prompt.js";
 
 export interface DispatchHeadlessTurnOpts {
   agentName: string;
@@ -30,6 +32,21 @@ export interface DispatchHeadlessTurnOpts {
   threadId?: string;
   /** A4：队列 item 的 kind——透传到 armTurnGuard 判 isNudge（triage/nudge 不触发回复守卫） */
   kind?: import("./agent-dispatch-queue.js").DispatchKind;
+  /**
+   * Phase 2（§8.4/§11）：回合元数据——turnId 随队列 item（retry 复用）、
+   * conversationId（§11.1）、attempt；resume 是同 conversation pending
+   * interrupt 的恢复载荷。claude driver 只用 prompt。
+   */
+  turn: {
+    turnId: string;
+    conversationId: string;
+    attempt: number;
+    /** §8.4：人类发送者名 → turn.start source.sender（bridge 专属，claude 忽略） */
+    sender?: string;
+    resume?: { interruptId: string; resumeToken: string; value: string };
+  };
+  /** Phase 2：interrupt 簿记——success 消费 / interrupted 覆写（§11.4） */
+  interruptStore?: IRuntimeInterruptStore;
   haltGen: number;
   serverUrl: string;
   /** A1.3：机器级凭证，fetchDispatchContext 查频道经理/worker 名单用 */
@@ -196,7 +213,10 @@ export const dispatchHeadlessTurn = async (opts: DispatchHeadlessTurnOpts): Prom
     credentialIssuedAt.delete(agentName);
   }
   const envCfg = loadDaemonEnv();
-  const usePersistent = !envCfg.oneshotClaude;
+  // Phase 2：bridge runtime（SARP/1）是常驻进程协议——oneshot 不适用，
+  // SLOCK_ONESHOT_CLAUDE 只对 claude 生效。
+  const isBridge = runtimeProfile.runtime !== "claude";
+  const usePersistent = isBridge ? true : !envCfg.oneshotClaude;
   // A5：one-shot 每回合都是新进程（spawn-only 开销对它不是开销而是必需）；
   // persistent 复用已有会话时跳过 mint/sysprompt/workspace/mcp 全套准备。
   const needsSpawn = !usePersistent || !persistentSessions.has(agentName);
@@ -235,6 +255,9 @@ export const dispatchHeadlessTurn = async (opts: DispatchHeadlessTurnOpts): Prom
     let promptFile: string | undefined;
     let workspace: string | undefined;
     let env: { SLOCK_AGENT_ID: string; SLOCK_AGENT_TOKEN_FILE: string; SLOCK_SERVER_URL: string } | undefined;
+    // Phase 2：bridge initialize 载荷素材（claude 路径恒 undefined）
+    let platformPrompt: string | undefined;
+    let mcpDescriptor: import("./agent-runtime-driver.js").AgentRuntimeOpenOptions["mcp"];
     if (needsSpawn || tokenExpiringSoon) {
       // 见 PTY 分支的注释：服务端不认账号级 apiKey 之外的凭证要走 scoped
       // runtime token（幂等 upsert，覆盖上一条也无妨）。
@@ -246,9 +269,6 @@ export const dispatchHeadlessTurn = async (opts: DispatchHeadlessTurnOpts): Prom
       credentialIssuedAt.set(agentName, Date.now());
       if (needsSpawn) {
         workspace = ws;
-        // A3 起系统提示去频道化（不再有 channelName 参数）：频道/角色事实走
-        // 回合消息尾的 buildRoleContextLine，避免 spawn 首频道语境漂移（§8.5）。
-        promptFile = writeSystemPromptFile(agentName, true, info, dispatchContext);
         // O11：这条路径的 env 直接进子进程（runtime driver 的 spawn），
         // 只放 token 文件路径，不放明文 token。
         env = {
@@ -256,19 +276,51 @@ export const dispatchHeadlessTurn = async (opts: DispatchHeadlessTurnOpts): Prom
           SLOCK_AGENT_TOKEN_FILE: tokenFile,
           SLOCK_SERVER_URL: opts.serverUrl,
         };
-        // MCP 工具接入（与 PTY 路径对齐，见 agent-runtime-spawn.ts）：headless
-        // 路径此前漏写 .mcp.json——agent 没有 send_message MCP 工具，只能靠记住
-        // `slock` CLI 命令回复；弱模型在受挫回合里会忘（2026-08-18 真机：天气
-        // 查到了但纯文本作答结束回合，频道永远收不到）。失败不阻塞：CLI 兜底仍在。
-        try {
-          const mcpBundlePath = await bundleSlockMcpServer();
-          if (mcpBundlePath) {
-            writeMcpConfig(ws, agentId, env.SLOCK_AGENT_TOKEN_FILE ?? "", env.SLOCK_SERVER_URL ?? "", mcpBundlePath);
-          }
-        } catch (err) {
-          console.warn(
-            `[Daemon] @${agentName} MCP config setup failed (headless), CLI-only fallback: ${errMessage(err)}`,
+        if (isBridge) {
+          // Phase 2：bridge worker 走 SARP initialize——平台提示走文本字段
+          // （runtime-neutral），MCP 走 initialize.platform.mcp 描述符由
+          // worker 自己挂 client，不写 .mcp.json/.claude settings。
+          platformPrompt = generateBridgeSystemPrompt(
+            { name: agentName, displayName: info.displayName, description: info.description },
+            dispatchContext,
           );
+          try {
+            const mcpBundlePath = await bundleSlockMcpServer();
+            if (mcpBundlePath) {
+              mcpDescriptor = {
+                transport: "stdio",
+                command: "node",
+                args: [mcpBundlePath],
+                env: {
+                  SLOCK_AGENT_ID: agentId,
+                  SLOCK_AGENT_TOKEN_FILE: tokenFile,
+                  SLOCK_SERVER_URL: opts.serverUrl,
+                },
+              };
+            }
+          } catch (err) {
+            console.warn(
+              `[Daemon] @${agentName} MCP bundle resolve failed (bridge), worker runs without MCP: ${errMessage(err)}`,
+            );
+          }
+        } else {
+          // A3 起系统提示去频道化（不再有 channelName 参数）：频道/角色事实走
+          // 回合消息尾的 buildRoleContextLine，避免 spawn 首频道语境漂移（§8.5）。
+          promptFile = writeSystemPromptFile(agentName, true, info, dispatchContext);
+          // MCP 工具接入（与 PTY 路径对齐，见 agent-runtime-spawn.ts）：headless
+          // 路径此前漏写 .mcp.json——agent 没有 send_message MCP 工具，只能靠记住
+          // `slock` CLI 命令回复；弱模型在受挫回合里会忘（2026-08-18 真机：天气
+          // 查到了但纯文本作答结束回合，频道永远收不到）。失败不阻塞：CLI 兜底仍在。
+          try {
+            const mcpBundlePath = await bundleSlockMcpServer();
+            if (mcpBundlePath) {
+              writeMcpConfig(ws, agentId, env.SLOCK_AGENT_TOKEN_FILE ?? "", env.SLOCK_SERVER_URL ?? "", mcpBundlePath);
+            }
+          } catch (err) {
+            console.warn(
+              `[Daemon] @${agentName} MCP config setup failed (headless), CLI-only fallback: ${errMessage(err)}`,
+            );
+          }
         }
         assertLive();
       } else {
@@ -292,6 +344,12 @@ export const dispatchHeadlessTurn = async (opts: DispatchHeadlessTurnOpts): Prom
           // bridge=manifest 校验后的 fixed/allowlist 值）。
           model: runtimeProfile.model,
           entrypoint: runtimeProfile.entrypoint,
+          // Phase 2：bridge initialize 载荷（claude driver 忽略）
+          agent: isBridge
+            ? { id: agentId, name: agentName, displayName: info.displayName, description: info.description }
+            : undefined,
+          platformPrompt,
+          mcp: mcpDescriptor,
           // A2：温启动——空闲回收 / daemon 重启后接回上次会话（sessionRef 由
           // stream handler 在 session init 事件时落 daemon-agent-sessions.json）。
           // SLOCK_SESSION_RESUME=0 关闭（与 PTY 同语义）；查不到 id = 全新会话。
@@ -353,7 +411,46 @@ export const dispatchHeadlessTurn = async (opts: DispatchHeadlessTurnOpts): Prom
         // 回合级交付：await 到 turn.end 事件（进程 mid-turn 退出则 reject → A1 队列
         // 退避重试，换 fresh 会话重投这条消息）。状态机回 idle 由 handleStreamEvent
         // 的 turn.end 分支负责（早于这里的 resolve，顺序无害）。
-        await session.send(turnMsg);
+        const request: AgentTurnRequest = {
+          turnId: opts.turn.turnId,
+          conversationId: opts.turn.conversationId,
+          attempt: opts.turn.attempt,
+          prompt: turnMsg,
+          source: {
+            kind: opts.kind ?? "message",
+            channel: channelName,
+            threadId,
+            ...(opts.turn.sender !== undefined ? { sender: opts.turn.sender } : {}),
+          },
+          resume: opts.turn.resume,
+        };
+        const turnResult = await session.send(request);
+        // Phase 2（§11.4）：interrupt 簿记——interrupted 写 pending（resumeToken
+        // 一次性，同 conversation 下条消息带它恢复）；success 消费掉已恢复的
+        // pending；失败/cancelled 保留（retry 时重发）。
+        if (turnResult?.status === "interrupted" && turnResult.interrupt) {
+          try {
+            opts.interruptStore?.put({
+              agentId,
+              runtime: runtimeProfile.runtime,
+              entrypoint: runtimeProfile.entrypoint,
+              conversationId: opts.turn.conversationId,
+              interruptId: turnResult.interrupt.interruptId,
+              resumeToken: turnResult.interrupt.resumeToken,
+              prompt: turnResult.interrupt.prompt,
+              createdAt: Date.now(),
+              expiresAt: 0,
+            });
+          } catch (err) {
+            console.warn(`[Daemon] @${agentName} interrupt persist failed:`, errMessage(err));
+          }
+        } else if (turnResult?.status === "success" && opts.turn.resume) {
+          try {
+            opts.interruptStore?.delete(agentId, opts.turn.conversationId);
+          } catch {
+            /* store 清理是旁路 */
+          }
+        }
       } catch (err) {
         // P1.12：send 失败后踢掉本实例。否则下一条以为无需 spawn，
         // 直接对死/停过的实例 send（Fake 不会自愈；真驱动虽能 respawn
@@ -399,7 +496,19 @@ export const dispatchHeadlessTurn = async (opts: DispatchHeadlessTurnOpts): Prom
         resumeSessionRef: sid,
         onEvent: (ev) => handleStreamEvent(agentName, ev),
       });
-      const turnResult = await session.send(turnMsg);
+      const turnResult = await session.send({
+        turnId: opts.turn.turnId,
+        conversationId: opts.turn.conversationId,
+        attempt: opts.turn.attempt,
+        prompt: turnMsg,
+        source: {
+          kind: opts.kind ?? "message",
+          channel: channelName,
+          threadId,
+          ...(opts.turn.sender !== undefined ? { sender: opts.turn.sender } : {}),
+        },
+        resume: opts.turn.resume,
+      });
       if (turnResult?.sessionRef) {
         agentSessions.set(agentName, turnResult.sessionRef);
         sessionIdentities.set(agentName, runtimeProfile.identity);

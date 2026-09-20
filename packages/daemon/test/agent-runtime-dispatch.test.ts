@@ -1,4 +1,5 @@
-import { rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -81,7 +82,16 @@ vi.mock("../src/agent-startup.js", async (importActual) => {
 import { buildChannelContextEnvelope, buildThreadContextEnvelope } from "../src/agent-context-builder.js";
 import { createObservationBus } from "../src/agent-observation.js";
 import { createDispatch, type DispatchDeps, type IDispatch } from "../src/agent-runtime-dispatch.js";
-import { AgentRuntimeRegistry } from "../src/agent-runtime-driver.js";
+import {
+  type AgentRuntimeDriver,
+  type AgentRuntimeOpenOptions,
+  AgentRuntimeRegistry,
+  type AgentRuntimeSession,
+  type AgentRuntimeTurnResult,
+  type AgentTurnRequest,
+} from "../src/agent-runtime-driver.js";
+import type { AgentRuntimeEvent } from "../src/agent-runtime-events.js";
+import { createRuntimeInterruptStore } from "../src/agent-runtime-interrupt-store.js";
 import type { ResolvedAgentRuntimeProfile } from "../src/agent-runtime-profile.js";
 import { createAgentStateMachine, type IAgentStateMachine } from "../src/agent-runtime-state.js";
 import { createTurnTracker } from "../src/agent-runtime-turn-tracker.js";
@@ -160,6 +170,7 @@ const makeHarness = (overrides?: {
   resolveRuntimeProfile?: DispatchDeps["resolveRuntimeProfile"];
   sessionIdentities?: DispatchDeps["sessionIdentities"];
   runtimeRegistry?: DispatchDeps["runtimeRegistry"];
+  interruptStore?: DispatchDeps["interruptStore"];
 }): Harness => {
   const stateMachine = createAgentStateMachine();
   stateMachine.transitionState(AGENT, "idle");
@@ -197,6 +208,7 @@ const makeHarness = (overrides?: {
     runtimeRegistry: overrides?.runtimeRegistry ?? new AgentRuntimeRegistry([createClaudeRuntimeDriver()]),
     resolveRuntimeProfile: overrides?.resolveRuntimeProfile,
     sessionIdentities: overrides?.sessionIdentities,
+    interruptStore: overrides?.interruptStore,
     persistentSessions: new Map(),
     agentSessions: new Map(),
     agentSessionStore: overrides?.agentSessionStore,
@@ -874,6 +886,162 @@ describe("agent-runtime-dispatch (headless)", () => {
       expect(FakePersistentClaude.instances).toHaveLength(2);
       expect(harness.deps.persistentSessions.get(AGENT)).toBe(FakePersistentClaude.instances[1]);
       expect(FakePersistentClaude.instances[1]!.opts.model).toBe("haiku");
+    });
+  });
+
+  describe("Phase 2：回合元数据 / interrupt 续接（§8.4/§11）", () => {
+    /** 捕获 openSession 选项与 send(request) 的假 bridge driver——验证 dispatch→driver 边界载荷 */
+    class FakeBridgeSession implements AgentRuntimeSession {
+      alive = true;
+      requests: AgentTurnRequest[] = [];
+      stopped = false;
+      /** 测试注入的回合结果；send 前先经 onEvent 发 turn.end（模仿真 worker 顺序） */
+      result: AgentRuntimeTurnResult = { status: "success", finalText: "done" };
+      endEvent: AgentRuntimeEvent = {
+        type: "turn.end",
+        status: "success",
+        result: "done",
+        usage: { costUsd: null, durationMs: 12, numTurns: 1, inputTokens: 10, outputTokens: 5 },
+      };
+      constructor(public opts: AgentRuntimeOpenOptions) {}
+      // biome-ignore lint/suspicious/noConfusingVoidType: 与 AgentRuntimeSession 契约一致（void = 仅事件结算）
+      send(req: AgentTurnRequest): Promise<void | AgentRuntimeTurnResult> {
+        this.requests.push(req);
+        this.opts.onEvent(this.endEvent);
+        return Promise.resolve(this.result);
+      }
+      stop(): void {
+        this.stopped = true;
+        this.alive = false;
+      }
+    }
+
+    const makeBridgeRegistry = () => {
+      const sessions: FakeBridgeSession[] = [];
+      const driver: AgentRuntimeDriver = {
+        driverId: "fake-bridge",
+        runtimeIds: ["langgraph", "langchain"],
+        openSession: (o) => {
+          const s = new FakeBridgeSession(o);
+          sessions.push(s);
+          return s;
+        },
+        forgetAgent: vi.fn(),
+      };
+      return {
+        sessions,
+        registry: new AgentRuntimeRegistry([createClaudeRuntimeDriver(), driver]),
+      };
+    };
+
+    const bridgeProfile: ResolvedAgentRuntimeProfile = {
+      runtime: "langgraph",
+      model: "gpt-test",
+      entrypoint: "ep-graph",
+      identity: "id-bridge",
+    };
+
+    it("bridge profile → registry 解析对应 driver，turn 元数据完整进 AgentTurnRequest", async () => {
+      const { registry, sessions } = makeBridgeRegistry();
+      harness = makeHarness({
+        runtimeRegistry: registry,
+        resolveRuntimeProfile: () => bridgeProfile,
+      });
+      await harness.dispatch.dispatchToAgent(AGENT, "general", "hi there", undefined, undefined, undefined, "alice");
+      await flush();
+
+      expect(sessions).toHaveLength(1);
+      const sess = sessions[0]!;
+      // openSession 边界：manifest entrypoint + resolved model + initialize 素材
+      expect(sess.opts.entrypoint).toBe("ep-graph");
+      expect(sess.opts.model).toBe("gpt-test");
+      expect(sess.opts.mode).toBe("persistent");
+      expect(sess.opts.agent?.id).toBe(AGENT_ID);
+      expect(sess.opts.agent?.name).toBe(AGENT);
+      // bridge 的平台提示走 initialize 文本（mcp-bundle 在本测试 mock 成 null → 无 mcp 描述符）
+      expect(sess.opts.platformPrompt).toContain(AGENT);
+      expect(sess.opts.mcp).toBeUndefined();
+
+      expect(sess.requests).toHaveLength(1);
+      const req = sess.requests[0]!;
+      expect(req.turnId).toMatch(/^turn-/);
+      expect(req.conversationId).toBe(`slock:v1:${AGENT_ID}:channel:general`);
+      expect(req.attempt).toBe(1);
+      expect(req.prompt).toContain("hi there");
+      expect(req.source).toEqual({ kind: "message", channel: "general", sender: "alice" });
+      expect(req.resume).toBeUndefined();
+      expect(harness.onDeliveryDeadLetter).not.toHaveBeenCalled();
+    });
+
+    it("threadId / reminder sourceId 参与 §11.1 conversationId 分类", async () => {
+      const { registry, sessions } = makeBridgeRegistry();
+      harness = makeHarness({
+        runtimeRegistry: registry,
+        resolveRuntimeProfile: () => bridgeProfile,
+      });
+      await harness.dispatch.dispatchToAgent(AGENT, "general", "thread msg", "t-1");
+      await harness.dispatch.dispatchToAgent(AGENT, "general", "remind", undefined, "reminder", "rem-9");
+      await flush();
+
+      expect(sessions).toHaveLength(1);
+      const reqs = sessions[0]!.requests;
+      expect(reqs[0]!.conversationId).toBe(`slock:v1:${AGENT_ID}:thread:t-1`);
+      expect(reqs[0]!.source.threadId).toBe("t-1");
+      expect(reqs[1]!.conversationId).toBe(`slock:v1:${AGENT_ID}:reminder:rem-9`);
+      expect(reqs[1]!.source.kind).toBe("reminder");
+    });
+
+    it("interrupted → 写 pending；同 conversation 下一条带 resume；success 后删除", async () => {
+      const tmp = mkdtempSync(join(tmpdir(), "slock-istore-"));
+      const store = createRuntimeInterruptStore(join(tmp, "interrupts.json"));
+      const { registry, sessions } = makeBridgeRegistry();
+      harness = makeHarness({
+        runtimeRegistry: registry,
+        resolveRuntimeProfile: () => bridgeProfile,
+        interruptStore: store,
+      });
+      try {
+        const sess0p = async () => sessions[0]!;
+        // 第一回合：worker 中断 → pending interrupt 落盘
+        await harness.dispatch.dispatchToAgent(AGENT, "general", "hit approval wall");
+        const sess = await sess0p();
+        sess.result = {
+          status: "interrupted",
+          interrupt: { interruptId: "int-1", resumeToken: "tok-abc", prompt: "批准执行吗？" },
+        };
+        sess.endEvent = {
+          type: "turn.end",
+          status: "interrupted",
+          usage: { costUsd: null, durationMs: 5, numTurns: 1 },
+          interrupt: { interruptId: "int-1", resumeToken: "tok-abc", prompt: "批准执行吗？" },
+        };
+        // send 已 resolve 于第一次 dispatch 前——重发一条触发 interrupted 结果
+        await harness.dispatch.dispatchToAgent(AGENT, "general", "still waiting");
+        await flush();
+        expect(sess.requests).toHaveLength(2);
+        const pending = store.list();
+        expect(pending).toHaveLength(1);
+        expect(pending[0]!.resumeToken).toBe("tok-abc");
+        expect(pending[0]!.conversationId).toBe(`slock:v1:${AGENT_ID}:channel:general`);
+
+        // 第二回合（resume）：下一条消息携带 resumeToken；success 后 pending 清除
+        sess.result = { status: "success", finalText: "resumed" };
+        sess.endEvent = {
+          type: "turn.end",
+          status: "success",
+          result: "resumed",
+          usage: { costUsd: null, durationMs: 8, numTurns: 1 },
+        };
+        await harness.dispatch.dispatchToAgent(AGENT, "general", "批准，继续");
+        await flush();
+        expect(sess.requests).toHaveLength(3);
+        const resumed = sess.requests[2]!;
+        expect(resumed.resume).toEqual({ interruptId: "int-1", resumeToken: "tok-abc", value: "批准，继续" });
+        expect(resumed.resume?.value).toContain("批准");
+        expect(store.list()).toHaveLength(0);
+      } finally {
+        rmSync(tmp, { recursive: true, force: true });
+      }
     });
   });
 });

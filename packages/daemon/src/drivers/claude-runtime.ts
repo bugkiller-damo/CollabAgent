@@ -129,11 +129,11 @@ const createClaudeOneshotSession = (
     get alive() {
       return !stopped;
     },
-    async send(prompt) {
+    async send(request) {
       if (stopped) throw new Error("runtime session stopped");
       try {
         const result = await claudePrint(
-          prompt,
+          request.prompt,
           options.resumeSessionRef,
           options.systemPromptFile,
           options.env,
@@ -167,7 +167,7 @@ export const createClaudeRuntimeDriver = (): AgentRuntimeDriver => {
       if (options.mode === "oneshot") {
         return createClaudeOneshotSession(options, normalizer);
       }
-      return new PersistentClaude({
+      const pc = new PersistentClaude({
         cwd: options.cwd,
         systemPromptFile: options.systemPromptFile,
         env: options.env,
@@ -183,6 +183,13 @@ export const createClaudeRuntimeDriver = (): AgentRuntimeDriver => {
         },
         onExit: options.onExit,
       });
+      // Phase 2：契约统一为 send(AgentTurnRequest)——Claude 只用 prompt，
+      // turnId/conversationId/resume 是 bridge runtime 的概念。
+      // 实例本身即 session（dispatch 以实例身份做复用/失效判定），own-property
+      // 遮蔽 send——只在 adapter 作用域内生效，类签名不变。
+      const innerSend = pc.send.bind(pc);
+      (pc as unknown as AgentRuntimeSession).send = (request) => innerSend(request.prompt);
+      return pc as unknown as AgentRuntimeSession;
     },
     forgetAgent(agentName) {
       normalizer.forget(agentName);

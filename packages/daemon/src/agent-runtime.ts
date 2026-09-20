@@ -5,6 +5,7 @@ import { createCredentialsClient } from "./agent-runtime-credentials.js";
 import { createDispatch, type ReminderFirePayload } from "./agent-runtime-dispatch.js";
 import { AgentRuntimeRegistry, type AgentRuntimeSession } from "./agent-runtime-driver.js";
 import { createExitChain } from "./agent-runtime-exit.js";
+import { createRuntimeInterruptStore, defaultInterruptStorePath } from "./agent-runtime-interrupt-store.js";
 import { createRuntimeManifestLoader } from "./agent-runtime-manifest.js";
 import {
   type AgentRegistrationInfo,
@@ -20,6 +21,7 @@ import { loadDaemonEnv } from "./config.js";
 // Phase 0 组合根：Claude driver 只在此处（provider 组合点）被引入；下游
 // dispatch/stream/observation/idle-reclaim 全部只认规范化契约。
 import { createClaudeRuntimeDriver } from "./drivers/claude-runtime.js";
+import { createJsonlBridgeRuntimeDriver } from "./drivers/jsonl-bridge-runtime.js";
 import { errMessage } from "./errors.js";
 import { createIdleReclaimer, reclaimIdleAgent } from "./idle-reclaimer.js";
 import { createPostStartInputWriter, type PostStartInputWriter } from "./post-start-input-writer.js";
@@ -97,6 +99,11 @@ export interface AgentRuntimeOptions {
    * 会 forget；空闲回收与 daemon 关闭保留（下次温启动续接）。测试可不传。
    */
   agentSessionStore?: import("./agent-session-store.js").IAgentSessionStore;
+  /**
+   * Phase 2：待恢复 interrupt 持久化（daemon-runtime-interrupts.json）。
+   * 缺省按 slockDir 默认路径创建；测试可注入内存实现。
+   */
+  interruptStore?: import("./agent-runtime-interrupt-store.js").IRuntimeInterruptStore;
   /** D4：按 agent 绑定进度条发/改/删（测试可不传 = 不写频道进度） */
   createProgressPoster?: (agentName: string) => import("./agent-progress.js").ProgressPoster;
   /** T4：顶栏「正在做什么」（不落库） */
@@ -445,13 +452,20 @@ export const createAgentRuntime = (
     getPreferredTermSize: (name) => preferredTermSize.get(name),
   });
 
-  // ---- Phase 0/1：runtime driver registry + profile 解析 ----
+  // ---- Phase 0/1/2：runtime driver registry + profile 解析 ----
   // provider runtimeId → driver 的解析点。重复 runtimeId 在构造时即抛错
   // （启动失败而非运行期）。
   // manifest 用 mtime 缓存：内容一变即重解析，条目 revision 进 identity →
   // 旧会话自然失效（design §Phase 1 验收：manifest 变更不复用旧 Worker）。
   const manifestLoader = createRuntimeManifestLoader();
-  const runtimeRegistry = new AgentRuntimeRegistry([createClaudeRuntimeDriver()]);
+  // Phase 2：SARP/1 bridge driver 只在实验开关下注册——未开 flag 时
+  // langchain/langgraph 仍走 runtime-unsupported fail-closed（与 Phase 1 一致）。
+  const runtimeRegistry = new AgentRuntimeRegistry([
+    createClaudeRuntimeDriver(),
+    ...(cfg.experimentalBridgeRuntimes ? [createJsonlBridgeRuntimeDriver({ manifestLoader })] : []),
+  ]);
+  // Phase 2：待恢复 interrupt 持久化（§11.4；bridge 专属，claude 不产生）。
+  const interruptStore = options.interruptStore ?? createRuntimeInterruptStore(defaultInterruptStorePath());
   const resolveRuntimeProfile = (name: string): ResolvedAgentRuntimeProfile =>
     resolveAgentRuntimeProfile(agentInfo.get(name) ?? {}, manifestLoader());
   /**
@@ -501,6 +515,7 @@ export const createAgentRuntime = (
     agentSessions,
     credentialIssuedAt,
     agentSessionStore: options.agentSessionStore,
+    interruptStore,
     onDeliveryQueued: options.onDeliveryQueued,
     onDeliveryDeadLetter: options.onDeliveryDeadLetter,
     observationBus,
@@ -586,10 +601,14 @@ export const createAgentRuntime = (
     },
 
     unregisterAgent(name: string): void {
+      // §11.4：注销后该 agent 的待恢复 interrupt 永久作废——记录里带着 runtime/
+      // entrypoint 身份，重注册同名 agent 也不应被旧令牌复活。
+      const clearedId = agentNameToId.get(name);
       agentNameToId.delete(name);
       agentDrivers.delete(name);
       agentInfo.delete(name);
       agentSessions.delete(name);
+      if (clearedId) interruptStore.clearAgent(clearedId);
       // A2：注销（含 duty off / agent:stop）= 显式丢弃——清除续接 id，
       // 下次注册是全新会话。回收 / daemon 关闭不在此列（见 agentSessionStore 注释）。
       try {

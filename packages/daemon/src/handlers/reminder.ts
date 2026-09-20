@@ -16,6 +16,9 @@ export async function handleReminderFire(ctx: HandlerContext, msg: ReminderMsg):
   }
   console.log(`[Daemon] reminder fired for @${remName}: ${reminder.title} (${reminder.kind || "reminder"})`);
   const payload: ReminderFirePayload = { title: reminder.title, kind: reminder.kind };
+  // Phase 2：reminder.id 是 conversationId 的 reminder 分桶键——WS schema
+  // 缺省 ""，空串不落 payload（否则下游拿到畸形 sourceId）
+  if (reminder.id) payload.id = reminder.id;
   if (reminder.channel) payload.channel = reminder.channel;
   if (reminder.instructions) payload.instructions = reminder.instructions;
   await ctx.runtime.runAgentReminder(remName, payload);

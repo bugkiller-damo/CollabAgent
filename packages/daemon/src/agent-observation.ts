@@ -99,17 +99,40 @@ export const streamEventToFrames = (
       // agent-runtime-dispatch-stream 的 handleStreamEvent（D3 / Step 4）。
       // 注意 costUsd 是本回合增量（driver 边界已做累计→差值），非会话累计。
       const ok = ev.status === "success";
+      const label =
+        ev.status === "success"
+          ? "success"
+          : ev.status === "interrupted"
+            ? "interrupted (waiting for resume)"
+            : ev.status === "cancelled"
+              ? "cancelled"
+              : `error (${ev.subtype ?? "?"})`;
       const summary = [
-        ok ? "success" : `error (${ev.subtype ?? "?"})`,
+        label,
         ev.usage.durationMs != null ? `${(ev.usage.durationMs / 1000).toFixed(1)}s` : null,
         ev.usage.costUsd != null ? `$${ev.usage.costUsd.toFixed(4)}` : null,
         ev.usage.numTurns != null ? `${ev.usage.numTurns} turns` : null,
+        ev.usage.totalTokens != null ? `${ev.usage.totalTokens} tokens` : null,
       ]
         .filter(Boolean)
         .join(", ");
       push("turn_end", null, { summary, text: ok ? undefined : truncate(ev.result ?? "", 500) });
       break;
     }
+    // Phase 2：bridge worker 的安全进度摘要——不进 text 帧（避免被回复守卫
+    // 当成回合正文代发），system 帧只做观察展示。
+    case "progress":
+      push("system", ev.turnId ?? null, { text: truncate(ev.message, 500) });
+      break;
+    case "interrupt":
+      push("system", ev.turnId ?? null, { text: `⏸ waiting for input — ${truncate(ev.interrupt.prompt, 300)}` });
+      break;
+    case "warning":
+      push("error", ev.turnId ?? null, { text: truncate(ev.message, 500) });
+      break;
+    // 回合内 usage 快照不进帧流——终态用量由 turn_end 帧承载（§8.7.7）
+    case "usage":
+      break;
   }
   return frames;
 };

@@ -202,6 +202,12 @@ describe("dispatchHeadlessTurn 会话锁 / stale 清理 (P1.12)", () => {
       idleReclaimer: createIdleReclaimer({ timeoutMs: Number.MAX_SAFE_INTEGER, onReclaim: () => {} }),
       mintAgentCredential: async () => "sk_agent_test",
       agentInfo,
+      // Phase 2：回合元数据（§8.4）——测试缺省；用例可按需覆写 turn 字段
+      turn: {
+        turnId: "turn-test-1",
+        conversationId: "slock:v1:id-alice:channel:general",
+        attempt: 1,
+      },
       // Phase 0：driver 边界——FakePersistentClaude 经 claude-runtime 适配器
       // 被 new 出来（vi.mock 照常拦截），保持实例身份断言不变。
       runtimeDriver: createClaudeRuntimeDriver(),

@@ -179,10 +179,15 @@ export const createStreamTurnHandler = (
     // 工具审计 / 进度更新无条件执行——审计边界不随围观 UI 缺席而消失。
     for (const frame of streamEventToFrames(agentName, ev, obsSeq)) {
       observationBus?.publish(frame);
-      // 回复守卫：记录本回合出现过发送动作
+      // 回复守卫：记录本回合出现过发送动作。
+      // §7：bridge 的稳定信号是 provider="slock" + operation="send_message"
+      // （不依赖工具名字符串）；名称匹配是 claude/Bash 兜底路径。
       if (frame.kind === "tool_use") {
         const guard = turnGuards.get(agentName);
-        if (guard && isSendToolFrame(frame)) guard.hadSend = true;
+        const slockSend =
+          isSendToolFrame(frame) ||
+          (ev.type === "tool.start" && ev.provider === "slock" && ev.operation === "send_message");
+        if (guard && slockSend) guard.hadSend = true;
       }
       // 回复守卫：记下最后一段正文（代发的内容来源）
       if (frame.kind === "text") {
@@ -259,13 +264,20 @@ export const createStreamTurnHandler = (
       const guard = turnGuards.get(agentName);
       turnGuards.delete(agentName);
       progressTurns.delete(agentName);
+      // Phase 2：bridge worker 的规范 finalText 走 turn.end.result（不是 text
+      // 帧）——作为守卫代发源补上。interrupted/cancelled 是刻意终态
+      // （等 resume / 被停），不走代发/追问。
+      if (guard && ev.status === "success" && ev.result?.trim() && !guard.lastText) {
+        guard.lastText = ev.result;
+      }
+      const terminalWait = ev.status === "interrupted" || ev.status === "cancelled";
       void (async () => {
         let rewritten = false;
         if (guard?.progress) {
-          const answer = !guard.hadSend && !guard.isNudge ? guard.lastText?.trim() : undefined;
+          const answer = !terminalWait && !guard.hadSend && !guard.isNudge ? guard.lastText?.trim() : undefined;
           try {
             const fin = await guard.progress.finish({
-              hadSend: guard.hadSend || guard.isNudge,
+              hadSend: terminalWait || guard.hadSend || guard.isNudge,
               rewrite: answer || undefined,
             });
             rewritten = fin.rewritten;
@@ -278,7 +290,7 @@ export const createStreamTurnHandler = (
             /* ignore */
           }
         }
-        if (guard && !guard.hadSend && !guard.isNudge && loadDaemonEnv().replyGuard) {
+        if (guard && !terminalWait && !guard.hadSend && !guard.isNudge && loadDaemonEnv().replyGuard) {
           const answer = guard.lastText?.trim();
           if (answer && rewritten) {
             console.warn(

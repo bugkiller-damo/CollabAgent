@@ -25,7 +25,7 @@
  */
 
 import { loadDaemonEnv } from "./config.js";
-import { DispatchError, errMessage, isRetriableError } from "./errors.js";
+import { DispatchError, errMessage, isDispatchError, isRetriableError } from "./errors.js";
 
 /**
  * A4：kind 语义化——入桶判别（triage/nudge/reminder 不与 message 合并）并随
@@ -45,6 +45,16 @@ export interface DispatchQueueItem {
   attempts: number;
   /** D1/D2：本条所属线程（合并批次取第一项） */
   threadId?: string;
+  /**
+   * Phase 2（§8.4）：回合 turnId——首次入队生成，A1 退避重投复用同一
+   * turnId（幂等锚，worker/SDK 可按它去重），attempt 取 attempts+1。
+   * 合并批次用 items[0] 的 turnId。
+   */
+  turnId: string;
+  /** Phase 2（§11.1）：reminder 等带来源稳定 ID（ReminderFirePayload.id），conversationId 分桶用 */
+  sourceId?: string;
+  /** Phase 2（§8.4）：人类发送者名——bridge worker 的 turn.start source.sender */
+  sender?: string;
 }
 
 /** 投递执行器：items 长度 >1 时表示合并投递。失败必须 reject，队列据此重试。 */
@@ -97,6 +107,10 @@ export interface AgentDispatchQueue {
     content: string;
     kind?: DispatchQueueItem["kind"];
     threadId?: string;
+    /** Phase 2：reminder 等带来源稳定 ID（conversationId 分桶用） */
+    sourceId?: string;
+    /** Phase 2：人类发送者名（turn.start source.sender） */
+    sender?: string;
   }): EnqueueStatus;
   /** 指定 agent（或全部）的 pending 数量（跨桶合计） */
   depth(agentName?: string): number;
@@ -109,6 +123,7 @@ export interface AgentDispatchQueue {
 }
 
 let nextId = 1;
+let nextTurnId = 1;
 
 /** A4：(channel, thread, kind) 分桶——合并/去重/重试都在同桶内进行 */
 interface BucketState {
@@ -352,8 +367,14 @@ export const createAgentDispatchQueue = (opts: DispatchQueueOptions): AgentDispa
           discardPending(agentName, dead, err, "dead-letter");
         }
         if (retryable.length > 0) {
-          // A4：合并批按最高 attempts 定速——最新鲜的条目不许给最失败的条目加速
-          const delay = backoff(Math.max(...retryable.map((i) => i.attempts)));
+          // A4：合并批按最高 attempts 定速——最新鲜的条目不许给最失败的条目加速。
+          // §15.2：worker 声明的 retryAfterMs（如 MODEL_RATE_LIMITED）取与
+          // 指数退避的较大值，再钳制到 maxDelayMs——防止 worker 无限放大等待。
+          const declared = isDispatchError(err) && typeof err.retryAfterMs === "number" ? err.retryAfterMs : 0;
+          const delay = Math.min(
+            maxDelayMs,
+            Math.max(backoff(Math.max(...retryable.map((i) => i.attempts))), declared),
+          );
           for (const item of retryable) safe(() => opts.onRetry?.(agentName, item, err, delay));
           // 重回本桶队首（保持原始相对顺序），退避结束后继续排空
           bucket.pending.unshift(...retryable);
@@ -386,6 +407,9 @@ export const createAgentDispatchQueue = (opts: DispatchQueueOptions): AgentDispa
           enqueuedAt: now(),
           attempts: maxRetries,
           threadId: input.threadId,
+          turnId: `turn-${nextTurnId++}`,
+          sourceId: input.sourceId,
+          sender: input.sender,
         };
         safe(() => opts.onDeadLetter?.(agentName, item, err));
         return { status: "dead", err };
@@ -416,6 +440,9 @@ export const createAgentDispatchQueue = (opts: DispatchQueueOptions): AgentDispa
         enqueuedAt: now(),
         attempts: 0,
         threadId: input.threadId,
+        turnId: `turn-${nextTurnId++}`,
+        sourceId: input.sourceId,
+        sender: input.sender,
       };
       const done = new Promise<void>((r) => doneResolvers.set(item.id, r));
       bucket.pending.push(item);

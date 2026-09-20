@@ -1,7 +1,7 @@
 # Daemon 接入 LangChain / LangGraph 详细设计
 
 > 日期：2026-09-20
-> 状态：Phase 0、Phase 1 已实施并验证；Phase 2–5 尚未实施
+> 状态：Phase 0、Phase 1、Phase 2 已实施并验证；Phase 3–5 尚未实施
 > 关联审计：[01-daemon-claude-decoupling-audit.md](./01-daemon-claude-decoupling-audit.md)
 > 范围：`packages/daemon/` 为主，包含必要的 shared / server / web 协议改动
 
@@ -1440,22 +1440,78 @@ server 侧新增 `agents.test.ts` Phase 1 集成用例（entrypoint 落库/保�
 
 ### Phase 2：SARP/1 与通用 bridge driver
 
-复杂度：高  风险：中
+状态：已完成（2026-09-20）
+复杂度：高
+风险：中高
 
 实施：
-1. 完成 protocol codec 与 schema validation
-2. 完成 `PersistentJsonlWorkerSession`
-3. 支持 handshake、turn、stream、usage、cancel、shutdown
-4. 支持 stdout parser、stderr ring buffer、frame limit、silence timeout
-5. 使用 fixture Worker 完成崩溃、错帧、重复终止和 retry 测试
+
+1. 完成 protocol codec 和 schema validation。
+2. 完成 `PersistentJsonlWorkerSession`。
+3. 支持 handshake、turn、stream、usage、cancel、shutdown。
+4. 支持 stdout parser、stderr ring buffer、frame limit、silence timeout。
+5. 使用 fixture Worker 完成崩溃、错帧、重复终止和 retry 测试。
 
 验收：
-- fixture Worker 可以连续处理多个 turn
-- 每个 turn 精确结束一次
-- malformed stdout 立即停止 Worker
-- idle reclaim 能清理 Worker 进程树
-- retry 复用 turn ID
-- 不存在跨 agent token / MCP 会话复用
+
+- [x] fixture Worker 可以连续处理多个 turn（真实子进程端到端测试覆盖）。
+- [x] 每个 turn 精确结束一次（终态后同 turnId 的任何帧 = `protocol-violation`）。
+- [x] malformed stdout 立即停止 Worker（非 optional 未知帧/坏 schema/越序 → violation 杀进程）。
+- [x] idle reclaim 能清理 Worker 进程树（session 走 persistentSessions 统一回收通道；
+  `stop()` 发 `shutdown` → SIGTERM → SIGKILL 逐级升级）。
+- [x] retry 复用 turn ID（队列 item 首入队生成 `turnId`，重投沿用，`attempt` 随 attempts+1）。
+- [x] 不存在跨 agent token 或 MCP 会话复用（initialize 载荷按 agent 生成；
+  token 文件路径经 env 白名单下发，MCP 描述符每次 spawn 重建）。
+
+实际落地文件：
+
+- 新增 `sarp-protocol.ts`（信封/编解码/schema 校验/帧大小与 seq 单调/optional 语义/wire 错误映射）、
+  `agent-conversation-id.ts`（§11.1 稳定会话 ID）、
+  `agent-runtime-interrupt-store.ts`（§11.4 pending interrupt 原子落盘 + 7 天 TTL + runtime/entrypoint 相容校验）。
+- 新增 `drivers/persistent-jsonl-worker.ts`（spawn/握手/回合状态机/沉默与启动超时/
+  §8.6 预览-终态 interrupt 一致性校验/§8.7.8 empty-success/取消与关停升级）。
+- 新增 `drivers/jsonl-bridge-runtime.ts`（manifest→spawnSpec/env 白名单/secretEnv 按名注入/
+  initialize 载荷组装），`agent-runtime.ts` 仅在 `SLOCK_EXPERIMENTAL_BRIDGE_RUNTIMES=1` 注册。
+- `agent-runtime-driver.ts`：`send(prompt)` → `send(AgentTurnRequest)`（turnId/conversationId/
+  attempt/source/resume）；`AgentRuntimeTurnResult` 增 status/finalText/interrupt；
+  `AgentRuntimeOpenOptions` 增 agent/platformPrompt/mcp。
+- `errors.ts`：13 个新错误码 + `retryAfterMs`（封顶 `DISPATCH_MAX_RETRY_AFTER_MS=120s`）。
+- `agent-dispatch-queue.ts`：item 携带 `turnId`/`sourceId`/`sender`；retryAfterMs 与退避取大者并封顶。
+- `agent-runtime-dispatch.ts`：§11.1 conversationId + pending interrupt take/resume +
+  turnSeed 元数据 + sender 贯通（runAgent/runAgentDm/runAgentTriage）；
+  `IDispatch.dispatchToAgent` 增 `sender` 形参。
+- `agent-runtime-dispatch-headless.ts`：bridge spawn 准备（platformPrompt/MCP 描述符/token 文件/
+  env）+ `send(request)` + interrupt 簿记（interrupted→put、success→delete）。
+- `agent-runtime-dispatch-stream.ts`：`provider="slock"+operation="send_message"` 稳定信号判
+  reply guard；`turn.end.status` 多终态处理；finalText 作守卫代发源。
+- `agent-observation.ts`：progress/interrupt/warning 新事件映射 + turn.end 四终态标签。
+- `handlers/reminder.ts`：`reminder.id` → sourceId（空串不落 payload）。
+- `drivers/claude-runtime.ts`：send 契约适配（实例本体即 session，遮蔽 send 解 request.prompt）。
+- `system-prompt.ts`：runtime-neutral `generateBridgeSystemPrompt`。
+- `daemon-core.ts`：`unregisterAgent` 时 `interruptStore.clearAgent(agentId)`。
+- 测试 fixture `test/fixtures/sarp-worker.mjs`（真实 Node 子进程，env 控制脚本化行为）。
+
+测试与验证：
+
+- 新增测试文件：`sarp-protocol`（15）、`persistent-jsonl-worker`（30）、`sarp-worker-fixture`（28）、
+  `sarp-bridge-integration`（真实进程端到端）、`jsonl-bridge-runtime`（6）、
+  `agent-conversation-id`（6）、`agent-runtime-interrupt-store`（7）。
+- 扩展：`agent-runtime-dispatch`（turn 元数据/conversationId/interrupt 续接/sender）、
+  `agent-dispatch-queue`（turnId 复用/attempt/retryAfterMs/sender）、
+  `claude-runtime`（send(request) 契约）、`agent-runtime-dispatch-headless`（turn 缺省）、
+  `daemon-core`（reminder payload）。
+- daemon 全量 **60 文件 / 703 用例通过**；typecheck、lint（0 error / 5 既有 warning）、
+  build、`git diff --check` 全部通过。
+
+已知边界与有意推迟：
+
+- bridge driver 仅在 `SLOCK_EXPERIMENTAL_BRIDGE_RUNTIMES=1` 注册；flag 关闭时
+  langchain/langgraph 仍 `runtime-unsupported` fail-closed。
+- 线格式以本节 §8 为准：`tool.start`/`tool.end` 顶层 `callId`/`input` + `tool{}`；
+  ready `model.overrides`；initialize 含 `requestId`/`runtime.model`/`workspace.path`。
+- `computers.ts` entrypoints 落库与 web 创建 UI 仍随 Phase 4 开放。
+- SARP/1 Python SDK（`slock_runtime`）属 Phase 3——本阶段 daemon 侧契约已冻结，
+  SDK 实现须与 `sarp-protocol.ts` + fixture worker 逐帧对齐。
 
 ### Phase 3：Python LangChain / LangGraph bridge
 

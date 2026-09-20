@@ -69,6 +69,15 @@ const openOpts = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
+/** Phase 2：send() 契约是 AgentTurnRequest；Claude 只消费 prompt 字段 */
+const req = (prompt: string) => ({
+  turnId: "turn-test",
+  conversationId: "slock:v1:id-alice:channel:general",
+  attempt: 1,
+  prompt,
+  source: { kind: "message" as const },
+});
+
 describe("createClaudeEventNormalizer", () => {
   it("system 事件 → session（保留 subtype/sessionRef/model）", () => {
     const n = createClaudeEventNormalizer();
@@ -276,7 +285,13 @@ describe("createClaudeRuntimeDriver", () => {
     );
     expect(session.alive).toBe(true);
 
-    const result = await session.send("hello");
+    const result = await session.send({
+      turnId: "turn-t1",
+      conversationId: "slock:v1:id-alice:channel:general",
+      attempt: 1,
+      prompt: "hello",
+      source: { kind: "message" },
+    });
     expect(result).toEqual({ sessionRef: "sess-print-1" });
     expect(claudePrintMock).toHaveBeenCalledTimes(1);
     const [prompt, sid, promptFile, env, cwd, cb, model] = claudePrintMock.mock.calls[0]!;
@@ -303,11 +318,11 @@ describe("createClaudeRuntimeDriver", () => {
     claudePrintMock.mockReset().mockResolvedValue({ reply: "ok" });
     const driver = createClaudeRuntimeDriver();
     const session = driver.openSession(openOpts({ mode: "oneshot" }));
-    const result = await session.send("hi");
+    const result = await session.send(req("hi"));
     expect(result).toEqual({});
     expect(session.alive).toBe(false);
     // 已完成的会话不能再起第二个 claudePrint 进程
-    await expect(session.send("again")).rejects.toThrow("runtime session stopped");
+    await expect(session.send(req("again"))).rejects.toThrow("runtime session stopped");
     expect(claudePrintMock).toHaveBeenCalledTimes(1);
     session.stop();
     session.stop();
@@ -320,7 +335,7 @@ describe("createClaudeRuntimeDriver", () => {
     const session = driver.openSession(openOpts({ mode: "oneshot" }));
     session.stop();
     expect(session.alive).toBe(false);
-    await expect(session.send("hi")).rejects.toThrow("runtime session stopped");
+    await expect(session.send(req("hi"))).rejects.toThrow("runtime session stopped");
     expect(claudePrintMock).not.toHaveBeenCalled();
   });
 
@@ -337,7 +352,7 @@ describe("createClaudeRuntimeDriver", () => {
     // 同一 driver 的 oneshot 回合：claudePrint 报累计 0.02 < 基线 → 回退按原值记
     const onEventO = vi.fn();
     const os = driver.openSession(openOpts({ mode: "oneshot", onEvent: onEventO }));
-    await os.send("x");
+    await os.send(req("x"));
     expect(onEventO).toHaveBeenCalledWith(
       expect.objectContaining({ type: "turn.end", usage: expect.objectContaining({ costUsd: 0.02 }) }),
     );
