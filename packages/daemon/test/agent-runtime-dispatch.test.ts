@@ -83,6 +83,7 @@ import { createObservationBus } from "../src/agent-observation.js";
 import { createDispatch, type DispatchDeps, type IDispatch } from "../src/agent-runtime-dispatch.js";
 import { createAgentStateMachine, type IAgentStateMachine } from "../src/agent-runtime-state.js";
 import { createTurnTracker } from "../src/agent-runtime-turn-tracker.js";
+import { createClaudeRuntimeDriver } from "../src/drivers/claude-runtime.js";
 import { createIdleReclaimer } from "../src/idle-reclaimer.js";
 import { slockDir } from "../src/private-dir.js";
 
@@ -184,6 +185,9 @@ const makeHarness = (overrides?: {
     resolveAgentId: overrides?.resolveAgentId ?? ((n) => (n === AGENT ? AGENT_ID : n === AGENT2 ? AGENT2_ID : null)),
     agentInfo: new Map(),
     runIdByAgent: new Map(),
+    // Phase 0：headless 会话经 driver 边界创建；Fake 仍被 vi.mock 拦截，
+    // inst.emit 的原始 stream-json 事件照常过 normalizer（适配器边界被测到）。
+    runtimeDriver: createClaudeRuntimeDriver(),
     persistentSessions: new Map(),
     agentSessions: new Map(),
     agentSessionStore: overrides?.agentSessionStore,

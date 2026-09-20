@@ -1,10 +1,5 @@
 import { buildChannelContextEnvelope, buildThreadContextEnvelope } from "./agent-context-builder.js";
-import {
-  type CostGateDecision,
-  createSessionCostDelta,
-  evaluateCostGate,
-  type ICostTracker,
-} from "./agent-cost-tracker.js";
+import { type CostGateDecision, evaluateCostGate, type ICostTracker } from "./agent-cost-tracker.js";
 import { createAgentDispatchQueue, type DispatchQueueItem } from "./agent-dispatch-queue.js";
 import { createSeqAllocator, type ObservationBus } from "./agent-observation.js";
 import type { ProgressTurn } from "./agent-progress.js";
@@ -13,6 +8,7 @@ import type { ICredentialsClient } from "./agent-runtime-credentials.js";
 import { dispatchHeadlessTurn } from "./agent-runtime-dispatch-headless.js";
 import { dispatchPtyTurn } from "./agent-runtime-dispatch-pty.js";
 import { createStreamTurnHandler, type TurnGuard } from "./agent-runtime-dispatch-stream.js";
+import type { AgentRuntimeDriver, AgentRuntimeSession } from "./agent-runtime-driver.js";
 import type { IExitChain } from "./agent-runtime-exit.js";
 import type { SpawnPtyForAgent } from "./agent-runtime-spawn.js";
 import type { IAgentStateMachine } from "./agent-runtime-state.js";
@@ -20,7 +16,6 @@ import type { ITurnTracker } from "./agent-runtime-turn-tracker.js";
 import type { IAgentSessionStore } from "./agent-session-store.js";
 import type { IThreadSessionStore } from "./agent-thread-sessions.js";
 import { loadDaemonEnv } from "./config.js";
-import type { PersistentClaude } from "./drivers/persistent-claude.js";
 import { DispatchError, errMessage } from "./errors.js";
 import type { IIdleReclaimer } from "./idle-reclaimer.js";
 import type { PostStartInputWriter } from "./post-start-input-writer.js";
@@ -146,19 +141,24 @@ export interface DispatchDeps {
   agentInfo: Map<string, { displayName?: string; description?: string; model?: string }>;
   /** agentName -> runId 缓存（常驻 PTY） */
   runIdByAgent: Map<string, string>;
-  /** 旧 PersistentClaude 路径（兜底）常驻会话 */
-  persistentSessions: Map<string, PersistentClaude>;
+  /**
+   * Phase 0：runtime driver（组合根 agent-runtime 经 registry resolve 后注入）。
+   * headless 会话创建与累计成本基线都在 driver 内——本模块不再感知 provider。
+   */
+  runtimeDriver: AgentRuntimeDriver;
+  /** headless 常驻会话（Phase 0 起为 provider 中立的 AgentRuntimeSession） */
+  persistentSessions: Map<string, AgentRuntimeSession>;
   /**
    * P1.12：headless 会话创建单飞（可选；缺省由工厂自建）。
    * 测试注入时可不传。
    */
-  sessionCreates?: Map<string, Promise<PersistentClaude>>;
+  sessionCreates?: Map<string, Promise<AgentRuntimeSession>>;
   /**
    * A5：agentName → scoped token 签发时间戳（ms）。生产由 agent-runtime
    * 注入并在 tearDown/回收时清条目；缺省由工厂自建（测试用）。
    */
   credentialIssuedAt?: Map<string, number>;
-  /** claudePrint 一次性模式的 session 缓存 */
+  /** one-shot runtime 会话的 sessionRef 缓存（agent→上次会话 id，下次 send resume 用） */
   agentSessions: Map<string, string>;
   /**
    * A2：agent→sessionId 持久化（daemon-agent-sessions.json）——persistent
@@ -225,11 +225,11 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
     persistentSessions,
     agentSessions,
   } = deps;
-  const sessionCreates = deps.sessionCreates ?? new Map<string, Promise<PersistentClaude>>();
+  const sessionCreates = deps.sessionCreates ?? new Map<string, Promise<AgentRuntimeSession>>();
   const credentialIssuedAt = deps.credentialIssuedAt ?? new Map<string, number>();
   const { transitionState, clearStartupTimer } = stateMachine;
-  // P0.5：result.total_cost_usd 是会话累计；按 agent 记上次值，落库只写差值。
-  const sessionCostDelta = createSessionCostDelta();
+  // P0.5：provider 的会话累计成本 → 本回合增量，换算在 driver 边界内
+  //（claude-runtime 的 normalizer 持有基线）；forgetSessionCost 只做转发。
   // P0.3：stopAll/unregister 会先切到 stopped。in-flight 的 spawn 失败 / 超时 /
   // send reject / 成功进入 working 都不能再改状态，否则「已停止」被复活。
   const isStopped = (agentName: string): boolean => stateMachine.getState(agentName) === "stopped";
@@ -297,7 +297,6 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
     costTracker: deps.costTracker,
     threadSessions: deps.threadSessions,
     agentSessionStore: deps.agentSessionStore,
-    sessionCostDelta,
     obsSeq,
     turnGuards,
     progressTurns,
@@ -396,12 +395,13 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
       idleReclaimer,
       mintAgentCredential,
       agentInfo,
+      runtimeDriver: deps.runtimeDriver,
       persistentSessions,
       sessionCreates,
       agentSessions,
       agentSessionStore: deps.agentSessionStore,
       credentialIssuedAt,
-      forgetSessionCost: (name) => sessionCostDelta.forget(name),
+      forgetSessionCost: (name) => deps.runtimeDriver.forgetAgent(name),
       threadSessions: deps.threadSessions,
       turnGuards,
       progressTurns,
@@ -434,10 +434,11 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
   const envCfg = loadDaemonEnv();
   const dispatchQueue = createAgentDispatchQueue({
     // in-flight 告警阈值 6 分钟：persistent 路径的 deliver 是回合级的
-    // （2026-08-18 起 await 到 result 事件），正常回合轻松超过默认 60s。
+    // （2026-08-18 起 await 到 turn.end 事件），正常回合轻松超过默认 60s。
     // A4/§8.13⑦：超时不再触发重投（回合大概率还在跑，重投=重复回合+守卫
-    // 串台）——只打告警日志继续等真实 settle。真正的看门狗是
-    // PersistentClaude 的沉默超时（300s 无事件必杀 → reject → 那时重试才安全）。
+    // 串台）——只打告警日志继续等真实 settle。真正的看门狗是 runtime 会话
+    // 所在 provider driver 的沉默超时（claude-stream：PersistentClaude 300s
+    // 无事件必杀 → reject → 那时重试才安全）。
     inflightMs: envCfg.dispatchInflightMs,
     maxRetries: envCfg.dispatchMaxRetries,
     deliver: async (agentName, items) => {
@@ -670,7 +671,7 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
       dispatchQueue.dispose();
     },
     forgetSessionCost: (agentName) => {
-      sessionCostDelta.forget(agentName);
+      deps.runtimeDriver.forgetAgent(agentName);
     },
   };
 };

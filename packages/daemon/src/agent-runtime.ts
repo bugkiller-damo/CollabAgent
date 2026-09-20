@@ -3,6 +3,7 @@ import { createLazyAgentManager } from "./agent-manager-lazy.js";
 import { createObservationBus, type ObservationBus } from "./agent-observation.js";
 import { createCredentialsClient } from "./agent-runtime-credentials.js";
 import { createDispatch, type ReminderFirePayload } from "./agent-runtime-dispatch.js";
+import { AgentRuntimeRegistry, type AgentRuntimeSession } from "./agent-runtime-driver.js";
 import { createExitChain } from "./agent-runtime-exit.js";
 import { createSpawnPtyForAgent } from "./agent-runtime-spawn.js";
 import { createAgentStateMachine } from "./agent-runtime-state.js";
@@ -10,7 +11,9 @@ import { BUSY_MARKER_RE, createTurnTracker, PROMPT_RE } from "./agent-runtime-tu
 import { createAgentStdinDispatcher } from "./agent-stdin-dispatcher.js";
 import { resolveClaudeBinary } from "./command-resolver.js";
 import { loadDaemonEnv } from "./config.js";
-import type { PersistentClaude } from "./drivers/persistent-claude.js";
+// Phase 0 组合根：Claude driver 只在此处（provider 组合点）被引入；下游
+// dispatch/stream/observation/idle-reclaim 全部只认规范化契约。
+import { createClaudeRuntimeDriver } from "./drivers/claude-runtime.js";
 import { errMessage } from "./errors.js";
 import { createIdleReclaimer, reclaimIdleAgent } from "./idle-reclaimer.js";
 import { createPostStartInputWriter, type PostStartInputWriter } from "./post-start-input-writer.js";
@@ -51,12 +54,14 @@ const ANSI_CSI_RE = new RegExp(`${ESC}\\[[0-9;?]*[a-zA-Z]`, "g");
  * 负责：
  * - 消息分发（dispatchToAgent / runAgent / runAgentDm / runAgentReminder）
  * - Agent 注册表管理
- * - 常驻会话缓存（PTY 模式单进程常驻 / PersistentClaude 模式类常驻）
+ * - 常驻会话缓存（PTY 模式单进程常驻 / headless 常驻会话——经 runtime driver
+ *   打开，Phase 0 起 provider 中立）
  * - 与 live-run-registry 集成（scoped token 吊销由 server 侧承担，H1）
  *
  * ### 启动路径（B2，2026-08-18 起 headless 为默认）
- * - 默认（headless）：PersistentClaude 持久会话，stream-json stdin/stdout
- *   结构化通道；`SLOCK_ONESHOT_CLAUDE=1` 退到 claudePrint 一次性模式
+ * - 默认（headless）：runtime driver 的 persistent 会话（claude-stream driver
+ *   → PersistentClaude，stream-json stdin/stdout 结构化通道）；
+ *   `SLOCK_ONESHOT_CLAUDE=1` 退到一次性模式（claude → claudePrint）
  * - 降级（`SLOCK_USE_PTY=1`）：node-pty 启动 Claude CLI TUI，等 `❯` 提示符
  *   就绪后键盘模拟写入（真 TUI 调试用，workaround 群见各文件「何时可删（O13）」注释）
  */
@@ -177,8 +182,8 @@ export const createAgentRuntime = (
   const preferredTermSize = new Map<string, { cols: number; rows: number }>();
   // runId -> unsubscribe 函数
   const unsubByRunId = new Map<string, () => void>();
-  // 旧 PersistentClaude 路径（兜底）
-  const persistentSessions = new Map<string, PersistentClaude>();
+  // headless 常驻会话（provider 中立；Phase 0 的 claude driver 返回 PersistentClaude 实例）
+  const persistentSessions = new Map<string, AgentRuntimeSession>();
   // A5：agentName → scoped token 签发时间戳（常驻会话临期刷新用，见 dispatch-headless）
   const credentialIssuedAt = new Map<string, number>();
 
@@ -430,6 +435,13 @@ export const createAgentRuntime = (
     getPreferredTermSize: (name) => preferredTermSize.get(name),
   });
 
+  // ---- Phase 0：runtime driver registry ----
+  // provider runtimeId → driver 的解析点。Phase 0 只有 claude；后续
+  // langchain/langgraph driver 注册进同一 registry 后按 agent 的 runtime 字段
+  // resolve。重复 runtimeId 在构造时即抛错（启动失败而非运行期）。
+  const runtimeRegistry = new AgentRuntimeRegistry([createClaudeRuntimeDriver()]);
+  const runtimeDriver = runtimeRegistry.resolve("claude");
+
   // ---- 消息分发核心（见 agent-runtime-dispatch.ts）----
   const {
     dispatchToAgent,
@@ -453,6 +465,7 @@ export const createAgentRuntime = (
     resolveAgentId,
     agentInfo,
     runIdByAgent,
+    runtimeDriver,
     persistentSessions,
     agentSessions,
     credentialIssuedAt,

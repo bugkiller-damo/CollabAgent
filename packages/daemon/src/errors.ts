@@ -23,9 +23,16 @@ export type DispatchErrorCode =
   /** 队列 in-flight 截止（deliver 挂住）——可重试 */
   | "inflight-timeout"
   /** scoped token mint 失败（网络/服务端 5xx）——可重试 */
-  | "credential-mint-failed";
+  | "credential-mint-failed"
+  /** runtime 未在 driver registry 注册 / 无 preset——重试无意义 */
+  | "runtime-unsupported";
 
-const NON_RETRIABLE: ReadonlySet<DispatchErrorCode> = new Set(["agent-unknown", "agent-stopped", "session-lost"]);
+const NON_RETRIABLE: ReadonlySet<DispatchErrorCode> = new Set([
+  "agent-unknown",
+  "agent-stopped",
+  "session-lost",
+  "runtime-unsupported",
+]);
 
 export class DispatchError extends Error {
   readonly code: DispatchErrorCode;

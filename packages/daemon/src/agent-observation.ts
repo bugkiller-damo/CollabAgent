@@ -6,7 +6,9 @@
  * 「headless 转正」的硬前置。本模块把 stream-json 输出事件转成结构化观察帧
  * （对齐 buzz buzz-acp/observer.rs 的 ObserverEvent 思路）：
  *
- * - streamEventToFrames：纯函数，claude stream-json 事件 → ObservationFrame[]
+ * - streamEventToFrames：纯函数，规范化 `AgentRuntimeEvent` → ObservationFrame[]
+ *   （Phase 0 起 provider 私有事件在 driver 边界内已转换完毕，本模块不再认
+ *   Claude stream-json）
  * - ObservationBus：per-agent 发布/订阅 + 环形 replay buffer（对齐 pty-output-bus
  *   的纪律：按 key 索引、unsubscribe 清理、监听器抛错不影响他人）
  * - renderTranscript：把 replay buffer 渲染成纯文本 transcript——当前直接复用
@@ -17,7 +19,7 @@
 // ObservationFrame 规范定义在 @collabagent/shared（WS 线协议 terminal:obs-frame
 // 的载荷类型，2026-08-20 S2.3 收敛）。此处 re-export，既有 import 方不用改路径。
 import type { ObservationFrame } from "@collabagent/shared";
-import { type ClaudeStreamEvent, isPlainObject } from "./claude-stream.js";
+import type { AgentRuntimeEvent } from "./agent-runtime-events.js";
 import { errMessage } from "./errors.js";
 import { redactDeep, redactSecrets } from "./redact.js";
 
@@ -44,24 +46,17 @@ const truncate = (s: string, max: number): string => {
 };
 
 /**
- * claude stream-json 事件 → 观察帧。纯函数便于单测。
- * 事件形态（claude --output-format stream-json --verbose）：
- * - {"type":"system","subtype":"init","session_id":...}      会话初始化
- * - {"type":"assistant","message":{"id","content":[blocks]}}  assistant 输出块
- * - {"type":"user","message":{"content":[tool_result...]}}   工具结果回灌
- * - {"type":"result","subtype":"success"|"error",...}        回合结束（精确边界）
+ * 规范化 runtime 事件 → 观察帧。纯函数便于单测。
+ * 事件形态见 agent-runtime-events.ts（各 driver 边界内已从 provider 私有
+ * 协议转换完成，例如 Claude stream-json → drivers/claude-runtime.ts）：
+ * - session(subtype=init)   会话初始化
+ * - text / thinking         assistant 输出（按块顺序逐个到达）
+ * - tool.start / tool.end   工具调用与结果回灌
+ * - turn.end                回合结束（精确边界）
  */
-const blockText = (content: unknown): string => {
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    return content.map((c) => (isPlainObject(c) ? String(c.text ?? "") : "")).join("\n");
-  }
-  return JSON.stringify(content ?? "");
-};
-
 export const streamEventToFrames = (
   agentName: string,
-  ev: ClaudeStreamEvent | null | undefined,
+  ev: AgentRuntimeEvent | null | undefined,
   allocSeq: () => number,
 ): ObservationFrame[] => {
   const frames: ObservationFrame[] = [];
@@ -73,61 +68,46 @@ export const streamEventToFrames = (
   };
 
   switch (ev?.type) {
-    case "system":
+    case "session":
       if (ev.subtype === "init") {
-        push("system", null, { text: `session ${ev.session_id ?? "?"} (model=${ev.model ?? "?"})` });
+        push("system", null, { text: `session ${ev.sessionRef ?? "?"} (model=${ev.model ?? "?"})` });
       }
       break;
-    case "assistant": {
-      const turnId = ev.message?.id ?? null;
-      const blocks = Array.isArray(ev.message?.content) ? ev.message.content : [];
-      for (const b of blocks) {
-        if (!isPlainObject(b)) continue;
-        if (b.type === "text" && typeof b.text === "string") {
-          push("text", turnId, { text: truncate(b.text, 4000) });
-        } else if (b.type === "thinking" && typeof b.thinking === "string") {
-          push("thinking", turnId, { text: truncate(b.thinking, 1000) });
-        } else if (b.type === "tool_use") {
-          push("tool_use", turnId, {
-            toolName: typeof b.name === "string" ? b.name : "?",
-            toolUseId: typeof b.id === "string" ? b.id : undefined,
-            toolInput: b.input,
-            text: truncate(JSON.stringify(b.input ?? {}), 500),
-          });
-        }
-      }
+    case "text":
+      push("text", ev.turnId ?? null, { text: truncate(ev.text, 4000) });
       break;
-    }
-    case "user": {
-      // stream-json 里工具结果以 user 消息回灌
-      const blocks = Array.isArray(ev.message?.content) ? ev.message.content : [];
-      for (const b of blocks) {
-        if (!isPlainObject(b)) continue;
-        if (b.type === "tool_result") {
-          push("tool_result", null, {
-            toolUseId: typeof b.tool_use_id === "string" ? b.tool_use_id : undefined,
-            text: truncate(blockText(b.content), 1000),
-          });
-        }
-      }
+    case "thinking":
+      push("thinking", ev.turnId ?? null, { text: truncate(ev.text, 1000) });
       break;
-    }
-    case "result": {
-      // 数值 cost/duration/turns 只进 summary 字符串；落库在
-      // agent-runtime-dispatch.handleStreamEvent（D3 / Step 4）。
-      const ok = ev.subtype === "success";
-      const durationMs = Number(ev.duration_ms);
-      const costUsd = Number(ev.total_cost_usd);
-      const numTurns = Number(ev.num_turns);
+    case "tool.start":
+      push("tool_use", ev.turnId ?? null, {
+        toolName: ev.toolName,
+        toolUseId: ev.toolUseId,
+        toolInput: ev.input,
+        text: truncate(JSON.stringify(ev.input ?? {}), 500),
+      });
+      break;
+    case "tool.end":
+      push("tool_result", ev.turnId ?? null, {
+        toolName: ev.toolName,
+        toolUseId: ev.toolUseId,
+        text: truncate(ev.output, 1000),
+      });
+      break;
+    case "turn.end": {
+      // usage 数值只进 summary 字符串；落库在
+      // agent-runtime-dispatch-stream 的 handleStreamEvent（D3 / Step 4）。
+      // 注意 costUsd 是本回合增量（driver 边界已做累计→差值），非会话累计。
+      const ok = ev.status === "success";
       const summary = [
         ok ? "success" : `error (${ev.subtype ?? "?"})`,
-        ev.duration_ms != null && Number.isFinite(durationMs) ? `${(durationMs / 1000).toFixed(1)}s` : null,
-        ev.total_cost_usd != null && Number.isFinite(costUsd) ? `$${costUsd.toFixed(4)}` : null,
-        ev.num_turns != null && Number.isFinite(numTurns) ? `${numTurns} turns` : null,
+        ev.usage.durationMs != null ? `${(ev.usage.durationMs / 1000).toFixed(1)}s` : null,
+        ev.usage.costUsd != null ? `$${ev.usage.costUsd.toFixed(4)}` : null,
+        ev.usage.numTurns != null ? `${ev.usage.numTurns} turns` : null,
       ]
         .filter(Boolean)
         .join(", ");
-      push("turn_end", null, { summary, text: ok ? undefined : truncate(String(ev.result ?? ""), 500) });
+      push("turn_end", null, { summary, text: ok ? undefined : truncate(ev.result ?? "", 500) });
       break;
     }
   }

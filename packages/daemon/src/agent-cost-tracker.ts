@@ -7,17 +7,18 @@ import { mkdirPrivateSync, slockDir } from "./private-dir.js";
 export { parseCostBudgetUsd } from "./config.js";
 
 /**
- * D3 成本记账（Step 4）：按 (agent, channel, day, thread) 累计 stream-json `result`
- * 事件里的成本 / 时长 / 工具轮次。thread 为空时与历史无 threadId 行兼容。
+ * D3 成本记账（Step 4）：按 (agent, channel, day, thread) 累计规范化 `turn.end`
+ * usage 里的成本 / 时长 / 工具轮次。thread 为空时与历史无 threadId 行兼容。
  *
  * 独立 JSON 文件，不挂在 AgentRunRecord 上——headless 默认路径从不
  * insertAgentRun（那是 PTY spawn 专属），往 runs 上长字段会空转。
  *
- * P0.5（2026-08-25）：Claude Code `result.total_cost_usd` 是**会话累计**
- * （常驻进程内单调不减；CLI `us()` 用进程级 `totalCostUsd` 覆盖 result）。
- * 直接累加会把历史再算一遍，落库前必须对每个常驻进程做「本次 − 上次」。
+ * P0.5（2026-08-25）：落库的 `costUsd` 是**本回合增量**——provider 报会话累计
+ * 值时，「本次 − 上次」换算在 runtime driver 边界内完成（当前例：Claude
+ * `result.total_cost_usd` 常驻进程内单调不减，由 drivers/claude-runtime.ts
+ * 持有的 createSessionCostDelta 换算；进程被停/回收后经 forget 清基线）。
  * `duration_ms` / `num_turns` 是本回合墙钟 / 本回合工具轮次，按原值累加。
- * one-shot / 首条 result 没有上次基线，差值 = 本次原值。
+ * 本模块不解析 provider 私有事件协议。
  *
  * 熔断：SLOCK_COST_BUDGET_USD（每 agent 每个 UTC 日，>0 才生效）超限后
  * A1 队列拒投；频道熔断文案由 daemon-core.postAsAgent 代发（零 LLM）。
@@ -126,28 +127,12 @@ interface StoreFile {
 const finiteOrZero = (v: number | null | undefined): number =>
   typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 0;
 
-const asFiniteNumber = (v: unknown): number | null => {
-  if (typeof v === "number" && Number.isFinite(v)) return v;
-  if (typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v))) return Number(v);
-  return null;
-};
-
-/** stream-json `result` 事件上的累计值；非 result 返回 null。缺字段为 null 而非 0。 */
-export const extractResultMetrics = (
-  ev: { type?: string; total_cost_usd?: unknown; duration_ms?: unknown; num_turns?: unknown } | null | undefined,
-): { costUsd: number | null; durationMs: number | null; numTurns: number | null } | null => {
-  if (ev?.type !== "result") return null;
-  return {
-    costUsd: asFiniteNumber(ev.total_cost_usd),
-    durationMs: asFiniteNumber(ev.duration_ms),
-    numTurns: asFiniteNumber(ev.num_turns),
-  };
-};
-
 const clampNonNeg = (v: number): number => (v > 0 ? v : 0);
 
 /**
- * 把会话累计 `total_cost_usd` 换成「本回合增量」。
+ * 把 provider 会话累计成本（如 Claude `result.total_cost_usd`）换成「本回合
+ * 增量」的通用辅助——归 runtime driver 边界持有（claude-runtime 的 normalizer
+ * 在内部实例化），通用记账层拿到的 turn.end.usage.costUsd 已是差值。
  *
  * - `costUsd == null`：本回合不记成本，基线也不更新。
  * - 累计回退（新进程 / 计量抖动）：按本次原值记账，并重置基线。

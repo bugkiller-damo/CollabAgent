@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { PersistentClaude } from "../src/drivers/persistent-claude.js";
+import type { AgentRuntimeSession } from "../src/agent-runtime-driver.js";
 import { createIdleReclaimer, reclaimIdleAgent } from "../src/idle-reclaimer.js";
 
 /**
@@ -103,7 +103,7 @@ describe("reclaimIdleAgent (P0.2)", () => {
 
   const makeSession = () => {
     const stop = vi.fn();
-    return { session: { stop } as unknown as PersistentClaude, stop };
+    return { session: { stop } as unknown as AgentRuntimeSession, stop };
   };
 
   it("headless：stop 会话并从 persistentSessions 删除", () => {
@@ -130,7 +130,7 @@ describe("reclaimIdleAgent (P0.2)", () => {
   });
 
   it("PTY：stopRun，不碰 headless map", () => {
-    const persistentSessions = new Map<string, PersistentClaude>();
+    const persistentSessions = new Map<string, AgentRuntimeSession>();
     const agentManager = { stopRun: vi.fn() };
     const stateMachine = { getState: vi.fn().mockReturnValue("idle"), transitionState: vi.fn() };
     const onSessionEnded = vi.fn();

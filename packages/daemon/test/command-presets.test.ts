@@ -6,6 +6,7 @@ import {
   getCommandPreset,
   renderResumeArgs,
 } from "../src/command-presets.js";
+import { DispatchError } from "../src/errors.js";
 
 describe("command-presets", () => {
   describe("COMMAND_PRESETS", () => {
@@ -74,8 +75,17 @@ describe("command-presets", () => {
       expect(getCommandPreset("codex").command).toBe("codex");
     });
 
-    it("未知 CLI 回退到 claude preset", () => {
-      expect(getCommandPreset("nonexistent").command).toBe("claude");
+    it("未知 runtime 抛 permanent DispatchError（Phase 0：不再回退 claude）", () => {
+      try {
+        getCommandPreset("nonexistent");
+        expect.unreachable();
+      } catch (err) {
+        expect(err).toBeInstanceOf(DispatchError);
+        const de = err as DispatchError;
+        expect(de.code).toBe("runtime-unsupported");
+        expect(de.retriable).toBe(false);
+        expect(de.message).toContain("nonexistent");
+      }
     });
   });
 

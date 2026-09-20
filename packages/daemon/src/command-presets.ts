@@ -1,4 +1,5 @@
 import { DEFAULT_AGENT_ALLOWED_TOOLS, loadDaemonEnv } from "./config.js";
+import { DispatchError } from "./errors.js";
 import type { CommandPreset } from "./types/index.js";
 
 /**
@@ -60,12 +61,11 @@ export const COMMAND_PRESETS: Record<string, CommandPreset> = {
   },
 };
 
-/** 查找预设；未注册 CLI 走 'claude' 作为兜底 */
+/** 查找预设；未注册 runtime/CLI 抛 permanent runtime-unsupported（Phase 0：不再回退 claude） */
 export function getCommandPreset(name: string): CommandPreset {
   const preset = COMMAND_PRESETS[name];
   if (!preset) {
-    console.warn(`[Presets] Unknown CLI '${name}', falling back to 'claude' preset`);
-    return COMMAND_PRESETS.claude!;
+    throw new DispatchError("runtime-unsupported", `Unsupported runtime: ${name}`);
   }
   return preset;
 }

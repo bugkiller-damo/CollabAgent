@@ -6,63 +6,62 @@ import {
   renderFrame,
   streamEventToFrames,
 } from "../src/agent-observation.js";
+import type { AgentRuntimeEvent } from "../src/agent-runtime-events.js";
+
+const nullUsage = { costUsd: null, durationMs: null, numTurns: null };
 
 describe("agent-observation", () => {
   describe("streamEventToFrames", () => {
     const seq = createSeqAllocator();
 
-    it("system init → system 帧（含 session_id）", () => {
+    it("session(init) → system 帧（含 sessionRef）；非 init subtype 不产帧", () => {
       const frames = streamEventToFrames(
         "alice",
-        { type: "system", subtype: "init", session_id: "s1", model: "claude" },
+        { type: "session", subtype: "init", sessionRef: "s1", model: "claude" },
         seq,
       );
       expect(frames).toHaveLength(1);
       expect(frames[0].kind).toBe("system");
       expect(frames[0].payload.text).toContain("s1");
+      expect(streamEventToFrames("alice", { type: "session", subtype: "compact" }, seq)).toEqual([]);
     });
 
-    it("assistant 消息按 block 拆帧：text / thinking / tool_use", () => {
-      const frames = streamEventToFrames(
-        "alice",
-        {
-          type: "assistant",
-          message: {
-            id: "msg-1",
-            content: [
-              { type: "thinking", thinking: "想一下" },
-              { type: "text", text: "你好" },
-              { type: "tool_use", id: "tu-1", name: "Read", input: { file_path: "a.ts" } },
-            ],
-          },
-        },
-        seq,
-      );
+    it("text / thinking / tool.start 按事件序产帧（turnId 透传）", () => {
+      const events: AgentRuntimeEvent[] = [
+        { type: "thinking", turnId: "msg-1", text: "想一下" },
+        { type: "text", turnId: "msg-1", text: "你好" },
+        { type: "tool.start", turnId: "msg-1", toolName: "Read", toolUseId: "tu-1", input: { file_path: "a.ts" } },
+      ];
+      const frames = events.flatMap((ev) => streamEventToFrames("alice", ev, seq));
       expect(frames.map((f) => f.kind)).toEqual(["thinking", "text", "tool_use"]);
       expect(frames[2].payload.toolName).toBe("Read");
       expect(frames[2].payload.toolUseId).toBe("tu-1");
       expect(frames.every((f) => f.turnId === "msg-1")).toBe(true);
     });
 
-    it("user 消息里的 tool_result → tool_result 帧（C1 completed 数据源）", () => {
+    it("tool.end → tool_result 帧（C1 completed 数据源，toolName/turnId 透传）", () => {
       const frames = streamEventToFrames(
         "alice",
-        {
-          type: "user",
-          message: { content: [{ type: "tool_result", tool_use_id: "tu-1", content: "file contents" }] },
-        },
+        { type: "tool.end", turnId: "msg-1", toolName: "Read", toolUseId: "tu-1", output: "file contents" },
         seq,
       );
       expect(frames).toHaveLength(1);
       expect(frames[0].kind).toBe("tool_result");
+      expect(frames[0].turnId).toBe("msg-1");
+      expect(frames[0].payload.toolName).toBe("Read");
       expect(frames[0].payload.toolUseId).toBe("tu-1");
       expect(frames[0].payload.text).toBe("file contents");
     });
 
-    it("result 事件 → turn_end 帧（含耗时/cost 摘要）", () => {
+    it("turn.end → turn_end 帧（含耗时/cost 摘要）", () => {
       const frames = streamEventToFrames(
         "alice",
-        { type: "result", subtype: "success", duration_ms: 2300, total_cost_usd: 0.0123, num_turns: 2 },
+        {
+          type: "turn.end",
+          status: "success",
+          subtype: "success",
+          usage: { costUsd: 0.0123, durationMs: 2300, numTurns: 2 },
+        },
         seq,
       );
       expect(frames).toHaveLength(1);
@@ -71,18 +70,24 @@ describe("agent-observation", () => {
       expect(frames[0].payload.summary).toContain("2.3s");
     });
 
-    it("超长内容截断（观察帧不扛完整内容）", () => {
+    it("turn.end error → summary 含 subtype，result 进 text 字段", () => {
       const frames = streamEventToFrames(
         "alice",
-        { type: "assistant", message: { id: "m", content: [{ type: "text", text: "x".repeat(10000) }] } },
+        { type: "turn.end", status: "error", subtype: "error_max_turns", result: "boom", usage: nullUsage },
         seq,
       );
+      expect(frames[0].payload.summary).toContain("error_max_turns");
+      expect(frames[0].payload.text).toBe("boom");
+    });
+
+    it("超长内容截断（观察帧不扛完整内容）", () => {
+      const frames = streamEventToFrames("alice", { type: "text", turnId: "m", text: "x".repeat(10000) }, seq);
       expect(frames[0].payload.text!.length).toBeLessThan(5000);
       expect(frames[0].payload.text).toContain("+6000 chars");
     });
 
     it("未知事件类型 → 空帧数组（不抛错）", () => {
-      expect(streamEventToFrames("alice", { type: "mystery" }, seq)).toEqual([]);
+      expect(streamEventToFrames("alice", { type: "mystery" } as never, seq)).toEqual([]);
       expect(streamEventToFrames("alice", null, seq)).toEqual([]);
     });
 
@@ -91,20 +96,10 @@ describe("agent-observation", () => {
       const TOKEN = "sk_agent_abcd1234abcd1234abcd1234abcd1234";
 
       it("text / thinking 帧文本脱敏", () => {
-        const frames = streamEventToFrames(
-          "alice",
-          {
-            type: "assistant",
-            message: {
-              id: "m",
-              content: [
-                { type: "text", text: `token: ${TOKEN}` },
-                { type: "thinking", thinking: `用 ${TOKEN} 调一下` },
-              ],
-            },
-          },
-          seq,
-        );
+        const frames = [
+          ...streamEventToFrames("alice", { type: "text", turnId: "m", text: `token: ${TOKEN}` }, seq),
+          ...streamEventToFrames("alice", { type: "thinking", turnId: "m", text: `用 ${TOKEN} 调一下` }, seq),
+        ];
         expect(frames).toHaveLength(2);
         for (const f of frames) {
           expect(f.payload.text).toContain("sk_agent_***");
@@ -112,22 +107,15 @@ describe("agent-observation", () => {
         }
       });
 
-      it("tool_use 的截断文本与结构化 toolInput 都脱敏", () => {
+      it("tool.start 的截断文本与结构化 toolInput 都脱敏", () => {
         const frames = streamEventToFrames(
           "alice",
           {
-            type: "assistant",
-            message: {
-              id: "m",
-              content: [
-                {
-                  type: "tool_use",
-                  id: "tu-1",
-                  name: "Bash",
-                  input: { command: `TOKEN=${TOKEN} curl x`, nested: { auth: TOKEN } },
-                },
-              ],
-            },
+            type: "tool.start",
+            turnId: "m",
+            toolName: "Bash",
+            toolUseId: "tu-1",
+            input: { command: `TOKEN=${TOKEN} curl x`, nested: { auth: TOKEN } },
           },
           seq,
         );
@@ -138,13 +126,10 @@ describe("agent-observation", () => {
         expect(JSON.stringify(p.toolInput)).toContain("sk_agent_***");
       });
 
-      it("tool_result 帧脱敏", () => {
+      it("tool.end 帧脱敏", () => {
         const frames = streamEventToFrames(
           "alice",
-          {
-            type: "user",
-            message: { content: [{ type: "tool_result", tool_use_id: "tu-1", content: `stdout: ${TOKEN}` }] },
-          },
+          { type: "tool.end", toolUseId: "tu-1", output: `stdout: ${TOKEN}` },
           seq,
         );
         expect(frames[0].payload.text).not.toContain(TOKEN);
@@ -159,7 +144,7 @@ describe("agent-observation", () => {
       const seq = createSeqAllocator();
       const received: ObservationFrame[] = [];
       bus.subscribe("alice", (f) => received.push(f));
-      const frames = streamEventToFrames("alice", { type: "result", subtype: "success" }, seq);
+      const frames = streamEventToFrames("alice", { type: "turn.end", status: "success", usage: nullUsage }, seq);
       for (const f of frames) bus.publish(f);
       expect(received).toHaveLength(1);
       expect(bus.replay("alice")).toHaveLength(1);

@@ -69,22 +69,23 @@ import {
   dropStalePersistentSession,
   ensurePersistentSession,
 } from "../src/agent-runtime-dispatch-headless.js";
+import type { AgentRuntimeSession } from "../src/agent-runtime-driver.js";
 import { createAgentStateMachine } from "../src/agent-runtime-state.js";
 import type { IAgentSessionStore } from "../src/agent-session-store.js";
-import type { PersistentClaude } from "../src/drivers/persistent-claude.js";
+import { createClaudeRuntimeDriver } from "../src/drivers/claude-runtime.js";
 import { createIdleReclaimer } from "../src/idle-reclaimer.js";
 
 const fakeSession = (label: string) =>
   ({
     label,
     stop: vi.fn(),
-  }) as unknown as PersistentClaude & { label: string; stop: ReturnType<typeof vi.fn> };
+  }) as unknown as AgentRuntimeSession & { label: string; stop: ReturnType<typeof vi.fn> };
 
 describe("ensurePersistentSession (P1.12)", () => {
   it("已有会话直接返回，不调 create", async () => {
     const existing = fakeSession("a");
-    const sessions = new Map<string, PersistentClaude>([["alice", existing]]);
-    const locks = new Map<string, Promise<PersistentClaude>>();
+    const sessions = new Map<string, AgentRuntimeSession>([["alice", existing]]);
+    const locks = new Map<string, Promise<AgentRuntimeSession>>();
     const create = vi.fn(() => fakeSession("b"));
 
     const got = await ensurePersistentSession("alice", sessions, locks, create);
@@ -94,8 +95,8 @@ describe("ensurePersistentSession (P1.12)", () => {
   });
 
   it("同 tick 两次 ensure 只 create 一次，共用同一实例", async () => {
-    const sessions = new Map<string, PersistentClaude>();
-    const locks = new Map<string, Promise<PersistentClaude>>();
+    const sessions = new Map<string, AgentRuntimeSession>();
+    const locks = new Map<string, Promise<AgentRuntimeSession>>();
     const create = vi.fn(() => fakeSession("only"));
 
     const p1 = ensurePersistentSession("alice", sessions, locks, create);
@@ -109,8 +110,8 @@ describe("ensurePersistentSession (P1.12)", () => {
   });
 
   it("create 抛错不占 map，锁释放后可重试", async () => {
-    const sessions = new Map<string, PersistentClaude>();
-    const locks = new Map<string, Promise<PersistentClaude>>();
+    const sessions = new Map<string, AgentRuntimeSession>();
+    const locks = new Map<string, Promise<AgentRuntimeSession>>();
     const boom = vi.fn(() => {
       throw new Error("spawn failed");
     });
@@ -130,7 +131,7 @@ describe("ensurePersistentSession (P1.12)", () => {
 describe("dropStalePersistentSession (P1.12)", () => {
   it("只踢本回合持有的实例，并 stop + forget", () => {
     const mine = fakeSession("mine");
-    const sessions = new Map<string, PersistentClaude>([["alice", mine]]);
+    const sessions = new Map<string, AgentRuntimeSession>([["alice", mine]]);
     const forget = vi.fn();
 
     dropStalePersistentSession("alice", sessions, mine, forget);
@@ -142,7 +143,7 @@ describe("dropStalePersistentSession (P1.12)", () => {
   it("map 里已是别人的实例则不 stop、不 delete", () => {
     const mine = fakeSession("mine");
     const winner = fakeSession("winner");
-    const sessions = new Map<string, PersistentClaude>([["alice", winner]]);
+    const sessions = new Map<string, AgentRuntimeSession>([["alice", winner]]);
     const forget = vi.fn();
 
     dropStalePersistentSession("alice", sessions, mine, forget);
@@ -153,7 +154,7 @@ describe("dropStalePersistentSession (P1.12)", () => {
   });
 
   it("session 为空是 no-op", () => {
-    const sessions = new Map<string, PersistentClaude>();
+    const sessions = new Map<string, AgentRuntimeSession>();
     dropStalePersistentSession("alice", sessions, undefined);
     expect(sessions.size).toBe(0);
   });
@@ -177,7 +178,7 @@ describe("dispatchHeadlessTurn 会话锁 / stale 清理 (P1.12)", () => {
   ): DispatchHeadlessTurnOpts => {
     const stateMachine = createAgentStateMachine();
     stateMachine.transitionState("alice", "idle");
-    const persistentSessions = new Map<string, PersistentClaude>();
+    const persistentSessions = new Map<string, AgentRuntimeSession>();
     return {
       agentName: "alice",
       agentId: "id-alice",
@@ -190,6 +191,9 @@ describe("dispatchHeadlessTurn 会话锁 / stale 清理 (P1.12)", () => {
       idleReclaimer: createIdleReclaimer({ timeoutMs: Number.MAX_SAFE_INTEGER, onReclaim: () => {} }),
       mintAgentCredential: async () => "sk_agent_test",
       agentInfo: new Map(),
+      // Phase 0：driver 边界——FakePersistentClaude 经 claude-runtime 适配器
+      // 被 new 出来（vi.mock 照常拦截），保持实例身份断言不变。
+      runtimeDriver: createClaudeRuntimeDriver(),
       persistentSessions,
       sessionCreates: new Map(),
       agentSessions: new Map(),

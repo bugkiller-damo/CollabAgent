@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from "vitest";
-import { createSessionCostDelta } from "../src/agent-cost-tracker.js";
 import { createObservationBus, createSeqAllocator, type ObservationFrame } from "../src/agent-observation.js";
 import type { ProgressPoster, ProgressTurn } from "../src/agent-progress.js";
 import {
@@ -10,11 +9,14 @@ import {
   type StreamTurnHandlerOpts,
   type TurnGuard,
 } from "../src/agent-runtime-dispatch-stream.js";
+import type { AgentRuntimeEvent } from "../src/agent-runtime-events.js";
 import { createAgentStateMachine } from "../src/agent-runtime-state.js";
 import type { IIdleReclaimer } from "../src/idle-reclaimer.js";
 
 /**
- * A8：createStreamTurnHandler 的最小直连测试（无 PersistentClaude / 无 server）。
+ * A8：createStreamTurnHandler 的最小直连测试（无 driver / 无 server——
+ * Phase 0 起 handler 只消费规范化 AgentRuntimeEvent，provider 原始事件
+ * 经 drivers/claude-runtime.ts 的 normalizer 转换，其单测在 claude-runtime.test.ts）。
  *
  * 钉住的契约：工具审计（onToolCall pending/completed）、回复守卫簿记与进度
  * 更新是安全边界，独立于可选的 observationBus——bus 缺席只停发观察帧，
@@ -36,7 +38,6 @@ const stubIdleReclaimer = (): IIdleReclaimer => ({
 /** 缺省不提供 observationBus——关键审计用例刻意不带 UI 旁路 */
 const makeHandler = (overrides: Partial<StreamTurnHandlerOpts> = {}) => {
   const deps = {
-    sessionCostDelta: createSessionCostDelta(),
     obsSeq: createSeqAllocator(),
     turnGuards: new Map<string, TurnGuard>(),
     progressTurns: new Map<string, ProgressTurn>(),
@@ -49,14 +50,18 @@ const makeHandler = (overrides: Partial<StreamTurnHandlerOpts> = {}) => {
   return { handler: createStreamTurnHandler(deps), deps };
 };
 
-const bashToolUse = (id: string, command: string) => ({
-  type: "assistant" as const,
-  message: { id: "msg-1", content: [{ type: "tool_use", id, name: "Bash", input: { command } }] },
+const bashToolUse = (id: string, command: string): AgentRuntimeEvent => ({
+  type: "tool.start",
+  turnId: "msg-1",
+  toolName: "Bash",
+  toolUseId: id,
+  input: { command },
 });
 
-const toolResult = (id: string, content: string) => ({
-  type: "user" as const,
-  message: { content: [{ type: "tool_result", tool_use_id: id, content }] },
+const toolResult = (id: string, content: string): AgentRuntimeEvent => ({
+  type: "tool.end",
+  toolUseId: id,
+  output: content,
 });
 
 describe("createStreamTurnHandler（A8：审计独立于 observationBus）", () => {
@@ -76,7 +81,7 @@ describe("createStreamTurnHandler（A8：审计独立于 observationBus）", () 
     expect(calls[0]!.info.text).toContain("echo");
     expect(calls[0]!.info.text).toContain("sk_agent_***");
     expect(calls[0]!.info.text).not.toContain(TOKEN);
-    // completed：tool_result 回灌；stream tool_result 只带 id，toolName 可为空
+    // completed：tool.end 回灌；tool.end 只带 id，toolName 可为空
     expect(calls[1]!.info.toolUseId).toBe("tu-1");
     expect(calls[1]!.info.status).toBe("completed");
     expect(calls[1]!.info.text).toContain("done");
@@ -115,11 +120,13 @@ describe("createStreamTurnHandler（A8：审计独立于 observationBus）", () 
 });
 
 describe("armTurnGuard（A4：kind 传入守卫判 isNudge）", () => {
-  const resultEvent = { type: "result" as const, subtype: "success", session_id: "sess-1", total_cost_usd: 0 };
-  const textEvent = (text: string) => ({
-    type: "assistant" as const,
-    message: { id: "msg-t", content: [{ type: "text", text }] },
-  });
+  const resultEvent: AgentRuntimeEvent = {
+    type: "turn.end",
+    status: "success",
+    subtype: "success",
+    usage: { costUsd: 0, durationMs: null, numTurns: null },
+  };
+  const textEvent = (text: string): AgentRuntimeEvent => ({ type: "text", turnId: "msg-t", text });
   const flush = () => new Promise((r) => setTimeout(r, 20));
 
   const arm = (deps: ReturnType<typeof makeHandler>["deps"], opts: { kind?: string; userMsg?: string } = {}) =>
@@ -183,32 +190,20 @@ describe("armTurnGuard（A4：kind 传入守卫判 isNudge）", () => {
  * A6：守卫三分支（hadSend / 代发 / 追问）+ abort + 成本差值——A1–A5 的安全网。
  * 代发分支已由上方 kind=message/reminder 两例覆盖，这里补齐其余面。
  */
-describe("回复守卫三分支 / abort / 成本差值（A6）", () => {
-  const resultEvent = (costUsd = 0) => ({
-    type: "result" as const,
+describe("回复守卫三分支 / abort / 成本落库（A6）", () => {
+  const resultEvent = (costUsd = 0): AgentRuntimeEvent => ({
+    type: "turn.end",
+    status: "success",
     subtype: "success",
-    session_id: "sess-1",
-    total_cost_usd: costUsd,
-    duration_ms: 100,
-    num_turns: 1,
+    usage: { costUsd, durationMs: 100, numTurns: 1 },
   });
-  const textEvent = (text: string) => ({
-    type: "assistant" as const,
-    message: { id: "msg-t", content: [{ type: "text", text }] },
-  });
-  const sendToolEvent = {
-    type: "assistant" as const,
-    message: {
-      id: "msg-s",
-      content: [
-        {
-          type: "tool_use",
-          id: "tu-s",
-          name: "mcp__slock__send_message",
-          input: { target: "#general", content: "hi" },
-        },
-      ],
-    },
+  const textEvent = (text: string): AgentRuntimeEvent => ({ type: "text", turnId: "msg-t", text });
+  const sendToolEvent: AgentRuntimeEvent = {
+    type: "tool.start",
+    turnId: "msg-s",
+    toolName: "mcp__slock__send_message",
+    toolUseId: "tu-s",
+    input: { target: "#general", content: "hi" },
   };
   const flush = () => new Promise((r) => setTimeout(r, 20));
 
@@ -315,7 +310,7 @@ describe("回复守卫三分支 / abort / 成本差值（A6）", () => {
     expect(poster.remove).toHaveBeenCalledWith("pm-1");
     expect(onProgress).toHaveBeenCalledWith("alice", "general", "", "end");
 
-    // 迟到的 result：守卫已拆，不代发不追问；状态机照常回 idle
+    // 迟到的 turn.end：守卫已拆，不代发不追问；状态机照常回 idle
     handler("alice", resultEvent(0.01));
     await flush();
     expect(onReplyMissing).not.toHaveBeenCalled();
@@ -323,7 +318,7 @@ describe("回复守卫三分支 / abort / 成本差值（A6）", () => {
     expect(deps.stateMachine.getState("alice")).toBe("idle");
   });
 
-  it("成本差值：result.total_cost_usd 会话累计 → 落库写增量；channel/threadId 取守卫", async () => {
+  it("成本落库：turn.end.usage 已是本回合增量，原样写库；channel/threadId 取守卫", async () => {
     const recordTurn = vi.fn();
     const { handler, deps } = makeHandler({ costTracker: { recordTurn } as never });
 
@@ -331,10 +326,10 @@ describe("回复守卫三分支 / abort / 成本差值（A6）", () => {
     arm(deps, { kind: "message" });
     handler("alice", resultEvent(0.05));
 
-    // 守卫在 result 时已被清掉——再 arm 一次让第二条 result 也带 channel
+    // 守卫在 turn.end 时已被清掉——再 arm 一次让第二条也带 channel
     working(deps);
     arm(deps, { kind: "message" });
-    handler("alice", resultEvent(0.12));
+    handler("alice", resultEvent(0.07));
     await flush();
 
     expect(recordTurn).toHaveBeenCalledTimes(2);
@@ -346,7 +341,31 @@ describe("回复守卫三分支 / abort / 成本差值（A6）", () => {
       durationMs: 100,
       numTurns: 1,
     });
-    // 第二条：0.12 累计 − 0.05 基线 = 0.07 增量（P0.5 差值记账）
+    // usage 原样透传（累计→差值是 driver 边界的职责，见 claude-runtime.test.ts）
     expect(recordTurn.mock.calls[1]![0].costUsd).toBeCloseTo(0.07, 10);
+  });
+
+  it("usage 全 null 的 turn.end 仍记一笔（回合计数不丢）", async () => {
+    const recordTurn = vi.fn();
+    const { handler, deps } = makeHandler({ costTracker: { recordTurn } as never });
+
+    working(deps);
+    arm(deps, { kind: "message" });
+    handler("alice", {
+      type: "turn.end",
+      status: "error",
+      subtype: "error_during_execution",
+      usage: { costUsd: null, durationMs: null, numTurns: null },
+    });
+    await flush();
+
+    expect(recordTurn).toHaveBeenCalledTimes(1);
+    expect(recordTurn.mock.calls[0]![0]).toMatchObject({
+      agentName: "alice",
+      channel: "general",
+      costUsd: null,
+      durationMs: null,
+      numTurns: null,
+    });
   });
 });

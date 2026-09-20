@@ -8,7 +8,6 @@ import {
   createJsonCostTracker,
   createSessionCostDelta,
   evaluateCostGate,
-  extractResultMetrics,
   type ICostTracker,
   normalizeCostChannel,
   parseCostBudgetUsd,
@@ -42,33 +41,8 @@ describe("agent-cost-tracker", () => {
     }
   });
 
-  describe("extractResultMetrics", () => {
-    it("pulls numeric cost/duration/turns off a stream-json result event", () => {
-      expect(
-        extractResultMetrics({
-          type: "result",
-          subtype: "success",
-          total_cost_usd: 0.0123,
-          duration_ms: 2300,
-          num_turns: 2,
-        }),
-      ).toEqual({ costUsd: 0.0123, durationMs: 2300, numTurns: 2 });
-    });
-
-    it("accepts numeric strings and leaves missing fields null", () => {
-      expect(extractResultMetrics({ type: "result", total_cost_usd: "0.5" })).toEqual({
-        costUsd: 0.5,
-        durationMs: null,
-        numTurns: null,
-      });
-    });
-
-    it("returns null for non-result events", () => {
-      expect(extractResultMetrics({ type: "assistant" })).toBeNull();
-      expect(extractResultMetrics(null)).toBeNull();
-    });
-  });
-
+  // extractResultMetrics（Claude result 字段解析）已随 Phase 0 迁入
+  // drivers/claude-runtime.ts 的 normalizer——对应用例见 claude-runtime.test.ts。
   describe("createSessionCostDelta (P0.5)", () => {
     it("首条 result 没有基线，差值等于本次累计", () => {
       const d = createSessionCostDelta();

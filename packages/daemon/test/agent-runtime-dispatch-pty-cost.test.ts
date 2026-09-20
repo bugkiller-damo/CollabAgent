@@ -18,6 +18,7 @@ import { createDispatch, type DispatchDeps, type IDispatch } from "../src/agent-
 import { dispatchPtyTurn } from "../src/agent-runtime-dispatch-pty.js";
 import { createAgentStateMachine, type IAgentStateMachine } from "../src/agent-runtime-state.js";
 import { createTurnTracker } from "../src/agent-runtime-turn-tracker.js";
+import { createClaudeRuntimeDriver } from "../src/drivers/claude-runtime.js";
 import { createIdleReclaimer } from "../src/idle-reclaimer.js";
 
 const AGENT = "zz_pty_cost_agent";
@@ -76,6 +77,8 @@ const makeHarness = (overrides?: { tracker?: FakeTracker | undefined }): Harness
     resolveAgentId: (n) => (n === AGENT ? AGENT_ID : null),
     agentInfo: new Map(),
     runIdByAgent: new Map(),
+    // PTY 路径不走 driver，但 DispatchDeps 必填（Phase 0 契约）
+    runtimeDriver: createClaudeRuntimeDriver(),
     persistentSessions: new Map(),
     agentSessions: new Map(),
     observationBus: createObservationBus(),

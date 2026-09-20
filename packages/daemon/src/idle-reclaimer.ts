@@ -1,5 +1,5 @@
+import type { AgentRuntimeSession } from "./agent-runtime-driver.js";
 import type { IAgentStateMachine } from "./agent-runtime-state.js";
-import type { PersistentClaude } from "./drivers/persistent-claude.js";
 import type { IAgentManager } from "./types/index.js";
 
 /**
@@ -85,7 +85,7 @@ export const createIdleReclaimer = (opts: IdleReclaimerOptions): IIdleReclaimer 
 
 /**
  * 空闲回收动作（P0.2）。PTY 走 `stopRun` → 退出清理链；headless 必须额外
- * `PersistentClaude.stop()` 并踢掉 `persistentSessions`，否则子进程永不退出。
+ * `session.stop()` 并踢掉 `persistentSessions`，否则子进程永不退出。
  *
  * working/starting 时返回 false——dispatch 漏 untrack 时也不能杀进行中的回合，
  * reclaimer 会保留跟踪、下次扫描再试。
@@ -94,7 +94,7 @@ export const reclaimIdleAgent = (opts: {
   name: string;
   runIdByAgent: Map<string, string>;
   agentManager: Pick<IAgentManager, "stopRun">;
-  persistentSessions: Map<string, PersistentClaude>;
+  persistentSessions: Map<string, AgentRuntimeSession>;
   stateMachine: Pick<IAgentStateMachine, "getState" | "transitionState">;
   /** P0.5：常驻进程被回收后清会话累计基线 */
   onSessionEnded?: (name: string) => void;

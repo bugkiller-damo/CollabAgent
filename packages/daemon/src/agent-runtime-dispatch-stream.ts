@@ -1,15 +1,10 @@
-import {
-  type CostGateDecision,
-  type createSessionCostDelta,
-  extractResultMetrics,
-  type ICostTracker,
-} from "./agent-cost-tracker.js";
+import type { CostGateDecision, ICostTracker } from "./agent-cost-tracker.js";
 import { type createSeqAllocator, type ObservationBus, streamEventToFrames } from "./agent-observation.js";
 import { createProgressTurn, type ProgressTurn } from "./agent-progress.js";
+import type { AgentRuntimeEvent } from "./agent-runtime-events.js";
 import type { IAgentStateMachine } from "./agent-runtime-state.js";
 import type { IAgentSessionStore } from "./agent-session-store.js";
 import type { IThreadSessionStore } from "./agent-thread-sessions.js";
-import type { ClaudeStreamEvent } from "./claude-stream.js";
 import { loadDaemonEnv } from "./config.js";
 import { errMessage } from "./errors.js";
 import type { IIdleReclaimer } from "./idle-reclaimer.js";
@@ -31,8 +26,6 @@ export interface TurnGuard {
   progress?: ProgressTurn;
 }
 
-export type SessionCostDelta = ReturnType<typeof createSessionCostDelta>;
-
 export interface StreamTurnHandlerOpts {
   observationBus?: ObservationBus;
   onToolCall?: (
@@ -45,7 +38,6 @@ export interface StreamTurnHandlerOpts {
   threadSessions?: IThreadSessionStore;
   /** A2：agent→sessionId 持久化（daemon-agent-sessions.json；测试可不传） */
   agentSessionStore?: IAgentSessionStore;
-  sessionCostDelta: SessionCostDelta;
   obsSeq: ReturnType<typeof createSeqAllocator>;
   turnGuards: Map<string, TurnGuard>;
   progressTurns: Map<string, ProgressTurn>;
@@ -153,8 +145,9 @@ export const armTurnGuard = (opts: {
 };
 
 /**
- * B1/C1：persistent 路径的 stream-json 事件处理——发布观察帧 + 工具审计 + 精确回合边界。
- * 含回复守卫判定（代发 / 追问一次）与 D3 成本差值落库。
+ * B1/C1：persistent 路径的规范化事件处理——发布观察帧 + 工具审计 + 精确回合边界。
+ * 含回复守卫判定（代发 / 追问一次）与 D3 成本落库（turn.end.usage 已是 driver
+ * 边界换算好的本回合增量）。
  *
  * A8：工具审计（onToolCall pending/completed）、回复守卫簿记与进度条更新是安全
  * 边界，独立于可选的 observationBus（UI 围观通道）——bus 缺席只意味着不发布
@@ -162,7 +155,7 @@ export const armTurnGuard = (opts: {
  */
 export const createStreamTurnHandler = (
   opts: StreamTurnHandlerOpts,
-): ((agentName: string, ev: ClaudeStreamEvent) => void) => {
+): ((agentName: string, ev: AgentRuntimeEvent) => void) => {
   const {
     observationBus,
     onToolCall,
@@ -171,7 +164,6 @@ export const createStreamTurnHandler = (
     costTracker,
     threadSessions,
     agentSessionStore,
-    sessionCostDelta,
     obsSeq,
     turnGuards,
     progressTurns,
@@ -182,7 +174,7 @@ export const createStreamTurnHandler = (
   } = opts;
   const { transitionState } = stateMachine;
 
-  return (agentName: string, ev: ClaudeStreamEvent): void => {
+  return (agentName: string, ev: AgentRuntimeEvent): void => {
     // A8：观察帧发布受 observationBus 节制（可选 UI 旁路），但守卫簿记 /
     // 工具审计 / 进度更新无条件执行——审计边界不随围观 UI 缺席而消失。
     for (const frame of streamEventToFrames(agentName, ev, obsSeq)) {
@@ -217,54 +209,51 @@ export const createStreamTurnHandler = (
         /* 进度旁路不阻塞 */
       }
     }
-    // D3 / P0.5：result.total_cost_usd 是会话累计，落库前换成相对上次的增量。
-    // duration_ms / num_turns 是本回合值，原样累加。无 tracker 时跳过。
+    // D3：turn.end.usage 已是 driver 边界换算好的本回合增量（Claude 的
+    // 会话累计→差值在 claude-runtime 完成），此处原样落库。无 tracker 时跳过。
     // 必须在 turnGuards.delete 之前取 channel。
-    if (ev.type === "result") {
+    if (ev.type === "turn.end" && costTracker) {
       try {
-        const metrics = extractResultMetrics(ev);
-        if (metrics && costTracker) {
-          const guard = turnGuards.get(agentName);
-          const channel = guard?.channel ?? "unknown";
-          costTracker.recordTurn({
-            agentName,
-            agentId: resolveAgentId(agentName),
-            channel,
-            threadId: guard?.threadId,
-            costUsd: sessionCostDelta.next(agentName, metrics.costUsd),
-            durationMs: metrics.durationMs,
-            numTurns: metrics.numTurns,
-          });
-        }
+        const guard = turnGuards.get(agentName);
+        const channel = guard?.channel ?? "unknown";
+        costTracker.recordTurn({
+          agentName,
+          agentId: resolveAgentId(agentName),
+          channel,
+          threadId: guard?.threadId,
+          costUsd: ev.usage.costUsd,
+          durationMs: ev.usage.durationMs,
+          numTurns: ev.usage.numTurns,
+        });
       } catch (err) {
         console.warn(`[Daemon] @${agentName} cost record failed:`, errMessage(err));
       }
     }
-    // D2：system init 带 session_id 时记下本回合 thread 的亲和（无 thread 则跳过）。
-    if (ev.type === "system" && typeof ev.session_id === "string" && ev.session_id) {
-      // A2：agent→sessionId 持久化——PersistentClaude 下次 spawn（空闲回收 /
+    // D2：session 事件带 sessionRef 时记下本回合 thread 的亲和（无 thread 则跳过）。
+    if (ev.type === "session" && ev.sessionRef) {
+      // A2：agent→sessionId 持久化——常驻会话下次 spawn（空闲回收 /
       // daemon 重启后）以 --resume 温启动的数据源。one-shot 路径也经本 handler，
       // 顺手记上无害（其自身 resume 仍走 threadSessions/agentSessions）。
       try {
-        agentSessionStore?.remember(agentName, ev.session_id);
+        agentSessionStore?.remember(agentName, ev.sessionRef);
       } catch (err) {
         console.warn(`[Daemon] @${agentName} session-store remember failed:`, errMessage(err));
       }
       const tid = turnGuards.get(agentName)?.threadId;
       if (tid) {
         try {
-          threadSessions?.remember(agentName, tid, ev.session_id);
+          threadSessions?.remember(agentName, tid, ev.sessionRef);
         } catch (err) {
           console.warn(`[Daemon] @${agentName} thread-session remember failed:`, errMessage(err));
         }
       }
     }
-    // stream-json 的 result 事件即精确回合边界（替代 PTY 路径的 ❯ 启发式）：
+    // turn.end 事件即精确回合边界（替代 PTY 路径的 ❯ 启发式）：
     // 回合结束立刻回 idle，终端面板的状态列/空闲回收都靠这个状态。
-    if (ev.type === "result" && stateMachine.getState(agentName) === "working") {
+    if (ev.type === "turn.end" && stateMachine.getState(agentName) === "working") {
       transitionState(agentName, "idle");
       idleReclaimer.touch(agentName);
-      console.log(`[Daemon] @${agentName} round-end (stream-json result)`);
+      console.log(`[Daemon] @${agentName} round-end (runtime turn.end)`);
 
       // 回复守卫判定：整回合没有发送动作且不是追问本身 → 优先代发，其次追问
       const guard = turnGuards.get(agentName);
