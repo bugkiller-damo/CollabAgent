@@ -8,8 +8,15 @@ import type { ICredentialsClient } from "./agent-runtime-credentials.js";
 import { dispatchHeadlessTurn } from "./agent-runtime-dispatch-headless.js";
 import { dispatchPtyTurn } from "./agent-runtime-dispatch-pty.js";
 import { createStreamTurnHandler, type TurnGuard } from "./agent-runtime-dispatch-stream.js";
-import type { AgentRuntimeDriver, AgentRuntimeSession } from "./agent-runtime-driver.js";
+import type { AgentRuntimeRegistry, AgentRuntimeSession } from "./agent-runtime-driver.js";
 import type { IExitChain } from "./agent-runtime-exit.js";
+import { createRuntimeManifestLoader } from "./agent-runtime-manifest.js";
+import {
+  type AgentRegistrationInfo,
+  assertResolvedAgentRuntimeProfile,
+  type ResolvedAgentRuntimeProfile,
+  resolveAgentRuntimeProfile,
+} from "./agent-runtime-profile.js";
 import type { SpawnPtyForAgent } from "./agent-runtime-spawn.js";
 import type { IAgentStateMachine } from "./agent-runtime-state.js";
 import type { ITurnTracker } from "./agent-runtime-turn-tracker.js";
@@ -137,15 +144,28 @@ export interface DispatchDeps {
   getStopGeneration?(agentName: string): number;
   /** P0.3：spawn 完成后才发现已被 stop 时，拆掉刚拉起的进程 */
   abortAgentProcess?(agentName: string): void;
-  /** agentName -> displayName/description/model（PTY 环境准备 + headless --model 用） */
-  agentInfo: Map<string, { displayName?: string; description?: string; model?: string }>;
+  /** agentName -> displayName/description/model/runtime/entrypoint（PTY 环境准备 + profile 解析源） */
+  agentInfo: Map<string, AgentRegistrationInfo>;
   /** agentName -> runId 缓存（常驻 PTY） */
   runIdByAgent: Map<string, string>;
   /**
-   * Phase 0：runtime driver（组合根 agent-runtime 经 registry resolve 后注入）。
-   * headless 会话创建与累计成本基线都在 driver 内——本模块不再感知 provider。
+   * Phase 1：runtimeId → driver 注册表。doDispatch 先解析 agent 的 runtime
+   * profile（runtime/model/entrypoint + identity + 配置错误），再按
+   * profile.runtime 从 registry 取 driver——未注册 runtime 抛
+   * runtime-unsupported（permanent）。
    */
-  runtimeDriver: AgentRuntimeDriver;
+  runtimeRegistry: AgentRuntimeRegistry;
+  /**
+   * Phase 1：agent → resolved runtime profile。缺省实现按 agentInfo +
+   * 本机 manifest 解析；生产由 agent-runtime 注入（与 registerAgent 的
+   * 身份失效判定共用同一 manifest loader）。
+   */
+  resolveRuntimeProfile?: (agentName: string) => ResolvedAgentRuntimeProfile;
+  /**
+   * Phase 1：agent → 已开会话/续接引用的 profile identity。dispatch 用它
+   * 在复用前判失效；缺省由工厂自建（测试注入时可不传）。
+   */
+  sessionIdentities?: Map<string, string>;
   /** headless 常驻会话（Phase 0 起为 provider 中立的 AgentRuntimeSession） */
   persistentSessions: Map<string, AgentRuntimeSession>;
   /**
@@ -227,6 +247,12 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
   } = deps;
   const sessionCreates = deps.sessionCreates ?? new Map<string, Promise<AgentRuntimeSession>>();
   const credentialIssuedAt = deps.credentialIssuedAt ?? new Map<string, number>();
+  const sessionIdentities = deps.sessionIdentities ?? new Map<string, string>();
+  // 缺省解析器：与 agent-runtime 注入的同一语义（agentInfo + mtime 缓存 manifest）。
+  const defaultManifestLoader = createRuntimeManifestLoader();
+  const resolveRuntimeProfile =
+    deps.resolveRuntimeProfile ??
+    ((agentName: string) => resolveAgentRuntimeProfile(agentInfo.get(agentName) ?? {}, defaultManifestLoader()));
   const { transitionState, clearStartupTimer } = stateMachine;
   // P0.5：provider 的会话累计成本 → 本回合增量，换算在 driver 边界内
   //（claude-runtime 的 normalizer 持有基线）；forgetSessionCost 只做转发。
@@ -341,7 +367,19 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
       }
     };
 
+    // Phase 1：派发前解析 runtime profile——配置/清单错误是 permanent
+    // DispatchError，首次失败即死信（不重试）。legacy 无 runtime 字段 → claude。
+    const runtimeProfile = resolveRuntimeProfile(agentName);
+    assertResolvedAgentRuntimeProfile(runtimeProfile);
+
     if (usePty) {
+      // ❄️ PTY 冻结路径只接 claude——新 runtime 一律走 headless driver。
+      if (runtimeProfile.runtime !== "claude") {
+        throw new DispatchError(
+          "pty-runtime-unsupported",
+          `[Daemon] @${agentName} runtime ${runtimeProfile.runtime} is not supported on the PTY path`,
+        );
+      }
       // ---- PTY 模式 ----
       // ❄️ LEGACY / FROZEN（2026-08-20 Step 3）：本分支整体冻结保留，仅
       // SLOCK_USE_PTY=1 时进入。实现已原样迁到 agent-runtime-dispatch-pty.ts。
@@ -395,13 +433,15 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
       idleReclaimer,
       mintAgentCredential,
       agentInfo,
-      runtimeDriver: deps.runtimeDriver,
+      runtimeDriver: deps.runtimeRegistry.resolve(runtimeProfile.runtime),
+      runtimeProfile,
+      sessionIdentities,
       persistentSessions,
       sessionCreates,
       agentSessions,
       agentSessionStore: deps.agentSessionStore,
       credentialIssuedAt,
-      forgetSessionCost: (name) => deps.runtimeDriver.forgetAgent(name),
+      forgetSessionCost: (name) => deps.runtimeRegistry.forgetAgent(name),
       threadSessions: deps.threadSessions,
       turnGuards,
       progressTurns,
@@ -671,7 +711,7 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
       dispatchQueue.dispose();
     },
     forgetSessionCost: (agentName) => {
-      deps.runtimeDriver.forgetAgent(agentName);
+      deps.runtimeRegistry.forgetAgent(agentName);
     },
   };
 };

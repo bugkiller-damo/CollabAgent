@@ -81,9 +81,12 @@ vi.mock("../src/agent-startup.js", async (importActual) => {
 import { buildChannelContextEnvelope, buildThreadContextEnvelope } from "../src/agent-context-builder.js";
 import { createObservationBus } from "../src/agent-observation.js";
 import { createDispatch, type DispatchDeps, type IDispatch } from "../src/agent-runtime-dispatch.js";
+import { AgentRuntimeRegistry } from "../src/agent-runtime-driver.js";
+import type { ResolvedAgentRuntimeProfile } from "../src/agent-runtime-profile.js";
 import { createAgentStateMachine, type IAgentStateMachine } from "../src/agent-runtime-state.js";
 import { createTurnTracker } from "../src/agent-runtime-turn-tracker.js";
 import { createClaudeRuntimeDriver } from "../src/drivers/claude-runtime.js";
+import { DispatchError, type DispatchErrorCode } from "../src/errors.js";
 import { createIdleReclaimer } from "../src/idle-reclaimer.js";
 import { slockDir } from "../src/private-dir.js";
 
@@ -153,6 +156,10 @@ const makeHarness = (overrides?: {
   resolveAgentId?: (name: string) => string | null;
   createProgressPoster?: DispatchDeps["createProgressPoster"];
   agentSessionStore?: DispatchDeps["agentSessionStore"];
+  usePty?: boolean;
+  resolveRuntimeProfile?: DispatchDeps["resolveRuntimeProfile"];
+  sessionIdentities?: DispatchDeps["sessionIdentities"];
+  runtimeRegistry?: DispatchDeps["runtimeRegistry"];
 }): Harness => {
   const stateMachine = createAgentStateMachine();
   stateMachine.transitionState(AGENT, "idle");
@@ -181,13 +188,15 @@ const makeHarness = (overrides?: {
     credentialsClient: { mintAgentCredential, revokeAgentCredential: vi.fn(async () => {}) },
     postStartWriter: (async () => {}) as any,
     spawnPtyForAgent: vi.fn() as any,
-    usePty: false,
+    usePty: overrides?.usePty ?? false,
     resolveAgentId: overrides?.resolveAgentId ?? ((n) => (n === AGENT ? AGENT_ID : n === AGENT2 ? AGENT2_ID : null)),
     agentInfo: new Map(),
     runIdByAgent: new Map(),
-    // Phase 0：headless 会话经 driver 边界创建；Fake 仍被 vi.mock 拦截，
-    // inst.emit 的原始 stream-json 事件照常过 normalizer（适配器边界被测到）。
-    runtimeDriver: createClaudeRuntimeDriver(),
+    // Phase 0/1：headless 会话经 registry→driver 边界创建；Fake 仍被 vi.mock
+    // 拦截，inst.emit 的原始 stream-json 事件照常过 normalizer（适配器边界被测到）。
+    runtimeRegistry: overrides?.runtimeRegistry ?? new AgentRuntimeRegistry([createClaudeRuntimeDriver()]),
+    resolveRuntimeProfile: overrides?.resolveRuntimeProfile,
+    sessionIdentities: overrides?.sessionIdentities,
     persistentSessions: new Map(),
     agentSessions: new Map(),
     agentSessionStore: overrides?.agentSessionStore,
@@ -761,6 +770,110 @@ describe("agent-runtime-dispatch (headless)", () => {
       expect(inst.sent[0]).toContain("dispatch_task");
       // 分诊是 nudge 性质：topLevel=false，不拉顶层小预算历史
       expect(buildChannelContextEnvelope).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("Phase 1：runtime profile 解析与身份失效", () => {
+    const profileOf = (over: Partial<ResolvedAgentRuntimeProfile> = {}): ResolvedAgentRuntimeProfile => ({
+      runtime: "claude",
+      identity: "id-claude",
+      ...over,
+    });
+    const profileError = (runtime: string, code: DispatchErrorCode): ResolvedAgentRuntimeProfile =>
+      profileOf({ runtime, identity: `err-${code}`, error: { code, message: code } });
+
+    it("legacy 无 runtime 字段 → 走 claude，行为不变", async () => {
+      harness = makeHarness();
+      await harness.dispatch.dispatchToAgent(AGENT, "general", "hello");
+      expect(FakePersistentClaude.instances).toHaveLength(1);
+      expect(harness.onDeliveryDeadLetter).not.toHaveBeenCalled();
+    });
+
+    it("langgraph 无 entrypoint → entrypoint-required 首次失败即死信（不 spawn）", async () => {
+      harness = makeHarness({
+        resolveRuntimeProfile: () => profileError("langgraph", "entrypoint-required"),
+      });
+      await harness.dispatch.dispatchToAgent(AGENT, "general", "hi");
+      await flush();
+      expect(harness.onDeliveryDeadLetter).toHaveBeenCalledTimes(1);
+      const err = harness.onDeliveryDeadLetter.mock.calls[0][2] as DispatchError;
+      expect(err).toBeInstanceOf(DispatchError);
+      expect(err.code).toBe("entrypoint-required");
+      expect(err.retriable).toBe(false);
+      expect(FakePersistentClaude.instances).toHaveLength(0);
+    });
+
+    it("默认解析器读 agentInfo：langgraph 缺 entrypoint → entrypoint-required", async () => {
+      harness = makeHarness();
+      harness.deps.agentInfo.set(AGENT, { runtime: "langgraph" });
+      await harness.dispatch.dispatchToAgent(AGENT, "general", "hi");
+      await flush();
+      const err = harness.onDeliveryDeadLetter.mock.calls[0][2] as DispatchError;
+      expect(err.code).toBe("entrypoint-required");
+      expect(FakePersistentClaude.instances).toHaveLength(0);
+    });
+
+    it("claude + entrypoint → entrypoint-not-allowed 死信", async () => {
+      harness = makeHarness();
+      harness.deps.agentInfo.set(AGENT, { runtime: "claude", entrypoint: "ep-1" });
+      await harness.dispatch.dispatchToAgent(AGENT, "general", "hi");
+      await flush();
+      expect((harness.onDeliveryDeadLetter.mock.calls[0][2] as DispatchError).code).toBe("entrypoint-not-allowed");
+    });
+
+    it("profile 上游冲突 → runtime-profile-conflict 直通死信", async () => {
+      harness = makeHarness({
+        resolveRuntimeProfile: () => profileError("claude", "runtime-profile-conflict"),
+      });
+      await harness.dispatch.dispatchToAgent(AGENT, "general", "hi");
+      await flush();
+      expect((harness.onDeliveryDeadLetter.mock.calls[0][2] as DispatchError).code).toBe("runtime-profile-conflict");
+    });
+
+    it("未注册 runtime（codex）→ runtime-unsupported 死信", async () => {
+      harness = makeHarness({ resolveRuntimeProfile: () => profileOf({ runtime: "codex", identity: "id-codex" }) });
+      await harness.dispatch.dispatchToAgent(AGENT, "general", "hi");
+      await flush();
+      const err = harness.onDeliveryDeadLetter.mock.calls[0][2] as DispatchError;
+      expect(err).toBeInstanceOf(DispatchError);
+      expect(err.code).toBe("runtime-unsupported");
+      expect(FakePersistentClaude.instances).toHaveLength(0);
+    });
+
+    it("usePty + 非 claude runtime → pty-runtime-unsupported（冻结层不接新 runtime）", async () => {
+      harness = makeHarness({
+        usePty: true,
+        resolveRuntimeProfile: () => profileOf({ runtime: "langgraph", identity: "id-lg", entrypoint: "ep-1" }),
+      });
+      await harness.dispatch.dispatchToAgent(AGENT, "general", "hi");
+      await flush();
+      const err = harness.onDeliveryDeadLetter.mock.calls[0][2] as DispatchError;
+      expect(err).toBeInstanceOf(DispatchError);
+      expect(err.code).toBe("pty-runtime-unsupported");
+      expect(err.retriable).toBe(false);
+    });
+
+    it("model 变更 → 旧常驻会话被丢弃并按新身份重开", async () => {
+      process.env.SLOCK_REPLY_GUARD = "0";
+      harness = makeHarness();
+      harness.deps.agentInfo.set(AGENT, { model: "sonnet" });
+      await harness.dispatch.dispatchToAgent(AGENT, "general", "first");
+      const inst1 = FakePersistentClaude.instances[0]!;
+      emitTurnWithSend(inst1);
+      await flush();
+
+      harness.deps.agentInfo.set(AGENT, { model: "sonnet" });
+      await harness.dispatch.dispatchToAgent(AGENT, "general", "same-model");
+      expect(FakePersistentClaude.instances).toHaveLength(1); // 同 identity → 复用
+
+      harness.deps.agentInfo.set(AGENT, { model: "haiku" });
+      emitTurnWithSend(inst1); // 让上一回合收尾
+      await harness.dispatch.dispatchToAgent(AGENT, "general", "new-model");
+      await flush();
+      expect(inst1.stopped).toBe(true); // identity 变了 → 旧会话被踢
+      expect(FakePersistentClaude.instances).toHaveLength(2);
+      expect(harness.deps.persistentSessions.get(AGENT)).toBe(FakePersistentClaude.instances[1]);
+      expect(FakePersistentClaude.instances[1]!.opts.model).toBe("haiku");
     });
   });
 });

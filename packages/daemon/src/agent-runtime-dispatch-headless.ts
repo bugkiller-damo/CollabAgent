@@ -4,6 +4,7 @@ import type { ICredentialsClient } from "./agent-runtime-credentials.js";
 import { abortTurnGuards, armTurnGuard, type TurnGuard } from "./agent-runtime-dispatch-stream.js";
 import type { AgentRuntimeDriver, AgentRuntimeSession } from "./agent-runtime-driver.js";
 import type { AgentRuntimeEvent } from "./agent-runtime-events.js";
+import type { AgentRegistrationInfo, ResolvedAgentRuntimeProfile } from "./agent-runtime-profile.js";
 import type { IAgentStateMachine } from "./agent-runtime-state.js";
 import type { IAgentSessionStore } from "./agent-session-store.js";
 import {
@@ -43,9 +44,13 @@ export interface DispatchHeadlessTurnOpts {
   stateMachine: IAgentStateMachine;
   idleReclaimer: IIdleReclaimer;
   mintAgentCredential: ICredentialsClient["mintAgentCredential"];
-  agentInfo: Map<string, { displayName?: string; description?: string; model?: string }>;
-  /** Phase 0：runtime driver（组合根 agent-runtime 注入；Phase 0 只有 claude） */
+  agentInfo: Map<string, AgentRegistrationInfo>;
+  /** Phase 0：runtime driver（doDispatch 按 resolved profile.runtime 从 registry 取出后注入） */
   runtimeDriver: AgentRuntimeDriver;
+  /** Phase 1：本回合的 resolved profile——model/identity 以它为准（agentInfo 只做工作区/提示词素材） */
+  runtimeProfile: ResolvedAgentRuntimeProfile;
+  /** Phase 1：agent → 会话身份；与 runtimeProfile.identity 不符的复用一律丢弃 */
+  sessionIdentities: Map<string, string>;
   persistentSessions: Map<string, AgentRuntimeSession>;
   /**
    * P1.12：per-agent 会话创建单飞。A4 前队列 in-flight 超时会让重投与仍在跑的
@@ -125,6 +130,7 @@ export const dropStalePersistentSession = (
   persistentSessions: Map<string, AgentRuntimeSession>,
   session: AgentRuntimeSession | undefined,
   forgetSessionCost?: (agentName: string) => void,
+  sessionIdentities?: Map<string, string>,
 ): void => {
   if (!session) return;
   if (persistentSessions.get(agentName) !== session) return;
@@ -134,6 +140,7 @@ export const dropStalePersistentSession = (
     /* stop 失败仍要从 map 摘掉，避免下次 send 打到死实例 */
   }
   persistentSessions.delete(agentName);
+  sessionIdentities?.delete(agentName);
   try {
     forgetSessionCost?.(agentName);
   } catch {
@@ -167,12 +174,27 @@ export const dispatchHeadlessTurn = async (opts: DispatchHeadlessTurnOpts): Prom
     assertLive,
     forgetSessionCost,
     credentialIssuedAt,
+    runtimeProfile,
+    sessionIdentities,
   } = opts;
   const { transitionState } = stateMachine;
 
   // 整段 dispatch（含 await mint）期间不计入空闲，避免复用路径上
   // mint 等待时扫描把即将 send 的常驻进程杀掉（P0.2）。
   idleReclaimer.untrack(agentName);
+  // Phase 1：profile identity 变化（runtime/entrypoint/model/manifest 修订）→
+  // 旧常驻会话不复用，丢掉后按新身份冷启动。
+  const recordedIdentity = sessionIdentities.get(agentName);
+  if (recordedIdentity !== runtimeProfile.identity && persistentSessions.has(agentName)) {
+    dropStalePersistentSession(
+      agentName,
+      persistentSessions,
+      persistentSessions.get(agentName),
+      forgetSessionCost,
+      sessionIdentities,
+    );
+    credentialIssuedAt.delete(agentName);
+  }
   const envCfg = loadDaemonEnv();
   const usePersistent = !envCfg.oneshotClaude;
   // A5：one-shot 每回合都是新进程（spawn-only 开销对它不是开销而是必需）；
@@ -266,9 +288,10 @@ export const dispatchHeadlessTurn = async (opts: DispatchHeadlessTurnOpts): Prom
           systemPromptFile: promptFile!,
           env: env!,
           label: "@" + agentName,
-          // A1.1：用户在档案里选的模型（runtime_profile.model）→ --model；
-          // 模型变更经 registerAgent tearDown 换进程，天然生效。
-          model: info.model,
+          // A1.1/Phase 1：模型以 resolved profile 为准（claude=档案所选；
+          // bridge=manifest 校验后的 fixed/allowlist 值）。
+          model: runtimeProfile.model,
+          entrypoint: runtimeProfile.entrypoint,
           // A2：温启动——空闲回收 / daemon 重启后接回上次会话（sessionRef 由
           // stream handler 在 session init 事件时落 daemon-agent-sessions.json）。
           // SLOCK_SESSION_RESUME=0 关闭（与 PTY 同语义）；查不到 id = 全新会话。
@@ -301,8 +324,10 @@ export const dispatchHeadlessTurn = async (opts: DispatchHeadlessTurnOpts): Prom
           },
         }),
       );
+      // Phase 1：记录本次会话对应的 profile identity——下次复用/重推时判失效
+      sessionIdentities.set(agentName, runtimeProfile.identity);
       if (!enterWorking(agentName, haltGen)) {
-        dropStalePersistentSession(agentName, persistentSessions, session, forgetSessionCost);
+        dropStalePersistentSession(agentName, persistentSessions, session, forgetSessionCost, sessionIdentities);
         credentialIssuedAt.delete(agentName);
         throw new DispatchError("agent-stopped", `[Daemon] @${agentName} is stopped, cannot dispatch`);
       }
@@ -333,7 +358,7 @@ export const dispatchHeadlessTurn = async (opts: DispatchHeadlessTurnOpts): Prom
         // P1.12：send 失败后踢掉本实例。否则下一条以为无需 spawn，
         // 直接对死/停过的实例 send（Fake 不会自愈；真驱动虽能 respawn
         // 但 env/onExit 仍是失败那次的）。
-        dropStalePersistentSession(agentName, persistentSessions, session, forgetSessionCost);
+        dropStalePersistentSession(agentName, persistentSessions, session, forgetSessionCost, sessionIdentities);
         credentialIssuedAt.delete(agentName);
         throw err;
       }
@@ -353,9 +378,14 @@ export const dispatchHeadlessTurn = async (opts: DispatchHeadlessTurnOpts): Prom
         createProgressPoster: opts.createProgressPoster,
         onProgress: opts.onProgress,
       });
-      const sid = threadId
-        ? (threadSessions?.lookup(agentName, threadId)?.sessionId ?? agentSessions.get(agentName))
-        : agentSessions.get(agentName);
+      // Phase 1：续接引用只在「与上次同 identity」时才用——profile/manifest
+      // 变化后旧 sessionId 不应续接（语义已变）。
+      const sid =
+        sessionIdentities.get(agentName) === runtimeProfile.identity
+          ? threadId
+            ? (threadSessions?.lookup(agentName, threadId)?.sessionId ?? agentSessions.get(agentName))
+            : agentSessions.get(agentName)
+          : undefined;
       // one-shot 下 needsSpawn 恒真，spawn-only 变量必已赋值
       const session = runtimeDriver.openSession({
         agentName,
@@ -364,13 +394,15 @@ export const dispatchHeadlessTurn = async (opts: DispatchHeadlessTurnOpts): Prom
         systemPromptFile: promptFile!,
         env: env!,
         label: "@" + agentName,
-        model: info.model,
+        model: runtimeProfile.model,
+        entrypoint: runtimeProfile.entrypoint,
         resumeSessionRef: sid,
         onEvent: (ev) => handleStreamEvent(agentName, ev),
       });
       const turnResult = await session.send(turnMsg);
       if (turnResult?.sessionRef) {
         agentSessions.set(agentName, turnResult.sessionRef);
+        sessionIdentities.set(agentName, runtimeProfile.identity);
         if (threadId) threadSessions?.remember(agentName, threadId, turnResult.sessionRef);
       }
       console.log(`[Daemon] @${agentName} turn finished (one-shot)`);

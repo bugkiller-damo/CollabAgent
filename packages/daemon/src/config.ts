@@ -55,6 +55,8 @@ export const DAEMON_ENV_DEFAULTS = {
   agentAllowedTools: DEFAULT_AGENT_ALLOWED_TOOLS,
   agentEffort: "medium" as AgentEffort,
   agentEnvExtra: [] as string[],
+  experimentalBridgeRuntimes: false,
+  runtimeManifestPath: null as string | null,
 } as const;
 
 export type DaemonEnv = {
@@ -116,6 +118,10 @@ export type DaemonEnv = {
    * `_KEY`/`_TOKEN`/`_SECRET` 结尾的名字会被拒（防凭据外泄）。
    */
   agentEnvExtra: string[];
+  /** `SLOCK_EXPERIMENTAL_BRIDGE_RUNTIMES=1`：上报本机 bridge entrypoint probe */
+  experimentalBridgeRuntimes: boolean;
+  /** `SLOCK_RUNTIME_MANIFEST`：覆盖 `<slockDir()>/runtimes.json` */
+  runtimeManifestPath: string | null;
 };
 
 /** 正整数（含「必须 >0」的毫秒/条数）。非法 / ≤0 → fallback。 */
@@ -196,5 +202,7 @@ export const loadDaemonEnv = (env: NodeJS.ProcessEnv = process.env): DaemonEnv =
     agentAllowedTools: tools.length > 0 ? tools : DEFAULT_AGENT_ALLOWED_TOOLS,
     agentEffort: parseAgentEffort(env.SLOCK_AGENT_EFFORT),
     agentEnvExtra: parseEnvNameList(env.SLOCK_ENV_EXTRA),
+    experimentalBridgeRuntimes: env.SLOCK_EXPERIMENTAL_BRIDGE_RUNTIMES === "1",
+    runtimeManifestPath: env.SLOCK_RUNTIME_MANIFEST?.trim() || null,
   };
 };

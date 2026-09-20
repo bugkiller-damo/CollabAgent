@@ -1,7 +1,7 @@
 # Daemon 接入 LangChain / LangGraph 详细设计
 
 > 日期：2026-09-20
-> 状态：Phase 0 已实施并验证；Phase 1–5 尚未实施
+> 状态：Phase 0、Phase 1 已实施并验证；Phase 2–5 尚未实施
 > 关联审计：[01-daemon-claude-decoupling-audit.md](./01-daemon-claude-decoupling-audit.md)
 > 范围：`packages/daemon/` 为主，包含必要的 shared / server / web 协议改动
 
@@ -1386,6 +1386,7 @@ retryable
 
 ### Phase 1：runtime profile 与本地 manifest
 
+状态：已完成（2026-09-20）
 复杂度：中
 风险：中
 
@@ -1399,33 +1400,62 @@ retryable
 
 验收：
 
-- 老 agent 缺 runtime 时仍是 Claude。
-- LangGraph 缺 entrypoint 时 permanent fail。
-- server 无法通过 profile 注入命令。
-- ready payload 不泄漏路径和 secret。
-- manifest 变更后旧 Worker 不会继续复用。
+- [x] 老 agent 缺 runtime 时仍是 Claude（`resolveAgentRuntimeProfile` 缺省 runtime="claude"）。
+- [x] LangGraph 缺 entrypoint 时 permanent fail（`entrypoint-required` 首败即死信，不重试不 spawn）。
+- [x] server 无法通过 profile 注入命令（entrypoint 只是本机 manifest 里的 ID；命令/路径/env 不随 profile 流动）。
+- [x] ready payload 不泄漏路径和 secret（probe 只上报 id/label/runtime/状态/模型名单；secretEnv 仅存变量名）。
+- [x] manifest 变更后旧 Worker 不会继续复用（identity 含 entry revision；dispatch 复用前比对，不符即丢弃冷启动）。
+
+实际落地文件：
+
+- 新增 `agent-runtime-manifest.ts`（加载/校验/`invalidEntries` 安全元数据/mtime 缓存 loader）、
+  `agent-runtime-profile.ts`（解析/校验/identity）、`drivers/runtime-entrypoint-probe.ts`（`--slock-probe` 子进程探测 + 能力白名单裁剪）。
+- shared：`AgentRuntimeProfile`、`WsAgentStartConfig/Agent` 增 `entrypoint`、`RuntimeEntrypointProbe`、
+  `BRIDGE_RUNTIME_IDS`、ready `entrypoints` 字段。
+- `agent-runtime.ts`：`agentInfo` 扩 runtime/entrypoint/runtimeProfileError；`sessionIdentities` +
+  `invalidateOnIdentityChange`；`registerAgent` 权威合并语义；`loadExistingAgents` 解析 `runtime_profile`。
+- `agent-runtime-dispatch.ts`：派发前 `resolveRuntimeProfile` + `assertResolved`（permanent 即死信）；
+  `runtimeRegistry.resolve(profile.runtime)` 取 driver；`usePty`+非 claude → `pty-runtime-unsupported`。
+- `agent-runtime-dispatch-headless.ts`：复用前 identity 比对丢弃 stale 会话；`model`/`entrypoint` 走 resolved profile；
+  one-shot 续接要求 identity 一致。
+- `handlers/agent.ts`：runtime/entrypoint 多源候选 + 冲突检测（`runtime-profile-conflict`）；
+  `handlers/inbound.ts` 归一化新字段。
+- `ready-payload.ts` + `daemon-core.ts`：`SLOCK_EXPERIMENTAL_BRIDGE_RUNTIMES=1` 时 ready 附 `entrypoints`。
+- `config.ts`：`SLOCK_RUNTIME_MANIFEST` / `SLOCK_EXPERIMENTAL_BRIDGE_RUNTIMES`。
+- `errors.ts`：新增 8 个 permanent profile/manifest 错误码。
+- server `agents-public.ts`：POST/PATCH entrypoint 落库与透传；`claude+entrypoint` 静态无效组合 400；
+  PATCH 保留/清除语义（`entrypoint:null`/`""` 显式清除）。
+- `AgentRuntimeRegistry.forgetAgent`：按 driver 去重转发（成本基线/缓存清理由各 driver 自管）。
+- `AgentRuntimeOpenOptions.entrypoint`：profile → driver 的稳定 ID 透传。
+
+验证：daemon 全量 53 文件 / 595 用例通过；typecheck、lint（0 error / 6 既有 warning）、build 通过。
+server 侧新增 `agents.test.ts` Phase 1 集成用例（entrypoint 落库/保留/清除/400），需活库环境在 CI 执行。
+
+未做（有意推迟）：
+
+- `computers.ts` 的 entrypoint capability 摘要落库与 web 创建 UI——随 Phase 2 driver 接线一并开放；
+  当前 daemon 上报的 `entrypoints` 由 server zod `passthrough` 安全忽略。
+- `WIRED_RUNTIME_IDS` 仍为 `["claude"]`；bridge runtime 经 PATCH 可写入 profile，但无对应 driver，
+  派发以 `runtime-unsupported` 死信——这是本阶段的 fail-closed 预期。
 
 ### Phase 2：SARP/1 与通用 bridge driver
 
-复杂度：高
-风险：中高
+复杂度：高  风险：中
 
 实施：
-
-1. 完成 protocol codec 和 schema validation。
-2. 完成 `PersistentJsonlWorkerSession`。
-3. 支持 handshake、turn、stream、usage、cancel、shutdown。
-4. 支持 stdout parser、stderr ring buffer、frame limit、silence timeout。
-5. 使用 fixture Worker 完成崩溃、错帧、重复终止和 retry 测试。
+1. 完成 protocol codec 与 schema validation
+2. 完成 `PersistentJsonlWorkerSession`
+3. 支持 handshake、turn、stream、usage、cancel、shutdown
+4. 支持 stdout parser、stderr ring buffer、frame limit、silence timeout
+5. 使用 fixture Worker 完成崩溃、错帧、重复终止和 retry 测试
 
 验收：
-
-- fixture Worker 可以连续处理多个 turn。
-- 每个 turn 精确结束一次。
-- malformed stdout 立即停止 Worker。
-- idle reclaim 能清理 Worker 进程树。
-- retry 复用 turn ID。
-- 不存在跨 agent token 或 MCP 会话复用。
+- fixture Worker 可以连续处理多个 turn
+- 每个 turn 精确结束一次
+- malformed stdout 立即停止 Worker
+- idle reclaim 能清理 Worker 进程树
+- retry 复用 turn ID
+- 不存在跨 agent token / MCP 会话复用
 
 ### Phase 3：Python LangChain / LangGraph bridge
 

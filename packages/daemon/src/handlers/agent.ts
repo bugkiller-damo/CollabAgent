@@ -1,4 +1,5 @@
-import type { WsToDaemonMessage } from "@collabagent/shared";
+import type { WsAgentStartConfig, WsToDaemonMessage } from "@collabagent/shared";
+import type { AgentRegistrationInfo, RuntimeProfileIssue } from "../agent-runtime-profile.js";
 import type { HandlerContext } from "./types.js";
 
 type StartMsg = Extract<WsToDaemonMessage, { type: "agent:start" }>;
@@ -7,21 +8,51 @@ type DutyMsg = Extract<WsToDaemonMessage, { type: "agent:duty" }>;
 
 export function handleAgentStart(ctx: HandlerContext, msg: StartMsg): void {
   const agent = msg.agent;
-  const config = msg.config ?? {};
+  const config: WsAgentStartConfig = msg.config ?? {};
   const agentId = agent?.id || msg.agentId || "";
   const agentName = agent?.name || config.name || "";
   const displayName = agent?.displayName || config.displayName || agentName;
   const description = agent?.description || config.description || "";
-  // runtime_profile.model（Web 端可选 sonnet/opus/haiku）——注册时带上，spawn 拼 --model。
-  // 三种推送变体：创建时 model 在 agent.model；编辑（PATCH）时在 config.model；
-  // 部分路径在 config.runtime_profile.model。三个位置都兜底。
-  const rp = config.runtime_profile ?? agent?.runtime_profile;
-  const model = agent?.model || config.model || rp?.model || undefined;
+  const runtimeCandidates = [
+    config.runtime_profile?.runtime,
+    agent?.runtime_profile?.runtime,
+    config.runtime,
+    agent?.runtime,
+  ].filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+  const entrypointCandidates = [
+    config.runtime_profile?.entrypoint,
+    agent?.runtime_profile?.entrypoint,
+    config.entrypoint,
+    agent?.entrypoint,
+  ].filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+  const runtime = runtimeCandidates[0]?.trim();
+  const entrypoint = entrypointCandidates[0]?.trim();
+  const model =
+    agent?.model || config.model || config.runtime_profile?.model || agent?.runtime_profile?.model || undefined;
+  const runtimeValues = new Set(runtimeCandidates.map((value) => value.trim().toLowerCase()));
+  const entrypointValues = new Set(entrypointCandidates.map((value) => value.trim()));
+  let runtimeProfileError: RuntimeProfileIssue | null = null;
+  if (runtimeValues.size > 1) {
+    runtimeProfileError = {
+      code: "runtime-profile-conflict",
+      message: "Runtime profile contains conflicting runtime values",
+    };
+  } else if (entrypointValues.size > 1) {
+    runtimeProfileError = {
+      code: "runtime-profile-conflict",
+      message: "Runtime profile contains conflicting entrypoint values",
+    };
+  }
   if (!agentName) {
     console.log("[Daemon] agent:start without name, ignored");
     return;
   }
-  ctx.runtime.registerAgent(agentId, agentName, { displayName, description, model });
+  const info: AgentRegistrationInfo = { displayName, description, model };
+  const profileTouched = runtimeCandidates.length > 0 || entrypointCandidates.length > 0;
+  if (runtime !== undefined) info.runtime = runtime;
+  if (entrypoint !== undefined) info.entrypoint = entrypoint;
+  if (profileTouched) info.runtimeProfileError = runtimeProfileError;
+  ctx.runtime.registerAgent(agentId, agentName, info);
 }
 
 export function handleAgentStop(ctx: HandlerContext, msg: StopMsg): void {

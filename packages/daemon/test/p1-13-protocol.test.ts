@@ -72,6 +72,27 @@ describe("parseWsToDaemonMessage", () => {
     });
   });
 
+  it("Phase 1：agent:start 归一化 runtime/entrypoint/runtime_profile 字段", () => {
+    const msg = parseWsToDaemonMessage({
+      type: "agent:start",
+      agent: { id: "id-1", name: "alice", runtime: "langgraph", entrypoint: "ep-1" },
+      config: { runtime_profile: { runtime: "langgraph", model: "gpt-4o", entrypoint: "ep-1" } },
+    });
+    expect(msg).toMatchObject({
+      type: "agent:start",
+      agent: { id: "id-1", name: "alice", runtime: "langgraph", entrypoint: "ep-1" },
+      config: { runtime_profile: { runtime: "langgraph", model: "gpt-4o", entrypoint: "ep-1" } },
+    });
+    // 非字符串字段不静默过关
+    const bad = parseWsToDaemonMessage({
+      type: "agent:start",
+      config: { name: "a", runtime: 42, entrypoint: ["x"], runtime_profile: "str" },
+    });
+    expect(bad && bad.type === "agent:start" && bad.config?.runtime).toBeUndefined();
+    expect(bad && bad.type === "agent:start" && bad.config?.entrypoint).toBeUndefined();
+    expect(bad && bad.type === "agent:start" && bad.config?.runtime_profile).toBeUndefined();
+  });
+
   it("parses reminder.fire / agent:duty / ping; drops unknown type", () => {
     expect(
       parseWsToDaemonMessage({

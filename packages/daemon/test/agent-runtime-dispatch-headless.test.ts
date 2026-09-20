@@ -70,10 +70,20 @@ import {
   ensurePersistentSession,
 } from "../src/agent-runtime-dispatch-headless.js";
 import type { AgentRuntimeSession } from "../src/agent-runtime-driver.js";
+import type { RuntimeManifestSnapshot } from "../src/agent-runtime-manifest.js";
+import { resolveAgentRuntimeProfile } from "../src/agent-runtime-profile.js";
 import { createAgentStateMachine } from "../src/agent-runtime-state.js";
 import type { IAgentSessionStore } from "../src/agent-session-store.js";
 import { createClaudeRuntimeDriver } from "../src/drivers/claude-runtime.js";
 import { createIdleReclaimer } from "../src/idle-reclaimer.js";
+
+/** 空 manifest：bridge entrypoint 不存在；claude 解析不消费它。 */
+const EMPTY_MANIFEST: RuntimeManifestSnapshot = {
+  path: "<test>",
+  revision: "missing",
+  entries: new Map(),
+  invalidEntries: new Map(),
+};
 
 const fakeSession = (label: string) =>
   ({
@@ -179,6 +189,7 @@ describe("dispatchHeadlessTurn 会话锁 / stale 清理 (P1.12)", () => {
     const stateMachine = createAgentStateMachine();
     stateMachine.transitionState("alice", "idle");
     const persistentSessions = new Map<string, AgentRuntimeSession>();
+    const agentInfo = overrides.agentInfo ?? new Map();
     return {
       agentName: "alice",
       agentId: "id-alice",
@@ -190,10 +201,13 @@ describe("dispatchHeadlessTurn 会话锁 / stale 清理 (P1.12)", () => {
       stateMachine,
       idleReclaimer: createIdleReclaimer({ timeoutMs: Number.MAX_SAFE_INTEGER, onReclaim: () => {} }),
       mintAgentCredential: async () => "sk_agent_test",
-      agentInfo: new Map(),
+      agentInfo,
       // Phase 0：driver 边界——FakePersistentClaude 经 claude-runtime 适配器
       // 被 new 出来（vi.mock 照常拦截），保持实例身份断言不变。
       runtimeDriver: createClaudeRuntimeDriver(),
+      // Phase 1：resolved profile——model 从 agentInfo 派生，与 doDispatch 一致
+      runtimeProfile: resolveAgentRuntimeProfile(agentInfo.get("alice") ?? {}, EMPTY_MANIFEST),
+      sessionIdentities: new Map(),
       persistentSessions,
       sessionCreates: new Map(),
       agentSessions: new Map(),

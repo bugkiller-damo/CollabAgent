@@ -9,6 +9,7 @@
 
 import type {
   AgentDuty,
+  AgentRuntimeProfile,
   AttachmentRef,
   WsAgentStartAgent,
   WsAgentStartConfig,
@@ -27,9 +28,9 @@ const asFiniteNumber = (v: unknown): number | undefined =>
 const asStringList = (v: unknown): string[] | undefined =>
   Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : undefined;
 
-const readRuntimeProfile = (v: unknown): { runtime?: string; model?: string } | undefined => {
+const readRuntimeProfile = (v: unknown): AgentRuntimeProfile | undefined => {
   if (!isRecord(v)) return undefined;
-  return { runtime: asString(v.runtime), model: asString(v.model) };
+  return { runtime: asString(v.runtime), model: asString(v.model), entrypoint: asString(v.entrypoint) };
 };
 
 const readAgentStartAgent = (v: unknown): WsAgentStartAgent | undefined => {
@@ -41,6 +42,7 @@ const readAgentStartAgent = (v: unknown): WsAgentStartAgent | undefined => {
     description: asString(v.description),
     runtime: asString(v.runtime),
     model: asString(v.model),
+    entrypoint: asString(v.entrypoint),
     runtime_profile: readRuntimeProfile(v.runtime_profile),
   };
 };
@@ -53,6 +55,7 @@ const readAgentStartConfig = (v: unknown): WsAgentStartConfig | undefined => {
     description: asString(v.description),
     runtime: asString(v.runtime),
     model: asString(v.model),
+    entrypoint: asString(v.entrypoint),
     runtime_profile: readRuntimeProfile(v.runtime_profile),
   };
 };

@@ -1,4 +1,4 @@
-import { parseAgentDuty, WIRED_RUNTIME_IDS } from "@collabagent/shared";
+import { BRIDGE_RUNTIME_IDS, parseAgentDuty, WIRED_RUNTIME_IDS } from "@collabagent/shared";
 import type { FastifyInstance } from "fastify";
 import { sql } from "../db/connection.js";
 import { computerOnlineFor, decorateAgentPresence, setAgentDuty } from "../lib/agent-duty.js";
@@ -18,7 +18,7 @@ import {
 /**
  * runtime_profile 可能是正确的 jsonb 对象，也可能是历史遗留的「双重编码字符串」，统一解析。
  */
-function parseRuntimeProfile(v: unknown): { runtime?: string; model?: string } {
+function parseRuntimeProfile(v: unknown): { runtime?: string; model?: string; entrypoint?: string } {
   if (!v) return {};
   if (typeof v === "string") {
     try {
@@ -27,7 +27,7 @@ function parseRuntimeProfile(v: unknown): { runtime?: string; model?: string } {
       return {};
     }
   }
-  return v as { runtime?: string; model?: string };
+  return v as { runtime?: string; model?: string; entrypoint?: string };
 }
 
 export async function agentPublicRoutes(app: FastifyInstance) {
@@ -128,7 +128,7 @@ export async function agentPublicRoutes(app: FastifyInstance) {
 
   // POST /agents — 创建
   app.post("/agents", { preHandler: [app.authenticate] }, async (req: any, reply: any) => {
-    const { name, displayName, description, avatarUrl, runtime, model, serverId, computerId } = req.body;
+    const { name, displayName, description, avatarUrl, runtime, model, entrypoint, serverId, computerId } = req.body;
     if (!name) return reply.status(400).send({ error: "name required" });
 
     // serverId 显式必填（2026-09-19 取消个人空间兜底后与 computers 端点同口径）；
@@ -141,6 +141,13 @@ export async function agentPublicRoutes(app: FastifyInstance) {
     const runtimeId = String(runtime || "claude");
     if (!(WIRED_RUNTIME_IDS as readonly string[]).includes(runtimeId)) {
       return reply.status(400).send({ error: "runtime not wired", runtime: runtimeId });
+    }
+    // Phase 1：entrypoint 只对 bridge runtime（manifest 驱动）有意义；
+    // claude 携带 entrypoint 是静态无效组合，fail-fast 而不是落库后由 daemon 死信。
+    if (entrypoint !== undefined && entrypoint !== null && String(entrypoint).trim()) {
+      if (!(BRIDGE_RUNTIME_IDS as readonly string[]).includes(runtimeId)) {
+        return reply.status(400).send({ error: "entrypoint not allowed for runtime", runtime: runtimeId });
+      }
     }
 
     // 2026-09-19 server-scoped computers：目标 server 必须有我的计算机行（已注册，
@@ -210,7 +217,13 @@ export async function agentPublicRoutes(app: FastifyInstance) {
         displayName || name,
         description || "",
         avatarUrl || null,
-        sql.json({ runtime: runtimeId, model: model || "sonnet" }),
+        sql.json({
+          runtime: runtimeId,
+          model: model || "sonnet",
+          // Phase 1：bridge runtime 的本机 manifest 入口 ID（非命令/路径）；
+          // claude 等无 entrypoint 的 runtime 不落该键。
+          ...(typeof entrypoint === "string" && entrypoint.trim() ? { entrypoint: entrypoint.trim() } : {}),
+        }),
       ],
     );
     const agent = result.rows[0] as any;
@@ -228,6 +241,7 @@ export async function agentPublicRoutes(app: FastifyInstance) {
           displayName: agent.display_name,
           runtime: runtimeId,
           model: model || "sonnet",
+          ...(typeof entrypoint === "string" && entrypoint.trim() ? { entrypoint: entrypoint.trim() } : {}),
         },
         config: { runtime_profile: agent.runtime_profile },
       },
@@ -243,10 +257,22 @@ export async function agentPublicRoutes(app: FastifyInstance) {
     // P0.11：所有权校验收敛到 requireOwnAgent（与 /internal/agent 侧对齐）。此前只有
     // org 成员校验——共享 org 内任何成员都能改他人 agent（改 runtime/model 即重推
     // agent:start），是水平越权。web 侧编辑/删除本就按 ownedByMe 门控，服务端滞后。
-    const existingDuty = await app.pg.query<{ duty: string }>("SELECT duty FROM agents WHERE id = $1", [agentId]);
-    const wasOff = parseAgentDuty(existingDuty.rows[0]?.duty) === "off";
-    const { name, displayName, description, avatarUrl, runtime, model, allowTerminalWatch, consentChannelInvite } =
-      req.body || {};
+    const existing = await app.pg.query<{ duty: string; runtime_profile: unknown }>(
+      "SELECT duty, runtime_profile FROM agents WHERE id = $1",
+      [agentId],
+    );
+    const wasOff = parseAgentDuty(existing.rows[0]?.duty) === "off";
+    const {
+      name,
+      displayName,
+      description,
+      avatarUrl,
+      runtime,
+      model,
+      entrypoint,
+      allowTerminalWatch,
+      consentChannelInvite,
+    } = req.body || {};
     const sets: string[] = [];
     const params: any[] = [];
     let p = 1;
@@ -280,9 +306,29 @@ export async function agentPublicRoutes(app: FastifyInstance) {
       sets.push(`avatar_url = $${p++}`);
       params.push(avatarUrl);
     }
-    if (runtime !== undefined || model !== undefined) {
+    if (runtime !== undefined || model !== undefined || entrypoint !== undefined) {
+      // Phase 1：runtime_profile 整体重写时保留未提及的键——只改 model 不能抹掉
+      // 已存的 entrypoint；entrypoint: null/"" 视为显式清除。
+      const prevRp = parseRuntimeProfile(existing.rows[0]?.runtime_profile);
+      const nextEntrypoint =
+        entrypoint === undefined
+          ? prevRp.entrypoint
+          : typeof entrypoint === "string" && entrypoint.trim()
+            ? entrypoint.trim()
+            : undefined;
+      const nextRuntime = runtime || prevRp.runtime || "claude";
+      // 与 POST 同一规则：claude 等无 entrypoint 的 runtime 不得携带/残留该键
+      if (nextEntrypoint && !(BRIDGE_RUNTIME_IDS as readonly string[]).includes(nextRuntime)) {
+        return reply.status(400).send({ error: "entrypoint not allowed for runtime", runtime: nextRuntime });
+      }
       sets.push(`runtime_profile = $${p++}::jsonb`);
-      params.push(sql.json({ runtime: runtime || "claude", model: model || "sonnet" }));
+      params.push(
+        sql.json({
+          runtime: runtime || prevRp.runtime || "claude",
+          model: model || prevRp.model || "sonnet",
+          ...(nextEntrypoint ? { entrypoint: nextEntrypoint } : {}),
+        }),
+      );
     }
     if (sets.length === 0) return reply.status(400).send({ error: "no fields" });
     params.push(agentId);
@@ -315,6 +361,7 @@ export async function agentPublicRoutes(app: FastifyInstance) {
           description: agent.description,
           runtime: rp.runtime,
           model: rp.model,
+          ...(rp.entrypoint ? { entrypoint: rp.entrypoint } : {}),
         },
       });
     }

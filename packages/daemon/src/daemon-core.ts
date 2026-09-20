@@ -15,7 +15,7 @@ import { dispatchDaemonMessage, type HandlerContext, parseWsToDaemonMessage } fr
 import { createLiveRunRegistry } from "./live-run-registry.js";
 import { resolveMachineUuid } from "./machine-id.js";
 import { mkdirPrivateSync, slockDir } from "./private-dir.js";
-import { buildReadyPayload } from "./ready-payload.js";
+import { buildReadyPayload, probeBridgeEntrypoints } from "./ready-payload.js";
 import { setupSlockWrapper } from "./setup-slock-wrapper.js";
 import type { DaemonConfig } from "./types/index.js";
 
@@ -358,7 +358,13 @@ export class DaemonCore {
     this.ws.on("open", () => {
       console.log("[Daemon] Connected to server");
       this.reconnectDelay = 1000;
-      this.sendWs(buildReadyPayload(undefined, { machineUuid: this.machineUuid, serverName: this.serverName }));
+      this.sendWs(
+        buildReadyPayload(
+          undefined,
+          { machineUuid: this.machineUuid, serverName: this.serverName },
+          probeBridgeEntrypoints(),
+        ),
+      );
     });
     this.ws.on("message", (data) => {
       try {

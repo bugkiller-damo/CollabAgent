@@ -395,6 +395,12 @@ export interface ObservationFrame {
   };
 }
 
+export interface AgentRuntimeProfile {
+  runtime?: string;
+  model?: string;
+  entrypoint?: string;
+}
+
 /** agent:start 的 config 变体（agents.ts 创建 / agents-public.ts PATCH） */
 export interface WsAgentStartConfig {
   name?: string;
@@ -402,7 +408,8 @@ export interface WsAgentStartConfig {
   description?: string;
   runtime?: string;
   model?: string;
-  runtime_profile?: { runtime?: string; model?: string };
+  entrypoint?: string;
+  runtime_profile?: AgentRuntimeProfile;
 }
 
 /** agent:start 的 agent 变体（agents-public.ts 公开注册） */
@@ -413,7 +420,8 @@ export interface WsAgentStartAgent {
   description?: string;
   runtime?: string;
   model?: string;
-  runtime_profile?: { runtime?: string; model?: string };
+  entrypoint?: string;
+  runtime_profile?: AgentRuntimeProfile;
 }
 
 /** reminder.fire 的 reminder 载荷（reminder-scheduler.ts 组装） */
@@ -458,13 +466,45 @@ export type WsToDaemonMessage =
 
 // ---------- daemon → server ----------
 
-/** Computer 能力地图：已装 / 未装 / 已装但平台未接线（P0 spawn 仅 claude） */
-export type RuntimeProbeStatus = "installed" | "not_installed" | "installed_unsupported";
+/** Computer 能力地图：已装 / 未装 / 配置错误 / 协议不兼容 / 已装但平台未接线 */
+export type RuntimeProbeStatus =
+  | "installed"
+  | "not_installed"
+  | "misconfigured"
+  | "protocol_incompatible"
+  | "installed_unsupported";
 
 export interface RuntimeProbe {
   id: string;
   status: RuntimeProbeStatus;
   version?: string;
+}
+
+export interface RuntimeCapabilityProbe {
+  persistentProcess?: boolean;
+  streamingText?: boolean;
+  toolEvents?: boolean;
+  durableThreads?: boolean;
+  interrupts?: boolean;
+  mcp?: boolean;
+  usage?: "none" | "tokens" | "cost";
+  pty?: boolean;
+  maxConcurrency?: number;
+}
+
+export interface RuntimeEntrypointProbe {
+  id: string;
+  /** manifest 校验失败的条目可能连 runtime 都不可信——此时缺省，由 status/errorCode 表达 */
+  runtime?: BridgeRuntimeId;
+  label: string;
+  status: RuntimeProbeStatus;
+  version?: string;
+  models?: string[];
+  defaultModel?: string;
+  modelMode: "fixed" | "select";
+  capabilities?: RuntimeCapabilityProbe;
+  errorCode?: string;
+  errorMessage?: string;
 }
 
 export const RUNTIME_CATALOG_IDS = ["claude", "codex", "gemini", "opencode"] as const;
@@ -473,12 +513,18 @@ export type RuntimeCatalogId = (typeof RUNTIME_CATALOG_IDS)[number];
 /** P0 已接线、创建 picker 可收的 runtime */
 export const WIRED_RUNTIME_IDS = ["claude"] as const;
 
+/** Phase 1：manifest entrypoint 驱动的 bridge runtime（daemon 侧 JSONL worker 协议） */
+export const BRIDGE_RUNTIME_IDS = ["langchain", "langgraph"] as const;
+export type BridgeRuntimeId = (typeof BRIDGE_RUNTIME_IDS)[number];
+
 export type WsFromDaemonMessage =
   | {
       type: "ready";
       capabilities: string[];
       /** 新 daemon 发 RuntimeProbe[]；旧 daemon / 测试仍可能发 string[]，server 会归一化 */
       runtimes: RuntimeProbe[] | string[];
+      /** Phase 1：本机 manifest entrypoint 的安全能力摘要；不含命令、路径或 secret */
+      entrypoints?: RuntimeEntrypointProbe[];
       hostname: string;
       daemonVersion: string;
       os?: string;

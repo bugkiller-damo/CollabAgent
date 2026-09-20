@@ -5,6 +5,12 @@ import { createCredentialsClient } from "./agent-runtime-credentials.js";
 import { createDispatch, type ReminderFirePayload } from "./agent-runtime-dispatch.js";
 import { AgentRuntimeRegistry, type AgentRuntimeSession } from "./agent-runtime-driver.js";
 import { createExitChain } from "./agent-runtime-exit.js";
+import { createRuntimeManifestLoader } from "./agent-runtime-manifest.js";
+import {
+  type AgentRegistrationInfo,
+  type ResolvedAgentRuntimeProfile,
+  resolveAgentRuntimeProfile,
+} from "./agent-runtime-profile.js";
 import { createSpawnPtyForAgent } from "./agent-runtime-spawn.js";
 import { createAgentStateMachine } from "./agent-runtime-state.js";
 import { BUSY_MARKER_RE, createTurnTracker, PROMPT_RE } from "./agent-runtime-turn-tracker.js";
@@ -125,7 +131,7 @@ export interface IAgentRuntime {
   // 改为 lazy spawn + session resume（见 daemon-core.autostartCrashedAgents）。
 
   // 注册表
-  registerAgent(id: string, name: string, info: { displayName?: string; description?: string; model?: string }): void;
+  registerAgent(id: string, name: string, info: AgentRegistrationInfo): void;
   unregisterAgent(name: string): void;
   loadExistingAgents(): Promise<void>;
   resolveAgentId(agentName: string): string | null;
@@ -145,7 +151,7 @@ export interface IAgentRuntime {
   setPreferredTermSize(agentName: string, size: { cols: number; rows: number }): void;
 
   // 查询
-  getAgentInfo(name: string): { displayName?: string; description?: string; model?: string } | undefined;
+  getAgentInfo(name: string): AgentRegistrationInfo | undefined;
   hasAgent(name: string): boolean;
   getAgentState(name: string): AgentStatus | undefined;
 
@@ -169,7 +175,10 @@ export const createAgentRuntime = (
   const agentDrivers = new Map<string, boolean>();
   const agentSessions = new Map<string, string>();
   const agentNameToId = new Map<string, string>();
-  const agentInfo = new Map<string, { displayName?: string; description?: string; model?: string }>();
+  const agentInfo = new Map<string, AgentRegistrationInfo>();
+  // Phase 1：agent → 已开会话/续接引用所对应的 runtime profile identity。
+  // profile 变化（runtime/entrypoint/model/manifest 修订）即失效旧状态。
+  const sessionIdentities = new Map<string, string>();
 
   // ---- PTY 模式基础设施 ----
   // P0.7：懒加载——headless 默认路径不再静态引入 agent-manager.js（其顶层
@@ -282,6 +291,7 @@ export const createAgentRuntime = (
     }
     persistentSessions.get(name)?.stop();
     persistentSessions.delete(name);
+    sessionIdentities.delete(name);
     credentialIssuedAt.delete(name);
     forgetSessionCost(name);
     idleReclaimer.untrack(name);
@@ -435,12 +445,31 @@ export const createAgentRuntime = (
     getPreferredTermSize: (name) => preferredTermSize.get(name),
   });
 
-  // ---- Phase 0：runtime driver registry ----
-  // provider runtimeId → driver 的解析点。Phase 0 只有 claude；后续
-  // langchain/langgraph driver 注册进同一 registry 后按 agent 的 runtime 字段
-  // resolve。重复 runtimeId 在构造时即抛错（启动失败而非运行期）。
+  // ---- Phase 0/1：runtime driver registry + profile 解析 ----
+  // provider runtimeId → driver 的解析点。重复 runtimeId 在构造时即抛错
+  // （启动失败而非运行期）。
+  // manifest 用 mtime 缓存：内容一变即重解析，条目 revision 进 identity →
+  // 旧会话自然失效（design §Phase 1 验收：manifest 变更不复用旧 Worker）。
+  const manifestLoader = createRuntimeManifestLoader();
   const runtimeRegistry = new AgentRuntimeRegistry([createClaudeRuntimeDriver()]);
-  const runtimeDriver = runtimeRegistry.resolve("claude");
+  const resolveRuntimeProfile = (name: string): ResolvedAgentRuntimeProfile =>
+    resolveAgentRuntimeProfile(agentInfo.get(name) ?? {}, manifestLoader());
+  /**
+   * Phase 1：profile identity 变化 → 旧会话与续接 id 全部作废。
+   * registerAgent 重推（PATCH 编辑 runtime/model/entrypoint）与 manifest 修订
+   * 都会命中；displayName/description 等不改变 identity 的编辑不打断在跑会话。
+   */
+  const invalidateOnIdentityChange = (name: string): void => {
+    const recorded = sessionIdentities.get(name);
+    if (recorded === undefined || recorded === resolveRuntimeProfile(name).identity) return;
+    tearDownAgentProcess(name); // 内含 sessionIdentities.delete
+    agentSessions.delete(name);
+    try {
+      options.agentSessionStore?.forget(name);
+    } catch {
+      /* store 清理是旁路 */
+    }
+  };
 
   // ---- 消息分发核心（见 agent-runtime-dispatch.ts）----
   const {
@@ -465,7 +494,9 @@ export const createAgentRuntime = (
     resolveAgentId,
     agentInfo,
     runIdByAgent,
-    runtimeDriver,
+    runtimeRegistry,
+    resolveRuntimeProfile,
+    sessionIdentities,
     persistentSessions,
     agentSessions,
     credentialIssuedAt,
@@ -512,15 +543,11 @@ export const createAgentRuntime = (
     runAgentReminder,
     runAgentTriage,
 
-    registerAgent(
-      id: string,
-      name: string,
-      info: { displayName?: string; description?: string; model?: string },
-    ): void {
+    registerAgent(id: string, name: string, info: AgentRegistrationInfo): void {
       // A4：已注册的 agent 收到 agent:start 重推（PATCH 编辑/值班重复开）只做
       // 元数据合并——不 bump 代次（会让在途回合的 assertLive/haltGen 误判
       // stopped 而杀掉正常回合）、不清队列（积压消息不该因编辑丢失）、不杀
-      // 进程（改 description 不该打断在跑的会话）。注意：model/description
+      // 进程（改 description 不该打断在跑的会话）。注意：description
       // 变更对本进程不即时生效，下次 spawn（空闲回收/显式 stop 后）自然应用。
       const alreadyRegistered = agentDrivers.has(name);
       agentDrivers.set(name, true);
@@ -528,12 +555,22 @@ export const createAgentRuntime = (
       // 合并而非覆盖：编辑 agent（PATCH → agent:start 重推）时某些字段可能缺省，
       // 整体覆盖会把之前已捕获的 model 抹掉（2026-07-17 实测：改成 haiku 后
       // spawn 无 --model，因为重推消息没解出 model，覆盖了启动时捕获的 sonnet）。
+      // Phase 1：runtime/entrypoint 同理合并；但当次推送显式带了 profile 字段
+      // （runtimeProfileError !== undefined，含 null=无冲突）时 profile 视为
+      // 权威整体——避免「改 runtime 不带 entrypoint」残留旧 entrypoint 造成
+      // langgraph→claude 切换后 entrypoint-not-allowed 假阳性。
       const prev = agentInfo.get(name);
+      const profileAuthoritative = info.runtimeProfileError !== undefined;
       agentInfo.set(name, {
         displayName: info.displayName ?? prev?.displayName,
         description: info.description ?? prev?.description,
         model: info.model ?? prev?.model,
+        runtime: profileAuthoritative ? info.runtime : (info.runtime ?? prev?.runtime),
+        entrypoint: profileAuthoritative ? info.entrypoint : (info.entrypoint ?? prev?.entrypoint),
+        runtimeProfileError: profileAuthoritative ? info.runtimeProfileError : prev?.runtimeProfileError,
       });
+      // Phase 1：runtime/entrypoint/model/manifest 修订变化 → 旧会话/续接 id 失效
+      invalidateOnIdentityChange(name);
       if (alreadyRegistered) {
         // 元数据路径只兜底状态：stopped/无状态 → idle；working/starting 原样保留
         const cur = stateMachine.getState(name);
@@ -585,10 +622,27 @@ export const createAgentRuntime = (
           if (row.duty === "off") continue;
           onDutyNames.add(name);
           if (typeof row.id === "string" && row.id) agentNameToId.set(name, row.id);
+          // Phase 1：/api/agents 行内 runtime_profile 已解析（server 侧 jsonb），
+          // runtime/entrypoint 一并进 agentInfo，重启后 profile 不失忆。
+          const rowProfile = isRecord(row.runtime_profile) ? row.runtime_profile : undefined;
+          const rowRuntime =
+            typeof row.runtime === "string"
+              ? row.runtime
+              : typeof rowProfile?.runtime === "string"
+                ? rowProfile.runtime
+                : undefined;
+          const rowEntrypoint =
+            typeof row.entrypoint === "string"
+              ? row.entrypoint
+              : typeof rowProfile?.entrypoint === "string"
+                ? rowProfile.entrypoint
+                : undefined;
           agentInfo.set(name, {
             displayName: typeof row.display_name === "string" ? row.display_name : undefined,
             description: typeof row.description === "string" ? row.description : undefined,
             model: typeof row.model === "string" ? row.model : undefined,
+            ...(rowRuntime ? { runtime: rowRuntime } : {}),
+            ...(rowEntrypoint ? { entrypoint: rowEntrypoint } : {}),
           });
           if (!agentDrivers.has(name)) {
             console.log(

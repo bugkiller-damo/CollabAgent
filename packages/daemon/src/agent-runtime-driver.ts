@@ -33,6 +33,12 @@ export interface AgentRuntimeOpenOptions {
   env: Record<string, string>;
   label?: string;
   model?: string;
+  /**
+   * Phase 1：resolved profile 的 manifest entrypoint ID（bridge runtime 专属；
+   * claude 等内置 runtime 恒为 undefined）。driver 按它去本机 manifest 取
+   * 启动命令——openSession 只收到稳定 ID，命令/路径不随 profile 流动。
+   */
+  entrypoint?: string;
   resumeSessionRef?: string;
   onResumeFailed?: (sessionRef: string) => void;
   onEvent: (event: AgentRuntimeEvent) => void;
@@ -66,5 +72,14 @@ export class AgentRuntimeRegistry {
       throw new DispatchError("runtime-unsupported", `Unsupported runtime: ${runtimeId}`);
     }
     return driver;
+  }
+
+  forgetAgent(agentName: string): void {
+    const seen = new Set<AgentRuntimeDriver>();
+    for (const driver of this.byRuntime.values()) {
+      if (seen.has(driver)) continue;
+      seen.add(driver);
+      driver.forgetAgent(agentName);
+    }
   }
 }

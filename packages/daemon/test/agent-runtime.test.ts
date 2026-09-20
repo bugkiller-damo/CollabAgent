@@ -61,6 +61,30 @@ describe("agent-runtime 注册表与 mention 解析", () => {
     expect(runtime.getAgentInfo(A)).toEqual({ displayName: "Alice", description: "新描述", model: "sonnet" });
   });
 
+  it("Phase 1：runtime/entrypoint 进 agentInfo；不带 profile 字段的重推保留它们", () => {
+    runtime.registerAgent(A_ID, A, { runtime: "langgraph", entrypoint: "ep-1", runtimeProfileError: null });
+    expect(runtime.getAgentInfo(A)).toMatchObject({ runtime: "langgraph", entrypoint: "ep-1" });
+    runtime.registerAgent(A_ID, A, { description: "改描述" });
+    expect(runtime.getAgentInfo(A)).toMatchObject({ runtime: "langgraph", entrypoint: "ep-1", description: "改描述" });
+  });
+
+  it("Phase 1：权威 profile 重推整体替换——切 runtime 不带 entrypoint 时清掉旧值", () => {
+    runtime.registerAgent(A_ID, A, { runtime: "langgraph", entrypoint: "ep-1", runtimeProfileError: null });
+    // PATCH 改回 claude：本次推送带 profile 字段（runtimeProfileError=null=无冲突）→ 权威合并
+    runtime.registerAgent(A_ID, A, { runtime: "claude", runtimeProfileError: null });
+    const info = runtime.getAgentInfo(A);
+    expect(info?.runtime).toBe("claude");
+    expect(info?.entrypoint).toBeUndefined(); // 旧 langgraph entrypoint 不残留
+  });
+
+  it("Phase 1：runtimeProfileError 随重推更新/清除", () => {
+    const conflict = { code: "runtime-profile-conflict" as const, message: "conflict" };
+    runtime.registerAgent(A_ID, A, { runtime: "claude", runtimeProfileError: conflict });
+    expect(runtime.getAgentInfo(A)?.runtimeProfileError).toEqual(conflict);
+    runtime.registerAgent(A_ID, A, { runtime: "claude", runtimeProfileError: null });
+    expect(runtime.getAgentInfo(A)?.runtimeProfileError).toBeNull();
+  });
+
   it("register 后状态为 idle；getAgentState 对未知 agent 返回 undefined", () => {
     expect(runtime.getAgentState(A)).toBeUndefined();
     runtime.registerAgent(A_ID, A, {});
@@ -141,6 +165,24 @@ describe("agent-runtime loadExistingAgents", () => {
     expect(runtime.getAgentState(A)).toBe("idle");
     expect(runtime.getAgentInfo(A)).toEqual({ displayName: "Alice", description: "d", model: "sonnet" });
     expect(runtime.resolveAgentId(A)).toBe(A_ID);
+  });
+
+  it("Phase 1：runtime_profile.runtime/entrypoint 落进 agentInfo（重启不失忆）", async () => {
+    fakeFetch = installAgentsFetch(() => ({
+      ok: true,
+      body: {
+        agents: [
+          {
+            id: A_ID,
+            name: A,
+            duty: "on",
+            runtime_profile: { runtime: "langgraph", model: "gpt-4o", entrypoint: "ep-1" },
+          },
+        ],
+      },
+    }));
+    await runtime.loadExistingAgents();
+    expect(runtime.getAgentInfo(A)).toMatchObject({ runtime: "langgraph", entrypoint: "ep-1" });
   });
 
   it("二次加载摘掉已下线/转 off-duty 的 agent", async () => {

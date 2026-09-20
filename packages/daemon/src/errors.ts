@@ -25,13 +25,29 @@ export type DispatchErrorCode =
   /** scoped token mint 失败（网络/服务端 5xx）——可重试 */
   | "credential-mint-failed"
   /** runtime 未在 driver registry 注册 / 无 preset——重试无意义 */
-  | "runtime-unsupported";
+  | "runtime-unsupported"
+  | "runtime-profile-conflict"
+  | "entrypoint-required"
+  | "entrypoint-not-found"
+  | "entrypoint-runtime-mismatch"
+  | "entrypoint-not-allowed"
+  | "model-not-allowed"
+  | "manifest-invalid"
+  | "pty-runtime-unsupported";
 
 const NON_RETRIABLE: ReadonlySet<DispatchErrorCode> = new Set([
   "agent-unknown",
   "agent-stopped",
   "session-lost",
   "runtime-unsupported",
+  "runtime-profile-conflict",
+  "entrypoint-required",
+  "entrypoint-not-found",
+  "entrypoint-runtime-mismatch",
+  "entrypoint-not-allowed",
+  "model-not-allowed",
+  "manifest-invalid",
+  "pty-runtime-unsupported",
 ]);
 
 export class DispatchError extends Error {
