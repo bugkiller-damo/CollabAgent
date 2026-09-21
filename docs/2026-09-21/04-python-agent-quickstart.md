@@ -170,13 +170,13 @@ worker 是**受信任的任意本地代码**，不是沙箱：
 | 维度 | 支持面 | 验证方式 |
 |------|--------|----------|
 | Windows 11 x64 | CPython 3.10.21 / 3.12.14 / 3.13.15 | 本地已验证：pytest 134/134（两端点无 skip）、wheel 干净安装 + 双模板 probe/单回合冒烟、daemon `sarp-python-worker` 5/5 |
-| Windows Server 2022 x64 | CPython 3.10–3.13 | 首跑中 3.13 通过；3.10 与 daemon-bridge 因已修复的测试/进程清理问题失败，**待第二轮 CI 确认** |
-| Ubuntu 22.04 / 24.04 x64 | CPython 3.10–3.13 | 首跑中 3.13 与 Ubuntu daemon-bridge 通过；3.10 因已修复的测试 harness 撕帧失败，**待第二轮 CI 确认**；Linux x86_64 cp310/cp311/cp313 依赖已本地证明全为 binary wheel（43 wheel、0 sdist） |
+| Windows Server 2022 x64 | CPython 3.10–3.13 | 远端 CI 已验证（run `35602381617`：3.10/3.13 全量 pytest + daemon bridge） |
+| Ubuntu 22.04 / 24.04 x64 | CPython 3.10–3.13 | 远端 CI 已验证（run `35602381617`：3.10/3.13 全量 pytest + daemon bridge + 3.10 最低依赖）；Linux x86_64 cp310/cp311/cp313 依赖已本地证明全为 binary wheel（43 wheel、0 sdist） |
 | CentOS Stream 9 x64 | AppStream Python 3.11 + Node.js 20 | 远端 CI 已验证（`centos-stream-9` 容器 job：SDK pytest + 模板冒烟 + daemon 三件） |
 | CentOS Linux 7 | — | 不支持：EOL 2024-06-30，无受支持的 Python ≥3.10 基线 |
 | macOS | CPython 3.12 | 远端 CI 已验证（安装 + 双模板 probe/单回合冒烟），非主要内部目标 |
 | Python 版本范围 | 3.10–3.13（`>=3.10,<3.14`） | 同上行各 OS 行 |
-| Python 3.10 + 最低依赖 | 精确 `langchain==1.4.2` `langchain-core==1.6.3` `langgraph==1.2.11` `langgraph-checkpoint-sqlite==3.1.1` | ubuntu-24.04 专用 minimum-dependencies job 首跑受同一测试 harness 撕帧影响，**待第二轮 CI 确认** |
+| Python 3.10 + 最低依赖 | 精确 `langchain==1.4.2` `langchain-core==1.6.3` `langgraph==1.2.11` `langgraph-checkpoint-sqlite==3.1.1` | ubuntu-24.04 专用 minimum-dependencies job 已在远端 run `35602381617` 通过全量 pytest |
 | LangChain | `>=1.4.2,<2.0` | `[langchain]` extra + 模板/示例测试（更早 1.x 未测试不支持） |
 | LangGraph | `>=1.2.11,<2.0` | `[langgraph]` extra + 模板/示例测试 |
 | langgraph-checkpoint-sqlite | `>=3.1.1,<4.0` | `[langgraph]` extra |
