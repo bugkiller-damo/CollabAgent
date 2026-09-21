@@ -127,6 +127,48 @@ def build_graph(init, slock_tools: list[SlockTool]):
     return builder.compile(checkpointer=SqliteSaver(conn))
 
 
+def _probe() -> int:
+    """--slock-probe：单行 probe.result 帧后退出（§9.4）。
+
+    必须跑在 import langgraph / 建模型客户端 / 开 checkpoint 之前——
+    probe 环境是最小 env，且不保证框架依赖可用。
+    """
+    import importlib.metadata
+    from datetime import datetime, timezone
+
+    from slock_runtime.protocol import encode_worker_frame
+    from slock_runtime.runtime import BRIDGE_VERSION
+
+    try:
+        framework_version = importlib.metadata.version("langgraph")
+    except Exception:
+        framework_version = None
+    line = encode_worker_frame(
+        "probe.result",
+        1,
+        datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        runtime={
+            "id": "langgraph",
+            "frameworkVersion": framework_version,
+            "bridgeVersion": BRIDGE_VERSION,
+        },
+        capabilities={
+            "persistentProcess": True,
+            "streamingText": True,
+            "toolEvents": True,
+            "durableThreads": True,
+            "interrupts": True,
+            "mcp": True,
+            "usage": "tokens",
+            "pty": False,
+            "maxConcurrency": 1,
+        },
+    )
+    sys.stdout.write(line)
+    sys.stdout.flush()
+    return 0
+
+
 def _interrupt_prompt(value) -> str:
     """interrupt payload → 发回频道的审批文案（§8.6 turn.interrupt.prompt）。"""
     if isinstance(value, dict) and value.get("kind") == "final_approval":
@@ -142,6 +184,8 @@ def _custom_progress(data):
 
 
 def main() -> int:
+    if "--slock-probe" in sys.argv:
+        return _probe()
     try:
         return serve_langgraph(
             build_graph,
