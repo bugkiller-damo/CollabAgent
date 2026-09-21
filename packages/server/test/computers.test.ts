@@ -1,4 +1,5 @@
 import { afterAll, describe, expect, it } from "vitest";
+import { connectCommand } from "../src/routes/computers.js";
 import { api, cleanupTestData, closeSql, ensureTestComputer, registerUser, sql, uniqHandle } from "./helpers.js";
 
 afterAll(async () => {
@@ -11,6 +12,19 @@ async function createOrg(cookie: string, name = "zz_comp_org") {
   expect(r.status).toBe(200);
   return r.data.org as { id: string; name: string };
 }
+
+// 接入向导命令生成：前缀由 DAEMON_LAUNCH_CMD 配置（默认 monorepo dev 形态），
+// 分发部署改 env 即切 npx/二进制/docker 形态；--server-url/--api-key/--server 恒定由代码追加。
+describe("connectCommand", () => {
+  it("默认 pnpm dev 形态；launchCmd 可注入覆盖；尾斜杠归一化；--server 仅在有名时追加", () => {
+    expect(connectCommand("http://h:3001/", "tok")).toBe(
+      "pnpm --filter @collabagent/daemon dev -- --server-url http://h:3001 --api-key tok",
+    );
+    expect(connectCommand("http://h:3001", "tok", "srv", "npx --yes @collabagent/daemon")).toBe(
+      'npx --yes @collabagent/daemon --server-url http://h:3001 --api-key tok --server "srv"',
+    );
+  });
+});
 
 // 2026-09-19 server-scoped computers（docs/2026-09-19/01-server-scoped-computers.md）：
 // 行 = (user, server, machine) 三维；scope 必显式（不落 personal）；读=成员、写=属主、
