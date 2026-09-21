@@ -107,7 +107,7 @@ maybe("manifest → probe → driver → 模板 worker 端到端", () => {
           expect(result.finalText).toBe("Echo: hi");
           expect(events.some((e) => e.type === "turn.end")).toBe(true);
         } finally {
-          if (session.alive) session.stop();
+          await session.stop();
         }
       } finally {
         rmSync(root, { recursive: true, force: true });

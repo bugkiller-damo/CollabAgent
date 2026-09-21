@@ -150,6 +150,8 @@ export class PersistentJsonlWorkerSession implements AgentRuntimeSession {
   readonly ready: Promise<void>;
   private readyResolve!: () => void;
   private readyReject!: (e: Error) => void;
+  private readonly stoppedPromise: Promise<void>;
+  private resolveStopped!: () => void;
 
   constructor(private opts: JsonlWorkerSessionOptions) {
     this.now = opts.now ?? Date.now;
@@ -161,6 +163,9 @@ export class PersistentJsonlWorkerSession implements AgentRuntimeSession {
     // 预挂 handler：handshake 失败但尚无 send/await 时不触 unhandledRejection；
     // await 方拿到的仍是同一个 rejected promise。
     this.ready.catch(() => {});
+    this.stoppedPromise = new Promise<void>((res) => {
+      this.resolveStopped = res;
+    });
     this.spawnWorker();
   }
 
@@ -719,6 +724,7 @@ export class PersistentJsonlWorkerSession implements AgentRuntimeSession {
       // 不再是孤儿。killTree 内部已处理已退出/平台差异（测试可注入）。
       (this.opts.killTree ?? killProcessTree)(proc, { force: true });
     }
+    this.resolveStopped();
   }
 
   private detachProcListeners(): void {
@@ -749,6 +755,7 @@ export class PersistentJsonlWorkerSession implements AgentRuntimeSession {
     this.detachProcListeners();
     this.proc = null;
     this.lineBuf = "";
+    this.resolveStopped();
   }
 
   private handleProcExit(proc: ChildProcess, gen: number, code: number | null): void {
@@ -856,41 +863,44 @@ export class PersistentJsonlWorkerSession implements AgentRuntimeSession {
    * 结算（agent-stopped）→ shutdown → 等 runtime.stopped 或 shutdownMs →
    * SIGTERM → 2s 不 exit → SIGKILL。stdin 写失败直接进 kill 路径。
    */
-  stop(): void {
-    if (this.stopped) return;
-    this.stopped = true;
-    if (this.readyState === "pending") {
-      this.readyState = "failed";
-      this.readyReject(new DispatchError("agent-stopped", "session stopped before runtime.ready"));
-    }
-    const proc = this.proc;
-    const turn = this.activeTurn;
-    if (!proc) {
-      if (turn) {
-        this.activeTurn = null;
-        this.rejectTurn(turn, new DispatchError("agent-stopped", "session stopped"));
+  stop(): Promise<void> {
+    if (!this.stopped) {
+      this.stopped = true;
+      if (this.readyState === "pending") {
+        this.readyState = "failed";
+        this.readyReject(new DispatchError("agent-stopped", "session stopped before runtime.ready"));
       }
-      this.clearAllTimers();
-      return;
-    }
-    if (turn && !turn.settled) {
-      if (this.writeFrame({ type: "turn.cancel", fields: { turnId: turn.turnId, reason: "agent stopped" } })) {
-        const grace = Math.min(CANCEL_GRACE_MAX_MS, this.opts.timeouts.shutdownMs);
-        this.stopTimer = setTimeout(() => {
-          this.stopTimer = null;
-          const t = this.activeTurn;
-          if (t) {
-            this.rejectTurn(t, new DispatchError("agent-stopped", "turn force-settled on session stop"));
-            this.clearActiveTurn(t); // → proceedShutdown
-          } else {
-            this.proceedShutdown();
-          }
-        }, grace);
-        return;
+      const proc = this.proc;
+      const turn = this.activeTurn;
+      if (!proc) {
+        if (turn) {
+          this.activeTurn = null;
+          this.rejectTurn(turn, new DispatchError("agent-stopped", "session stopped"));
+        }
+        this.clearAllTimers();
+        this.resolveStopped();
+      } else if (turn && !turn.settled) {
+        if (this.writeFrame({ type: "turn.cancel", fields: { turnId: turn.turnId, reason: "agent stopped" } })) {
+          const grace = Math.min(CANCEL_GRACE_MAX_MS, this.opts.timeouts.shutdownMs);
+          this.stopTimer = setTimeout(() => {
+            this.stopTimer = null;
+            const t = this.activeTurn;
+            if (t) {
+              this.rejectTurn(t, new DispatchError("agent-stopped", "turn force-settled on session stop"));
+              this.clearActiveTurn(t); // → proceedShutdown
+            } else {
+              this.proceedShutdown();
+            }
+          }, grace);
+        } else {
+          // stdin 写失败 → 直接走 kill 路径（proceedShutdown 的 shutdown 写也会失败 → SIGTERM）
+          this.proceedShutdown();
+        }
+      } else {
+        this.proceedShutdown();
       }
-      // stdin 写失败 → 直接走 kill 路径（proceedShutdown 的 shutdown 写也会失败 → SIGTERM）
     }
-    this.proceedShutdown();
+    return this.stoppedPromise;
   }
 
   /** stop 流程第二步：shutdown 帧 → 等 runtime.stopped 或 shutdownMs → SIGTERM。 */

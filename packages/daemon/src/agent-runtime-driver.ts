@@ -56,7 +56,7 @@ export interface AgentRuntimeSession {
   readonly alive: boolean;
   // biome-ignore lint/suspicious/noConfusingVoidType: void 是有意的——persistent 会话可只经事件结算不返回值
   send(request: AgentTurnRequest): Promise<void | AgentRuntimeTurnResult>;
-  stop(): void;
+  stop(): void | Promise<void>;
 }
 
 export interface AgentRuntimeOpenOptions {

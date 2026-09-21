@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -75,7 +75,7 @@ maybe("Python slock_runtime worker ↔ session 端到端", () => {
     expect(result.sessionRef).toBe("slock:v1:a1:thread:t1");
     expect(result.usage?.totalTokens).toBe(3);
     expect(events.map((e) => e.type)).toEqual(["text", "text", "usage", "turn.end"]);
-    session.stop();
+    await session.stop();
     expect(session.alive).toBe(false);
   });
 
@@ -94,7 +94,7 @@ maybe("Python slock_runtime worker ↔ session 端到端", () => {
     )) as AgentRuntimeTurnResult;
     expect(second.status).toBe("success");
     expect(second.finalText).toBe("resumed:approved");
-    session.stop();
+    await session.stop();
   });
 
   it("伪造 resume token → PROTOCOL_VIOLATION → worker-error/终态 error", async () => {
@@ -106,7 +106,7 @@ maybe("Python slock_runtime worker ↔ session 端到端", () => {
     );
     if (res.ok) expect(res.r.status).toBe("error");
     else expect(res.code).toBeDefined();
-    session.stop();
+    await session.stop();
   });
 
   it("runtime.id 不符 → runtime-id-mismatch", async () => {

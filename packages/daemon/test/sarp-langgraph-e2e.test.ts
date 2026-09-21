@@ -95,7 +95,7 @@ maybe("真实 LangGraph worker ↔ daemon session", () => {
     const r2 = (await session.send(req("t-2", "second"))) as AgentRuntimeTurnResult;
     // 第二回合看到 [Human, AI, Human] = 3 条——上一回合状态在 checkpoint 里
     expect(r2.finalText).toBe("echo[3]:second");
-    session.stop();
+    await session.stop();
   });
 
   it("worker 进程重启后同 conversationId 状态仍在（durable checkpoint）", async () => {
@@ -103,14 +103,14 @@ maybe("真实 LangGraph worker ↔ daemon session", () => {
     const s1 = openWorker(ws);
     const r1 = (await s1.session.send(req("t-1", "first"))) as AgentRuntimeTurnResult;
     expect(r1.finalText).toBe("echo[1]:first");
-    s1.session.stop();
+    await s1.session.stop();
     expect(s1.session.alive).toBe(false);
 
     // 全新进程、同一 workspace + conversationId → checkpoint 恢复
     const s2 = openWorker(ws);
     const r2 = (await s2.session.send(req("t-2", "after-restart"))) as AgentRuntimeTurnResult;
     expect(r2.finalText).toBe("echo[3]:after-restart");
-    s2.session.stop();
+    await s2.session.stop();
   });
 
   it("不同 conversationId 互不共享状态", async () => {
@@ -119,7 +119,7 @@ maybe("真实 LangGraph worker ↔ daemon session", () => {
     await session.send(req("t-1", "first", "slock:v1:a1:thread:t1"));
     const other = (await session.send(req("t-2", "fresh", "slock:v1:a1:thread:OTHER"))) as AgentRuntimeTurnResult;
     expect(other.finalText).toBe("echo[1]:fresh");
-    session.stop();
+    await session.stop();
   });
 
   it("interrupt() → 审批提示回传 → resume 走 Command(resume) 原 checkpoint 续跑", async () => {
@@ -141,7 +141,7 @@ maybe("真实 LangGraph worker ↔ daemon session", () => {
     // gate 的 verdict + reply 的 echo 都进了 state.messages——resume 后图续跑
     expect(second.finalText).toContain("echo[");
     expect(second.finalText).toContain("verdict:approved");
-    session.stop();
+    await session.stop();
   });
 
   it("非流式 invoke 路径也产出 finalText（streaming=False 由 SDK 侧测；此处补一条跨会话隔离 sanity）", async () => {
@@ -150,6 +150,6 @@ maybe("真实 LangGraph worker ↔ daemon session", () => {
     const r = (await session.send(req("t-9", "x", "slock:v1:a1:dm:bob"))) as AgentRuntimeTurnResult;
     expect(r.status).toBe("success");
     expect(r.finalText).toBe("echo[1]:x");
-    session.stop();
+    await session.stop();
   });
 });
