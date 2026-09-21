@@ -176,8 +176,15 @@ checkpoint 碰撞。`runtime.revision` 来自 manifest 条目 sha256。
 ## 8. probe 模式
 
 `command --slock-probe`：不进入服务循环，打印**单行** `probe.result` 帧
-（`probe:true` + `runtime.id` + `capabilities` + `model`）后 `exit(0)`。
+（`probe:true` + `runtime.id` + `runtime.frameworkVersion` +
+`runtime.bridgeVersion` + `capabilities` + `model`）后 `exit(0)`。
 daemon 用它做 entrypoint 可用性门禁（15s 超时）。
+
+Python SDK 侧该分支由 `WorkerRuntime.serve` 内置实现：判定只看
+`sys.argv[1:]`，在读 stdin、开 journal、调 `on_initialize`、建
+graph/model、起 MCP 之前返回；`capabilities` 取 adapter 声明的静态基线
+（握手期 `on_initialize` overrides 仍是权威），`model` 取 `probe_model`
+（adapter 报 `{"overrides": true}`）。worker 源码不应再自写 probe 分支。
 
 ## 9. Conformance
 

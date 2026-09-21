@@ -92,7 +92,7 @@ SARP/1 协议 + `slock-runtime` Python SDK + daemon bridge driver + server/web �
 
 ## 4. 当前完成情况
 
-本次实测：Python SDK 测试 `bridges/python` 下 `pytest tests -q` → **121 passed**（仓库 venv 已装 langchain 1.4.2 / langgraph 1.2.11 / langgraph-checkpoint-sqlite / pytest 9.1.1）。注意：Python 测试当前**不在 GitHub CI**（`.github/workflows/ci.yml` 只有 Node 侧 lint/typecheck、daemon vitest、web、server 四层 job）。本评估未重新运行 daemon/server/web 测试，不虚构其结果；既有覆盖以测试文件存在与覆盖面为准。
+本次实测（批次 A 落地后复测）：隔离 venv（CPython 3.12.14，`pip install -e ".[langchain,langgraph,dev]"`）下 `pytest tests -q` → **134 passed**；`ruff check slock_runtime tests` clean；`mypy slock_runtime` clean；daemon 侧 `vitest run test/runtime-entrypoint-probe.test.ts test/sarp-python-worker.test.ts` → **22/22 passed**。批次 A 前基线为 121 passed。注意：Python 测试此前**不在 GitHub CI**——本批新增 `.github/workflows/python-sdk.yml`（ubuntu/windows × Python 3.10/3.13 全量、macOS 3.12 冒烟、单 Linux quality leg）**已配置但远端尚未运行**；本地未装 3.10/3.13，跨版本/平台结论以 CI 为准。未重新运行 server/web 测试，不虚构其结果。
 
 | 能力 | 状态 | 证据 | 结论 |
 |------|------|------|------|
@@ -109,19 +109,19 @@ SARP/1 协议 + `slock-runtime` Python SDK + daemon bridge driver + server/web �
 | web 创建 runtime/entrypoint/model | 已完成 | `packages/web/src/pages/ComputerView.vue`：bridge runtime 聚合选项、entrypoint 下拉、modelMode 收敛 model；`stores/computerStore.ts` bridgeRuntimes/runtimeCatalog | 创建链路可走 UI |
 | 示例 worker | 已完成 | `bridges/examples/langgraph-agent/`、`bridges/examples/langchain-agent/`：agent.py + runtime.manifest.json + README（含手动冒烟） | 可作模板蓝本 |
 | 跨语言 fixtures / conformance runner | 已完成 | `bridges/fixtures/*.jsonl` 双侧校验（`test/sarp-contract-fixtures.test.ts` ↔ `tests/test_contract_fixtures.py`）；`sarp-conformance.ts` `runSarpConformance` 8 项检查 | 合规验证能力存在但未暴露 |
-| SDK 分发 | 部分完成 | `bridges/python/pyproject.toml` 包名 `slock-runtime` v0.1.0、extras 齐全；但仅本地 editable/源码路径，无 PyPI、无 release CI | 没有受支持的公共安装路径 |
+| SDK 分发 | 部分完成 | `bridges/python/pyproject.toml`：dynamic version（`_version.py` 单一来源）、SPDX `license = "MIT"`、`requires-python = ">=3.10,<3.14"`、extras 下界=实测最低版本（langchain 1.4.2/core 1.6.3/langgraph 1.2.11/ckpt-sqlite 3.1.1）、`py.typed` 已就位；`python-release.yml` 已配置 | 包元数据与发布流水线就绪；仍未实际发布，受支持路径暂为源码/本地 wheel |
 | 可用性开关 | 部分完成 | daemon `SLOCK_EXPERIMENTAL_BRIDGE_RUNTIMES`、server `SLOCK_BRIDGE_RUNTIMES` 双 flag 默认关 | 实验姿态明确，非产品级开关 |
-| 文档 | 部分完成 | 设计文档、协议规范、实机手册、示例 README 均为内部视角；README 主文档未提 bridge | 缺外部开发者入口文档 |
+| 文档 | 部分完成 | 批次 A 已新增公开 quickstart、SDK README、双模板说明；协议规范与实机手册仍保留维护者深度 | Python Worker 接入入口已补；主仓库顶层导航与正式发布页仍待产品发布时接入 |
 | bridge agent 编辑 UX | 部分完成 | server PATCH 支持 runtime/entrypoint/model 复核修改；web `MemberProfileBody.vue` 对 bridge profile 只读（runtime 选项仅 claude） | API 先行，UI 未开 |
 | 诊断 | 部分完成 | probe 状态/errorCode 上抛至 web；session stderr 环形缓冲进错误尾 | 缺 runtime doctor / 受脱敏 stderr 查看面 |
 | secret 管理 | 部分完成 | `secretEnv` 只传变量名、值从 daemon env 注入 | 依赖用户自己配置 daemon 进程 env，无本地 secret store UX |
 | conformance 暴露 | 部分完成 | `runSarpConformance` 是库函数，仅测试与文档引用 | 无 CLI/HTTP 入口 |
-| 兼容性策略 | 部分完成 | 协议 version=1、SDK `__version__`=0.1.0 已就位 | 无对外版本支持/弃用承诺 |
-| PyPI / 公开分发 / release CI | 缺失 | 无发布配置；`.github/workflows/` 无 Python job | Developer Preview 阻塞项 |
-| Python CI | 缺失 | 同上；依赖 Python/venv 的 daemon 测试无 python 时 skip | 同上 |
+| 兼容性策略 | 部分完成 | 协议 version=1、SDK `__version__` 单一来源（`_version.py`）；公开 API 已分 stable/advanced/internal 并有 `test_public_api.py` 契约锁 | 无对外版本支持/弃用承诺 |
+| PyPI / 公开分发 / release CI | 部分完成 | `.github/workflows/python-release.yml`：`slock-runtime-v*` tag → build job（contents:read：构建/对账/twine/双 clean venv 冒烟/上传 artifact）→ publish job（needs:build，`environment: pypi` + `id-token: write`，download-artifact → `gh-action-pypi-publish`） | 已配置未触发；PyPI 未发布；PyPI trusted-publisher 映射与 `pypi` environment 属外部配置、尚未验证 |
+| Python CI | 部分完成 | `.github/workflows/python-sdk.yml` 已配置（ubuntu-22.04/24.04 + windows-2022 × 3.10/3.13 全量、ubuntu-24.04 3.10 minimum-dependencies job、macOS 3.12 probe+单回合冒烟、ubuntu-24.04/windows-2022 daemon-bridge 集成 leg、centos-stream-9 容器 job、单 ubuntu-24.04 quality leg；远端未跑）；daemon Python 依赖测试经 `SLOCK_TEST_PYTHON`/`python3`/`python` 候选探测选择解释器 | 远端绿与否待首跑 |
 | runtime/manifest/probe/check CLI | 缺失 | `cli.ts` 注册的 slock 子命令无 runtime 域 | 同上 |
 | 公开 JSON Schema / 模板生成器 | 缺失 | manifest schema 只在 `validateEntry` 代码内 | 同上 |
-| 一站式 quickstart / troubleshooting | 缺失 | 现有文档面向维护者 | 同上 |
+| 一站式 quickstart / troubleshooting | 已完成 | `docs/2026-09-21/04-python-agent-quickstart.md`（安装/manifest/flag/secret/故障表/信任边界/兼容矩阵）+ `bridges/python/README.md` 扩写 | Developer Preview 入口文档已存在 |
 | 本地 secret 管理 UX | 缺失 | 仅 daemon env 注入 | Beta 目标 |
 | 版本支持与弃用策略 | 缺失 | 无公开承诺文档 | GA 目标 |
 
@@ -129,11 +129,11 @@ SARP/1 协议 + `slock-runtime` Python SDK + daemon bridge driver + server/web �
 
 按当前实际顺序，每一步的主要摩擦/失败模式：
 
-1. **准备 Python 环境 + 安装 SDK**（`uv pip install -e bridges/python` 或示例的 sys.path 兜底）
-   - 摩擦：必须 clone 本仓库；没有 `pip install slock-runtime`；安装说明只在 `bridges/python/README.md` 与示例 README。
-2. **编写 `agent.py`（含 `--slock-probe` 分支）**
-   - 摩擦：probe 模式目前要用户手工编码 `probe.result` 帧（两个示例都是手写 `encode_worker_frame`），写错即 probe 失败；无模板生成器。
-   - 失败模式：probe 输出非单帧/缺字段 → `protocol_incompatible`（`probe-output-invalid` / `probe-protocol-incompatible`）。
+1. **准备 Python 环境 + 安装 SDK**
+   - 摩擦：受支持路径仍是源码/本地 wheel（`pip install -e "bridges/python[…]"` 或构建 wheel）；release 流水线已就位但 PyPI 未发布，故仍需接触本仓库。
+2. **编写 `agent.py`**
+   - 已解决（批次 A）：`--slock-probe` 由 `WorkerRuntime.serve` 内置处理（单行 `probe.result` → exit 0，跑在 stdin/journal/on_initialize/建 graph/起 MCP 之前）；示例手写 `_probe()` 已删，`bridges/templates/` 提供可复制最小模板。
+   - 残余失败模式：probe 输出非单帧/缺字段 → `protocol_incompatible`（`probe-output-invalid` / `probe-protocol-incompatible`）。
 3. **手写 manifest 条目**（`command`/`args`/`cwd` 绝对路径、`env`、`secretEnv` 名、`model.mode`、`requireDurableThreads`、三个超时）
    - 摩擦：schema 只在 `validateEntry` 代码里；无 validate CLI；失败表现为 probe `misconfigured` + errorCode，字段级报错不外发。
    - 失败模式（`validateEntry` 精确失败码）：`entry-invalid`、`entry-id-invalid`、`entry-runtime-invalid`、`entry-label-invalid`、`entry-command-invalid`、`entry-args-invalid`、`entry-cwd-invalid`、`entry-env-invalid`、`entry-secret-env-invalid`、`entry-env-overlap`、`entry-model-invalid`、`entry-timeout-invalid`、`entry-durable-invalid`、`entry-id-duplicate`。
@@ -152,9 +152,9 @@ SARP/1 协议 + `slock-runtime` Python SDK + daemon bridge driver + server/web �
 
 ### A. Python 包
 
-- 待新增：公开分发 `pip install "slock-runtime[langgraph]"` / `"slock-runtime[langchain]"`（extras 已在 `pyproject.toml` 定义，缺的是发布与 release CI）。
-- 已有基础但尚未冻结：`serve_langgraph` / `serve_langchain` / 低层 `WorkerRuntime`+`TurnOutcome`+`TurnEmit` 是候选公开 API（`slock_runtime/__init__.py` 的 `__all__` 是当前事实面，发布前仍需分层与兼容测试）。
-- 待新增：高层入口自动处理 `--slock-probe`，由 `serve_*`/`WorkerRuntime` 自带 probe 分支，用户不再手写帧（当前示例在 `_probe()` 里手写 `encode_worker_frame`，应内收进 SDK 并由 adapter capabilities 自动填充）。
+- 已落地（批次 A）：打包元数据齐备 + `python-release.yml`（`slock-runtime-v*` tag → clean venv extras 冒烟 → trusted publishing）；**待首个 tag 发布**——当前受支持路径为源码/本地 wheel。
+- 已分层（批次 A）：stable = `serve_langchain`/`serve_langgraph`/`SARP_PROTOCOL`/`SARP_VERSION`/`__version__`；advanced = `serve`/`WorkerRuntime`/`TurnOutcome`/`TurnEmit`/协议 dataclass/错误类型；其余为 internal。`serve()` 已补类型标注，`tests/test_public_api.py` 锁定 `__all__` 精确面与单一版本源。
+- 已完成（批次 A）：`--slock-probe` 由 `WorkerRuntime.serve` 内置（判定 `sys.argv[1:]`，在 stdin/journal/`on_initialize`/graph/MCP 之前发单行 `probe.result` → exit 0）；`probe_model` 构造参数；`_resolved_capabilities()` 供 probe 与 `runtime.ready` 共用；两个 adapter 配静态能力面 + `probe_model={"overrides":true}`；示例 `_probe()` 已删。
 
 ### B. Worker 可执行契约（公开文字约定）
 
@@ -189,6 +189,8 @@ SARP/1 协议 + `slock-runtime` Python SDK + daemon bridge driver + server/web �
 ## 7. 差距与优先级
 
 ### P0 — Developer Preview 阻塞项
+
+> 实施进度（2026-09-21 批次 A）：P0.1 发布物/API 分层已落地且 clean-venv 安装本地验证通过，**PyPI 未发布**（trusted-publisher 映射与 `pypi` environment 属外部配置，尚未完成）；P0.2 已完成（SDK 内置 probe + 双模板）；P0.5 workflow 已配置、**远端 CI 未跑**；P0.6 已完成（quickstart + README）；P0.3/P0.4/P0.7 未动，Developer Preview 门槛**未全部达成**。
 
 | ID | 任务 | 原因 | 主要落点 | 验收 |
 |----|------|------|----------|------|
@@ -231,6 +233,16 @@ SARP/1 协议 + `slock-runtime` Python SDK + daemon bridge driver + server/web �
   - 新 workflow：Python 测试（Linux/Windows 全量、macOS smoke）+ release（tag → wheel/sdist → 发布 → clean venv 安装验证）；
   - 公开 quickstart/troubleshooting/兼容矩阵文档。
 - 退出条件：clean venv 安装 + 模板 + 手写 manifest 三步跑通一个回合；CI 绿。
+- 实施记录（2026-09-21，本批已落地）：
+  - 版本/打包：`slock_runtime/_version.py` 单一版本源；pyproject dynamic version + SPDX `license = "MIT"`（setuptools>=77,<83）+ `requires-python = ">=3.10,<3.14"` + extras 下界=实测最低版本（`langchain>=1.4.2`、`langchain-core>=1.6.3`、`langgraph>=1.2.11`、`langgraph-checkpoint-sqlite>=3.1.1`，上界各按大版本）+ dev 工具全有界 + classifiers（Alpha）/keywords/项目 URLs + `py.typed`；API 三层写入 docstring/README，`serve()` 补类型标注。
+  - SDK 内置 probe：`WorkerRuntime.serve` 按 `sys.argv[1:]` 检测 `--slock-probe`，在读 stdin、开 journal、调 `on_initialize`、建 graph/model、起 MCP 之前发单行 `probe.result`（`probe:true` + `runtime{id,frameworkVersion,bridgeVersion}` + `capabilities` + `model`）并 exit 0；`probe_model` 构造参数缺省 `{}`；`_resolved_capabilities()` 供 probe 与 `runtime.ready` 共用；langchain/langgraph adapter 各配静态能力面（mcp 分别取 `load_mcp_tools`/true；durableThreads 静态 true、握手期按 checkpointer 覆盖）+ `probe_model={"overrides":true}`；两个示例手写 `_probe()`/argv 分支已删。
+  - 模板：`bridges/templates/langchain-agent/`、`langgraph-agent/`（`agent.py` + `requirements.txt` + `runtime.manifest.json` + `README.md`）+ 公共冒烟 `bridges/templates/smoke_one_turn.py`（stdlib-only，release workflow 与手工验证共用）。
+  - CI/release：`.github/workflows/python-sdk.yml`（ubuntu-22.04/24.04 + windows-2022 × Python 3.10/3.13 全量 pytest；ubuntu-24.04 3.10 minimum-dependencies job 精确装声明下界跑全量；macOS 3.12 非 editable 安装 + 双模板 probe + 单回合冒烟；ubuntu-24.04/windows-2022 × Python 3.12 daemon-bridge-integration leg（装 SDK wheel extras 后跑 `sarp-python-worker`/`sarp-langgraph-e2e`/`sarp-template-manifest-e2e` 三件）；centos-stream-9 容器 job（AppStream Python 3.11 + Node 20：全量 pytest + 模板 probe/冒烟 + daemon 三件）；单 ubuntu-24.04 quality leg 跑 ruff/mypy/build/twine；path filter 含 contract 文件、manifest/probe/worker driver 源与三件 daemon E2E 测试）与 `python-release.yml`（`slock-runtime-v*` tag；最小权限拆分——build job 仅 `contents: read` 做构建/对账/twine/双 clean venv extras 冒烟/上传，publish job `needs: build` + `environment: pypi` + `id-token: write`，download-artifact 后 `gh-action-pypi-publish`）。**均已配置、远端未运行；未发布 PyPI；PyPI trusted-publisher 映射（owner `bugkiller-damo`/repo `CollabAgent`/workflow `python-release.yml`/environment `pypi`）与 GitHub `pypi` environment 属外部配置，尚未完成、未验证**。
+  - 测试：`tests/test_runtime.py` 新增 `TestProbe`（单帧/字段/exit 0/不读 stdin/不调 handler 与 on_initialize/argv0 边界）；`test_langchain_adapter.py` 示例 probe 用例改为断言 probe 由 SDK 持有并覆盖两个示例；新增 `tests/test_templates.py`（probe + 无 provider 单回合，子进程清 PYTHONPATH）与 `tests/test_public_api.py`（版本单一来源/API 面契约锁）。
+  - 文档：`bridges/python/README.md` 扩写（安装/API/自动 probe/稳定性分层）；新增 `docs/2026-09-21/04-python-agent-quickstart.md`；`02-sarp1-protocol.md` §8 补 SDK probe 实现说明。
+  - 本地验证（Windows 11 x64）：CPython **3.10.21 / 3.12.14 / 3.13.15** 三个版本各跑 `pytest tests -q` → **134 passed / 0 skip**（3.12 为首批，3.10/3.13 为端点验证）；`ruff`/`mypy` clean；`build` + `twine check` PASSED（METADATA：`License-Expression: MIT`、Alpha、`Requires-Python <3.14,>=3.10`、extras 精确下界）；各版本 clean venv 只装 wheel extras 后 `__file__` 证实在 site-packages、双模板 probe 单行 `probe.result` exit 0、`smoke_one_turn.py` 成功；`SLOCK_TEST_PYTHON` 指到各 wheel venv 跑 daemon `sarp-python-worker.test.ts` **5/5 passed**（真跑非 skip）；另 `runtime-entrypoint-probe` + worker 两文件 **22/22 passed**（3.12）。
+  - Linux 依赖可用性（非运行时验证）：`pip download --only-binary` 对 cp310/cp311/cp313 × `manylinux_2_28_x86_64`/`manylinux2014_x86_64` 三个目标全部解析成功——43 wheel、0 sdist；pydantic-core/orjson/ormsgpack/xxhash/zstandard/pyyaml/websockets/sqlite-vec/uuid-utils/charset-normalizer 十个原生包均有对应 ABI 的 manylinux wheel，兼容 Ubuntu 22.04/24.04 与 CentOS Stream 9 glibc。运行时结论归远端 CI。
+  - 未做/未验：远端 CI（Ubuntu LTS / Windows Server / macOS / CentOS Stream 9 全部 job）未跑——workflow 未提交推送前这些 gate 无法运行；PyPI 未发布且 trusted-publisher/environment 外部配置未完成；CentOS Stream 9 只有 wheel 可用性证据，容器内运行时验证待 CI；P0.3/P0.4/P0.7 不在本批。
 
 ### 批次 B — Local Runtime UX（对应 P0.3/P0.4，并接 P1.1/P1.2）
 
@@ -258,12 +270,12 @@ SARP/1 协议 + `slock-runtime` Python SDK + daemon bridge driver + server/web �
 
 | 验证面 | 当前覆盖 | 需新增 |
 |--------|----------|--------|
-| Python unit | `bridges/python/tests` 9 文件 121 用例（本地实测通过；不进 CI） | CI job；发布的 wheel 在 clean venv 安装后跑 smoke |
-| 跨语言 contract fixtures | `bridges/fixtures/*.jsonl`：daemon 侧 `test/sarp-contract-fixtures.test.ts` ↔ Python 侧 `tests/test_contract_fixtures.py` | 纳入 Python CI；fixture 再生成流程文档化 |
-| daemon bridge/session | `persistent-jsonl-worker.test.ts`、`jsonl-bridge-runtime.test.ts`、`sarp-bridge-integration.test.ts`（mjs fixture 真进程）、`sarp-python-worker.test.ts`（真 SDK，无 python 时 skip）、`sarp-langgraph-e2e.test.ts`（真 LangGraph+sqlite，缺 venv 时 skip） | CI 中提供 python/venv 使 skip 测试实跑；`slock runtime check` CLI 测试 |
+| Python unit | `bridges/python/tests` 11 文件 134 用例（Windows 本地 3.10.21/3.12.14/3.13.15 各 134/134 无 skip；CI 已配置远端未跑） | 远端 CI 首跑转绿；发布的 wheel 在 clean venv 安装后跑 smoke（release workflow 已配置） |
+| 跨语言 contract fixtures | `bridges/fixtures/*.jsonl`：daemon 侧 `test/sarp-contract-fixtures.test.ts` ↔ Python 侧 `tests/test_contract_fixtures.py`；已纳入 python-sdk.yml path filter | fixture 再生成流程文档化 |
+| daemon bridge/session | `persistent-jsonl-worker.test.ts`、`jsonl-bridge-runtime.test.ts`、`sarp-bridge-integration.test.ts`（mjs fixture 真进程）、`sarp-python-worker.test.ts`（真 SDK，候选探测解释器）、`sarp-langgraph-e2e.test.ts`（真 LangGraph+sqlite，跨平台 Python 候选探测）、`sarp-template-manifest-e2e.test.ts`（manifest→probe→driver→模板 worker，`SLOCK_TEST_PYTHON` 门控） | daemon-bridge-integration CI leg（ubuntu-24.04/windows-2022 × 3.12）与 centos-stream-9 job 已配置待首跑；`slock runtime check` CLI 测试 |
 | server 门禁 | `test/agents-bridge.test.ts`（fake daemon WS + entrypoints 的 POST/PATCH 矩阵）、`config.test.ts` flag 解析 | secretRefs/编辑路径用例 |
 | web 创建/编辑 | `stores/computerStore.test.ts`（flag/entrypoints/catalog） | 创建表单 entrypoint/model 收敛组件测试；bridge 编辑 UI 测试（P1.3 后） |
-| 3 OS smoke | 无 | Linux/Windows/macOS 安装+probe smoke |
+| 多 OS smoke | Windows 11 x64 本地已验证（3.10/3.12/3.13 全链路）；CI 已配置 ubuntu-22.04/24.04 + windows-2022 全量矩阵、macOS 3.12 smoke、centos-stream-9 容器 job、daemon-bridge 集成 leg——全部远端待首跑 | 远端首跑转绿后把「CI 已配置」升级为已验证 |
 | provider 冒烟 | 无（示例有 demo fallback 可零密钥跑通管道） | 私有环境真实 provider 冒烟（P2.5） |
 | 安全泄漏 | daemon 侧 env 白名单/manifest env 拒绝凭据名/secretEnv 不外发已有测试（`agent-env-whitelist.test.ts`、`agent-runtime-manifest.test.ts`、`runtime-entrypoint-probe.test.ts`） | 显式 leak 测试：stdout 帧/审计/probe 摘要/manifest 文件中不出现 secret 值的断言 |
 
