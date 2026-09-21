@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "id": "my-langgraph-agent",
+      "runtime": "langgraph",
+      "label": "My LangGraph Agent",
+      "command": "/absolute/path/to/venv/bin/python",
+      "args": ["agent.py"],
+      "cwd": "/absolute/path/to/langgraph-agent",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      },
+      "secretEnv": [],
+      "model": {
+        "mode": "fixed",
+        "default": "local:echo",
+        "allowed": []
+      },
+      "requireDurableThreads": false,
+      "startupTimeoutMs": 15000,
+      "silenceTimeoutMs": 300000,
+      "shutdownTimeoutMs": 10000
+    }
+  ]
+}

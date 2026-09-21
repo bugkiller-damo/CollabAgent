@@ -11,10 +11,12 @@ from __future__ import annotations
 import io
 import json
 import os
+import sys
 import threading
 import time
 
 from slock_runtime import InterruptRecord, TurnOutcome, WorkerRuntime, new_resume_token
+from slock_runtime._version import BRIDGE_VERSION
 from slock_runtime.errors import GRAPH_INPUT_INVALID
 from slock_runtime.idempotency import TurnJournal
 from slock_runtime.transport import SarpTransport
@@ -333,6 +335,86 @@ class TestInterruptResume:
         end = h.wait_end("t1")
         assert end["error"]["code"] == "PROTOCOL_VIOLATION"
         h.finish()
+
+
+class TestProbe:
+    """§8.4：--slock-probe 由 WorkerRuntime.serve 内置——单行 probe.result
+    即退，且跑在读 stdin、开 journal、调 on_initialize/handler 之前。"""
+
+    def _run_probe(self, monkeypatch, argv_tail=("--slock-probe",), **rt_kwargs):
+        monkeypatch.setattr(sys, "argv", ["agent.py", *argv_tail])
+        calls = {"turn": 0, "init": 0, "read": 0}
+
+        def counting_turn(init, turn, emit, cancelled):
+            calls["turn"] += 1
+            return TurnOutcome(status="success")
+
+        def counting_init(init, emit):
+            calls["init"] += 1
+            return {}
+
+        h = Harness()  # 不传 journal：probe 不应触碰磁盘
+        orig_read = h.transport.read_message
+
+        def spy_read():
+            calls["read"] += 1
+            return orig_read()
+
+        monkeypatch.setattr(h.transport, "read_message", spy_read)
+        h.start(counting_turn, counting_init, **rt_kwargs)
+        h._thread.join(timeout=8.0)
+        return h, calls
+
+    def test_probe_single_frame_full_fields(self, monkeypatch):
+        h, calls = self._run_probe(
+            monkeypatch,
+            framework_version="langgraph 1.2.3",
+            capabilities={"streamingText": True, "durableThreads": True, "custom": "x"},
+            probe_model={"overrides": True},
+        )
+        assert h.exit_code == 0
+        frames = h.frames()
+        assert len(frames) == 1
+        f = frames[0]
+        assert f["protocol"] == "slock.agent-runtime" and f["version"] == 1
+        assert f["type"] == "probe.result" and f["probe"] is True
+        assert f["runtime"] == {
+            "id": "langgraph",
+            "frameworkVersion": "langgraph 1.2.3",
+            "bridgeVersion": BRIDGE_VERSION,
+        }
+        caps = f["capabilities"]
+        assert caps["persistentProcess"] is True
+        assert caps["maxConcurrency"] == 1
+        assert caps["pty"] is False
+        assert caps["durableThreads"] is True and caps["custom"] == "x"
+        assert f["model"] == {"overrides": True}
+        # 恰好一行 stdout；stdin/journal/handler/on_initialize 全程未触达
+        h.stdout.seek(0)
+        assert h.stdout.read().count("\n") == 1
+        assert calls == {"turn": 0, "init": 0, "read": 0}
+
+    def test_probe_default_model_is_empty_dict(self, monkeypatch):
+        h, calls = self._run_probe(monkeypatch)
+        f = h.frames()[0]
+        assert f["type"] == "probe.result" and f["model"] == {}
+        assert h.exit_code == 0
+        assert calls == {"turn": 0, "init": 0, "read": 0}
+
+    def test_probe_flag_after_other_args(self, monkeypatch):
+        h, _ = self._run_probe(monkeypatch, argv_tail=("--other", "--slock-probe"))
+        assert h.frames()[0]["type"] == "probe.result" and h.exit_code == 0
+
+    def test_probe_flag_in_argv0_does_not_trigger(self, monkeypatch, tmp_path):
+        """判定只看 sys.argv[1:]——argv[0] 携带 flag 名不应短路主循环。"""
+        monkeypatch.setattr(sys, "argv", ["--slock-probe"])
+        h = Harness(tmp_path)
+        h.start(_ok)
+        h.send("initialize", **INIT)
+        ready = h.wait_frame(lambda f: f["type"] == "runtime.ready")
+        assert ready["runtime"]["id"] == "langgraph"
+        h.send("shutdown")
+        assert h.finish() == 0
 
 
 class TestCancelShutdown:

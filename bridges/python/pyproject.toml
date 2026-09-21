@@ -1,23 +1,58 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77,<83"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "slock-runtime"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Slock Agent Runtime Protocol (SARP/1) Python worker SDK — LangChain/LangGraph bridge"
 readme = "README.md"
-requires-python = ">=3.10"
-license = { text = "MIT" }
+requires-python = ">=3.10,<3.14"
+license = "MIT"
+keywords = ["slock", "sarp", "agent-runtime", "langchain", "langgraph", "daemon"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
+]
 dependencies = []  # 核心零依赖；langchain/langgraph 由 worker 自行声明
 
 [project.optional-dependencies]
-langchain = ["langchain-core>=0.3"]
-langgraph = ["langgraph>=0.2", "langgraph-checkpoint-sqlite>=1.0"]
-dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.10"]
+langchain = [
+    "langchain>=1.4.2,<2.0",
+    "langchain-core>=1.6.3,<2.0",
+]
+langgraph = [
+    "langgraph>=1.2.11,<2.0",
+    "langgraph-checkpoint-sqlite>=3.1.1,<4.0",
+]
+dev = [
+    "pytest>=8,<10",
+    "ruff>=0.6,<1",
+    "mypy>=1.10,<2",
+    "build>=1.2,<2",
+    "twine>=5,<7",
+]
+
+[project.urls]
+Homepage = "https://github.com/bugkiller-damo/CollabAgent"
+Repository = "https://github.com/bugkiller-damo/CollabAgent"
+
+[tool.setuptools.dynamic]
+version = { attr = "slock_runtime._version.__version__" }
 
 [tool.setuptools.packages.find]
 include = ["slock_runtime*"]
+
+[tool.setuptools.package-data]
+slock_runtime = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

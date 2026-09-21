@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NoReturn
 
 SARP_PROTOCOL = "slock.agent-runtime"
 SARP_VERSION = 1
@@ -120,7 +120,7 @@ class SarpProtocolError(Exception):
         self.frame_type = frame_type
 
 
-def _fail(reason: SarpErrorReason, msg: str, frame_type: str | None = None) -> None:
+def _fail(reason: SarpErrorReason, msg: str, frame_type: str | None = None) -> NoReturn:
     raise SarpProtocolError(reason, msg, frame_type)
 
 

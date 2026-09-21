@@ -116,6 +116,17 @@ def serve_langchain(
     runtime = WorkerRuntime(
         runtime_id=runtime_id,
         framework_version=framework_version,
+        capabilities={
+            # probe 期无 initialize——静态报本 adapter 的固有面；
+            # 握手期 on_initialize overrides 仍是权威（§12.2）
+            "streamingText": streaming,
+            "toolEvents": True,
+            "durableThreads": False,
+            "interrupts": False,
+            "mcp": bool(load_mcp_tools),
+            "usage": "tokens",
+        },
+        probe_model={"overrides": True},
         transport=transport,
         journal=journal,
     )
@@ -397,10 +408,11 @@ def _load_langchain_tools(client: SlockMcpClient) -> list:
 
 
 def _detect_framework_version() -> str | None:
-    """惰性探测 langchain_core 版本——缺依赖时返回 None，不进帧。"""
-    try:
-        import langchain_core
+    """惰性探测 langchain-core 版本——走 importlib.metadata，不 import 框架
+    （probe 环境可能没有框架依赖）；缺依赖时返回 None，不进帧。"""
+    import importlib.metadata
 
-        return getattr(langchain_core, "__version__", None)
+    try:
+        return f"langchain-core {importlib.metadata.version('langchain-core')}"
     except Exception:
         return None

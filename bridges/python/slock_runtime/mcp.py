@@ -21,11 +21,12 @@ import threading
 from dataclasses import dataclass
 from typing import Any
 
+from ._version import __version__
 from .errors import MCP_START_FAILED, SarpError
 from .protocol import SarpMcpDescriptor
 
 MCP_PROTOCOL_VERSION = "2025-06-18"
-CLIENT_INFO = {"name": "slock-runtime", "version": "0.1"}
+CLIENT_INFO = {"name": "slock-runtime", "version": __version__}
 
 # §15.4.5：平台写工具的幂等注入面。这些工具调一次产生一条 server 侧写记录；
 # worker 崩溃/A1 重试重跑回合时会按相同顺序再次调用——SDK 自动附

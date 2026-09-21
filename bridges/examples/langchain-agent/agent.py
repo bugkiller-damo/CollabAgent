@@ -4,7 +4,8 @@
   - 由 daemon 按 runtime.manifest.json spawn：`python agent.py`
     （stdin/stdout 逐行 SARP/1 帧，日志一律 stderr）。
   - 本机自检：`python agent.py --slock-probe` —— 单行 probe.result 后退出 0
-    （§9.4：probe 分支必须跑在加载 graph / 建模型客户端 / 联网之前）。
+    （§9.4：probe 分支由 SDK WorkerRuntime 内置，跑在加载 graph / 建模型
+    客户端 / 联网之前——本文件无需自写分支）。
 
 模型来源：initialize.runtime.model（如 "openai:gpt-4o-mini"）经
 `langchain.chat_models.init_chat_model` 解析；未配置或不可用时退化为本地
@@ -74,49 +75,10 @@ def build_agent(init: SarpInitialize, tools: list) -> Any:
     return RunnableLambda(_reply)
 
 
-def _probe() -> int:
-    """--slock-probe：单行 probe.result 帧后退出（§9.4）。不建模型、不联网。"""
-    import importlib.metadata
-    from datetime import datetime, timezone
-
-    from slock_runtime.protocol import encode_worker_frame
-    from slock_runtime.runtime import BRIDGE_VERSION
-
-    try:
-        framework_version = importlib.metadata.version("langchain-core")
-    except Exception:
-        framework_version = None
-    line = encode_worker_frame(
-        "probe.result",
-        1,
-        datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        runtime={
-            "id": RUNTIME_ID,
-            "frameworkVersion": framework_version,
-            "bridgeVersion": BRIDGE_VERSION,
-        },
-        capabilities={
-            "persistentProcess": True,
-            "streamingText": True,
-            "toolEvents": True,
-            "durableThreads": False,
-            "interrupts": False,
-            "mcp": True,
-            "usage": "tokens",
-            "pty": False,
-            "maxConcurrency": 1,
-        },
-    )
-    sys.stdout.write(line)
-    sys.stdout.flush()
-    return 0
-
-
 def main() -> int:
-    if "--slock-probe" in sys.argv:
-        return _probe()
     from slock_runtime import serve_langchain
 
+    # --slock-probe 由 serve_langchain → WorkerRuntime.serve 内置处理
     return serve_langchain(build_agent, runtime_id=RUNTIME_ID)
 
 

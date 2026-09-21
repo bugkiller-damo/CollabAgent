@@ -17,10 +17,21 @@
     sys.exit(rt.serve(run_turn))
 
 纪律：stdout 只属于协议帧；worker 日志一律 stderr。
+
+公开 API 分层（发布承诺见 README「API 稳定性」）：
+- stable（语义化版本内保持向后兼容）：serve_langchain、serve_langgraph、
+  SARP_PROTOCOL、SARP_VERSION、__version__；
+- advanced（自建 runtime 可用，签名仍可能演进）：serve、WorkerRuntime、
+  TurnOutcome、TurnEmit、TurnJournal、InterruptRecord、SarpTransport、
+  协议 dataclass 与错误类型；
+- internal：其余子模块与内部 helper——未列入 __all__ 即不受兼容承诺。
 """
 
 from __future__ import annotations
 
+from typing import Any
+
+from ._version import __version__
 from .errors import SarpError, WireError, map_provider_error
 from .idempotency import TurnJournal
 from .protocol import (
@@ -35,10 +46,16 @@ from .protocol import (
     SarpTurnSource,
     SarpTurnStart,
 )
-from .runtime import InterruptRecord, TurnEmit, TurnOutcome, WorkerRuntime, new_resume_token
+from .runtime import (
+    InterruptRecord,
+    OnInitialize,
+    RunTurn,
+    TurnEmit,
+    TurnOutcome,
+    WorkerRuntime,
+    new_resume_token,
+)
 from .transport import SarpTransport
-
-__version__ = "0.1.0"
 
 __all__ = [
     "SARP_PROTOCOL",
@@ -68,7 +85,13 @@ __all__ = [
 ]
 
 
-def serve(run_turn, *, runtime_id: str, on_initialize=None, **runtime_kwargs) -> int:
+def serve(
+    run_turn: RunTurn,
+    *,
+    runtime_id: str,
+    on_initialize: OnInitialize | None = None,
+    **runtime_kwargs: Any,
+) -> int:
     """裸协议入口：自带 run_turn(init, turn, emit, cancelled) -> TurnOutcome。"""
     rt = WorkerRuntime(runtime_id=runtime_id, **runtime_kwargs)
     return rt.serve(run_turn, on_initialize)

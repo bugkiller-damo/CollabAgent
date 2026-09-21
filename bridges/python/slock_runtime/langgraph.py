@@ -341,15 +341,20 @@ def serve_langgraph(
             # 1) MCP client 先行：子进程随 worker 退出由 finally close() 兜底
             client = SlockMcpClient(init.mcp)
             client.start()
-            tools = [
-                SlockTool(
-                    name=t.name,
-                    description=t.description,
-                    input_schema=t.input_schema,
-                    call=lambda args, _n=t.name, _c=client: _c.call_tool(_n, args),
+            mcp_client = client
+            for t in client.list_tools():
+
+                def _call(args: dict, _n: str = t.name, _c: SlockMcpClient = mcp_client) -> str:
+                    return _c.call_tool(_n, args)
+
+                tools.append(
+                    SlockTool(
+                        name=t.name,
+                        description=t.description,
+                        input_schema=t.input_schema,
+                        call=_call,
+                    )
                 )
-                for t in client.list_tools()
-            ]
         state["mcp_client"] = client
         state["tools"] = tools
 
@@ -461,6 +466,7 @@ def serve_langgraph(
             }
         }
 
+        graph_input: Any
         if turn.resume is not None:
             from langgraph.types import Command  # 惰性导入：无 resume 不碰 langgraph
 
@@ -572,6 +578,17 @@ def serve_langgraph(
     rt = WorkerRuntime(
         runtime_id=runtime_id,
         framework_version=framework_version or _detect_langgraph_version(),
+        capabilities={
+            # probe 期无 initialize——静态报本 adapter 的固有能力面；
+            # durableThreads 实际值握手期按 checkpointer 覆盖（§11.3）
+            "streamingText": bool(streaming),
+            "toolEvents": True,
+            "durableThreads": True,
+            "interrupts": True,
+            "mcp": True,
+            "usage": "tokens",
+        },
+        probe_model={"overrides": True},
         transport=transport,
         journal=journal,
     )

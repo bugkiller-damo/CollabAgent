@@ -607,22 +607,45 @@ class TestRealLangChain:
         h.send("shutdown")
         assert h.finish() == 0
 
-    def test_example_probe_frame(self):
-        """examples/langchain-agent/agent.py --slock-probe：单行 probe.result（§9.4）。
+    @pytest.mark.parametrize(
+        ("example", "runtime_id", "durable", "interrupts"),
+        [
+            ("langchain-agent", "langchain", False, False),
+            ("langgraph-agent", "langgraph", True, True),
+        ],
+    )
+    def test_example_probe_frame(self, example, runtime_id, durable, interrupts):
+        """examples/*/agent.py --slock-probe：单行 probe.result（§9.4）。
 
-        probe 分支不 import langchain——无需 importorskip。
+        probe 由 WorkerRuntime.serve 内置——示例源码不再持有 _probe 函数
+        或 argv 分支，也不 import langchain/langgraph，无需 importorskip。
         """
+        agent = EXAMPLE_AGENT.parents[1] / example / "agent.py"
+        src = agent.read_text(encoding="utf-8")
+        assert "def _probe" not in src
+        assert "encode_worker_frame" not in src
+        assert 'if "--slock-probe"' not in src
+
+        env = dict(os.environ)
+        env.pop("PYTHONPATH", None)
         r = subprocess.run(
-            [sys.executable, str(EXAMPLE_AGENT), "--slock-probe"],
+            [sys.executable, str(agent), "--slock-probe"],
             capture_output=True,
             text=True,
             timeout=30,
+            env=env,
         )
         assert r.returncode == 0, r.stderr
         lines = [ln for ln in r.stdout.splitlines() if ln.strip()]
         assert len(lines) == 1
         frame = json.loads(lines[0])
         assert frame["protocol"] == "slock.agent-runtime" and frame["version"] == 1
-        assert frame["type"] == "probe.result"
-        assert frame["runtime"]["id"] == "langchain"
+        assert frame["type"] == "probe.result" and frame["probe"] is True
+        assert frame["runtime"]["id"] == runtime_id
+        assert frame["runtime"]["bridgeVersion"].startswith("slock-runtime/")
         assert frame["capabilities"]["maxConcurrency"] == 1
+        assert frame["capabilities"]["persistentProcess"] is True
+        assert frame["capabilities"]["pty"] is False
+        assert frame["capabilities"]["durableThreads"] is durable
+        assert frame["capabilities"]["interrupts"] is interrupts
+        assert frame["model"] == {"overrides": True}

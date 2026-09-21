@@ -34,6 +34,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from ._version import BRIDGE_VERSION
 from .errors import PROTOCOL_VIOLATION, WireError, map_provider_error
 from .idempotency import TurnJournal, TurnJournalEntry
 from .protocol import (
@@ -44,8 +45,6 @@ from .protocol import (
     SarpTurnStart,
 )
 from .transport import SarpTransport
-
-BRIDGE_VERSION = "slock-runtime/0.1"
 
 
 @dataclass(frozen=True)
@@ -202,6 +201,7 @@ class WorkerRuntime:
         capabilities: dict | None = None,
         model_selected: str | None = None,
         model_overrides: bool | None = None,
+        probe_model: dict | None = None,
         transport: SarpTransport | None = None,
         journal: TurnJournal | None = None,
     ):
@@ -211,6 +211,7 @@ class WorkerRuntime:
         self.capabilities = capabilities or {}
         self.model_selected = model_selected
         self.model_overrides = model_overrides
+        self.probe_model = probe_model if probe_model is not None else {}
         self.transport = transport or SarpTransport()
         self._journal = journal
         self._cancel_event: threading.Event | None = None
@@ -225,8 +226,30 @@ class WorkerRuntime:
 
     # ---------------- 主循环 ----------------
 
+    def _resolved_capabilities(self) -> dict:
+        """probe 与 runtime.ready 共用的基线能力集。握手期 on_initialize 返回的
+        overrides 在 ready 上继续 merge；probe 期无 initialize，基线即全貌。"""
+        return {"persistentProcess": True, "maxConcurrency": 1, "pty": False, **self.capabilities}
+
     def serve(self, run_turn: RunTurn, on_initialize: OnInitialize | None = None) -> int:
         """阻塞跑完整个生命周期，返回进程退出码。"""
+        # §8.4：--slock-probe 单行 probe.result 即退——必须跑在读 stdin、开
+        # journal、调 on_initialize、建 graph/model、起 MCP 之前（probe 环境是
+        # 最小 env，框架/模型依赖可能不可用）。
+        if "--slock-probe" in sys.argv[1:]:
+            self.transport.send(
+                "probe.result",
+                probe=True,
+                runtime={
+                    "id": self.runtime_id,
+                    "frameworkVersion": self.framework_version,
+                    "bridgeVersion": self.bridge_version,
+                },
+                capabilities=self._resolved_capabilities(),
+                model=self.probe_model,
+            )
+            return 0
+
         self._run_turn = run_turn
         t = self.transport
 
@@ -267,7 +290,7 @@ class WorkerRuntime:
             )
             return 2
 
-        caps = {"persistentProcess": True, "maxConcurrency": 1, **self.capabilities}
+        caps = self._resolved_capabilities()
         if overrides and overrides.get("capabilities"):
             caps.update(overrides["capabilities"])
         model_field: dict = {}
