@@ -414,6 +414,41 @@ class TestInterruptResume:
         end = _ends(f2)[0]
         assert end["status"] == "success" and end["finalText"] == "verdict:yes"
 
+    def test_orphaned_resume_thread_has_no_interrupt(self, tmp_path):
+        """token 有效但 thread 无 pending interrupt → INTERRUPT_NOT_FOUND。
+
+        实机场景：runtime 身份/命名空间漂移或 checkpoint 丢失后，journal 的
+        token 仍然有效（未消耗），但新 thread 上没有 interrupt 可续——
+        放行 Command(resume=) 会让 agent 节点拿到空 messages。
+        """
+        s = Session(_echo_graph(tmp_path, gate=True))
+        s.feed(_init_frame(tmp_path))
+        s.wait_type("runtime.ready")
+        s.feed(_turn(2, "t-int", "conv-1", "draft"))
+        intr = s.wait_type("turn.end")["interrupt"]
+
+        # 模拟 checkpoint 丢失：清空该 thread 的 checkpoints/writes
+        ck = sqlite3.connect(str(Path(tmp_path) / "ck.sqlite"))
+        for tbl in ("checkpoints", "writes"):
+            ck.execute(f"DELETE FROM {tbl} WHERE thread_id = ?", ("langgraph:e1:-:-:conv-1",))
+        ck.commit()
+        ck.close()
+
+        s.feed(
+            _turn(
+                3,
+                "t-resume",
+                "conv-1",
+                "go",
+                resume={"interruptId": intr["interruptId"], "resumeToken": intr["resumeToken"], "value": "yes"},
+            )
+        )
+        e2 = s.wait_turn_end("t-resume")
+        assert e2["status"] == "error"
+        assert e2["error"]["code"] == "INTERRUPT_NOT_FOUND"
+        assert e2["error"]["retryable"] is False
+        assert s.shutdown() == 0
+
 
 class TestErrors:
     def test_node_exception_single_error_end(self, tmp_path):

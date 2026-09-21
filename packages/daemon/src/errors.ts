@@ -57,6 +57,8 @@ export type DispatchErrorCode =
   | "provider-network-failed"
   /** wire GRAPH_INPUT_INVALID 等输入校验失败——重试无意义 */
   | "graph-input-invalid"
+  /** wire INTERRUPT_NOT_FOUND——resume 的 thread 无 pending interrupt（孤儿 resume），重试无意义 */
+  | "interrupt-not-found"
   /** wire MCP_START_FAILED——可重试（MCP server 拉起失败） */
   | "mcp-start-failed"
   /** success 但 finalText 为空且本回合无 slock send 成功——重试无意义（§8.7.8） */
@@ -91,6 +93,7 @@ const NON_RETRIABLE: ReadonlySet<DispatchErrorCode> = new Set([
   "protocol-violation",
   "provider-auth-failed",
   "graph-input-invalid",
+  "interrupt-not-found",
   "empty-success",
   "command-not-found",
   "cwd-not-found",

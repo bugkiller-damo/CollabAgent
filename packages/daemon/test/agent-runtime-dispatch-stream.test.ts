@@ -262,6 +262,59 @@ describe("回复守卫三分支 / abort / 成本落库（A6）", () => {
     expect(nMsg).toContain('target="general"');
   });
 
+  it("分支三补充：nudge 携带原始用户文本（新 thread 缺上下文时仍能作答）", async () => {
+    const { handler, deps } = makeHandler();
+    working(deps);
+    arm(deps, { kind: "message", userMsg: "查看今天徐州天气" });
+
+    handler("alice", resultEvent(0.01));
+    await flush();
+
+    expect(deps.nudge).toHaveBeenCalledTimes(1);
+    const nMsg = deps.nudge.mock.calls[0]![2] as string;
+    expect(nMsg).toContain("查看今天徐州天气");
+  });
+
+  it("error 终态不走守卫：不代发残文本也不追问（死信已由队列上报）", async () => {
+    const onReplyMissing = vi.fn();
+    const { handler, deps } = makeHandler({ onReplyMissing });
+    working(deps);
+    arm(deps, { kind: "message" });
+
+    // 实机踩坑：error 回合触发 nudge → 模型在无原文的新 thread 里翻历史乱答
+    handler("alice", textEvent("半截输出"));
+    handler("alice", {
+      type: "turn.end",
+      status: "error",
+      subtype: "error_during_execution",
+      usage: { costUsd: null, durationMs: null, numTurns: null },
+    });
+    await flush();
+
+    expect(onReplyMissing).not.toHaveBeenCalled();
+    expect(deps.nudge).not.toHaveBeenCalled();
+    expect(deps.turnGuards.size).toBe(0);
+  });
+
+  it("interrupted/cancelled 终态豁免守卫（等 resume / 主动停止）", async () => {
+    for (const status of ["interrupted", "cancelled"] as const) {
+      const onReplyMissing = vi.fn();
+      const { handler, deps } = makeHandler({ onReplyMissing });
+      working(deps);
+      arm(deps, { kind: "message" });
+      handler("alice", textEvent("等审批中"));
+      handler("alice", {
+        type: "turn.end",
+        status,
+        subtype: status,
+        usage: { costUsd: null, durationMs: null, numTurns: null },
+      });
+      await flush();
+      expect(onReplyMissing).not.toHaveBeenCalled();
+      expect(deps.nudge).not.toHaveBeenCalled();
+    }
+  });
+
   it("分支二 rewritten：进度条已发且可改写 → 回复被改写吸收，不再代发", async () => {
     const poster = {
       post: vi.fn(async () => "pm-1"),

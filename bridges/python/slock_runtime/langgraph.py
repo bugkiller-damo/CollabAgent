@@ -33,7 +33,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from .errors import GRAPH_INPUT_INVALID, RUNTIME_ID_MISMATCH, SarpError
+from .errors import GRAPH_INPUT_INVALID, INTERRUPT_NOT_FOUND, RUNTIME_ID_MISMATCH, SarpError
 from .mcp import SlockMcpClient
 from .protocol import SarpInitialize, SarpTurnStart
 from .runtime import InterruptRecord, TurnEmit, TurnOutcome, WorkerRuntime, new_resume_token
@@ -383,6 +383,26 @@ def serve_langgraph(
         if turn.resume is not None:
             from langgraph.types import Command  # 惰性导入：无 resume 不碰 langgraph
 
+            # 孤儿 resume 防护（实机踩坑）：journal 层已验 token 单次有效，
+            # 但 thread 侧可能根本没有 pending interrupt——命名空间漂移
+            # （runtime/entrypoint/revision/model 任一变化即换 thread）、
+            # 旧格式 thread、checkpoint 丢失都会命中。此时 Command(resume)
+            # 会让 agent 节点拿到空 messages → provider 报 "Empty input
+            # messages"。显式失败让 daemon 清掉 pending 记录（自愈）。
+            has_pending = False
+            get_state = getattr(graph, "get_state", None)
+            if get_state is not None:
+                try:
+                    snap = get_state(config)
+                    has_pending = bool(getattr(snap, "next", None))
+                except Exception:
+                    has_pending = False
+            if not has_pending:
+                raise SarpError(
+                    INTERRUPT_NOT_FOUND,
+                    f"resume for turn {turn.turn_id}: thread has no pending interrupt",
+                    retryable=False,
+                )
             graph_input = Command(resume=turn.resume.value)
         else:
             fresh = _thread_fresh(graph, config)

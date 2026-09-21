@@ -475,6 +475,7 @@ const WIRE_ERROR_MAP: Record<string, DispatchErrorCode> = {
   DURABLE_THREADS_REQUIRED: "durable-threads-required",
   PROTOCOL_VERSION_UNSUPPORTED: "protocol-version-unsupported",
   PROTOCOL_VIOLATION: "protocol-violation",
+  INTERRUPT_NOT_FOUND: "interrupt-not-found",
   COMMAND_NOT_FOUND: "command-not-found",
   CWD_NOT_FOUND: "cwd-not-found",
   SECRET_ENV_MISSING: "secret-env-missing",

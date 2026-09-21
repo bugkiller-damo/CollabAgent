@@ -20,6 +20,9 @@ export interface TurnGuard {
   kind?: string;
   /** 本回合最后一段正文（text 帧）——回合结束未发送时由 daemon 直接代发 */
   lastText?: string;
+  /** 触发本回合的原始用户文本（截断存）——nudge 追问时带上，
+   *  防崩溃/失败回合未落 checkpoint 导致追问回合看不到原始问题 */
+  userMsg?: string;
   /** D1/D2：本回合所属线程（无则顶层/DM/巡检） */
   threadId?: string;
   /** D4：本回合频道内进度条 */
@@ -139,6 +142,7 @@ export const armTurnGuard = (opts: {
     isNudge,
     kind,
     progress,
+    userMsg: userMsg.length > 400 ? `${userMsg.slice(0, 400)}…` : userMsg,
   };
   turnGuards.set(agentName, guard);
   progressTurns.set(agentName, progress);
@@ -274,13 +278,17 @@ export const createStreamTurnHandler = (
         guard.lastText = ev.result;
       }
       const terminalWait = ev.status === "interrupted" || ev.status === "cancelled";
+      // error 终态不走守卫：队列死信已上报失败，再代发残文本/追问只会让
+      // agent 在缺上下文的新回合里乱猜（实机踩坑：error 回合触发的 nudge
+      // 让模型翻历史复述了无关旧答案）。
+      const guardSkip = terminalWait || ev.status === "error";
       void (async () => {
         let rewritten = false;
         if (guard?.progress) {
-          const answer = !terminalWait && !guard.hadSend && !guard.isNudge ? guard.lastText?.trim() : undefined;
+          const answer = !guardSkip && !guard.hadSend && !guard.isNudge ? guard.lastText?.trim() : undefined;
           try {
             const fin = await guard.progress.finish({
-              hadSend: terminalWait || guard.hadSend || guard.isNudge,
+              hadSend: guardSkip || guard.hadSend || guard.isNudge,
               rewrite: answer || undefined,
             });
             rewritten = fin.rewritten;
@@ -293,7 +301,7 @@ export const createStreamTurnHandler = (
             /* ignore */
           }
         }
-        if (guard && !terminalWait && !guard.hadSend && !guard.isNudge && loadDaemonEnv().replyGuard) {
+        if (guard && !guardSkip && !guard.hadSend && !guard.isNudge && loadDaemonEnv().replyGuard) {
           const answer = guard.lastText?.trim();
           if (answer && rewritten) {
             console.warn(
@@ -316,6 +324,7 @@ export const createStreamTurnHandler = (
               `${REPLY_GUARD_PREFIX} 系统检测到你上一个回合没有调用 send_message（或 slock message send）——` +
               `你直接打的字不会送到频道，对方还在等回复。请现在把上一条问题的答案用 ` +
               `\`mcp__slock__send_message\`（target="${guard.channel}"）补发出去。` +
+              (guard.userMsg ? `上一条问题是：「${guard.userMsg}」。` : "") +
               `（触发于 ${new Date().toISOString()}）`;
             nudge(agentName, guard.channel, nudgeMsg);
           }

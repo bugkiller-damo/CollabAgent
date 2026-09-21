@@ -40,6 +40,8 @@ COMMAND_NOT_FOUND = "COMMAND_NOT_FOUND"
 CWD_NOT_FOUND = "CWD_NOT_FOUND"
 SECRET_ENV_MISSING = "SECRET_ENV_MISSING"
 EMPTY_SUCCESS = "EMPTY_SUCCESS"
+# resume 的 thread 无 pending interrupt（孤儿 resume——token 有效但无点可续）
+INTERRUPT_NOT_FOUND = "INTERRUPT_NOT_FOUND"
 # worker 内部错误的兜底码（daemon 收敛为永久 worker-error）
 WORKER_ERROR = "WORKER_ERROR"
 
