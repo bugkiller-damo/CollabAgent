@@ -111,6 +111,9 @@ export const createJsonlBridgeRuntimeDriver = (deps: JsonlBridgeDriverDeps): Age
         // entry.runtime === profile.runtime（entrypoint-runtime-mismatch）。
         runtime: entry.runtime,
         entrypoint: entry.id,
+        // Phase 5 §11.2：entry revision 进 initialize——worker 据此隔离
+        // checkpoint 命名空间，manifest 修订后不复用旧 thread。
+        revision: entry.revision,
         ...(options.model !== undefined ? { model: options.model } : {}),
         ...(options.platformPrompt !== undefined ? { platformPrompt: options.platformPrompt } : {}),
         ...(options.mcp !== undefined ? { mcp: options.mcp } : {}),

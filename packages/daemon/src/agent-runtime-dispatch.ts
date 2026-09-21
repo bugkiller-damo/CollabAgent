@@ -5,6 +5,7 @@ import { createAgentDispatchQueue, type DispatchQueueItem } from "./agent-dispat
 import { createSeqAllocator, type ObservationBus } from "./agent-observation.js";
 import type { ProgressTurn } from "./agent-progress.js";
 import type { AgentRuntimeOptions } from "./agent-runtime.js";
+import { createWorkerCrashGuard, type IWorkerCrashGuard } from "./agent-runtime-crash-guard.js";
 import type { ICredentialsClient } from "./agent-runtime-credentials.js";
 import { dispatchHeadlessTurn } from "./agent-runtime-dispatch-headless.js";
 import { dispatchPtyTurn } from "./agent-runtime-dispatch-pty.js";
@@ -236,6 +237,12 @@ export interface DispatchDeps {
   createProgressPoster?: (agentName: string) => import("./agent-progress.js").ProgressPoster;
   /** T4：顶栏 headline（不落库） */
   onProgress?: (agentName: string, channelName: string, headline: string, phase: "start" | "update" | "end") => void;
+  /**
+   * Phase 5：跨消息 crash-loop 熔断器（§15）。缺省由工厂自建；测试可注入
+   * 缩短冷却/阈值。键为 (agentName, profile.identity)——manifest 修订
+   * 变化自动复位。
+   */
+  crashGuard?: IWorkerCrashGuard;
 }
 
 /**
@@ -262,6 +269,8 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
   const sessionCreates = deps.sessionCreates ?? new Map<string, Promise<AgentRuntimeSession>>();
   const credentialIssuedAt = deps.credentialIssuedAt ?? new Map<string, number>();
   const sessionIdentities = deps.sessionIdentities ?? new Map<string, string>();
+  // Phase 5：crash-loop 熔断器——agent 级跨消息累计 worker 启动/生命周期失败
+  const crashGuard = deps.crashGuard ?? createWorkerCrashGuard();
   // 缺省解析器：与 agent-runtime 注入的同一语义（agentInfo + mtime 缓存 manifest）。
   const defaultManifestLoader = createRuntimeManifestLoader();
   const resolveRuntimeProfile =
@@ -403,6 +412,7 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
       conversationId,
       runtimeProfile.runtime,
       runtimeProfile.entrypoint,
+      runtimeProfile.manifestRevision,
     );
     const turn = {
       turnId: turnSeed?.turnId ?? `turn-${Date.now().toString(36)}`,
@@ -474,6 +484,7 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
       kind,
       turn,
       interruptStore: deps.interruptStore,
+      crashGuard,
       haltGen,
       serverUrl: options.serverUrl,
       apiKey: options.apiKey,

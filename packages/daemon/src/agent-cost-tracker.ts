@@ -32,7 +32,16 @@ export interface AgentCostRecord {
   day: string;
   /** 线程 id；顶层/DM/巡检为空串。旧账本缺字段视为 "" */
   threadId?: string;
+  /**
+   * 已计量 USD 合计。只累加 provider/runtime 报出真数字的回合；
+   * §14.2：无 USD 计量的回合进 unmeteredTurns，绝不能当 $0 记进本字段。
+   */
   costUsd: number;
+  /** 本行内 costUsd 为 null/缺失 的回合数（USD 未计量，非「免费」） */
+  unmeteredTurns?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
   durationMs: number;
   numTurns: number;
   /** 聚合进本行的 result 事件条数 */
@@ -57,6 +66,11 @@ export interface CostTurnInput {
   costUsd?: number | null;
   durationMs?: number | null;
   numTurns?: number | null;
+  /** §14.2：turn.end.usage 的 token 计数（增量）；与 costUsd 解耦——
+   *  token-only runtime 的 USD 记未计量而不是 0 */
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  totalTokens?: number | null;
   at?: number;
 }
 
@@ -74,6 +88,11 @@ export interface CostSpendRow {
   agentName: string;
   agentId: string | null;
   costUsd: number;
+  /** 窗口内 USD 未计量的回合数（>0 时 costUsd 不是全貌——UI 应标「未计量」而非 $0） */
+  unmeteredTurns: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
   durationMs: number;
   numTurns: number;
   turnCount: number;
@@ -90,6 +109,10 @@ export interface CostChannelSpendRow extends CostSpendRow {
 export interface CostDaySpendRow {
   day: string;
   costUsd: number;
+  unmeteredTurns: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
   durationMs: number;
   numTurns: number;
   turnCount: number;
@@ -214,6 +237,10 @@ const recordKey = (r: { agentName: string; channel: string; day: string; threadI
 
 const emptyMetrics = () => ({
   costUsd: 0,
+  unmeteredTurns: 0,
+  inputTokens: 0,
+  outputTokens: 0,
+  totalTokens: 0,
   durationMs: 0,
   numTurns: 0,
   turnCount: 0,
@@ -225,6 +252,10 @@ const emptyMetrics = () => ({
 
 const addRecordMetrics = <T extends ReturnType<typeof emptyMetrics>>(acc: T, r: AgentCostRecord): T => {
   acc.costUsd += r.costUsd;
+  acc.unmeteredTurns += r.unmeteredTurns ?? 0;
+  acc.inputTokens += r.inputTokens ?? 0;
+  acc.outputTokens += r.outputTokens ?? 0;
+  acc.totalTokens += r.totalTokens ?? 0;
   acc.durationMs += r.durationMs;
   acc.numTurns += r.numTurns;
   acc.turnCount += r.turnCount;
@@ -281,6 +312,12 @@ export const createJsonCostTracker = (filePath: string, opts?: { now?: () => num
     const addCost = finiteOrZero(input.costUsd);
     const addDur = finiteOrZero(input.durationMs);
     const addTurns = finiteOrZero(input.numTurns);
+    // §14.2：costUsd 缺失/null = 「USD 未计量」——计 unmeteredTurns，
+    // 不冒充已计量零值（显式 0 仍是「计量为零」，PTY 路径走这条）。
+    const unmetered = typeof input.costUsd !== "number" || !Number.isFinite(input.costUsd) ? 1 : 0;
+    const addIn = finiteOrZero(input.inputTokens);
+    const addOut = finiteOrZero(input.outputTokens);
+    const addTot = finiteOrZero(input.totalTokens);
     if (idx >= 0) {
       const prev = data.records[idx]!;
       const next: AgentCostRecord = {
@@ -288,6 +325,10 @@ export const createJsonCostTracker = (filePath: string, opts?: { now?: () => num
         agentId: input.agentId ?? prev.agentId,
         threadId: prev.threadId ?? threadId,
         costUsd: prev.costUsd + addCost,
+        unmeteredTurns: (prev.unmeteredTurns ?? 0) + unmetered,
+        inputTokens: (prev.inputTokens ?? 0) + addIn,
+        outputTokens: (prev.outputTokens ?? 0) + addOut,
+        totalTokens: (prev.totalTokens ?? 0) + addTot,
         durationMs: prev.durationMs + addDur,
         numTurns: prev.numTurns + addTurns,
         turnCount: prev.turnCount + 1,
@@ -304,6 +345,10 @@ export const createJsonCostTracker = (filePath: string, opts?: { now?: () => num
       day,
       threadId,
       costUsd: addCost,
+      unmeteredTurns: unmetered,
+      inputTokens: addIn,
+      outputTokens: addOut,
+      totalTokens: addTot,
       durationMs: addDur,
       numTurns: addTurns,
       turnCount: 1,

@@ -184,7 +184,9 @@ function fieldValue(v: string | null | undefined, empty = "未填写"): string {
 const showStats = computed(() => {
   const s = stats.value;
   if (!s) return false;
-  return s.messages > 0 || s.tasksOpen > 0 || s.tasksDone > 0 || typeof s.costUsd === "number";
+  return (
+    s.messages > 0 || s.tasksOpen > 0 || s.tasksDone > 0 || typeof s.costUsd === "number" || (s.unmeteredTurns ?? 0) > 0
+  );
 });
 
 async function load() {
@@ -460,6 +462,14 @@ async function expandChannels() {
             class="rounded-md bg-gray-100 px-2 py-1 text-xs text-gray-600 dark:bg-gray-700 dark:text-gray-300"
           >
             ${{ stats.costUsd.toFixed(2) }}
+          </span>
+          <!-- §14.2：USD 未计量不等于免费——明示 token 用量而非 $0 -->
+          <span
+            v-if="(stats?.unmeteredTurns ?? 0) > 0"
+            class="rounded-md bg-amber-50 px-2 py-1 text-xs text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
+            :title="`${stats?.unmeteredTurns} 个回合无 USD 计量`"
+          >
+            {{ stats?.totalTokens ? `${stats.totalTokens.toLocaleString()} tokens · ` : "" }}USD 未计量
           </span>
         </div>
       </section>

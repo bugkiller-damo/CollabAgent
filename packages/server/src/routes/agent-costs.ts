@@ -27,7 +27,14 @@ interface SyncRow {
   channel?: unknown;
   day?: unknown;
   costUsd?: unknown;
+  unmeteredTurns?: unknown;
+  inputTokens?: unknown;
+  outputTokens?: unknown;
+  totalTokens?: unknown;
 }
+
+/** 非负有限数 → int；非法/缺省 → 0（新字段全可选，旧 daemon 不带也兼容） */
+const nonNegInt = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.floor(v) : 0);
 
 export async function agentCostRoutes(app: FastifyInstance) {
   app.post("/sync", { preHandler: [app.authenticate] }, async (req: any, reply) => {
@@ -44,11 +51,25 @@ export async function agentCostRoutes(app: FastifyInstance) {
     const byName = new Map(mine.rows.map((r) => [r.name, r]));
 
     // 同键多行（理论不该发生）取大者；非法行 skip 计数不 400
-    const merged = new Map<string, { agentId: string; channel: string; day: string; costUsd: number }>();
+    interface Row {
+      agentId: string;
+      channel: string;
+      day: string;
+      costUsd: number;
+      unmeteredTurns: number;
+      inputTokens: number;
+      outputTokens: number;
+      totalTokens: number;
+    }
+    const merged = new Map<string, Row>();
     let skipped = 0;
     for (const raw of body.rows as SyncRow[]) {
       const costUsd =
-        typeof raw.costUsd === "number" && Number.isFinite(raw.costUsd) && raw.costUsd > 0 ? raw.costUsd : null;
+        typeof raw.costUsd === "number" && Number.isFinite(raw.costUsd) && raw.costUsd > 0 ? raw.costUsd : 0;
+      const unmeteredTurns = nonNegInt(raw.unmeteredTurns);
+      const inputTokens = nonNegInt(raw.inputTokens);
+      const outputTokens = nonNegInt(raw.outputTokens);
+      const totalTokens = nonNegInt(raw.totalTokens);
       const day =
         typeof raw.day === "string" && DAY_RE.test(raw.day) && !Number.isNaN(Date.parse(`${raw.day}T00:00:00Z`))
           ? raw.day
@@ -57,7 +78,9 @@ export async function agentCostRoutes(app: FastifyInstance) {
         typeof raw.channel === "string" && raw.channel.trim() !== ""
           ? raw.channel.trim().slice(0, MAX_CHANNEL_LEN)
           : null;
-      if (costUsd == null || day == null || channel == null) {
+      // §14.2：全零行依旧拒收；但有未计量回合/token 的行必须落库——
+      // token-only runtime 的 USD 是「未知」不是「免费」，行本身就承载该事实。
+      if (day == null || channel == null || !(costUsd > 0 || unmeteredTurns > 0 || totalTokens > 0)) {
         skipped++;
         continue;
       }
@@ -71,24 +94,46 @@ export async function agentCostRoutes(app: FastifyInstance) {
       }
       const key = `${agentId}\0${channel}\0${day}`;
       const prev = merged.get(key);
-      if (!prev || costUsd > prev.costUsd) merged.set(key, { agentId, channel, day, costUsd });
+      merged.set(key, {
+        agentId,
+        channel,
+        day,
+        costUsd: Math.max(prev?.costUsd ?? 0, costUsd),
+        unmeteredTurns: Math.max(prev?.unmeteredTurns ?? 0, unmeteredTurns),
+        inputTokens: Math.max(prev?.inputTokens ?? 0, inputTokens),
+        outputTokens: Math.max(prev?.outputTokens ?? 0, outputTokens),
+        totalTokens: Math.max(prev?.totalTokens ?? 0, totalTokens),
+      });
     }
 
     const values = Array.from(merged.values());
     if (values.length > 0) {
       const params: unknown[] = [];
       const tuples = values.map((v) => {
-        params.push(v.agentId, v.channel, v.day, v.costUsd);
+        params.push(
+          v.agentId,
+          v.channel,
+          v.day,
+          v.costUsd,
+          v.unmeteredTurns,
+          v.inputTokens,
+          v.outputTokens,
+          v.totalTokens,
+        );
         const i = params.length;
-        return `($${i - 3}::uuid, $${i - 2}, $${i - 1}::date, $${i}::numeric)`;
+        return `($${i - 7}::uuid, $${i - 6}, $${i - 5}::date, $${i - 4}::numeric, $${i - 3}, $${i - 2}, $${i - 1}, $${i})`;
       });
       // GREATEST：EXCLUDED 更小（重试重放 / 账本重置）时保留现值，单调不回退。
       // INSERT 列清单不含 updated_at（走 DEFAULT now()）；更新分支显式刷新。
       await app.pg.query(
-        `INSERT INTO agent_cost_daily AS t (agent_id, channel, day, cost_usd)
+        `INSERT INTO agent_cost_daily AS t (agent_id, channel, day, cost_usd, unmetered_turns, input_tokens, output_tokens, total_tokens)
          VALUES ${tuples.join(",")}
          ON CONFLICT (agent_id, channel, day) DO UPDATE
            SET cost_usd = GREATEST(t.cost_usd, EXCLUDED.cost_usd),
+               unmetered_turns = GREATEST(t.unmetered_turns, EXCLUDED.unmetered_turns),
+               input_tokens = GREATEST(t.input_tokens, EXCLUDED.input_tokens),
+               output_tokens = GREATEST(t.output_tokens, EXCLUDED.output_tokens),
+               total_tokens = GREATEST(t.total_tokens, EXCLUDED.total_tokens),
                updated_at = now()`,
         params,
       );

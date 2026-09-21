@@ -346,7 +346,8 @@ class TestDurableThreads:
         from langchain_core.messages import SystemMessage
 
         graph = _echo_graph(tmp_path)
-        snap = graph.get_state({"configurable": {"thread_id": "conv-1"}})
+        # §11.2：thread_id 按 runtime 身份命名空间（langgraph:e1:-:-:前缀）
+        snap = graph.get_state({"configurable": {"thread_id": "langgraph:e1:-:-:conv-1"}})
         sys_msgs = [m for m in snap.values["messages"] if isinstance(m, SystemMessage)]
         assert len(sys_msgs) == 1 and sys_msgs[0].content == "sys-prompt"
 
@@ -576,9 +577,9 @@ class TestDuckTypedAdapter:
         assert end["usage"]["outputTokens"] == 4
         assert end["usage"]["totalTokens"] == 6
 
-        # §11.2 config 形状
+        # §11.2 config 形状：thread_id = runtime:entrypoint:revision:model:conv
         cfg = graph.stream_calls[0]["config"]
-        assert cfg["configurable"]["thread_id"] == "conv-1"
+        assert cfg["configurable"]["thread_id"] == "langgraph:e1:-:-:conv-1"
         assert cfg["configurable"]["slock_turn_id"] == "t1"
         assert graph.stream_calls[0]["stream_mode"] == ["messages", "updates", "custom"]
 

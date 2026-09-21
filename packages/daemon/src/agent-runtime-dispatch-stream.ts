@@ -229,6 +229,9 @@ export const createStreamTurnHandler = (
           costUsd: ev.usage.costUsd,
           durationMs: ev.usage.durationMs,
           numTurns: ev.usage.numTurns,
+          inputTokens: ev.usage.inputTokens,
+          outputTokens: ev.usage.outputTokens,
+          totalTokens: ev.usage.totalTokens,
         });
       } catch (err) {
         console.warn(`[Daemon] @${agentName} cost record failed:`, errMessage(err));

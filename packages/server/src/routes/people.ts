@@ -142,11 +142,17 @@ export async function peopleRoutes(app: FastifyInstance) {
       // 显示 $ 徽标，恒 0 会让全员挂上 $0.00 噪音。
       const costSql =
         peer.type === "agent"
-          ? `SELECT COALESCE(SUM(cost_usd), 0)::float8 AS usd, COUNT(*)::int AS n
+          ? `SELECT COALESCE(SUM(cost_usd), 0)::float8 AS usd,
+                    COALESCE(SUM(unmetered_turns), 0)::int AS unmetered,
+                    COALESCE(SUM(total_tokens), 0)::bigint AS tokens,
+                    COUNT(*)::int AS n
                FROM agent_cost_daily
               WHERE agent_id = $1
                 AND day >= (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date - ($2::int - 1)`
-          : `SELECT COALESCE(SUM(c.cost_usd), 0)::float8 AS usd, COUNT(*)::int AS n
+          : `SELECT COALESCE(SUM(c.cost_usd), 0)::float8 AS usd,
+                    COALESCE(SUM(c.unmetered_turns), 0)::int AS unmetered,
+                    COALESCE(SUM(c.total_tokens), 0)::bigint AS tokens,
+                    COUNT(*)::int AS n
                FROM agent_cost_daily c
                JOIN agents a ON a.id = c.agent_id
               WHERE a.user_id = $1
@@ -158,6 +164,8 @@ export async function peopleRoutes(app: FastifyInstance) {
       // daemon 账本按归一化频道名记账、无法按可见频道过滤的既有取舍保留，但
       // 跨用户财务数据至少要求同处一个社区。
       let costUsd: number | null = null;
+      let unmeteredTurns = 0;
+      let totalTokens = 0;
       const costAllowed =
         peer.type === "agent" ||
         String(peer.id) === String(req.user.sub) ||
@@ -169,8 +177,16 @@ export async function peopleRoutes(app: FastifyInstance) {
           )
         ).rows.length > 0;
       if (costAllowed) {
-        const cost = await app.pg.query<{ usd: number; n: number }>(costSql, [peer.id, days]);
-        costUsd = Number(cost.rows[0]?.n || 0) > 0 ? Number(cost.rows[0]?.usd || 0) : null;
+        const cost = await app.pg.query<{ usd: number; unmetered: number; tokens: number; n: number }>(costSql, [
+          peer.id,
+          days,
+        ]);
+        const n = Number(cost.rows[0]?.n || 0);
+        // §14.2：costUsd 只代表已计量部分——有 unmetered 回合时绝不是全貌，
+        // 也不因 unmetered>0 而把 costUsd 硬抬成 0 冒充「已计量为零」。
+        costUsd = n > 0 && Number(cost.rows[0]?.usd || 0) > 0 ? Number(cost.rows[0].usd) : null;
+        unmeteredTurns = Number(cost.rows[0]?.unmetered || 0);
+        totalTokens = Number(cost.rows[0]?.tokens || 0);
       }
 
       return {
@@ -178,6 +194,8 @@ export async function peopleRoutes(app: FastifyInstance) {
         tasksOpen: Number(open.rows[0]?.n || 0),
         tasksDone: Number(done.rows[0]?.n || 0),
         costUsd,
+        unmeteredTurns,
+        totalTokens,
       };
     } catch (err: any) {
       req.log.error({ err }, "people_stats_failed");

@@ -84,7 +84,17 @@ describe("cost-reporter (P1.24)", () => {
     expect(requests[0]!.url).toBe("http://fake-server.test/api/agent-costs/sync");
     expect(requests[0]!.authorization).toBe("Bearer sk_machine_test");
     expect(requests[0]!.body.rows).toEqual([
-      { agentName: "alice", agentId: "a-1", channel: "general", day: "2026-09-02", costUsd: 0.05 },
+      {
+        agentName: "alice",
+        agentId: "a-1",
+        channel: "general",
+        day: "2026-09-02",
+        costUsd: 0.05,
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        unmeteredTurns: 0,
+      },
     ]);
   });
 

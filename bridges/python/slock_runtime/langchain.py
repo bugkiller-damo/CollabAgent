@@ -96,6 +96,9 @@ def serve_langchain(
         }
 
     def _run_turn(init: SarpInitialize, turn: SarpTurnStart, emit: TurnEmit, cancelled) -> TurnOutcome:
+        client = holder["mcp_client"]
+        if client is not None:
+            client.set_active_turn(turn.turn_id)  # §15.4：写工具幂等键锚定 turnId
         return _run_one_turn(
             holder["agent"],
             init,

@@ -139,15 +139,18 @@ server.registerTool(
         .array(z.string())
         .optional()
         .describe("可选：随消息附带的附件 id 列表（先用 upload_attachment 上传获得；拆条时只挂最后一条）"),
+      // Phase 5 §15.4：幂等键由 worker SDK 自动注入（<turnId>:<tool>:<seq>），
+      // agent 无需也不应手写；拆条时各条派生 <key>#<i>，保证逐条去重。
+      idempotencyKey: z.string().optional().describe("幂等去重键（由运行时注入，勿手写）"),
     },
   },
-  async ({ target, content, threadId, attachmentIds }) => {
+  async ({ target, content, threadId, attachmentIds, idempotencyKey }) => {
     try {
       const chunks = splitMessageContent(content);
       if (chunks.length === 1) {
         const result = await callSlock("/send", {
           method: "POST",
-          body: JSON.stringify({ target, content, threadId, attachmentIds }),
+          body: JSON.stringify({ target, content, threadId, attachmentIds, idempotencyKey }),
         });
         return ok(result);
       }
@@ -163,6 +166,7 @@ server.registerTool(
             content: chunks[i],
             threadId,
             attachmentIds: i === chunks.length - 1 ? attachmentIds : undefined,
+            idempotencyKey: idempotencyKey ? `${idempotencyKey}#${i}` : undefined,
           }),
         });
         const id =
@@ -326,13 +330,14 @@ server.registerTool(
       channel: z.string().describe('频道名，如 "#general"'),
       toAgent: z.string().describe("worker agent 的 handle（不带 @）"),
       text: z.string().describe("任务内容"),
+      idempotencyKey: z.string().optional().describe("幂等去重键（由运行时注入，勿手写）"),
     },
   },
-  async ({ channel, toAgent, text }) => {
+  async ({ channel, toAgent, text, idempotencyKey }) => {
     try {
       const result = await callSlock("/dispatch", {
         method: "POST",
-        body: JSON.stringify({ channel, toAgent, text }),
+        body: JSON.stringify({ channel, toAgent, text, idempotencyKey }),
       });
       return ok(result);
     } catch (err) {

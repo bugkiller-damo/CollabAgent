@@ -1,6 +1,7 @@
 import type { ICostTracker } from "./agent-cost-tracker.js";
 import { createLazyAgentManager } from "./agent-manager-lazy.js";
 import { createObservationBus, type ObservationBus } from "./agent-observation.js";
+import { createWorkerCrashGuard } from "./agent-runtime-crash-guard.js";
 import { createCredentialsClient } from "./agent-runtime-credentials.js";
 import { createDispatch, type ReminderFirePayload } from "./agent-runtime-dispatch.js";
 import { AgentRuntimeRegistry, type AgentRuntimeSession } from "./agent-runtime-driver.js";
@@ -104,6 +105,11 @@ export interface AgentRuntimeOptions {
    * 缺省按 slockDir 默认路径创建；测试可注入内存实现。
    */
   interruptStore?: import("./agent-runtime-interrupt-store.js").IRuntimeInterruptStore;
+  /**
+   * Phase 5：crash-loop 熔断器（§15）。缺省按默认阈值/冷却创建；
+   * 测试可注入缩短冷却的实现。
+   */
+  crashGuard?: import("./agent-runtime-crash-guard.js").IWorkerCrashGuard;
   /** D4：按 agent 绑定进度条发/改/删（测试可不传 = 不写频道进度） */
   createProgressPoster?: (agentName: string) => import("./agent-progress.js").ProgressPoster;
   /** T4：顶栏「正在做什么」（不落库） */
@@ -466,6 +472,9 @@ export const createAgentRuntime = (
   ]);
   // Phase 2：待恢复 interrupt 持久化（§11.4；bridge 专属，claude 不产生）。
   const interruptStore = options.interruptStore ?? createRuntimeInterruptStore(defaultInterruptStorePath());
+  // Phase 5：跨消息 crash-loop 熔断器（§15）——agent 级累计 worker 启动/
+  // 生命周期失败，阈值后冷却期内 fail-closed，identity 变化自动复位。
+  const crashGuard = options.crashGuard ?? createWorkerCrashGuard();
   const resolveRuntimeProfile = (name: string): ResolvedAgentRuntimeProfile =>
     resolveAgentRuntimeProfile(agentInfo.get(name) ?? {}, manifestLoader());
   /**
@@ -475,13 +484,35 @@ export const createAgentRuntime = (
    */
   const invalidateOnIdentityChange = (name: string): void => {
     const recorded = sessionIdentities.get(name);
-    if (recorded === undefined || recorded === resolveRuntimeProfile(name).identity) return;
+    const profile = resolveRuntimeProfile(name);
+    if (recorded === undefined || recorded === profile.identity) return;
     tearDownAgentProcess(name); // 内含 sessionIdentities.delete
     agentSessions.delete(name);
     try {
       options.agentSessionStore?.forget(name);
     } catch {
       /* store 清理是旁路 */
+    }
+    // Phase 5：identity 变化（runtime/entrypoint/model/manifest 修订）后旧
+    // resumeToken 指向的 checkpoint thread 不再可达——主动清 pending
+    // interrupt，不再等下条消息 take() 时才惰性发现。
+    const agentId = agentNameToId.get(name);
+    if (agentId) {
+      try {
+        const cleared = interruptStore.clearIncompatible(
+          agentId,
+          profile.runtime,
+          profile.entrypoint,
+          profile.manifestRevision,
+        );
+        if (cleared > 0) {
+          console.log(
+            `[Daemon] @${name} runtime identity changed — cleared ${cleared} incompatible pending interrupt(s)`,
+          );
+        }
+      } catch {
+        /* store 清理是旁路 */
+      }
     }
   };
 
@@ -516,6 +547,7 @@ export const createAgentRuntime = (
     credentialIssuedAt,
     agentSessionStore: options.agentSessionStore,
     interruptStore,
+    crashGuard,
     onDeliveryQueued: options.onDeliveryQueued,
     onDeliveryDeadLetter: options.onDeliveryDeadLetter,
     observationBus,
@@ -609,6 +641,7 @@ export const createAgentRuntime = (
       agentInfo.delete(name);
       agentSessions.delete(name);
       if (clearedId) interruptStore.clearAgent(clearedId);
+      crashGuard.reset(name);
       // A2：注销（含 duty off / agent:stop）= 显式丢弃——清除续接 id，
       // 下次注册是全新会话。回收 / daemon 关闭不在此列（见 agentSessionStore 注释）。
       try {

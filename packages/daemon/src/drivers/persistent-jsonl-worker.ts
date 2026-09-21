@@ -23,6 +23,7 @@ import { applyAgentEnv } from "../agent-env-whitelist.js";
 import type { AgentRuntimeSession, AgentRuntimeTurnResult, AgentTurnRequest } from "../agent-runtime-driver.js";
 import type { AgentRuntimeEvent, AgentRuntimeUsage } from "../agent-runtime-events.js";
 import { DispatchError, errMessage } from "../errors.js";
+import { killProcessTree, treeKillSpawnOptions } from "../process-tree.js";
 import { redactSecrets } from "../redact.js";
 import {
   encodeSarpFrame,
@@ -48,6 +49,8 @@ export interface JsonlWorkerSessionOptions {
   agent?: { id: string; name: string; displayName?: string; description?: string };
   runtime: string; // "langchain" | "langgraph"
   entrypoint: string; // manifest entrypoint id
+  /** Phase 5 §11.2：manifest 条目 revision——checkpoint 命名空间的一部分 */
+  revision?: string;
   model?: string; // resolved profile model
   platformPrompt?: string;
   serverUrl?: string;
@@ -61,6 +64,8 @@ export interface JsonlWorkerSessionOptions {
   onExit?: () => void;
   /** 测试注入 spawn；默认 node:child_process spawn */
   spawn?: typeof nodeSpawn;
+  /** Phase 5：测试注入进程树终止；默认 killProcessTree（POSIX 组杀/Windows taskkill） */
+  killTree?: (proc: ChildProcess, opts?: { force?: boolean }) => void;
   /** 测试注入时钟（只用于出向帧 timestamp，定时器不经过它） */
   now?: () => number;
 }
@@ -204,6 +209,9 @@ export class PersistentJsonlWorkerSession implements AgentRuntimeSession {
         shell: false,
         windowsHide: true,
         env,
+        // Phase 5：POSIX 独立进程组——killProcessTree(-pid) 才能收孙进程；
+        // Windows detached 语义不同（会弹新控制台），树上靠 taskkill /T。
+        ...treeKillSpawnOptions(),
       });
     } catch (err) {
       // spawn 同步抛（命令解析失败等）→ 会话不可用；send 经 ready 拿到 command-not-found
@@ -249,7 +257,12 @@ export class PersistentJsonlWorkerSession implements AgentRuntimeSession {
     return {
       requestId: this.initRequestId,
       agent: o.agent ?? { id: "", name: o.agentName },
-      runtime: { id: o.runtime, entrypoint: o.entrypoint, ...(o.model !== undefined ? { model: o.model } : {}) },
+      runtime: {
+        id: o.runtime,
+        entrypoint: o.entrypoint,
+        ...(o.model !== undefined ? { model: o.model } : {}),
+        ...(o.revision !== undefined ? { revision: o.revision } : {}),
+      },
       workspace: { path: o.workspace },
       platform: {
         ...(o.platformPrompt !== undefined ? { systemPrompt: o.platformPrompt } : {}),
@@ -702,11 +715,9 @@ export class PersistentJsonlWorkerSession implements AgentRuntimeSession {
     this.detachProcListeners();
     this.lineBuf = "";
     if (proc) {
-      try {
-        proc.kill();
-      } catch {
-        /* ignore */
-      }
+      // Phase 5：整树终止——worker 的 MCP server / 子代理孙进程一并收，
+      // 不再是孤儿。killTree 内部已处理已退出/平台差异（测试可注入）。
+      (this.opts.killTree ?? killProcessTree)(proc, { force: true });
     }
   }
 
@@ -914,19 +925,14 @@ export class PersistentJsonlWorkerSession implements AgentRuntimeSession {
     }
     const proc = this.proc;
     if (!proc) return;
-    try {
-      proc.kill("SIGTERM");
-    } catch {
-      /* ignore */
-    }
+    // Phase 5：SIGTERM→SIGKILL 都打整树（POSIX 进程组 / Windows taskkill /T），
+    // 孙进程（worker 内的 MCP client 子进程等）不留孤儿。
+    const killTree = this.opts.killTree ?? killProcessTree;
+    killTree(proc);
     this.stopTimer = setTimeout(() => {
       this.stopTimer = null;
       if (this.proc !== proc) return;
-      try {
-        proc.kill("SIGKILL");
-      } catch {
-        /* ignore */
-      }
+      killTree(proc, { force: true });
       this.cleanupDeadProc();
     }, SIGKILL_GRACE_MS);
   }

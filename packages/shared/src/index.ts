@@ -145,6 +145,10 @@ export interface PersonStats {
   tasksOpen: number;
   tasksDone: number;
   costUsd?: number | null;
+  /** §14.2：窗口内 USD 未计量回合数（>0 时 costUsd 不是全貌，UI 标「未计量」） */
+  unmeteredTurns?: number;
+  /** 窗口内 token 合计（无 USD 计量时的主要用量观测面） */
+  totalTokens?: number;
 }
 
 export interface PersonProfile {

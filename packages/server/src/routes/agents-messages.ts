@@ -16,10 +16,21 @@ import { broadcast } from "../ws/handler.js";
 
 export async function agentMessageRoutes(app: FastifyInstance) {
   app.post("/:agentId/send", { preHandler: [app.authenticate, requireOwnAgent] }, async (req, reply) => {
-    const { target, content, threadId, attachmentIds } = req.body as Record<string, unknown>;
+    const { target, content, threadId, attachmentIds, idempotencyKey } = req.body as Record<string, unknown>;
     const agentId = (req.params as Record<string, string>).agentId;
     const attIds: string[] = Array.isArray(attachmentIds) ? (attachmentIds as string[]) : [];
     if (!target) return reply.status(400).send({ error: "target required" });
+    // Phase 5 §15.4：agent 写操作幂等。worker SDK 按 <turnId>:<tool>:<seq> 生成
+    // idempotencyKey；存进 messages.client_nonce 复用既有部分唯一索引
+    // (channel_id, client_nonce)，前缀 ag:<agentId>: 把作用域收窄到本 agent——
+    // 不同 agent 的 turnId 序号天然同形，裸 key 会在同频道互撞。
+    let clientNonce: string | undefined;
+    if (idempotencyKey !== undefined) {
+      if (typeof idempotencyKey !== "string" || !/^[A-Za-z0-9:._-]{8,160}$/.test(idempotencyKey)) {
+        return reply.status(400).send({ error: "invalid idempotencyKey" });
+      }
+      clientNonce = `ag:${agentId}:${idempotencyKey}`;
+    }
     // P1.33：与人类侧 /api/messages/send 同口径的 content 上限
     if (typeof content === "string" && content.length > MAX_MESSAGE_CONTENT_LEN) {
       return reply.status(400).send({ error: `content too long (max ${MAX_MESSAGE_CONTENT_LEN})` });
@@ -69,10 +80,34 @@ export async function agentMessageRoutes(app: FastifyInstance) {
         if (parent.rows[0]) resolvedThreadId = String(parent.rows[0].id);
       }
     }
-    const result = await app.pg.query(
-      "INSERT INTO messages (channel_id, server_id, sender_id, sender_type, content, thread_id) VALUES ($1, $2, $3, 'agent', $4, $5) RETURNING id, seq, created_at",
-      [channelDbId, serverId, agentId, (content as string) || "", resolvedThreadId],
-    );
+    const result = clientNonce
+      ? await app.pg.query(
+          `INSERT INTO messages (channel_id, server_id, sender_id, sender_type, content, thread_id, client_nonce)
+           VALUES ($1, $2, $3, 'agent', $4, $5, $6)
+           ON CONFLICT (channel_id, client_nonce) WHERE client_nonce IS NOT NULL DO NOTHING
+           RETURNING id, seq, created_at`,
+          [channelDbId, serverId, agentId, (content as string) || "", resolvedThreadId, clientNonce],
+        )
+      : await app.pg.query(
+          "INSERT INTO messages (channel_id, server_id, sender_id, sender_type, content, thread_id) VALUES ($1, $2, $3, 'agent', $4, $5) RETURNING id, seq, created_at",
+          [channelDbId, serverId, agentId, (content as string) || "", resolvedThreadId],
+        );
+    // 幂等重放：INSERT 撞唯一索引 → 首次发送已成功，查原消息原样返回，
+    // 不重广播、不重挂附件、不重复计数（worker 崩溃重放走这条路）
+    if (result.rows.length === 0) {
+      const existed = await app.pg.query<{ id: string; seq: number }>(
+        "SELECT id, seq FROM messages WHERE channel_id = $1 AND client_nonce = $2",
+        [channelDbId, clientNonce],
+      );
+      return {
+        state: "sent",
+        messageId: existed.rows[0]?.id,
+        messageSeq: existed.rows[0]?.seq,
+        attachments: [],
+        channelId: dm ? "dm:" + channelDbId : undefined,
+        deduplicated: true,
+      };
+    }
     const msg = result.rows[0] as { id: string; seq: number; created_at: string };
     let attachments: any[] = [];
     if (attIds.length > 0 && agent) {

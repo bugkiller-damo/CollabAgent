@@ -35,7 +35,12 @@ export interface SarpInitializeFields {
   /** §8.2：握手关联 id——runtime.ready 必须原样回显 */
   requestId: string;
   agent: { id: string; name: string; displayName?: string; description?: string };
-  runtime: { id: string; entrypoint: string; model?: string };
+  /**
+   * Phase 5 §11.2：revision = manifest 条目修订（entry.revision）。worker 用
+   * runtime.id+entrypoint+revision+model 构造 checkpoint 命名空间——runtime/
+   * entrypoint/model/manifest 任一变化都不得复用旧 checkpoint thread。
+   */
+  runtime: { id: string; entrypoint: string; model?: string; revision?: string };
   workspace: { path: string };
   platform: {
     systemPrompt?: string;

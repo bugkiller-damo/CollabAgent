@@ -27,6 +27,12 @@ from .protocol import SarpMcpDescriptor
 MCP_PROTOCOL_VERSION = "2025-06-18"
 CLIENT_INFO = {"name": "slock-runtime", "version": "0.1"}
 
+# §15.4.5：平台写工具的幂等注入面。这些工具调一次产生一条 server 侧写记录；
+# worker 崩溃/A1 重试重跑回合时会按相同顺序再次调用——SDK 自动附
+# idempotencyKey=<turnId>:<tool>:<seq>，server 撞键去重返回首次结果。
+# 只列 server 侧真正实现了去重的工具；读工具天然幂等无需键。
+_WRITE_TOOLS = frozenset({"send_message", "dispatch_task"})
+
 
 @dataclass(frozen=True)
 class McpToolInfo:
@@ -47,6 +53,17 @@ class SlockMcpClient:
         self._lock = threading.Lock()
         self._reader: threading.Thread | None = None
         self._closed = False
+        # 回合上下文：adapter 在 run_turn 开头 set_active_turn(turn_id)。
+        # seq 以 (turn, tool) 为键——同一回合内第 n 次 send_message 恒得同键，
+        # 重跑同 turnId 时序号自然对齐（§15.4.4 幂等锚）。
+        self._active_turn: str | None = None
+        self._write_seq: dict[tuple[str, str], int] = {}
+
+    def set_active_turn(self, turn_id: str | None) -> None:
+        """回合开始/结束时由 adapter 调用；换回合清空写序号。"""
+        with self._lock:
+            self._active_turn = turn_id
+            self._write_seq.clear()
 
     # ---------------- 生命周期 ----------------
 
@@ -175,7 +192,15 @@ class SlockMcpClient:
 
     def call_tool(self, name: str, arguments: dict, timeout_s: float = 60.0) -> str:
         """tools/call → 拼合 text content 返回。isError 时抛异常由上层映射。"""
-        result = self._request("tools/call", {"name": name, "arguments": arguments}, timeout_s=timeout_s)
+        args = dict(arguments)
+        with self._lock:
+            turn = self._active_turn
+            if turn and name in _WRITE_TOOLS and "idempotencyKey" not in args:
+                key = (turn, name)
+                seq = self._write_seq.get(key, 0)
+                self._write_seq[key] = seq + 1
+                args["idempotencyKey"] = f"{turn}:{name}:{seq}"
+        result = self._request("tools/call", {"name": name, "arguments": args}, timeout_s=timeout_s)
         if result is None:
             return ""
         if result.get("isError"):

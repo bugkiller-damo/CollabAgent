@@ -1,5 +1,6 @@
 import { writeMcpConfig } from "./agent-mcp-config.js";
 import type { ProgressTurn } from "./agent-progress.js";
+import type { IWorkerCrashGuard } from "./agent-runtime-crash-guard.js";
 import type { ICredentialsClient } from "./agent-runtime-credentials.js";
 import { abortTurnGuards, armTurnGuard, type TurnGuard } from "./agent-runtime-dispatch-stream.js";
 import type { AgentRuntimeDriver, AgentRuntimeSession, AgentTurnRequest } from "./agent-runtime-driver.js";
@@ -47,6 +48,12 @@ export interface DispatchHeadlessTurnOpts {
   };
   /** Phase 2：interrupt 簿记——success 消费 / interrupted 覆写（§11.4） */
   interruptStore?: IRuntimeInterruptStore;
+  /**
+   * Phase 5（§15）：跨消息 crash-loop 熔断器。spawn/生命周期类失败累计到
+   * 阈值后，冷却期内不再烧 spawn，直接 fail-closed（worker-crash-loop
+   * 死信）。可选——测试不传则跳过熔断。
+   */
+  crashGuard?: IWorkerCrashGuard;
   haltGen: number;
   serverUrl: string;
   /** A1.3：机器级凭证，fetchDispatchContext 查频道经理/worker 名单用 */
@@ -202,6 +209,20 @@ export const dispatchHeadlessTurn = async (opts: DispatchHeadlessTurnOpts): Prom
   // Phase 1：profile identity 变化（runtime/entrypoint/model/manifest 修订）→
   // 旧常驻会话不复用，丢掉后按新身份冷启动。
   const recordedIdentity = sessionIdentities.get(agentName);
+  if (recordedIdentity !== undefined && recordedIdentity !== runtimeProfile.identity) {
+    // Phase 5：identity 变化后旧 pending interrupt 的 resumeToken 指向的
+    // checkpoint thread 已不可达——主动清，不等 take() 惰性发现。
+    try {
+      opts.interruptStore?.clearIncompatible(
+        agentId,
+        runtimeProfile.runtime,
+        runtimeProfile.entrypoint,
+        runtimeProfile.manifestRevision,
+      );
+    } catch {
+      /* store 清理是旁路 */
+    }
+  }
   if (recordedIdentity !== runtimeProfile.identity && persistentSessions.has(agentName)) {
     dropStalePersistentSession(
       agentName,
@@ -329,59 +350,84 @@ export const dispatchHeadlessTurn = async (opts: DispatchHeadlessTurnOpts): Prom
     }
 
     if (usePersistent) {
+      // Phase 5：真要 spawn（而非复用存活会话）前过熔断器——worker 连续
+      // 启动/生命周期失败达阈值后，冷却期内不再烧 spawn，直接 fail-closed。
+      if (!persistentSessions.has(agentName) && !sessionCreates.has(agentName)) {
+        const gate = opts.crashGuard?.check(agentName, runtimeProfile.identity);
+        if (gate?.blocked) {
+          throw new DispatchError(
+            "worker-crash-loop",
+            `[Daemon] @${agentName} worker crash-loop breaker open` +
+              ` (${gate.consecutiveFailures} consecutive failures, retry in ~${Math.ceil((gate.retryAfterMs ?? 0) / 1000)}s)`,
+            { retryAfterMs: gate.retryAfterMs },
+          );
+        }
+      }
       // P1.12：创建加锁。mint/MCP 之后再 ensure，避免两个重叠的 deliver
       // 各 open 一个常驻会话，后写覆盖前写、旧实例永不 stop。
-      const session = await ensurePersistentSession(agentName, persistentSessions, sessionCreates, () =>
-        // create 只在 map 无会话时执行（= needsSpawn），spawn-only 变量此时必已赋值
-        runtimeDriver.openSession({
-          agentName,
-          mode: "persistent",
-          cwd: workspace!,
-          systemPromptFile: promptFile!,
-          env: env!,
-          label: "@" + agentName,
-          // A1.1/Phase 1：模型以 resolved profile 为准（claude=档案所选；
-          // bridge=manifest 校验后的 fixed/allowlist 值）。
-          model: runtimeProfile.model,
-          entrypoint: runtimeProfile.entrypoint,
-          // Phase 2：bridge initialize 载荷（claude driver 忽略）
-          agent: isBridge
-            ? { id: agentId, name: agentName, displayName: info.displayName, description: info.description }
-            : undefined,
-          platformPrompt,
-          mcp: mcpDescriptor,
-          // A2：温启动——空闲回收 / daemon 重启后接回上次会话（sessionRef 由
-          // stream handler 在 session init 事件时落 daemon-agent-sessions.json）。
-          // SLOCK_SESSION_RESUME=0 关闭（与 PTY 同语义）；查不到 id = 全新会话。
-          resumeSessionRef: envCfg.sessionResume ? agentSessionStore?.lookup(agentName)?.sessionId : undefined,
-          // resume 宽限期早退 / 首事件 error = id 已失效——清掉避免
-          // 每次 spawn 都再撞一次（驱动内部已换全新会话继续）。只清
-          // 「还是这个 id」的记录：期间若已有更新的 sessionRef 落盘，
-          // 无条件 forget 会误删新会话。
-          onResumeFailed: (failedId) => {
-            try {
-              if (agentSessionStore?.lookup(agentName)?.sessionId === failedId) {
-                agentSessionStore.forget(agentName);
+      let session: AgentRuntimeSession;
+      try {
+        session = await ensurePersistentSession(agentName, persistentSessions, sessionCreates, () =>
+          // create 只在 map 无会话时执行（= needsSpawn），spawn-only 变量此时必已赋值
+          runtimeDriver.openSession({
+            agentName,
+            mode: "persistent",
+            cwd: workspace!,
+            systemPromptFile: promptFile!,
+            env: env!,
+            label: "@" + agentName,
+            // A1.1/Phase 1：模型以 resolved profile 为准（claude=档案所选；
+            // bridge=manifest 校验后的 fixed/allowlist 值）。
+            model: runtimeProfile.model,
+            entrypoint: runtimeProfile.entrypoint,
+            // Phase 2：bridge initialize 载荷（claude driver 忽略）
+            agent: isBridge
+              ? { id: agentId, name: agentName, displayName: info.displayName, description: info.description }
+              : undefined,
+            platformPrompt,
+            mcp: mcpDescriptor,
+            // A2：温启动——空闲回收 / daemon 重启后接回上次会话（sessionRef 由
+            // stream handler 在 session init 事件时落 daemon-agent-sessions.json）。
+            // SLOCK_SESSION_RESUME=0 关闭（与 PTY 同语义）；查不到 id = 全新会话。
+            resumeSessionRef: envCfg.sessionResume ? agentSessionStore?.lookup(agentName)?.sessionId : undefined,
+            // resume 宽限期早退 / 首事件 error = id 已失效——清掉避免
+            // 每次 spawn 都再撞一次（驱动内部已换全新会话继续）。只清
+            // 「还是这个 id」的记录：期间若已有更新的 sessionRef 落盘，
+            // 无条件 forget 会误删新会话。
+            onResumeFailed: (failedId) => {
+              try {
+                if (agentSessionStore?.lookup(agentName)?.sessionId === failedId) {
+                  agentSessionStore.forget(agentName);
+                }
+              } catch {
+                /* store 清理是旁路 */
               }
-            } catch {
-              /* store 清理是旁路 */
-            }
-            console.warn(`[Daemon] @${agentName} dropped saved session ${failedId.slice(0, 8)} (resume failed)`);
-          },
-          onEvent: (ev) => handleStreamEvent(agentName, ev),
-          // 当前进程崩溃 / 外部 kill：headless 下不会再有 turn.end 事件，状态机
-          // 靠这个回调从 working 解封。沉默超时由 session.send reject → 下方
-          // catch 解封，不走本回调（P0.1：迟到 onExit 会拆掉新回合的进度条）。
-          onExit: () => {
-            if (stateMachine.getState(agentName) === "working") {
-              transitionState(agentName, "idle");
-              idleReclaimer.touch(agentName);
-              console.log(`[Daemon] @${agentName} persistent process exited mid-turn, state -> idle`);
-            }
-            abortTurnGuards(agentName, turnGuards, progressTurns, opts.onProgress);
-          },
-        }),
-      );
+              console.warn(`[Daemon] @${agentName} dropped saved session ${failedId.slice(0, 8)} (resume failed)`);
+            },
+            onEvent: (ev) => handleStreamEvent(agentName, ev),
+            // 当前进程崩溃 / 外部 kill：headless 下不会再有 turn.end 事件，状态机
+            // 靠这个回调从 working 解封。沉默超时由 session.send reject → 下方
+            // catch 解封，不走本回调（P0.1：迟到 onExit 会拆掉新回合的进度条）。
+            onExit: () => {
+              if (stateMachine.getState(agentName) === "working") {
+                transitionState(agentName, "idle");
+                idleReclaimer.touch(agentName);
+                console.log(`[Daemon] @${agentName} persistent process exited mid-turn, state -> idle`);
+              }
+              abortTurnGuards(agentName, turnGuards, progressTurns, opts.onProgress);
+            },
+          }),
+        );
+      } catch (err) {
+        // Phase 5：spawn/handshake 期失败（openSession 同步抛 / ready 拒绝）
+        // 记熔断账——command-not-found / runtime-start-timeout / worker-exited 等。
+        opts.crashGuard?.recordFailure(
+          agentName,
+          runtimeProfile.identity,
+          err instanceof DispatchError ? err.code : undefined,
+        );
+        throw err;
+      }
       // Phase 1：记录本次会话对应的 profile identity——下次复用/重推时判失效
       sessionIdentities.set(agentName, runtimeProfile.identity);
       if (!enterWorking(agentName, haltGen)) {
@@ -425,6 +471,9 @@ export const dispatchHeadlessTurn = async (opts: DispatchHeadlessTurnOpts): Prom
           resume: opts.turn.resume,
         };
         const turnResult = await session.send(request);
+        // Phase 5：回合到达终态 = worker 健康——复位熔断计数（含 interrupted/
+        // error 终态：worker 活着，失败在 provider/图内部，不是 crash）。
+        opts.crashGuard?.recordSuccess(agentName, runtimeProfile.identity);
         // Phase 2（§11.4）：interrupt 簿记——interrupted 写 pending（resumeToken
         // 一次性，同 conversation 下条消息带它恢复）；success 消费掉已恢复的
         // pending；失败/cancelled 保留（retry 时重发）。
@@ -434,6 +483,7 @@ export const dispatchHeadlessTurn = async (opts: DispatchHeadlessTurnOpts): Prom
               agentId,
               runtime: runtimeProfile.runtime,
               entrypoint: runtimeProfile.entrypoint,
+              revision: runtimeProfile.manifestRevision,
               conversationId: opts.turn.conversationId,
               interruptId: turnResult.interrupt.interruptId,
               resumeToken: turnResult.interrupt.resumeToken,
@@ -457,6 +507,12 @@ export const dispatchHeadlessTurn = async (opts: DispatchHeadlessTurnOpts): Prom
         // 但 env/onExit 仍是失败那次的）。
         dropStalePersistentSession(agentName, persistentSessions, session, forgetSessionCost, sessionIdentities);
         credentialIssuedAt.delete(agentName);
+        // Phase 5：记熔断账——spawn/生命周期类失败码累计，provider 类不计。
+        opts.crashGuard?.recordFailure(
+          agentName,
+          runtimeProfile.identity,
+          err instanceof DispatchError ? err.code : undefined,
+        );
         throw err;
       }
       console.log(`[Daemon] @${agentName} turn finished (persistent)`);

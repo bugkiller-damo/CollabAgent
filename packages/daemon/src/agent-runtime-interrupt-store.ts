@@ -21,6 +21,8 @@ export interface PendingRuntimeInterrupt {
   agentId: string;
   runtime: string;
   entrypoint?: string;
+  /** Phase 5 §11.2：manifest 条目 revision——修订变化后旧 resumeToken 作废 */
+  revision?: string;
   conversationId: string;
   interruptId: string;
   resumeToken: string;
@@ -36,7 +38,19 @@ export interface IRuntimeInterruptStore {
    * 派发前取待恢复 interrupt。校验 runtime/entrypoint 与当前 profile 兼容、
    * 未过期——不符/过期即清除并返回 null（§11.4.4 不兼容 interrupt 不残留）。
    */
-  take(agentId: string, conversationId: string, runtime: string, entrypoint?: string): PendingRuntimeInterrupt | null;
+  take(
+    agentId: string,
+    conversationId: string,
+    runtime: string,
+    entrypoint?: string,
+    revision?: string,
+  ): PendingRuntimeInterrupt | null;
+  /**
+   * Phase 5：identity 变化时主动清——删该 agent 所有 runtime/entrypoint/
+   * revision 与当前 profile 不符的 pending 记录（不再等 take 时惰性清）。
+   * 返回清除条数。
+   */
+  clearIncompatible(agentId: string, runtime: string, entrypoint?: string, revision?: string): number;
   /** 恢复成功 / conversation 终结后删除（无记录返回 false） */
   delete(agentId: string, conversationId: string): boolean;
   /** agent 注销/删除时清空其全部 pending */
@@ -93,19 +107,36 @@ export const createRuntimeInterruptStore = (
       writeAll(data);
     },
 
-    take(agentId, conversationId, runtime, entrypoint) {
+    take(agentId, conversationId, runtime, entrypoint, revision) {
       const data = readAll();
       const k = keyOf(agentId, conversationId);
       const idx = data.records.findIndex((r) => keyOf(r.agentId, r.conversationId) === k);
       if (idx < 0) return null;
       const rec = data.records[idx];
-      const compatible = rec.runtime === runtime && (rec.entrypoint ?? undefined) === (entrypoint ?? undefined);
+      const compatible =
+        rec.runtime === runtime &&
+        (rec.entrypoint ?? undefined) === (entrypoint ?? undefined) &&
+        (rec.revision ?? undefined) === (revision ?? undefined);
       if (!compatible || rec.expiresAt <= now()) {
         data.records.splice(idx, 1);
         writeAll(data);
         return null;
       }
       return rec;
+    },
+
+    clearIncompatible(agentId, runtime, entrypoint, revision) {
+      const data = readAll();
+      const next = data.records.filter(
+        (r) =>
+          r.agentId !== agentId ||
+          (r.runtime === runtime &&
+            (r.entrypoint ?? undefined) === (entrypoint ?? undefined) &&
+            (r.revision ?? undefined) === (revision ?? undefined)),
+      );
+      if (next.length === data.records.length) return 0;
+      writeAll({ records: next });
+      return data.records.length - next.length;
     },
 
     delete(agentId, conversationId) {

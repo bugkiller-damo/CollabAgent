@@ -52,6 +52,8 @@ class SarpInitialize:
     runtime_id: str
     entrypoint: str
     model: str | None
+    """Phase 5 §11.2：manifest 条目 revision——checkpoint 命名空间分量之一"""
+    revision: str | None
     workspace_path: str
     system_prompt: str | None
     server_url: str | None
@@ -253,6 +255,7 @@ def decode_daemon_frame(line: bytes | str) -> SarpDaemonMessage | None:
             runtime_id=_req_str(runtime, "id", f"{t}.runtime"),
             entrypoint=_req_str(runtime, "entrypoint", f"{t}.runtime"),
             model=_opt_str(runtime, "model", f"{t}.runtime"),
+            revision=_opt_str(runtime, "revision", f"{t}.runtime"),
             workspace_path=_req_str(workspace, "path", f"{t}.workspace"),
             system_prompt=_opt_str(platform, "systemPrompt", f"{t}.platform"),
             server_url=_opt_str(platform, "serverUrl", f"{t}.platform"),

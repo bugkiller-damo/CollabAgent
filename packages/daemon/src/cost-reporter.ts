@@ -52,6 +52,11 @@ interface SyncRow {
   channel: string;
   day: string;
   costUsd: number;
+  /** §14.2：USD 未计量回合数 + token 计数——token-only runtime 不报 0 美元冒充已计量 */
+  unmeteredTurns: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
 }
 
 const dirtyKey = (agentName: string, channel: string, day: string): string => `${agentName}\0${channel}\0${day}`;
@@ -94,17 +99,26 @@ export const createCostReporter = (opts: CostReporterOptions): CostReporter => {
     listRecords: (filter) => tracker.listRecords(filter),
   };
 
-  /** 读脏键在账本的当日累计绝对值（跨 thread 行求和）；无行 / 全零返回 null */
+  /** 读脏键在账本的当日累计绝对值（跨 thread 行求和）；无行 / 全零且无未计量回合返回 null */
   const absoluteFor = (agentName: string, channel: string, day: string): SyncRow | null => {
     const rows = tracker.listRecords({ agentName, channel, sinceDay: day, untilDay: day });
     let costUsd = 0;
+    let unmeteredTurns = 0;
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let totalTokens = 0;
     let agentId: string | null = null;
     for (const r of rows) {
       costUsd += r.costUsd;
+      unmeteredTurns += r.unmeteredTurns ?? 0;
+      inputTokens += r.inputTokens ?? 0;
+      outputTokens += r.outputTokens ?? 0;
+      totalTokens += r.totalTokens ?? 0;
       agentId = r.agentId ?? agentId;
     }
-    if (!rows.length || !(costUsd > 0)) return null;
-    return { agentName, agentId, channel, day, costUsd };
+    // 有未计量回合的行也要上报——server 侧要区分「已计量 $0」与「未计量」（§14.2）
+    if (!rows.length || !(costUsd > 0 || unmeteredTurns > 0 || totalTokens > 0)) return null;
+    return { agentName, agentId, channel, day, costUsd, unmeteredTurns, inputTokens, outputTokens, totalTokens };
   };
 
   const flushOnce = async (): Promise<{ applied: number; skipped: number } | null> => {
@@ -134,7 +148,12 @@ export const createCostReporter = (opts: CostReporterOptions): CostReporter => {
       for (const row of rows) {
         const key = dirtyKey(row.agentName, row.channel, row.day);
         const nowRow = absoluteFor(row.agentName, row.channel, row.day);
-        if (!nowRow || nowRow.costUsd <= row.costUsd) dirty.delete(key);
+        const grew =
+          nowRow &&
+          (nowRow.costUsd > row.costUsd ||
+            nowRow.unmeteredTurns > row.unmeteredTurns ||
+            nowRow.totalTokens > row.totalTokens);
+        if (!nowRow || !grew) dirty.delete(key);
       }
       return { applied: body.applied ?? 0, skipped: body.skipped ?? 0 };
     } catch (err) {

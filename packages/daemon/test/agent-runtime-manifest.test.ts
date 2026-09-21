@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -6,6 +6,7 @@ import {
   createRuntimeManifestLoader,
   defaultRuntimeManifestPath,
   loadRuntimeManifest,
+  manifestAuditPath,
   resolveRuntimeManifestPath,
 } from "../src/agent-runtime-manifest.js";
 
@@ -171,5 +172,44 @@ describe("createRuntimeManifestLoader", () => {
     expect(loader().entries.size).toBe(0);
     rmSync(p);
     expect(loader().revision).toBe("missing");
+  });
+
+  it("Phase 5：revision 变化写审计行，首次加载/重复加载不写", () => {
+    const dir = tmp();
+    const p = writeManifest(dir, { version: 1, entries: [validEntry()] });
+    const audit = manifestAuditPath(p);
+    const loader = createRuntimeManifestLoader(p, process.env);
+    const first = loader();
+    loader();
+    expect(existsSync(audit)).toBe(false); // 首次加载是基线，不是变更
+
+    writeFileSync(p, JSON.stringify({ version: 1, entries: [validEntry({ label: "v2" })] }));
+    const second = loader();
+    expect(second.revision).not.toBe(first.revision);
+    expect(existsSync(audit)).toBe(true);
+    const lines = readFileSync(audit, "utf-8").trim().split("\n");
+    expect(lines).toHaveLength(1);
+    const rec = JSON.parse(lines[0]!);
+    expect(rec.previousRevision).toBe(first.revision);
+    expect(rec.revision).toBe(second.revision);
+    expect(rec.entries).toEqual([{ id: "ep-1", runtime: "langgraph", revision: expect.any(String) }]);
+    // 审计纪律：不含命令/路径/env 值等敏感配置
+    expect(lines[0]).not.toContain("python");
+    expect(lines[0]).not.toContain("work");
+
+    loader(); // 同 revision 重复加载不追加
+    expect(readFileSync(audit, "utf-8").trim().split("\n")).toHaveLength(1);
+  });
+
+  it("Phase 5：manifest 被删 → revision → missing 也记审计", () => {
+    const dir = tmp();
+    const p = writeManifest(dir, { version: 1, entries: [validEntry()] });
+    const loader = createRuntimeManifestLoader(p, process.env);
+    loader();
+    rmSync(p);
+    expect(loader().revision).toBe("missing");
+    const lines = readFileSync(manifestAuditPath(p), "utf-8").trim().split("\n");
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0]!).revision).toBe("missing");
   });
 });

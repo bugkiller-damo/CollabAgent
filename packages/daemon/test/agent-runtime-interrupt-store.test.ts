@@ -75,6 +75,39 @@ describe("createRuntimeInterruptStore", () => {
     expect(store.list()).toHaveLength(0);
   });
 
+  it("Phase 5：manifest revision 不兼容 → take 清除并返回 null", () => {
+    const store = createRuntimeInterruptStore(tmpFile());
+    store.put(rec({ revision: "rev-a" }));
+    // 同 runtime/entrypoint 但 revision 不同（manifest 被改）→ 不兼容
+    expect(store.take("a1", "slock:v1:a1:thread:t1", "langgraph", "ep-1", "rev-b")).toBeNull();
+    expect(store.list()).toHaveLength(0);
+    // revision 一致 → 兼容返回
+    store.put(rec({ revision: "rev-a" }));
+    expect(store.take("a1", "slock:v1:a1:thread:t1", "langgraph", "ep-1", "rev-a")?.resumeToken).toBe("r7");
+  });
+
+  it("Phase 5：clearIncompatible 只清不兼容记录，兼容的保留", () => {
+    const store = createRuntimeInterruptStore(tmpFile());
+    store.put(rec({ revision: "rev-a" }));
+    store.put(rec({ agentId: "a1", conversationId: "slock:v1:a1:channel:c2", revision: "rev-a" }));
+    store.put(rec({ agentId: "a1", conversationId: "slock:v1:a1:channel:c3", runtime: "langchain" }));
+    store.put(rec({ agentId: "a2", conversationId: "slock:v1:a2:channel:c4", revision: "rev-b" }));
+    // 当前身份变成 langgraph/ep-1/rev-b：a1 三条全不兼容（rev-a×2 + langchain×1），
+    // a2 的记录不受波及（只管本 agent）。
+    expect(store.clearIncompatible("a1", "langgraph", "ep-1", "rev-b")).toBe(3);
+    const rest = store.list();
+    expect(rest).toHaveLength(1);
+    expect(rest[0]!.agentId).toBe("a2");
+  });
+
+  it("Phase 5：clearIncompatible 保留同身份记录", () => {
+    const store = createRuntimeInterruptStore(tmpFile());
+    store.put(rec({ revision: "rev-a" }));
+    store.put(rec({ agentId: "a1", conversationId: "slock:v1:a1:channel:c2", revision: "rev-a" }));
+    expect(store.clearIncompatible("a1", "langgraph", "ep-1", "rev-a")).toBe(0);
+    expect(store.list()).toHaveLength(2);
+  });
+
   it("clearAgent 只清目标 agent", () => {
     const store = createRuntimeInterruptStore(tmpFile());
     store.put(rec());

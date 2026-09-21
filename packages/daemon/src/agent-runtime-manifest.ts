@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, readFileSync, statSync } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import { appendFileSync, chmodSync, existsSync, readFileSync, statSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { BridgeRuntimeId } from "@collabagent/shared";
 import { loadDaemonEnv } from "./config.js";
-import { slockDir } from "./private-dir.js";
+import { mkdirPrivateSync, slockDir } from "./private-dir.js";
 
 export type { BridgeRuntimeId };
 export type RuntimeModelMode = "fixed" | "select";
@@ -254,8 +254,37 @@ export function loadRuntimeManifest(filePath?: string, env: NodeJS.ProcessEnv = 
 }
 
 /**
+ * Phase 5 §16.2.10：manifest 审计日志。revision 变化时向 manifest 同目录的
+ * `runtime-manifest-audit.jsonl` 追加一行——只记安全元数据（时间/新旧
+ * revision/条目 id+runtime+条目 revision/校验失败码），不记 command/cwd/
+ * env 值/secret 名之外的任何配置内容。审计写失败不阻断 manifest 加载。
+ */
+export const manifestAuditPath = (manifestPath: string): string =>
+  join(dirname(manifestPath), "runtime-manifest-audit.jsonl");
+
+const appendManifestAudit = (prev: RuntimeManifestSnapshot | null, next: RuntimeManifestSnapshot): void => {
+  const line = {
+    ts: new Date().toISOString(),
+    manifest: next.path,
+    previousRevision: prev?.revision ?? null,
+    revision: next.revision,
+    fatalError: next.fatalError,
+    entries: [...next.entries.values()].map((e) => ({ id: e.id, runtime: e.runtime, revision: e.revision })),
+    invalidEntries: [...next.invalidEntries.entries()].map(([id, e]) => ({ id, code: e.code, runtime: e.runtime })),
+  };
+  try {
+    mkdirPrivateSync(dirname(next.path));
+    appendFileSync(manifestAuditPath(next.path), `${JSON.stringify(line)}\n`, "utf-8");
+  } catch (err) {
+    console.warn(`[ManifestAudit] append failed: ${(err as Error)?.message}`);
+  }
+};
+
+/**
  * Phase 1：manifest 的 mtime 缓存加载器。文件未变 → 复用上份 snapshot；
  * 变更 → 重新解析（revision/条目修订随内容变化，下游据此失效旧会话）。
+ * Phase 5：revision 变化（含首次加载 missing→有内容、以及文件消失/损坏）
+ * 追加一条审计行；同 revision 的重复加载不产生重复审计记录。
  * 返回零参函数便于作为依赖注入 dispatch / ready 链路。
  */
 export function createRuntimeManifestLoader(
@@ -275,7 +304,12 @@ export function createRuntimeManifestLoader(
     }
     const key = `${path}\n${statKey}`;
     if (cached && cacheKey === key) return cached;
-    cached = loadRuntimeManifest(path, env);
+    const next = loadRuntimeManifest(path, env);
+    // 审计纪律：「文件 stat 变了但解析结果 revision 没变」不写——mtime 抖动
+    // （touch / 权限位变更）不该制造假变更记录。首次加载也不写（无变更语义，
+    // 初始状态是基线而非变更）。审计只记真正的 revision 迁移。
+    if (cached && cached.revision !== next.revision) appendManifestAudit(cached, next);
+    cached = next;
     cacheKey = key;
     return cached;
   };

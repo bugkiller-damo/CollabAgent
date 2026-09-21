@@ -97,8 +97,18 @@ async function alarmIfDaemonOffline(
 export async function agentDispatchRoutes(app: FastifyInstance) {
   app.post("/:agentId/dispatch", { preHandler: [app.authenticate, requireOwnAgent] }, async (req, reply) => {
     const agentId = (req.params as Record<string, string>).agentId;
-    const { channel, toAgent, text } = req.body as { channel?: string; toAgent?: string; text?: string };
+    const { channel, toAgent, text, idempotencyKey } = req.body as {
+      channel?: string;
+      toAgent?: string;
+      text?: string;
+      idempotencyKey?: string;
+    };
     if (!channel || !toAgent || !text) return reply.status(400).send({ error: "channel, toAgent and text required" });
+    // Phase 5 §15.4：幂等键——worker 重跑回合时重复 dispatch_task 撞同一键，
+    // server 返回首次创建的 dispatch 而不再插消息/派任务卡。
+    if (idempotencyKey !== undefined && !/^[A-Za-z0-9:._-]{8,160}$/.test(idempotencyKey)) {
+      return reply.status(400).send({ error: "invalid idempotencyKey" });
+    }
 
     // 2026-09-17 审计 F4 修复：频道名解析限定经理 agent 所属 server（跨社区同名不串号）
     const manager = await getAgent(app, agentId);
@@ -128,20 +138,32 @@ export async function agentDispatchRoutes(app: FastifyInstance) {
       return reply.status(409).send({ error: "worker is off duty" });
     }
 
-    const dispatch = (
-      await app.pg.query<{
-        id: string;
-        channel_id: string;
-        from_agent_id: string;
-        to_agent_id: string;
-        text: string;
-        status: string;
-        created_at: string;
-      }>(
-        "INSERT INTO dispatches (channel_id, from_agent_id, to_agent_id, text) VALUES ($1, $2, $3, $4) RETURNING id, channel_id, from_agent_id, to_agent_id, text, status, created_at",
-        [ch.id, agentId, peer.id, text],
-      )
-    ).rows[0];
+    const dispatchRes = await app.pg.query<{
+      id: string;
+      channel_id: string;
+      from_agent_id: string;
+      to_agent_id: string;
+      text: string;
+      status: string;
+      created_at: string;
+    }>(
+      `INSERT INTO dispatches (channel_id, from_agent_id, to_agent_id, text, idempotency_key)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (channel_id, from_agent_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
+       RETURNING id, channel_id, from_agent_id, to_agent_id, text, status, created_at`,
+      [ch.id, agentId, peer.id, text, idempotencyKey ?? null],
+    );
+    // 幂等重放：同频道同经理的同 key dispatch 已存在——返回原记录，
+    // 跳过 insertAndDeliver / 任务卡 / 台账等全部副作用
+    if (dispatchRes.rows.length === 0) {
+      const existed = await app.pg.query(
+        `SELECT id, channel_id, from_agent_id, to_agent_id, text, status, created_at
+         FROM dispatches WHERE channel_id = $1 AND from_agent_id = $2 AND idempotency_key = $3`,
+        [ch.id, agentId, idempotencyKey],
+      );
+      return { dispatch: existed.rows[0], deduplicated: true };
+    }
+    const dispatch = dispatchRes.rows[0];
 
     const msgId = await insertAndDeliver(
       app,

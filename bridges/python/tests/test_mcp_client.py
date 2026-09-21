@@ -89,3 +89,49 @@ class TestTools:
             client._request("bogus/method", {})
         assert ei.value.wire.code == MCP_START_FAILED
         assert "method not found" in ei.value.wire.message
+
+
+class TestWriteIdempotency:
+    """§15.4：写工具自动注入 <turnId>:<tool>:<seq> 幂等键。"""
+
+    def test_write_tool_gets_idempotency_key(self, client):
+        client.set_active_turn("turn-7")
+        out = client.call_tool("send_message", {"target": "#general", "content": "hi"})
+        assert '"idempotencyKey": "turn-7:send_message:0"' in out
+
+    def test_seq_increments_within_turn(self, client):
+        client.set_active_turn("turn-7")
+        client.call_tool("send_message", {"target": "#general", "content": "a"})
+        out = client.call_tool("send_message", {"target": "#general", "content": "b"})
+        assert '"idempotencyKey": "turn-7:send_message:1"' in out
+
+    def test_replayed_turn_rekeys_from_zero(self, client):
+        """A1 重试重跑同 turnId：序号归零重数，第 n 次写撞同一键。"""
+        client.set_active_turn("turn-7")
+        client.call_tool("send_message", {"target": "#g", "content": "a"})
+        client.set_active_turn("turn-7")  # 重试到达：同 turnId 重置序号
+        out = client.call_tool("send_message", {"target": "#g", "content": "a"})
+        assert '"idempotencyKey": "turn-7:send_message:0"' in out
+
+    def test_different_tools_have_independent_seq(self, client):
+        client.set_active_turn("turn-7")
+        client.call_tool("send_message", {"target": "#g", "content": "a"})
+        out = client.call_tool("dispatch_task", {"channel": "#g", "toAgent": "w", "text": "t"})
+        assert '"idempotencyKey": "turn-7:dispatch_task:0"' in out
+
+    def test_read_tool_gets_no_key(self, client):
+        client.set_active_turn("turn-7")
+        out = client.call_tool("slock_echo", {"text": "x"})
+        assert "idempotencyKey" not in out
+
+    def test_no_active_turn_no_key(self, client):
+        out = client.call_tool("send_message", {"target": "#g", "content": "a"})
+        assert "idempotencyKey" not in out
+
+    def test_caller_supplied_key_wins(self, client):
+        client.set_active_turn("turn-7")
+        out = client.call_tool(
+            "send_message",
+            {"target": "#g", "content": "a", "idempotencyKey": "custom-key-9"},
+        )
+        assert '"idempotencyKey": "custom-key-9"' in out

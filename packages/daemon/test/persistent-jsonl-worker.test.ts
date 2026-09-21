@@ -95,6 +95,12 @@ const makeSession = (overrides: Partial<JsonlWorkerSessionOptions> = {}): Harnes
     timeouts: { startupMs: 5000, silenceMs: 5000, shutdownMs: 40 },
     onEvent: (ev) => events.push(ev),
     spawn: (() => child as unknown as ChildProcess) as typeof import("node:child_process").spawn,
+    // Phase 5：真实默认实现是 killProcessTree（POSIX 组杀/taskkill）——测试
+    // 注入桥回 child.kill，保留既有「已终止」断言语义（force → SIGKILL，
+    // 非 force → SIGTERM，便于 SIGTERM 断言保持原有形状）。
+    killTree: (proc, opts) => {
+      (proc as unknown as FakeChild).kill(opts?.force ? "SIGKILL" : "SIGTERM");
+    },
   };
   const session = new PersistentJsonlWorkerSession({
     ...base,

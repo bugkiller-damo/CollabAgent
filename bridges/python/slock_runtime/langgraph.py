@@ -91,6 +91,24 @@ def _flatten_content(content: Any) -> str:
     return str(content)
 
 
+def checkpoint_thread_id(init: SarpInitialize, conversation_id: str) -> str:
+    """Phase 5 §11.2：thread_id 按 runtime 身份命名空间隔离。
+
+    runtime/entrypoint/model/manifest revision 任一分量变化 → 新命名空间 →
+    不复用旧 checkpoint thread。身份不变时 conversation_id 保住会话连续性。
+    前缀分量做分隔符清洗，保证结果仍是合法 thread_id 且不会跨命名空间碰撞。
+    """
+    parts = [
+        init.runtime_id,
+        init.entrypoint,
+        init.revision or "-",
+        init.model or "-",
+        conversation_id,
+    ]
+    cleaned = ["".join(c if (c.isalnum() or c in "._-") else "_" for c in p) for p in parts]
+    return ":".join(cleaned)
+
+
 def _default_input_mapper(init: SarpInitialize, turn: SarpTurnStart, fresh: bool) -> dict:
     """§12.3.2：HumanMessage(turn.prompt)；thread 全新且有平台 prompt 时前置 SystemMessage。"""
     from langchain_core.messages import HumanMessage, SystemMessage  # 惰性导入
@@ -348,9 +366,19 @@ def serve_langgraph(
 
     def run_turn(init: SarpInitialize, turn: SarpTurnStart, emit: TurnEmit, cancelled) -> TurnOutcome:
         graph = state["graph"]
+        client = state["mcp_client"]
+        if client is not None:
+            client.set_active_turn(turn.turn_id)  # §15.4：写工具幂等键锚定 turnId
         started = time.monotonic()
-        # §11.2：thread_id 控 checkpoint 连续性；slock_turn_id 供幂等审计
-        config = {"configurable": {"thread_id": turn.conversation_id, "slock_turn_id": turn.turn_id}}
+        # §11.2：thread_id 按 runtime 身份命名空间控 checkpoint 连续性
+        # （runtime/entrypoint/revision/model 变化不复用旧 thread）；
+        # slock_turn_id 供幂等审计。
+        config = {
+            "configurable": {
+                "thread_id": checkpoint_thread_id(init, turn.conversation_id),
+                "slock_turn_id": turn.turn_id,
+            }
+        }
 
         if turn.resume is not None:
             from langgraph.types import Command  # 惰性导入：无 resume 不碰 langgraph

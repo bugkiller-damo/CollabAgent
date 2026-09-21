@@ -1635,6 +1635,37 @@ worker 侧容错解析）；resume token 签发收敛进 runtime 层而非 adapt
 - unknown cost 不再显示为 0 美元已计量。
 - 三平台至少各通过一次真实 Worker smoke test。
 
+**实施完成（2026-09-21）**：
+
+1. ✅ **幂等链**——`send_message`/`dispatch_task` 经 MCP 携带 `idempotencyKey`
+   （`<turnId>:<tool>:<seq>`，seq 为回合内序号——重试时模型 callId 会变而序号稳定）；
+   Python SDK `SlockMcpClient.call_tool` 自动注入（`set_active_turn` 由 adapter
+   在 `run_turn` 挂上）。server 侧：`/messages send` 复用 `client_nonce` 唯一索引
+   （agent 前缀 `ag:<agentId>:`）；`/dispatch` 迁移 033 加 `idempotency_key` 列，
+   撞键返回既有行（重放语义）。
+2. ✅ **unknown cost 显式建模**——账本/schema 扩 `input/output/totalTokens` +
+   `unmeteredTurns`；token-only worker 记 unmetered 而非 USD 0（§14.2）；
+   server sync 逐字段取最大合并；people stats / cost show / web 徽标透出「未计量」。
+3. ✅ **manifest 审计**——`runtime-manifest-audit.jsonl`（manifest 旁），
+   revision 变化才追加；只记 id/runtime/revision/错误码，不落 command/cwd/env/secret；
+   审计写失败不阻塞加载。
+4. ✅ **crash-loop 熔断**——`agent-runtime-crash-guard.ts`：按
+   `(agentName, profile identity)` 计连续 worker 启动/生命周期失败，阈值熔断 +
+   递增冷却 + 探测窗 + 成功回合复位 + identity 变更自动复位 + `unregisterAgent` 显式
+   reset。熔断期派发走非重试 `worker-crash-loop` 错误直接死信（不再热 spawn）。
+5. ✅ **runtime 切换隔离**——`initialize.runtime.revision`（manifest 条目 sha256）
+   下发；Python SDK 组 `thread_id = runtime:entrypoint:revision:model:conversationId`，
+   任何 identity 分量变化不命中旧 LangGraph checkpoint；interrupt 记录带 revision，
+   identity 变更主动 `clearIncompatible`。
+6. ✅ **进程树 kill**——`process-tree.ts`：POSIX `detached` 建进程组 +
+   `kill(-pgid)`，Windows `taskkill /T`；优雅/强杀两级；MCP 孙进程不再成孤儿。
+   测试经 `killTree` 注入保持可断言。
+7. ✅ **conformance suite + 协议文档**——`sarp-conformance.ts` 可复用 runner
+   （handshake / seq 单调 / 回合终态唯一 / eventSeq / cancel / 坏帧容错或
+   fail-closed / journal 回放 / shutdown 干净退出），
+   `test/sarp-conformance.test.ts` 对 fixture 跑健康+5 故障矩阵；
+   协议规范独立成文 `docs/2026-09-21/02-sarp1-protocol.md`。
+
 ---
 
 ## 20. 测试方案
