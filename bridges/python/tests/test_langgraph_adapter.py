@@ -351,6 +351,46 @@ class TestDurableThreads:
         sys_msgs = [m for m in snap.values["messages"] if isinstance(m, SystemMessage)]
         assert len(sys_msgs) == 1 and sys_msgs[0].content == "sys-prompt"
 
+    def test_dangling_tool_call_repaired_on_next_turn(self, tmp_path):
+        """上回合死在 tool_call→ToolMessage 之间 → 本回合先补 error ToolMessage。
+
+        实机：tool 400 崩回合后 checkpoint 尾部留着悬空 tool_call，下个回合
+        的 messages 数组被 provider 400 拒收（tool_calls must be followed by
+        tool messages），thread 永久毒化。
+        """
+        _lg()
+        from langchain_core.messages import AIMessage, ToolMessage
+
+        graph = _echo_graph(tmp_path)
+        s = Session(graph)
+        s.feed(_init_frame(tmp_path))
+        s.wait_type("runtime.ready")
+        s.feed(_turn(2, "t1", "conv-1", "hello"))
+        s.wait_turn_end("t1")
+
+        # 模拟毒化：直接向 checkpoint 尾部写一条带悬空 tool_call 的 AI 消息
+        config = {"configurable": {"thread_id": "langgraph:e1:-:-:conv-1"}}
+        graph.update_state(
+            config,
+            {
+                "messages": [
+                    AIMessage(
+                        content="",
+                        tool_calls=[{"id": "call-poison", "name": "send_message", "args": {}}],
+                    )
+                ]
+            },
+        )
+
+        s.feed(_turn(3, "t2", "conv-1", "again"))
+        e2 = s.wait_turn_end("t2")
+        assert e2["status"] == "success"
+
+        msgs = graph.get_state(config).values["messages"]
+        repairs = [m for m in msgs if isinstance(m, ToolMessage) and m.tool_call_id == "call-poison"]
+        assert repairs and "aborted" in repairs[0].content
+        assert s.shutdown() == 0
+
 
 class TestInterruptResume:
     def test_interrupt_then_resume_same_worker(self, tmp_path):

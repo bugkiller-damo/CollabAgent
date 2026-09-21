@@ -191,6 +191,52 @@ def _thread_fresh(graph: Any, config: dict) -> bool:
     return not getattr(snap, "values", None)
 
 
+def _repair_dangling_tool_calls(graph: Any, config: dict) -> int:
+    """回合中途死亡（崩溃/error/杀进程）会把『带 tool_calls 的 AI 消息』落进
+    checkpoint 而对应 ToolMessage 未写——下个回合把新 HumanMessage 接在其后，
+    provider 400：assistant tool_calls must be followed by tool messages。
+    为每个悬空 tool_call 补一条 error ToolMessage 再进 graph。返回修补数。"""
+    get_state = getattr(graph, "get_state", None)
+    update_state = getattr(graph, "update_state", None)
+    if get_state is None or update_state is None:
+        return 0
+    try:
+        snap = get_state(config)
+    except Exception:
+        return 0
+    values = getattr(snap, "values", None)
+    messages = values.get("messages") if isinstance(values, dict) else None
+    if not messages:
+        return 0
+    answered = {getattr(m, "tool_call_id", None) for m in messages if _is_tool_kind(_msg_kind(m))}
+    dangling: list[str] = []
+    for m in messages:
+        if not _is_ai_kind(_msg_kind(m)):
+            continue
+        for tc in getattr(m, "tool_calls", None) or ():
+            tid = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
+            if tid and tid not in answered:
+                dangling.append(str(tid))
+    if not dangling:
+        return 0
+    from langchain_core.messages import ToolMessage  # 惰性导入
+
+    def _mk(tid: str, with_status: bool):
+        kw = {"status": "error"} if with_status else {}
+        return ToolMessage(
+            content="[slock] tool call aborted: previous turn ended before the tool responded",
+            tool_call_id=tid,
+            **kw,
+        )
+
+    try:
+        patches = [_mk(tid, True) for tid in dangling]
+    except TypeError:
+        patches = [_mk(tid, False) for tid in dangling]
+    update_state(config, {"messages": patches})
+    return len(dangling)
+
+
 def _final_values(graph: Any, config: dict, fallback: dict) -> dict:
     try:
         snap = graph.get_state(config)
@@ -406,6 +452,11 @@ def serve_langgraph(
             graph_input = Command(resume=turn.resume.value)
         else:
             fresh = _thread_fresh(graph, config)
+            if not fresh:
+                # 上个回合可能死在 tool_call 与 ToolMessage 之间——先补悬空
+                # tool_call 的 error ToolMessage，否则 provider 400 拒收整个
+                # messages（实机：idempotencyKey 400 崩回合后 thread 永久毒化）。
+                _repair_dangling_tool_calls(graph, config)
             mapper = input_mapper or _default_input_mapper
             try:
                 graph_input = mapper(init, turn, fresh)
