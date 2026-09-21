@@ -193,9 +193,15 @@ def _thread_fresh(graph: Any, config: dict) -> bool:
 
 def _repair_dangling_tool_calls(graph: Any, config: dict) -> int:
     """回合中途死亡（崩溃/error/杀进程）会把『带 tool_calls 的 AI 消息』落进
-    checkpoint 而对应 ToolMessage 未写——下个回合把新 HumanMessage 接在其后，
-    provider 400：assistant tool_calls must be followed by tool messages。
-    为每个悬空 tool_call 补一条 error ToolMessage 再进 graph。返回修补数。"""
+    checkpoint 而对应 ToolMessage 未写——下个回合 provider 400 拒收整个
+    messages（assistant tool_calls must be followed by tool messages）。
+
+    provider 要求 tool 应答**紧跟** AI 消息之后——尾部追加无效（实机验证：
+    悬空 AI 在历史中段时 append 的 ToolMessage 不构成合法应答，自身还成
+    孤儿）。修法：add_messages 按 id upsert，把悬空 AI 原位替换为只保留
+    『已被紧邻 tool 块应答』的 tool_calls 的同 id 副本；游离 ToolMessage
+    （无紧邻上游 AI tool_calls 认领，含旧版尾部补丁残留）一并 RemoveMessage。
+    返回改动消息数。"""
     get_state = getattr(graph, "get_state", None)
     update_state = getattr(graph, "update_state", None)
     if get_state is None or update_state is None:
@@ -205,36 +211,65 @@ def _repair_dangling_tool_calls(graph: Any, config: dict) -> int:
     except Exception:
         return 0
     values = getattr(snap, "values", None)
-    messages = values.get("messages") if isinstance(values, dict) else None
+    messages = list(values.get("messages") or []) if isinstance(values, dict) else []
     if not messages:
         return 0
-    answered = {getattr(m, "tool_call_id", None) for m in messages if _is_tool_kind(_msg_kind(m))}
-    dangling: list[str] = []
-    for m in messages:
-        if not _is_ai_kind(_msg_kind(m)):
-            continue
-        for tc in getattr(m, "tool_calls", None) or ():
-            tid = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
-            if tid and tid not in answered:
-                dangling.append(str(tid))
-    if not dangling:
+
+    def _tid(tc: Any) -> str | None:
+        t = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
+        return str(t) if t else None
+
+    patches: list = []
+    n = len(messages)
+    i = 0
+    while i < n:
+        m = messages[i]
+        kind = _msg_kind(m)
+        if _is_ai_kind(kind) and (getattr(m, "tool_calls", None) or getattr(m, "invalid_tool_calls", None)):
+            # 紧邻其后的连续 tool 块才算合法应答（provider 语义）
+            j = i + 1
+            block: list = []
+            while j < n and _is_tool_kind(_msg_kind(messages[j])):
+                block.append(messages[j])
+                j += 1
+            block_ids = {getattr(t, "tool_call_id", None) for t in block}
+            tcs = list(getattr(m, "tool_calls", None) or ())
+            ics = list(getattr(m, "invalid_tool_calls", None) or ())
+            keep = [tc for tc in tcs if _tid(tc) in block_ids]
+            keep_i = [tc for tc in ics if _tid(tc) in block_ids]
+            if len(keep) != len(tcs) or len(keep_i) != len(ics):
+                mid = getattr(m, "id", None)
+                try:
+                    patches.append(
+                        m.model_copy(update={"tool_calls": keep, "invalid_tool_calls": keep_i})
+                        if mid
+                        else ("remove", mid)
+                    )
+                except AttributeError:
+                    if mid:
+                        patches.append(("remove", mid))  # 改不了就整条删——AI 无 tool_calls 仍合法
+            # block 里不属于本 AI 调用集的 tool 消息是孤儿
+            call_ids = {_tid(tc) for tc in tcs} | {_tid(tc) for tc in ics}
+            for t in block:
+                if getattr(t, "tool_call_id", None) not in call_ids:
+                    patches.append(("remove", getattr(t, "id", None)))
+            i = j
+        elif _is_tool_kind(kind):
+            # 不在任何 AI tool_calls 紧邻块内的 tool 消息 → 孤儿
+            patches.append(("remove", getattr(m, "id", None)))
+            i += 1
+        else:
+            i += 1
+
+    if not patches:
         return 0
-    from langchain_core.messages import ToolMessage  # 惰性导入
+    from langchain_core.messages import RemoveMessage  # 惰性导入
 
-    def _mk(tid: str, with_status: bool):
-        kw = {"status": "error"} if with_status else {}
-        return ToolMessage(
-            content="[slock] tool call aborted: previous turn ended before the tool responded",
-            tool_call_id=tid,
-            **kw,
-        )
-
-    try:
-        patches = [_mk(tid, True) for tid in dangling]
-    except TypeError:
-        patches = [_mk(tid, False) for tid in dangling]
-    update_state(config, {"messages": patches})
-    return len(dangling)
+    ops = [RemoveMessage(id=p[1]) if isinstance(p, tuple) and p[1] else p for p in patches]
+    if not ops:
+        return 0
+    update_state(config, {"messages": ops})
+    return len(ops)
 
 
 def _final_values(graph: Any, config: dict, fallback: dict) -> dict:

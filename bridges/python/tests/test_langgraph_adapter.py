@@ -377,7 +377,9 @@ class TestDurableThreads:
                     AIMessage(
                         content="",
                         tool_calls=[{"id": "call-poison", "name": "send_message", "args": {}}],
-                    )
+                    ),
+                    # 再加一条孤儿 ToolMessage（旧版尾部补丁形态）应被移除
+                    ToolMessage(content="stale patch", tool_call_id="call-orphan"),
                 ]
             },
         )
@@ -387,8 +389,10 @@ class TestDurableThreads:
         assert e2["status"] == "success"
 
         msgs = graph.get_state(config).values["messages"]
-        repairs = [m for m in msgs if isinstance(m, ToolMessage) and m.tool_call_id == "call-poison"]
-        assert repairs and "aborted" in repairs[0].content
+        # 悬空 AI 的 tool_calls 被原位剥离；孤儿 ToolMessage 被移除
+        remaining_tc_ids = [tc["id"] for m in msgs for tc in (getattr(m, "tool_calls", None) or [])]
+        assert "call-poison" not in remaining_tc_ids
+        assert not any(getattr(m, "tool_call_id", None) == "call-orphan" for m in msgs)
         assert s.shutdown() == 0
 
 
