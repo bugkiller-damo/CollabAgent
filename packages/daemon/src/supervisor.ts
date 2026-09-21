@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import "./load-env.js"; // 必须是第一个 import——在任何模块读 process.env 前加载 .env
 // Daemon 监督进程：文件变更自动重启（dev watch）+ 崩溃自动重启（带退避）+ 干净关闭。
 // 用法与 daemon 相同，参数透传：
 //   pnpm --filter daemon dev -- --server-url http://localhost:3001 --api-key sk_machine_<token>

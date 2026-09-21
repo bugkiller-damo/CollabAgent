@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import "./load-env.js"; // 必须是第一个 import——在任何模块读 process.env 前加载 .env
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -76,9 +77,11 @@ function enforceSingleInstance(): void {
 enforceSingleInstance();
 
 function parseArgs(args: string[]): { serverUrl: string; apiKey: string; serverName?: string } | null {
-  let serverUrl = "";
-  let apiKey = "";
-  let serverName = "";
+  // CLI 优先；缺省回落 env（SLOCK_SERVER_URL / SLOCK_API_KEY / SLOCK_SERVER_NAME，
+  // 可经 packages/daemon/.env 固化），`pnpm dev` 零参数即可起。
+  let serverUrl = process.env.SLOCK_SERVER_URL ?? "";
+  let apiKey = process.env.SLOCK_API_KEY ?? "";
+  let serverName = process.env.SLOCK_SERVER_NAME ?? "";
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--server-url" && args[i + 1]) serverUrl = args[++i];
     if (args[i] === "--api-key" && args[i + 1]) apiKey = args[++i];
@@ -92,7 +95,10 @@ function parseArgs(args: string[]): { serverUrl: string; apiKey: string; serverN
 
 const parsed = parseArgs(process.argv.slice(2));
 if (!parsed) {
-  console.error("Usage: collabagent-daemon --server-url <url> --api-key <key> [--server <name>]");
+  console.error(
+    "Usage: collabagent-daemon --server-url <url> --api-key <key> [--server <name>]" +
+      "  (或经 env/.env: SLOCK_SERVER_URL / SLOCK_API_KEY / SLOCK_SERVER_NAME)",
+  );
   process.exit(1);
 }
 
