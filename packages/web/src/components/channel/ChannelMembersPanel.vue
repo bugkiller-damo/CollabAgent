@@ -5,7 +5,7 @@ import { apiClient } from "../../api";
 import { type ChannelMember, useAuthStore, useChannelStore, useUiStore } from "../../stores";
 import { toast } from "../../stores/toastStore";
 import Avatar from "../ui/Avatar.vue";
-import Button from "../ui/Button.vue";
+import ChannelInvitePicker from "./ChannelInvitePicker.vue";
 
 const ROLE_LABEL: Record<string, string> = { owner: "所有者", admin: "管理员", member: "成员" };
 
@@ -23,9 +23,6 @@ const currentUserId = computed(() => authStore.user?.id);
 // 广播 / 本地保存的 applyMemberProfile 回写后，本面板随 store 即时刷新头像/显示名
 const members = computed<ChannelMember[]>(() => channelStore.membersByChannelId[props.channelId] ?? []);
 const loading = ref(true);
-const inviteHandle = ref("");
-const inviteMsg = ref("");
-const busy = ref(false);
 
 function load() {
   loading.value = true;
@@ -39,28 +36,6 @@ function load() {
 
 onMounted(load);
 watch(() => props.channelId, load);
-
-async function handleInvite() {
-  const h = inviteHandle.value.trim();
-  if (!h) return;
-  busy.value = true;
-  inviteMsg.value = "";
-  try {
-    await apiClient(`/api/channels/${props.channelId}/invite`, { method: "POST", body: { handle: h } });
-    inviteHandle.value = "";
-    inviteMsg.value = "已邀请";
-    load();
-  } catch (err: any) {
-    inviteMsg.value =
-      err?.message === "user or agent not found"
-        ? "用户/Agent 不存在"
-        : err?.message === "already a member"
-          ? "已是成员"
-          : err?.message || "邀请失败";
-  } finally {
-    busy.value = false;
-  }
-}
 
 async function handleRemove(m: ChannelMember) {
   if (!confirm(`将 @${m.handle} 移出频道？`)) return;
@@ -98,9 +73,12 @@ async function handleManager(m: ChannelMember, is_manager: boolean) {
 const humans = computed(() => members.value.filter((m) => m.member_type === "human"));
 const agents = computed(() => members.value.filter((m) => m.member_type === "agent"));
 
-function onInviteKeydown(e: KeyboardEvent) {
-  if (e.key === "Enter") handleInvite();
-}
+// 邀请入口只对频道管理员可见（后端 /invite 同口径 canManageChannel）——
+// 此前普通成员也能看到输入框但提交必 403
+const canInvite = computed(() => {
+  const me = members.value.find((m) => m.member_type === "human" && m.member_id === currentUserId.value);
+  return me?.role === "owner" || me?.role === "admin";
+});
 
 function openProfile(m: ChannelMember) {
   uiStore.openProfile({ handle: m.handle, channelId: props.channelId });
@@ -117,23 +95,8 @@ function openProfile(m: ChannelMember) {
       </button>
     </div>
 
-    <div class="p-3 border-b border-line space-y-1">
-      <div class="flex gap-1">
-        <input
-          type="text"
-          :value="inviteHandle"
-          @input="inviteHandle = ($event.target as HTMLInputElement).value"
-          @keydown="onInviteKeydown"
-          placeholder="输入用户名 / Agent名 邀请"
-          class="flex-1 min-w-0 text-sm p-1.5 rounded-md bg-white dark:bg-gray-700 text-ink border border-gray-300 dark:border-gray-600"
-        />
-        <Button
-          size="sm"
-          :disabled="busy || !inviteHandle.trim()"
-          @click="handleInvite"
-        >邀请</Button>
-      </div>
-      <p v-if="inviteMsg" :class="'text-xs ' + (inviteMsg === '已邀请' ? 'text-green-500' : 'text-red-400')">{{ inviteMsg }}</p>
+    <div v-if="canInvite" class="p-3 border-b border-line">
+      <ChannelInvitePicker :channel-id="channelId" @invited="load" />
     </div>
 
     <div class="flex-1 overflow-y-auto p-2 space-y-3">

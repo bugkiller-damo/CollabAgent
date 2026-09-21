@@ -19,9 +19,9 @@ export async function channelRoutes(app: FastifyInstance) {
     const resolvedServerId = tenant.serverId;
     if (!resolvedServerId) return { channels: [] };
     const result = await app.pg.query(
-      `SELECT c.*, cm.role
+      `SELECT c.*, cm.role, (cm.member_id IS NOT NULL) AS joined
        FROM channels c
-       LEFT JOIN channel_members cm ON cm.channel_id = c.id AND cm.member_id::text = $1
+       LEFT JOIN channel_members cm ON cm.channel_id = c.id AND cm.member_id::text = $1 AND cm.member_type = 'human'
        WHERE c.server_id = $2 AND c.archived = false AND c.type <> 'dm'
          AND (c.type <> 'private' OR cm.role IS NOT NULL)
        ORDER BY c.created_at`,
@@ -184,7 +184,8 @@ export async function channelRoutes(app: FastifyInstance) {
     }
     // 2026-09-17 审计收紧：加入公开频道须为该 server 成员——此前任何登录用户
     // 拿到频道 UUID 即可零门槛自加入（也是「频道同事」终端观看门槛被伪造的主路径）。
-    // 跨社区协作仍可由频道管理员经 /invite 邀请（成员行直接放行）。
+    // 跨社区的「人」2026-09-20 起不再经 /invite 放行（受邀人类须为 server 成员，
+    // 先邀进 server 再进频道）；存量跨 server 成员行与 agent 属主兜底不受影响。
     if (!(await isServerMember(app, ch.rows[0].server_id, req.user.sub))) {
       return reply.status(403).send({ error: "not a member of that server" });
     }
@@ -211,41 +212,131 @@ export async function channelRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
+  // 可邀请候选：成员面板「选择添加」下拉的数据源——频道所在 server 的人类成员 +
+  // 该 server 的 agent + 调用者自己名下的 agent（与下方 /invite 解析口径一致：
+  // 同 server 团队 agent 或属主自带 agent），已是频道成员的自动剔除。
+  app.get("/:channelId/invitable", { preHandler: [app.authenticate] }, async (req, reply) => {
+    const { channelId } = req.params as Record<string, string>;
+    if (!(await canManageChannel(app, channelId, req.user.sub))) {
+      return reply.status(403).send({ error: "only channel admins can invite members" });
+    }
+    const ch = await app.pg.query<{ server_id: string }>("SELECT server_id FROM channels WHERE id = $1", [channelId]);
+    const serverId = ch.rows[0]?.server_id;
+    if (!serverId) return reply.status(404).send({ error: "channel not found" });
+    const [humans, agents] = await Promise.all([
+      app.pg.query(
+        `SELECT u.id AS member_id, u.handle, u.display_name, u.avatar_url
+           FROM server_members sm
+           JOIN users u ON u.id = sm.user_id
+          WHERE sm.server_id = $1
+            AND NOT EXISTS (
+              SELECT 1 FROM channel_members cm
+               WHERE cm.channel_id = $2 AND cm.member_id = u.id AND cm.member_type = 'human'
+            )
+          ORDER BY u.handle`,
+        [serverId, channelId],
+      ),
+      app.pg.query(
+        `SELECT a.id AS member_id, a.name AS handle, a.display_name, a.avatar_url
+           FROM agents a
+          WHERE (a.server_id = $1 OR a.user_id::text = $3)
+            AND NOT EXISTS (
+              SELECT 1 FROM channel_members cm
+               WHERE cm.channel_id = $2 AND cm.member_id = a.id AND cm.member_type = 'agent'
+            )
+          ORDER BY a.name`,
+        [serverId, channelId, req.user.sub],
+      ),
+    ]);
+    return {
+      candidates: [
+        ...humans.rows.map((r: any) => ({ ...r, member_type: "human" })),
+        ...agents.rows.map((r: any) => ({ ...r, member_type: "agent" })),
+      ],
+    };
+  });
+
   // 邀请成员：按 handle 查找用户或 agent 并加入频道
   app.post("/:channelId/invite", { preHandler: [app.authenticate] }, async (req, reply) => {
     const { channelId } = req.params as Record<string, string>;
     if (!(await canManageChannel(app, channelId, req.user.sub))) {
       return reply.status(403).send({ error: "only channel admins can invite members" });
     }
-    const { handle } = req.body as { handle?: string };
-    if (!handle) return reply.status(400).send({ error: "handle required" });
-    const clean = handle.replace(/^@/, "");
-    // 先找用户，找不到再找 agent
-    const user = await app.pg.query<{ id: string }>("SELECT id FROM users WHERE handle = $1", [clean]);
+    const body = (req.body ?? {}) as { handle?: unknown; memberId?: unknown; memberType?: unknown };
+    // handle 仅接受字符串：trim 后去一个前导 @；非字符串/空串视同未提供
+    const clean = typeof body.handle === "string" ? body.handle.trim().replace(/^@/, "") : "";
+    // 精确目标（memberId + memberType）是 picker 的消歧路径：同名 human/agent 候选
+    // 共存时 handle 无法区分，必须按 id 定向；提供任一字段时必须成对且合法。
+    const hasExactTarget = body.memberId !== undefined || body.memberType !== undefined;
+    let exactId = "";
+    let exactType: "human" | "agent" | null = null;
+    if (hasExactTarget) {
+      exactId = typeof body.memberId === "string" ? body.memberId.trim() : "";
+      if (body.memberType === "human" || body.memberType === "agent") exactType = body.memberType;
+      if (!exactId || !exactType) return reply.status(400).send({ error: "invalid invite target" });
+    } else if (!clean) {
+      return reply.status(400).send({ error: "handle required" });
+    }
+    const ch = await app.pg.query<{ server_id: string }>("SELECT server_id FROM channels WHERE id = $1", [channelId]);
+    const serverId = ch.rows[0]?.server_id;
+    if (!serverId) return reply.status(404).send({ error: "channel not found" });
     let memberId: string | null = null;
     let memberType: "human" | "agent" | null = null;
-    if (user.rows.length > 0) {
-      memberId = String(user.rows[0].id);
-      memberType = "human";
-    } else {
-      const ch = await app.pg.query<{ server_id: string }>("SELECT server_id FROM channels WHERE id = $1", [channelId]);
-      // 先按频道所在 server 找（同 server 的团队 agent）；找不到再退回"当前用户自己名下的
-      // agent"，不管它挂在哪个 server 下——agent 默认落在创建者的私有 server，跟频道所在
-      // server 天然不一致（尤其是频道建在共享的 Default Server 时），邀请自己的 agent 不应
-      // 该被这个边界卡住。
-      let agent = await app.pg.query<{ id: string }>("SELECT id FROM agents WHERE name = $1 AND server_id = $2", [
-        clean,
-        ch.rows[0]?.server_id,
-      ]);
-      if (agent.rows.length === 0) {
-        agent = await app.pg.query<{ id: string }>("SELECT id FROM agents WHERE name = $1 AND user_id = $2", [
-          clean,
-          req.user.sub,
-        ]);
+    if (exactType === "human") {
+      // 精确 human：目标 id 必须存在且属于频道所在 server（与 legacy 分支的
+      // isServerMember 门槛同口径，只是合并进一条查询）
+      const r = await app.pg.query<{ id: string }>(
+        `SELECT u.id FROM users u
+         JOIN server_members sm ON sm.user_id = u.id
+         WHERE u.id::text = $1 AND sm.server_id = $2`,
+        [exactId, serverId],
+      );
+      if (r.rows.length > 0) {
+        memberId = String(r.rows[0].id);
+        memberType = "human";
       }
-      if (agent.rows.length > 0) {
-        memberId = String(agent.rows[0].id);
+    } else if (exactType === "agent") {
+      // 精确 agent：同 server 团队 agent 或调用者自己名下 agent（与 legacy 分支同口径）
+      const r = await app.pg.query<{ id: string }>(
+        "SELECT id FROM agents WHERE id::text = $1 AND (server_id = $2 OR user_id::text = $3)",
+        [exactId, serverId, req.user.sub],
+      );
+      if (r.rows.length > 0) {
+        memberId = String(r.rows[0].id);
         memberType = "agent";
+      }
+    } else {
+      // legacy handle 分支：先找用户，找不到再找 agent
+      const user = await app.pg.query<{ id: string }>("SELECT id FROM users WHERE handle = $1", [clean]);
+      if (user.rows.length > 0) {
+        // 2026-09-20 收口：受邀人类须为频道所在 server 成员——此前 handle 全局命中 users，
+        // 可把任何注册用户直接拉进频道（含私有频道），绕过 server 邀请制与 /join 的
+        // server 成员门槛（join 收紧后 invite 成了同级漏洞）。跨社区协作改为先邀进
+        // server 再进频道；存量跨 server 成员行仍由 canAccessChannel 放行。
+        if (!(await isServerMember(app, String(serverId), String(user.rows[0].id)))) {
+          return reply.status(403).send({ error: "user is not a member of that server" });
+        }
+        memberId = String(user.rows[0].id);
+        memberType = "human";
+      } else {
+        // 先按频道所在 server 找（同 server 的团队 agent）；找不到再退回"当前用户自己名下的
+        // agent"，不管它挂在哪个 server 下——agent 默认落在创建者的私有 server，跟频道所在
+        // server 天然不一致（尤其是频道建在共享的 Default Server 时），邀请自己的 agent 不应
+        // 该被这个边界卡住。
+        let agent = await app.pg.query<{ id: string }>("SELECT id FROM agents WHERE name = $1 AND server_id = $2", [
+          clean,
+          serverId,
+        ]);
+        if (agent.rows.length === 0) {
+          agent = await app.pg.query<{ id: string }>("SELECT id FROM agents WHERE name = $1 AND user_id = $2", [
+            clean,
+            req.user.sub,
+          ]);
+        }
+        if (agent.rows.length > 0) {
+          memberId = String(agent.rows[0].id);
+          memberType = "agent";
+        }
       }
     }
     if (!memberId || !memberType) return reply.status(404).send({ error: "user or agent not found" });

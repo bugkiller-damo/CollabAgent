@@ -602,7 +602,7 @@ export async function orgRoutes(app: FastifyInstance) {
     const serverResult = await app.pg.query<{ name: string }>("SELECT id, name FROM servers WHERE id = $1", [serverId]);
     const userId = req.user?.sub;
     const channels = await app.pg.query(
-      `SELECT DISTINCT ON (c.id) c.*, cm.role
+      `SELECT DISTINCT ON (c.id) c.*, cm.role, (cm.member_id IS NOT NULL) AS joined
          FROM channels c
          LEFT JOIN channel_members cm ON cm.channel_id = c.id AND cm.member_id::text = $2 AND cm.member_type = 'human'
         WHERE c.server_id = $1 AND c.archived = false AND c.type <> 'dm'

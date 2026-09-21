@@ -524,6 +524,8 @@ describe("自建 server: onboarding-owner 私有频道", () => {
     expect(ch.type).toBe("private");
     // /api/server/info 的 cm.role 直列透出频道成员角色——owner 是频道 owner
     expect(ch.role).toBe("owner");
+    // joined 标记：侧栏「加入」按钮的显隐数据源（漏字段会导致已入圈频道仍显示加入）
+    expect(ch.joined).toBe(true);
     const members = await api(`/api/channels/${ch.id}/members`, { cookie: u.cookie });
     expect(members.status).toBe(200);
     const me = members.data.members.find((m: any) => m.member_id === u.userId);
@@ -548,6 +550,21 @@ describe("自建 server: onboarding-owner 私有频道", () => {
     // owner 侧仍可见（对照）
     const ownerInfo = await api(`/api/server/info?serverId=${org.id}`, { cookie: u.cookie });
     expect(ownerInfo.data.channels.some((c: any) => c.name === "onboarding-owner")).toBe(true);
+
+    // joined 标记两端口径：owner 建的公开频道，未入圈 member 侧 joined=false、
+    // 创建者（自动入圈 owner）侧 joined=true——侧栏「加入」按钮按此显隐
+    const pub = await api("/api/channels", {
+      method: "POST",
+      cookie: u.cookie,
+      body: { serverId: org.id, name: "pub_joined_flag" },
+    });
+    expect(pub.status).toBe(200);
+    const mInfo = await api(`/api/server/info?serverId=${org.id}`, { cookie: m.cookie });
+    const mPub = mInfo.data.channels.find((c: any) => c.name === "pub_joined_flag");
+    expect(mPub).toBeTruthy();
+    expect(mPub.joined).toBe(false);
+    const oInfo = await api(`/api/server/info?serverId=${org.id}`, { cookie: u.cookie });
+    expect(oInfo.data.channels.find((c: any) => c.name === "pub_joined_flag").joined).toBe(true);
   });
 
   it("幂等：重复 GET /api/orgs 不产生第二个同名频道", async () => {

@@ -161,7 +161,7 @@ describe("visibility hardening: 公开频道 server 成员口径（canAccessChan
     expect(res.status).toBe(404);
   });
 
-  it("被频道管理员邀请入圈的非 server 成员：成员行放行（跨社区协作语义保留）", async () => {
+  it("非 server 成员不可被 /invite 拉入频道（2026-09-20 invite 收口：受邀人类须为 server 成员）", async () => {
     const alice = await registerUser();
     await makeOrgOwner(alice); // 默认社区建频道需 server owner（2026-09-18）
     const ch = await call(alice, "/api/channels", "POST", { name: "zz_test_vh_" + uniqHandle(), type: "public" });
@@ -174,15 +174,17 @@ describe("visibility hardening: 公开频道 server 成员口径（canAccessChan
         })
       ).status,
     ).toBe(404);
+    // invite 直接输 handle 也进不来：非 server 成员被拒——跨社区协作须先邀进 server
     const invite = await call(alice, `/api/channels/${ch.data.channel.id}/invite`, "POST", {
       handle: outsider.handle,
     });
-    expect(invite.status).toBe(200);
-    // 邀请后：成员行即可访问（无需 server 成员身份）
+    expect(invite.status).toBe(403);
+    expect(invite.data.error).toBe("user is not a member of that server");
+    // 邀请被拒 → 无成员行 → resolve 依旧 404
     const res = await api(`/api/channels/resolve?target=${encodeURIComponent("#" + ch.data.channel.name)}`, {
       cookie: outsider.cookie,
     });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(404);
   });
 
   it("非 server 成员名下 agent 写默认社区公开频道 → 403（agentCanAccessChannel 同口径）", async () => {
