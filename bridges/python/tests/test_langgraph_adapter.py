@@ -73,8 +73,7 @@ def _turn(seq: int, turn_id: str, conv: str, prompt: str = "hi", resume: dict | 
 
 
 def _frames(stdout: io.StringIO) -> list[dict]:
-    stdout.seek(0)
-    return [json.loads(line) for line in stdout if line.strip()]
+    return [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip()]
 
 
 def _ends(frames: list[dict]) -> list[dict]:
@@ -82,13 +81,10 @@ def _ends(frames: list[dict]) -> list[dict]:
 
 
 def _wait_for(stdout: io.StringIO, pred, timeout: float = 15.0) -> list[dict]:
-    """轮询 stdout 直到 pred(frames) 为真；写线程半行按『未就绪』处理。"""
+    """轮询 stdout 直到 pred(frames) 为真。"""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        try:
-            fr = _frames(stdout)
-        except (json.JSONDecodeError, ValueError):
-            fr = []
+        fr = _frames(stdout)
         if pred(fr):
             return fr
         time.sleep(0.01)

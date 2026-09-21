@@ -100,8 +100,7 @@ class Harness:
         self.writer.flush()
 
     def frames(self) -> list[dict]:
-        self.stdout.seek(0)
-        return [json.loads(line) for line in self.stdout if line.strip()]
+        return [json.loads(line) for line in self.stdout.getvalue().splitlines() if line.strip()]
 
     def wait_frame(self, pred, timeout: float = 8.0) -> dict:
         deadline = time.time() + timeout

@@ -96,8 +96,7 @@ class Harness:
         self.writer.flush()
 
     def frames(self) -> list[dict]:
-        self.stdout.seek(0)
-        return [json.loads(line) for line in self.stdout if line.strip()]
+        return [json.loads(line) for line in self.stdout.getvalue().splitlines() if line.strip()]
 
     def wait_frame(self, pred, timeout: float = 8.0) -> dict:
         deadline = time.time() + timeout
@@ -390,8 +389,7 @@ class TestProbe:
         assert caps["durableThreads"] is True and caps["custom"] == "x"
         assert f["model"] == {"overrides": True}
         # 恰好一行 stdout；stdin/journal/handler/on_initialize 全程未触达
-        h.stdout.seek(0)
-        assert h.stdout.read().count("\n") == 1
+        assert h.stdout.getvalue().count("\n") == 1
         assert calls == {"turn": 0, "init": 0, "read": 0}
 
     def test_probe_default_model_is_empty_dict(self, monkeypatch):
