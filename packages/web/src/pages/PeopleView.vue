@@ -12,6 +12,7 @@ import MemberProfileBody from "../components/people/MemberProfileBody.vue";
 import Avatar from "../components/ui/Avatar.vue";
 import Input from "../components/ui/Input.vue";
 import { LG_QUERY, useMediaQuery } from "../composables";
+import { copyText } from "../lib/clipboard";
 import { runtimeCatalog, useAgentStore, useAuthStore, useChannelStore, useServerStore, useUiStore } from "../stores";
 import { toast } from "../stores/toastStore";
 
@@ -138,7 +139,7 @@ function inviteUrl(token: string) {
 
 async function copyInvite(token: string) {
   try {
-    await navigator.clipboard.writeText(inviteUrl(token));
+    await copyText(inviteUrl(token));
     copiedToken.value = token;
     setTimeout(() => {
       copiedToken.value = "";

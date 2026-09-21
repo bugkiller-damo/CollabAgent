@@ -4,6 +4,7 @@ import { ClipboardList, MessageCircle, Smile, Trash2 } from "@lucide/vue";
 import { computed, nextTick, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { apiClient } from "../../api";
+import { copyText } from "../../lib/clipboard";
 import { formatTime } from "../../lib/formatTime";
 import { MAX_MESSAGE_CONTENT_LEN } from "../../lib/limits";
 import { threadPath } from "../../lib/nav";
@@ -174,8 +175,12 @@ async function handleReactionClick(emoji: string) {
   }
 }
 
-function copyContent() {
-  navigator.clipboard.writeText(props.msg.content || "");
+async function copyContent() {
+  try {
+    await copyText(props.msg.content || "");
+  } catch {
+    toast.error("复制失败");
+  }
 }
 
 function onEditKeydown(e: KeyboardEvent) {
@@ -215,7 +220,7 @@ function openSenderProfile() {
 <template>
   <div
     :class="[
-      'group flex gap-3 hover:bg-gray-100 dark:hover:bg-gray-800/50 p-2 rounded relative',
+      'group flex items-start gap-3 hover:bg-gray-100 dark:hover:bg-gray-800/50 p-2 rounded relative',
       isHighlighted ? 'animate-highlight' : '',
       dispatchKind
         ? 'border-l-2 border-amber-400 dark:border-amber-600 bg-amber-50/40 dark:bg-amber-900/10'

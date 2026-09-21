@@ -6,6 +6,7 @@ import ConfirmDialog from "../../components/ConfirmDialog.vue";
 import PageHeader from "../../components/layout/PageHeader.vue";
 import Button from "../../components/ui/Button.vue";
 import Card from "../../components/ui/Card.vue";
+import { copyText } from "../../lib/clipboard";
 import { toast } from "../../stores/toastStore";
 
 interface MachineToken {
@@ -60,8 +61,12 @@ async function revokeToken(id: string) {
 
 async function copyNewToken() {
   if (!newToken.value) return;
-  await navigator.clipboard.writeText(newToken.value);
-  toast.success("已复制");
+  try {
+    await copyText(newToken.value);
+    toast.success("已复制");
+  } catch {
+    toast.error("复制失败");
+  }
 }
 
 const DAY_MS = 86_400_000;

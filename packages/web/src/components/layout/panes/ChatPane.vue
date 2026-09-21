@@ -3,6 +3,7 @@ import { Check, ChevronDown, Copy, Link2, LogOut, Pencil, Plus, Trash2, Users } 
 import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { apiGet, apiPost } from "../../../api";
+import { copyText } from "../../../lib/clipboard";
 import { channelPath, lastChannelKey } from "../../../lib/nav";
 import { useAuthStore, useChannelStore, useServerStore, useUiStore } from "../../../stores";
 import { toast } from "../../../stores/toastStore";
@@ -186,7 +187,7 @@ async function createInvite() {
 
 async function copyInvite() {
   try {
-    await navigator.clipboard.writeText(inviteLink.value);
+    await copyText(inviteLink.value);
     linkCopied.value = true;
   } catch {
     toast.error("复制失败，请手动复制");
