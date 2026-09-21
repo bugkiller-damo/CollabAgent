@@ -475,8 +475,11 @@ export const dispatchHeadlessTurn = async (opts: DispatchHeadlessTurnOpts): Prom
         // error 终态：worker 活着，失败在 provider/图内部，不是 crash）。
         opts.crashGuard?.recordSuccess(agentName, runtimeProfile.identity);
         // Phase 2（§11.4）：interrupt 簿记——interrupted 写 pending（resumeToken
-        // 一次性，同 conversation 下条消息带它恢复）；success 消费掉已恢复的
-        // pending；失败/cancelled 保留（retry 时重发）。
+        // 一次性，同 conversation 下条消息带它恢复）；resume 回合到达任何非
+        // interrupted 终态都清 pending：token 已被 worker 消费（used=1），
+        // 只在 success 删会留下死 token，下条消息带着它无限撞
+        // PROTOCOL_VIOLATION（resume token rejected）。interrupted 由上面
+        // put 覆写新 token，不进此分支。
         if (turnResult?.status === "interrupted" && turnResult.interrupt) {
           try {
             opts.interruptStore?.put({
@@ -494,11 +497,17 @@ export const dispatchHeadlessTurn = async (opts: DispatchHeadlessTurnOpts): Prom
           } catch (err) {
             console.warn(`[Daemon] @${agentName} interrupt persist failed:`, errMessage(err));
           }
-        } else if (turnResult?.status === "success" && opts.turn.resume) {
+        } else if (opts.turn.resume) {
           try {
             opts.interruptStore?.delete(agentId, opts.turn.conversationId);
           } catch {
             /* store 清理是旁路 */
+          }
+          if (turnResult?.status !== "success") {
+            console.warn(
+              `[Daemon] @${agentName} resume turn ended ${turnResult?.status ?? "?"} — ` +
+                `cleared consumed pending interrupt for ${opts.turn.conversationId}`,
+            );
           }
         }
       } catch (err) {
@@ -507,6 +516,17 @@ export const dispatchHeadlessTurn = async (opts: DispatchHeadlessTurnOpts): Prom
         // 但 env/onExit 仍是失败那次的）。
         dropStalePersistentSession(agentName, persistentSessions, session, forgetSessionCost, sessionIdentities);
         credentialIssuedAt.delete(agentName);
+        // resume 回合 send 抛错：turn.start 已送达 worker 即意味着 token
+        // 可能被 consume（worker 死在 resume 中途 = token 烧掉没终态）。
+        // 清掉 pending 防止死 token 循环；若 turn.start 其实没送达，
+        // 代价只是放弃一次 resume，不会出错。
+        if (opts.turn.resume) {
+          try {
+            opts.interruptStore?.delete(agentId, opts.turn.conversationId);
+          } catch {
+            /* store 清理是旁路 */
+          }
+        }
         // Phase 5：记熔断账——spawn/生命周期类失败码累计，provider 类不计。
         opts.crashGuard?.recordFailure(
           agentName,

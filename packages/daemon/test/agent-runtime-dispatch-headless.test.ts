@@ -170,64 +170,66 @@ describe("dropStalePersistentSession (P1.12)", () => {
   });
 });
 
-describe("dispatchHeadlessTurn 会话锁 / stale 清理 (P1.12)", () => {
-  afterEach(() => {
-    FakePersistentClaude.reset();
-    fetchDispatchContextMock.mockReset().mockResolvedValue(null);
-    writeSystemPromptFileMock.mockClear();
-    writeAgentTokenFileMock.mockClear();
-    createWorkspaceDirMock.mockClear();
-    delete process.env.SLOCK_ONESHOT_CLAUDE;
-    delete process.env.SLOCK_SESSION_RESUME;
-  });
+const resetEnv = () => {
+  FakePersistentClaude.reset();
+  fetchDispatchContextMock.mockReset().mockResolvedValue(null);
+  writeSystemPromptFileMock.mockClear();
+  writeAgentTokenFileMock.mockClear();
+  createWorkspaceDirMock.mockClear();
+  delete process.env.SLOCK_ONESHOT_CLAUDE;
+  delete process.env.SLOCK_SESSION_RESUME;
+};
 
-  const makeOpts = (
-    overrides: Partial<DispatchHeadlessTurnOpts> & {
-      mintAgentCredential?: DispatchHeadlessTurnOpts["mintAgentCredential"];
-    } = {},
-  ): DispatchHeadlessTurnOpts => {
-    const stateMachine = createAgentStateMachine();
-    stateMachine.transitionState("alice", "idle");
-    const persistentSessions = new Map<string, AgentRuntimeSession>();
-    const agentInfo = overrides.agentInfo ?? new Map();
-    return {
-      agentName: "alice",
-      agentId: "id-alice",
-      channelName: "general",
-      userMsg: "hello",
-      haltGen: 0,
-      serverUrl: "http://fake.test",
-      apiKey: "test-key",
-      stateMachine,
-      idleReclaimer: createIdleReclaimer({ timeoutMs: Number.MAX_SAFE_INTEGER, onReclaim: () => {} }),
-      mintAgentCredential: async () => "sk_agent_test",
-      agentInfo,
-      // Phase 2：回合元数据（§8.4）——测试缺省；用例可按需覆写 turn 字段
-      turn: {
-        turnId: "turn-test-1",
-        conversationId: "slock:v1:id-alice:channel:general",
-        attempt: 1,
-      },
-      // Phase 0：driver 边界——FakePersistentClaude 经 claude-runtime 适配器
-      // 被 new 出来（vi.mock 照常拦截），保持实例身份断言不变。
-      runtimeDriver: createClaudeRuntimeDriver(),
-      // Phase 1：resolved profile——model 从 agentInfo 派生，与 doDispatch 一致
-      runtimeProfile: resolveAgentRuntimeProfile(agentInfo.get("alice") ?? {}, EMPTY_MANIFEST),
-      sessionIdentities: new Map(),
-      persistentSessions,
-      sessionCreates: new Map(),
-      agentSessions: new Map(),
-      credentialIssuedAt: new Map(),
-      turnGuards: new Map(),
-      progressTurns: new Map(),
-      handleStreamEvent: () => {},
-      enterWorking: () => true,
-      releaseToIdle: () => {},
-      assertLive: () => {},
-      forgetSessionCost: vi.fn(),
-      ...overrides,
-    };
+const makeOpts = (
+  overrides: Partial<DispatchHeadlessTurnOpts> & {
+    mintAgentCredential?: DispatchHeadlessTurnOpts["mintAgentCredential"];
+  } = {},
+): DispatchHeadlessTurnOpts => {
+  const stateMachine = createAgentStateMachine();
+  stateMachine.transitionState("alice", "idle");
+  const persistentSessions = new Map<string, AgentRuntimeSession>();
+  const agentInfo = overrides.agentInfo ?? new Map();
+  return {
+    agentName: "alice",
+    agentId: "id-alice",
+    channelName: "general",
+    userMsg: "hello",
+    haltGen: 0,
+    serverUrl: "http://fake.test",
+    apiKey: "test-key",
+    stateMachine,
+    idleReclaimer: createIdleReclaimer({ timeoutMs: Number.MAX_SAFE_INTEGER, onReclaim: () => {} }),
+    mintAgentCredential: async () => "sk_agent_test",
+    agentInfo,
+    // Phase 2：回合元数据（§8.4）——测试缺省；用例可按需覆写 turn 字段
+    turn: {
+      turnId: "turn-test-1",
+      conversationId: "slock:v1:id-alice:channel:general",
+      attempt: 1,
+    },
+    // Phase 0：driver 边界——FakePersistentClaude 经 claude-runtime 适配器
+    // 被 new 出来（vi.mock 照常拦截），保持实例身份断言不变。
+    runtimeDriver: createClaudeRuntimeDriver(),
+    // Phase 1：resolved profile——model 从 agentInfo 派生，与 doDispatch 一致
+    runtimeProfile: resolveAgentRuntimeProfile(agentInfo.get("alice") ?? {}, EMPTY_MANIFEST),
+    sessionIdentities: new Map(),
+    persistentSessions,
+    sessionCreates: new Map(),
+    agentSessions: new Map(),
+    credentialIssuedAt: new Map(),
+    turnGuards: new Map(),
+    progressTurns: new Map(),
+    handleStreamEvent: () => {},
+    enterWorking: () => true,
+    releaseToIdle: () => {},
+    assertLive: () => {},
+    forgetSessionCost: vi.fn(),
+    ...overrides,
   };
+};
+
+describe("dispatchHeadlessTurn 会话锁 / stale 清理 (P1.12)", () => {
+  afterEach(resetEnv);
 
   it("mint 重叠的两次 dispatch 只 new 一个 PersistentClaude", async () => {
     let release!: () => void;
@@ -397,5 +399,95 @@ describe("dispatchHeadlessTurn 会话锁 / stale 清理 (P1.12)", () => {
     expect(FakePersistentClaude.instances).toHaveLength(1);
     expect(FakePersistentClaude.instances[0]!.sent).toEqual(["first", "second"]);
     expect(writeSystemPromptFileMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("resume 回合的 pending interrupt 清理（死 token 回归）", () => {
+  afterEach(resetEnv);
+
+  const interruptStore = () => ({
+    put: vi.fn(),
+    take: vi.fn(() => null),
+    clearIncompatible: vi.fn(() => 0),
+    delete: vi.fn(() => true),
+    clearAgent: vi.fn(() => 0),
+    list: vi.fn(() => []),
+  });
+
+  const CONV = "slock:v1:id-alice:channel:general";
+  const RESUME = { interruptId: "i1", resumeToken: "tok-1", value: "approve" };
+
+  /** 脚本化终态的 fake driver——只实现 dispatch 用到的 openSession。 */
+  const driverReturning = (sendImpl: () => Promise<unknown>) => {
+    const session = {
+      send: vi.fn(sendImpl),
+      stop: vi.fn(),
+    } as unknown as AgentRuntimeSession;
+    return {
+      session,
+      driver: {
+        openSession: vi.fn(() => session),
+      } as unknown as import("../src/agent-runtime-driver.js").AgentRuntimeDriver,
+    };
+  };
+
+  const optsWithResume = (driver: unknown, store: ReturnType<typeof interruptStore>) =>
+    makeOpts({
+      runtimeDriver: driver as DispatchHeadlessTurnOpts["runtimeDriver"],
+      interruptStore: store,
+      turn: { turnId: "turn-r1", conversationId: CONV, attempt: 1, resume: RESUME },
+    });
+
+  it("resume 回合终态 success → 清 pending 记录", async () => {
+    const store = interruptStore();
+    const { driver } = driverReturning(async () => ({ status: "success" }));
+    await dispatchHeadlessTurn(optsWithResume(driver, store));
+    expect(store.delete).toHaveBeenCalledWith("id-alice", CONV);
+    expect(store.put).not.toHaveBeenCalled();
+  });
+
+  it("resume 回合终态 error（token 已烧）→ 也清 pending 记录", async () => {
+    const store = interruptStore();
+    const { driver } = driverReturning(async () => ({
+      status: "error",
+      error: { code: "PROTOCOL_VIOLATION", message: "resume token rejected", retryable: false },
+    }));
+    await dispatchHeadlessTurn(optsWithResume(driver, store));
+    // 修复前只在 success 删——error 终态留死 token，下条消息无限撞拒绝
+    expect(store.delete).toHaveBeenCalledWith("id-alice", CONV);
+  });
+
+  it("resume 回合 send 抛错（worker 死在 resume 中途）→ 清 pending 记录", async () => {
+    const store = interruptStore();
+    const { driver } = driverReturning(async () => {
+      throw new Error("process died mid-resume");
+    });
+    await expect(dispatchHeadlessTurn(optsWithResume(driver, store))).rejects.toThrow(/mid-resume/);
+    expect(store.delete).toHaveBeenCalledWith("id-alice", CONV);
+  });
+
+  it("resume 回合又 interrupted → put 覆写新 token，不 delete", async () => {
+    const store = interruptStore();
+    const { driver } = driverReturning(async () => ({
+      status: "interrupted",
+      interrupt: { interruptId: "i2", resumeToken: "tok-2", prompt: "再批一次" },
+    }));
+    await dispatchHeadlessTurn(optsWithResume(driver, store));
+    expect(store.put).toHaveBeenCalledTimes(1);
+    expect(store.put).toHaveBeenCalledWith(expect.objectContaining({ resumeToken: "tok-2" }));
+    expect(store.delete).not.toHaveBeenCalled();
+  });
+
+  it("非 resume 回合（无 turn.resume）终态 error → 不动 pending 记录", async () => {
+    const store = interruptStore();
+    const { driver } = driverReturning(async () => ({ status: "error" }));
+    const opts = makeOpts({
+      runtimeDriver: driver as DispatchHeadlessTurnOpts["runtimeDriver"],
+      interruptStore: store,
+      turn: { turnId: "turn-n1", conversationId: CONV, attempt: 1 },
+    });
+    await dispatchHeadlessTurn(opts);
+    expect(store.delete).not.toHaveBeenCalled();
+    expect(store.put).not.toHaveBeenCalled();
   });
 });

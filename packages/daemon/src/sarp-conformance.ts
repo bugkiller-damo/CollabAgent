@@ -1,29 +1,29 @@
 /**
- * Phase 5 搂16锛歋ARP/1 worker conformance runner銆?
+ * Phase 5 §16：SARP/1 worker conformance runner。
  *
- * 鏂?worker锛堜换浣曡瑷€锛夋帴鍏ュ墠鐨勫崗璁悎瑙勯獙璇侊細浠ョ湡瀹?spawn + stdin/stdout
- * JSONL 椹卞姩 worker锛岄€愰」妫€鏌ュ崗璁笉鍙橀噺锛岃緭鍑虹粨鏋勫寲缁撴灉銆?
+ * 新 worker（任何语言）接入前的协议合规验证：以真实 spawn + stdin/stdout
+ * JSONL 驱动 worker，逐项检查协议不变量，输出结构化结果。
  *
- * 鐢ㄦ硶锛?
+ * 用法：
  *   const report = await runSarpConformance({
- *     command: "python", args: ["agent.py"], cwd: "...", env: {...},
+ *     spawnSpec: { command: "python", args: ["agent.py"], cwd: "...", env: {...} },
  *     runtimeId: "langgraph", entrypoint: "my-ep",
  *   });
- *   report.ok === false 鈫?鍝潯 check 鎸備簡鐪?report.checks銆?
+ *   report.ok === false → 哪条 check 挂了看 report.checks。
  *
- * 妫€鏌ラ」锛堜笌 docs SARP/1 鍗忚鏂囨。涓€涓€瀵瑰簲锛夛細
- *   handshake          initialize 鈫?runtime.ready锛坮equestId 鍥炴樉 + runtime.id锛?
- *   seq-monotonic      鍑哄悜甯?seq 涓ユ牸閫掑
- *   turn-lifecycle     turn.start 鈫?鎭板ソ涓€涓?turn.end锛坱urnId 鍖归厤锛?
- *   eventseq-monotonic 鍥炲悎甯?eventSeq 浠?1 涓ユ牸閫掑
- *   cancel             turn.cancel 鈫?cancelled 缁堟€侊紙worker 涓嶆敮鎸佸垯 skip锛?
- *   shutdown           shutdown 鈫?runtime.stopped + 杩涚▼骞插噣閫€鍑?
- *   malformed-stdin    闈?JSON 琛屽叆鍚?鈫?worker 涓嶅簲闈欓粯宕╂簝锛堝洖 error 鎴栧拷鐣ュ潎鍙紝
- *                      浣嗕笉寰楁棤缁堟€佸湴鎸傝捣鈥斺€旈殢鍚?shutdown 蹇呴』浠嶅彲杈撅級
- *   replay             鍚?turnId 閲嶅彂 鈫?journal 鍥炴斁鍚岀粓鎬侊紙浠?journal 瀹炵幇瑕佹煡锛?
- *                      expectJournal=false 鏃?skip锛?
+ * 检查项（与 docs SARP/1 协议文档一一对应）：
+ *   handshake          initialize → runtime.ready（requestId 回显 + runtime.id）
+ *   seq-monotonic      出向帧 seq 严格递增
+ *   turn-lifecycle     turn.start → 恰好一个 turn.end（turnId 匹配）
+ *   eventseq-monotonic 回合帧 eventSeq 从 1 严格递增
+ *   cancel             turn.cancel → cancelled 终态（worker 不支持则 skip）
+ *   shutdown           shutdown → runtime.stopped + 进程干净退出
+ *   malformed-stdin    非 JSON 行入向 → worker 不应静默崩溃（回 error 或忽略均可，
+ *                      但不得无终态地挂起——随后 shutdown 必须仍可达）
+ *   replay             同 turnId 重发 → journal 回放同终态（仅 journal 实现要查；
+ *                      expectJournal=false 时 skip）
  *
- * 绾緥锛歳unner 鍙柇瑷€銆屽崗璁眰涓嶅彉閲忋€嶏紝涓嶆柇瑷€涓氬姟璇箟锛堟枃鏈唴瀹广€佹ā鍨嬮€夋嫨绛夛級銆?
+ * 纪律：runner 只断言「协议层不变量」，不断言业务语义（文本内容、模型选择等）。
  */
 
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
@@ -37,17 +37,17 @@ export interface ConformanceSpawnSpec {
 
 export interface ConformanceOptions {
   spawnSpec: ConformanceSpawnSpec;
-  /** 鏈熸湜鐨?ready.runtime.id */
+  /** 期望的 ready.runtime.id */
   runtimeId: string;
-  /** initialize.runtime.entrypoint锛坵orker 渚ч€氬父鍙牎楠?id锛屾鍊艰繘甯т緵鏃ュ織/鏍￠獙锛?*/
+  /** initialize.runtime.entrypoint（worker 侧通常只校验 id，此值进帧供日志/校验） */
   entrypoint?: string;
-  /** 鏈熸湜鐨?model.selected 鏂█锛堝彲閫夛級 */
+  /** 期望的 model.selected 断言（可选） */
   expectModel?: string;
-  /** worker 瀹炵幇浜?turn journal 鈫?璺?replay 妫€鏌ワ紙slock_runtime SDK = true锛?*/
+  /** worker 实现了 turn journal → 跑 replay 检查（slock_runtime SDK = true） */
   expectJournal?: boolean;
-  /** 姣忔绛夊緟涓婇檺锛岄粯璁?8000ms */
+  /** 每步等待上限，默认 8000ms */
   stepTimeoutMs?: number;
-  /** 鑷畾涔?spawn锛堟祴璇曟敞鍏ワ級 */
+  /** 自定义 spawn（测试注入） */
   spawn?: typeof import("node:child_process").spawn;
 }
 
@@ -62,7 +62,7 @@ export interface ConformanceCheck {
 export interface ConformanceReport {
   ok: boolean;
   checks: ConformanceCheck[];
-  /** worker stderr 灏鹃儴锛堣瘖鏂敤锛?*/
+  /** worker stderr 尾部（诊断用） */
   stderrTail: string;
 }
 
@@ -127,7 +127,7 @@ class WorkerProc {
       this.stdoutClosed = true;
       for (const w of this.waiters.splice(0)) {
         clearTimeout(w.timer);
-        w.reject(new Error(`stdout closed (exit=${this.exitCode}) 鈥?stderr: ${this.stderrTail()}`));
+        w.reject(new Error(`stdout closed (exit=${this.exitCode}) — stderr: ${this.stderrTail()}`));
       }
     });
     this.exited = new Promise((resolve) => {
@@ -156,7 +156,7 @@ class WorkerProc {
   readLine(timeoutMs: number): Promise<string> {
     if (this.lines.length) return Promise.resolve(this.lines.shift()!);
     if (this.stdoutClosed) {
-      return Promise.reject(new Error(`stdout already closed 鈥?stderr: ${this.stderrTail()}`));
+      return Promise.reject(new Error(`stdout already closed — stderr: ${this.stderrTail()}`));
     }
     return new Promise<string>((resolve, reject) => {
       const waiter = {
@@ -168,7 +168,7 @@ class WorkerProc {
         timer: setTimeout(() => {
           const i = this.waiters.indexOf(waiter);
           if (i >= 0) this.waiters.splice(i, 1);
-          reject(new Error(`no stdout line within ${timeoutMs}ms 鈥?stderr: ${this.stderrTail()}`));
+          reject(new Error(`no stdout line within ${timeoutMs}ms — stderr: ${this.stderrTail()}`));
         }, timeoutMs),
       };
       this.waiters.push(waiter);
@@ -257,7 +257,7 @@ export const runSarpConformance = async (opts: ConformanceOptions): Promise<Conf
     }
     pass("handshake", `runtime.id=${ready.runtime.id}, requestId echoed`);
 
-    /* ---------------- 宸ュ叿鍑芥暟 ---------------- */
+    /* ---------------- 工具函数 ---------------- */
     let lastSeq = ready.seq ?? 1;
     const readTurnFrames = async (): Promise<Frame[]> => {
       const frames: Frame[] = [];
@@ -339,7 +339,7 @@ export const runSarpConformance = async (opts: ConformanceOptions): Promise<Conf
     if (opts.expectJournal) {
       worker.send({
         type: "turn.start",
-        turnId: "conf-t1", // 涓庡凡瀹屾垚鍥炲悎鍚?turnId 鈫?搴斿洖鏀惧悓缁堟€侊紝涓嶉噸璺?
+        turnId: "conf-t1", // 与已完成回合同 turnId → 应回放同终态，不重跑
         conversationId: "conf-conv",
         attempt: 2,
         source: { kind: "message", channel: "conformance" },
@@ -361,8 +361,8 @@ export const runSarpConformance = async (opts: ConformanceOptions): Promise<Conf
     }
 
     /* ---------------- malformed-stdin ---------------- */
-    // 涓ょ鍚堣琛屼负锛氬拷鐣ュ潖琛岀户缁湇鍔★紙瀹归敊锛夛紝鎴?runtime.error 鍚?exit 闈為浂锛坒ail-closed锛夈€?
-    // 涓嶅悎瑙勮涓猴細闈欓粯鎸傛锛堟棤 error 涔熸棤杩涚▼閫€鍑轰笖鍚庣画 shutdown 涓嶅彲杈撅級銆?
+    // 两种合规行为：忽略坏行继续服务（容错），或 runtime.error 后 exit 非零（fail-closed）。
+    // 不合规行为：静默挂死（无 error 也无进程退出且后续 shutdown 不可达）。
     let workerDead = false;
     worker.sendRaw("{not json at all");
     try {
@@ -378,7 +378,7 @@ export const runSarpConformance = async (opts: ConformanceOptions): Promise<Conf
         pass("malformed-stdin", `responded type=${maybeErr.type}`);
       }
     } catch {
-      // stdout 宸插叧 鈫?杩涚▼澶ф鐜囧凡 fail-closed 閫€鍑猴紱绛?exited 纭
+      // stdout 已关 → 进程大概率已 fail-closed 退出；等 exited 确认
       const code = await Promise.race([worker.exited, new Promise<null>((r) => setTimeout(() => r(null), 1500))]);
       if (code === null) {
         pass("malformed-stdin", "stdout closed; exit pending");
