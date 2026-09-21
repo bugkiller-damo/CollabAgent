@@ -75,6 +75,35 @@ describe("computerStore.refresh（server 语境列表）", () => {
     await store.refresh();
     expect(store.connected).toBe(false);
   });
+
+  it("Phase 4：bridgeRuntimes flag 透传（缺省 false）", async () => {
+    apiGetMock.mockResolvedValueOnce({ computers: [], bridgeRuntimes: true } as any);
+    const store = useComputerStore();
+    await store.refresh();
+    expect(store.bridgeRuntimes).toBe(true);
+
+    apiGetMock.mockResolvedValueOnce({ computers: [] } as any);
+    await store.refresh();
+    expect(store.bridgeRuntimes).toBe(false);
+  });
+
+  it("Phase 4：entrypoints 字段随行保留", async () => {
+    const eps = [
+      {
+        id: "ep-sel",
+        label: "LG",
+        runtime: "langgraph",
+        status: "installed_unsupported",
+        modelMode: "select",
+        models: ["openai:gpt-5-mini"],
+        defaultModel: "openai:gpt-5-mini",
+      },
+    ];
+    apiGetMock.mockResolvedValueOnce({ computers: [row({ entrypoints: eps })] } as any);
+    const store = useComputerStore();
+    await store.refresh();
+    expect(store.computers[0].entrypoints).toEqual(eps);
+  });
 });
 
 describe("runtime 判定 helpers", () => {
@@ -91,7 +120,9 @@ describe("runtime 判定 helpers", () => {
     ).toBe(true);
   });
 
-  it("runtimeCatalog：四运行时目录", () => {
-    expect(runtimeCatalog().map((r) => r.id)).toEqual(["claude", "codex", "gemini", "opencode"]);
+  it("runtimeCatalog：四个 binary + 两个 bridge runtime", () => {
+    const cat = runtimeCatalog();
+    expect(cat.map((r) => r.id)).toEqual(["claude", "codex", "gemini", "opencode", "langchain", "langgraph"]);
+    expect(cat.filter((r) => r.kind === "bridge").map((r) => r.id)).toEqual(["langchain", "langgraph"]);
   });
 });

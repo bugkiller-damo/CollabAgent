@@ -29,6 +29,8 @@ const readySchema = z
     type: z.literal("ready"),
     capabilities: z.array(z.string()).optional(),
     runtimes: z.array(z.unknown()).optional(), // RuntimeProbe[] | string[]，normalizeRuntimes 归一化
+    // Phase 4：manifest entrypoint 探测摘要，normalizeEntrypoints 归一化（缺省 = daemon 未开 flag）
+    entrypoints: z.array(z.unknown()).optional(),
     hostname: str.optional(),
     daemonVersion: str.optional(),
     os: str.optional(),

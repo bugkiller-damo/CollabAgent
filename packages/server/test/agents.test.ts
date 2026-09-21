@@ -451,9 +451,9 @@ describe("agent 删除级联：无 CASCADE 子表悬挂行", () => {
   });
 });
 
-// Phase 1：runtime_profile.entrypoint 的落库/保留/清除/校验。
-// PATCH 不走 WIRED_RUNTIME_IDS 创建门禁（编辑既有 agent 允许指向 daemon 侧
-// 已知的 bridge runtime）；claude+entrypoint 这类静态无效组合在 API 边界 400。
+// Phase 1+4：runtime_profile.entrypoint 的边界校验（flag 无关的静态断言）。
+// bridge runtime 的 probe 复核矩阵在 agents-bridge.test.ts（fake daemon + flag 自适应）。
+// PATCH 自 Phase 4 起同样按绑定机 live probe 复核——无 flag/无 daemon 时 400 fail-closed。
 describe("Phase 1: agent runtime_profile entrypoint", () => {
   let owner: Awaited<ReturnType<typeof registerUser>>;
   let serverId: string;
@@ -489,25 +489,29 @@ describe("Phase 1: agent runtime_profile entrypoint", () => {
     expect(r.data.error).toContain("entrypoint");
   });
 
-  it("PATCH 切 bridge runtime + entrypoint → 落库；只改 model 不抹 entrypoint", async () => {
-    const p1 = await api(`/api/agents/${agentId}`, {
+  it("PATCH claude agent 携带 entrypoint → 400（非 bridge runtime 不得带键）", async () => {
+    const r = await api(`/api/agents/${agentId}`, {
+      method: "PATCH",
+      cookie: owner.cookie,
+      csrf: owner.csrf,
+      body: { entrypoint: "ep-1" },
+    });
+    expect(r.status).toBe(400);
+    expect(r.data.error).toContain("entrypoint");
+    expect((await readProfile())?.entrypoint).toBeUndefined();
+  });
+
+  it("PATCH 切 bridge runtime → 400（flag 关 not wired / flag 开无 probe entrypoint required，同 fail-closed）", async () => {
+    const r = await api(`/api/agents/${agentId}`, {
       method: "PATCH",
       cookie: owner.cookie,
       csrf: owner.csrf,
       body: { runtime: "langgraph", entrypoint: "ep-1" },
     });
-    expect(p1.status).toBe(200);
-    expect((await readProfile())?.entrypoint).toBe("ep-1");
-
-    const p2 = await api(`/api/agents/${agentId}`, {
-      method: "PATCH",
-      cookie: owner.cookie,
-      csrf: owner.csrf,
-      body: { model: "gpt-4o-mini" },
-    });
-    expect(p2.status).toBe(200);
-    const rp = await readProfile();
-    expect(rp).toMatchObject({ runtime: "langgraph", model: "gpt-4o-mini", entrypoint: "ep-1" });
+    expect(r.status).toBe(400);
+    expect(r.data.error).toMatch(/runtime|entrypoint/);
+    // 不落库——runtime 仍是 claude
+    expect((await readProfile())?.runtime).toBe("claude");
   });
 
   it("PATCH entrypoint:null 显式清除 → runtime_profile 不再带键", async () => {
@@ -521,21 +525,7 @@ describe("Phase 1: agent runtime_profile entrypoint", () => {
     expect((await readProfile())?.entrypoint).toBeUndefined();
   });
 
-  it("PATCH 残留 entrypoint 切回 claude → 400；同请求清 entrypoint 则放行", async () => {
-    // 先把 entrypoint 放回去
-    await api(`/api/agents/${agentId}`, {
-      method: "PATCH",
-      cookie: owner.cookie,
-      csrf: owner.csrf,
-      body: { entrypoint: "ep-1" },
-    });
-    const bad = await api(`/api/agents/${agentId}`, {
-      method: "PATCH",
-      cookie: owner.cookie,
-      csrf: owner.csrf,
-      body: { runtime: "claude" },
-    });
-    expect(bad.status).toBe(400);
+  it("PATCH runtime:claude + entrypoint:'' 显式清除 → 放行", async () => {
     const ok = await api(`/api/agents/${agentId}`, {
       method: "PATCH",
       cookie: owner.cookie,

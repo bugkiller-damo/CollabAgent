@@ -69,6 +69,9 @@ export function parseCookieSecure(raw: string): boolean | "auto" {
   return "auto";
 }
 
+/** 接入向导生成的 daemon 启动前缀默认值（monorepo 开发形态）。 */
+const DEFAULT_DAEMON_LAUNCH_CMD = "pnpm --filter @collabagent/daemon dev --";
+
 export const config = {
   PORT: Number(process.env.PORT) || 3001,
   HOST: process.env.HOST || "0.0.0.0",
@@ -113,6 +116,10 @@ export const config = {
   // O14：web 前端 dist 目录（生产静态托管）。空 = 按源码布局自动定位 ../web/dist；
   // 目录不存在（本地 vite 开发 / 纯后端部署）时自动跳过 SPA 托管。
   WEB_DIST_DIR: env("WEB_DIST_DIR", ""),
+  // 接入向导生成命令的 daemon 启动前缀（routes/computers.ts connectCommand）。
+  // 分发部署时覆盖，如 "npx --yes @collabagent/daemon"、二进制绝对路径或
+  // "docker run --rm slock/daemon"；--server-url/--api-key/--server 参数仍由代码追加。
+  DAEMON_LAUNCH_CMD: env("DAEMON_LAUNCH_CMD", DEFAULT_DAEMON_LAUNCH_CMD).trim() || DEFAULT_DAEMON_LAUNCH_CMD,
   LOGIN_MAX_ATTEMPTS: Number(process.env.LOGIN_MAX_ATTEMPTS) || 5,
   LOGIN_LOCK_MS: Number(process.env.LOGIN_LOCK_MS) || 15 * 60 * 1000,
   // IP 维度登录失败阈值（NAT 共享 IP，默认显著高于账号维度）
@@ -126,6 +133,15 @@ export const config = {
   // 判定，不依赖反代改写）。显式覆盖见 parseCookieSecure。
   COOKIE_SECURE: parseCookieSecure(env("COOKIE_SECURE", "")),
 } as const;
+
+/**
+ * Phase 4：bridge runtime（langchain/langgraph）创建门禁的受控 rollout 开关。
+ * 默认关——daemon 侧 SARP/1 + entrypoint probe 链路完成 E2E 验收后再开；
+ * 函数形式读 env（不走 config 快照），便于测试按用例切换。
+ */
+export function bridgeRuntimesEnabled(e: NodeJS.ProcessEnv = process.env): boolean {
+  return e.SLOCK_BRIDGE_RUNTIMES === "1";
+}
 
 /**
  * 收集不安全配置项（纯函数，可单测）。

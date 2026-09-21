@@ -1,7 +1,7 @@
 # Daemon 接入 LangChain / LangGraph 详细设计
 
 > 日期：2026-09-20
-> 状态：Phase 0、Phase 1、Phase 2、Phase 3 已实施并验证；Phase 4–5 尚未实施
+> 状态：Phase 0–4 已实施并验证；Phase 5 生产硬化尚未实施
 > 关联审计：[01-daemon-claude-decoupling-audit.md](./01-daemon-claude-decoupling-audit.md)
 > 范围：`packages/daemon/` 为主，包含必要的 shared / server / web 协议改动
 
@@ -1564,27 +1564,53 @@ server 侧新增 `agents.test.ts` Phase 1 集成用例（entrypoint 落库/保�
 差异说明：agent.id 允许空串（daemon initFields fallback 会发 `""`，
 worker 侧容错解析）；resume token 签发收敛进 runtime 层而非 adapter。
 
-### Phase 4：server / web 正式接线
+### Phase 4：server / web 正式接线 ✅ 已实施
 
 复杂度：中
 风险：中
 
-实施：
+实施（2026-09-21 落码）：
 
-1. 添加 `langchain`、`langgraph` catalog metadata。
-2. server 按 online computer 的 entrypoint probe 校验创建请求。
-3. web 提供 runtime / entrypoint / model 选择。
-4. 成员档案显示 runtime 状态与能力。
-5. 加入受控 rollout 开关。
-6. E2E 验证后再加入 `WIRED_RUNTIME_IDS`。
+1. ✅ catalog：`computerStore.CATALOG` 增加 `langchain`/`langgraph`（`kind: "bridge"`），
+   web `runtimeCatalog()` 六运行时；`BRIDGE_RUNTIME_IDS` 已是 shared 单一事实源。
+2. ✅ server probe 接线：`normalizeEntrypoints`（`runtime-probe.ts`，五态全集
+   installed/not_installed/installed_unsupported/misconfigured/protocol_incompatible，
+   剥离 command/cwd/env/secretEnv 纵深防御）→ `readySchema.entrypoints` →
+   `finalizeDaemonReady` 归一化入 `DaemonMeta` + `persistComputerReady` 落库
+   （`032_computers_entrypoints.sql`：`computers.entrypoints jsonb default '[]'`）→
+   `GET /api/computers` / `/api/computers/me` 透出（live meta 优先，行快照兜底）。
+3. ✅ web 三级创建表单（`ComputerView.vue`）：runtime 选项 = 已装 claude + 「该机上
+   至少一个可用 entrypoint」聚合出的 bridge runtime；选中 bridge 后出现
+   entrypoint 下拉（仅可用态）与模型下拉（select=allowlist / fixed=锁死禁用）。
+   计算机页新增 Bridge entrypoints 状态卡（状态/errorCode 可见）。
+4. ✅ 成员档案：`PersonProfile.entrypoint` 透出；bridge agent 的 runtime/model
+   行内编辑只读（claude 选项集不适用，probe 策略锁定）。
+5. ✅ rollout 开关：`SLOCK_BRIDGE_RUNTIMES=1`（`bridgeRuntimesEnabled()` 函数式读 env）；
+   关时 POST/PATCH 一律 400 `runtime not wired`，UI 不出 bridge 选项。
+6. ⏳ `WIRED_RUNTIME_IDS` 仍为 `["claude"]`——待真实 E2E 后放行。
 
-验收：
+门禁语义（POST 与 PATCH 同一套）：
 
-- 未配置 entrypoint 的 computer 无法创建对应 agent。
-- computer A 的 entrypoint 不能被误用于 computer B。
-- fixed model 不可被 UI 或 API 覆盖。
-- 离线 computer fail closed。
-- Claude 创建流程无回归。
+- bridge runtime 必须显式 `entrypoint`；非 bridge runtime 携带 entrypoint → 400。
+- entrypoint 必须命中**绑定机** live `meta.entrypoints`（machineKey 隔离，
+  computer A 的条目对 B 天然 400 `entrypoint_unavailable`）。
+- meta 缺失（离线/旧 daemon 未上报）→ fail closed。
+- probe 状态仅 installed / installed_unsupported 可用；其余 → `entrypoint_not_ready`。
+- fixed 模式拒模型覆盖（`model_fixed`）；select 模式限 allowlist（`model_not_allowed`）。
+- PATCH 同门禁：把既有 agent 改成 bridge runtime / 换 entrypoint/model 同样复核
+  probe；fixed entrypoint 切换时模型收敛回默认。
+
+验证（server 集成测试 `agents-bridge.test.ts`，fake daemon WS ready 驱动）：
+
+- ✅ 未配置 entrypoint 的 computer 无法创建（meta 缺失 / 条目不在该机 → 400）。
+- ✅ computer A 的 entrypoint 不能用于 computer B（跨机隔离用例）。
+- ✅ fixed model 不可被 API 覆盖（UI 侧下拉禁用 + server 双重校验）。
+- ✅ 离线/旧 daemon fail closed（meta 缺失即拒）。
+- ✅ `entrypoint_not_ready` 携带 status/errorCode；`entrypoints` API 面不泄
+  command/cwd/env/secretEnv（`normalizeEntrypoints` 白名单重建 + 测试断言）。
+- ✅ Claude 创建流程无回归（`agents.test.ts` Phase-1 段改写为 flag 无关断言）。
+- flag 自适应：测试实例（`test-server.ts`）默认 `SLOCK_BRIDGE_RUNTIMES=1` 跑
+  全矩阵；dev 回落无 flag 时只断言 fail-closed 契约。
 
 ### Phase 5：生产硬化
 

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { collectInsecureConfig, INSECURE_DEV_DEFAULTS, parseCookieSecure, parseTrustProxy } from "../src/lib/config.js";
+import {
+  bridgeRuntimesEnabled,
+  collectInsecureConfig,
+  INSECURE_DEV_DEFAULTS,
+  parseCookieSecure,
+  parseTrustProxy,
+} from "../src/lib/config.js";
 
 // O5：配置危险默认值硬校验——collectInsecureConfig 为纯函数，直接断言各分支。
 describe("collectInsecureConfig", () => {
@@ -112,6 +118,20 @@ describe("collectInsecureConfig：SLOCK_DEV_TOKEN（P1.17）", () => {
       DATABASE_URL: "postgresql://u:p@db/app",
     });
     expect(issues).toEqual([]);
+  });
+});
+
+// Phase 4：bridge runtime rollout 开关——仅 "1" 开，其余一律关（默认 fail-closed）
+describe("bridgeRuntimesEnabled（Phase 4 rollout flag）", () => {
+  it("缺省 / 任意非 '1' 值 → false", () => {
+    expect(bridgeRuntimesEnabled({})).toBe(false);
+    expect(bridgeRuntimesEnabled({ SLOCK_BRIDGE_RUNTIMES: "0" })).toBe(false);
+    expect(bridgeRuntimesEnabled({ SLOCK_BRIDGE_RUNTIMES: "true" })).toBe(false);
+    expect(bridgeRuntimesEnabled({ SLOCK_BRIDGE_RUNTIMES: "yes" })).toBe(false);
+  });
+
+  it("显式 '1' → true", () => {
+    expect(bridgeRuntimesEnabled({ SLOCK_BRIDGE_RUNTIMES: "1" })).toBe(true);
   });
 });
 

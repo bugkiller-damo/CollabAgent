@@ -326,3 +326,4 @@ CREATE TABLE IF NOT EXISTS task_comments (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_task_comments_message ON task_comments (message_id, created_at);
+ALTER TABLE computers ADD COLUMN IF NOT EXISTS entrypoints JSONB NOT NULL DEFAULT '[]'::jsonb;

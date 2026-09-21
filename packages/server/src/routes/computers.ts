@@ -1,7 +1,8 @@
 import { randomBytes } from "node:crypto";
-import type { RuntimeProbe } from "@collabagent/shared";
+import type { RuntimeEntrypointProbe, RuntimeProbe } from "@collabagent/shared";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { computerOnlineFor } from "../lib/agent-duty.js";
+import { bridgeRuntimesEnabled, config } from "../lib/config.js";
 import {
   countActiveMachineTokens,
   MACHINE_TOKEN_MAX_ACTIVE_PER_USER,
@@ -9,7 +10,7 @@ import {
 } from "../lib/machine-token-policy.js";
 import { isOrgOwner } from "../lib/orgs.js";
 import { isMachineOnline } from "../lib/presence.js";
-import { normalizeRuntimes } from "../lib/runtime-probe.js";
+import { normalizeEntrypoints, normalizeRuntimes } from "../lib/runtime-probe.js";
 import { isServerMember, TENANT_HEADER, UUID_RE } from "../lib/tenant.js";
 import { sha256Token } from "../lib/token-hash.js";
 import { daemonMeta, findDaemonMeta } from "../ws/handler.js";
@@ -27,6 +28,8 @@ export interface ComputerRow {
   arch: string | null;
   daemon_version: string | null;
   runtimes: unknown;
+  /** Phase 4：bridge runtime entrypoint 探测摘要快照（032 列，旧行可能缺列由 ?? [] 兜） */
+  entrypoints?: unknown;
   last_ready_at: Date | string | null;
   created_at: Date | string;
 }
@@ -54,6 +57,8 @@ export function serializeComputer(
   extras: {
     online: boolean;
     runtimes: RuntimeProbe[];
+    /** Phase 4：entrypoint 探测摘要（live meta 优先、行快照兜底，同 runtimes 口径） */
+    entrypoints?: RuntimeEntrypointProbe[];
     connectedAt: number | null;
     ownerHandle?: string | null;
     ownerName?: string | null;
@@ -75,6 +80,7 @@ export function serializeComputer(
     createdAt: iso(row.created_at),
     online: extras.online,
     runtimes: extras.runtimes,
+    entrypoints: extras.entrypoints ?? [],
     connectedAt: extras.connectedAt,
     ownerHandle: extras.ownerHandle ?? null,
     ownerName: extras.ownerName ?? null,
@@ -94,9 +100,13 @@ function serializeRow(row: ComputerRow, viewerId: string, owner?: { handle: stri
   const meta = metaForRow(row);
   const online = isMachineOnline(String(row.user_id), row.machine_uuid, String(row.server_id));
   const runtimes = meta?.runtimes?.length ? meta.runtimes : normalizeRuntimes(row.runtimes);
+  // meta.entrypoints 为 undefined 时（daemon 未开 flag / 旧 daemon）回落行快照；
+  // 空数组是「开了 flag 但没条目」的真值，不回落。
+  const entrypoints = meta?.entrypoints ?? normalizeEntrypoints(row.entrypoints);
   return serializeComputer(row, {
     online,
     runtimes,
+    entrypoints,
     connectedAt: meta?.connectedAt ?? null,
     ownerHandle: owner?.handle ?? null,
     ownerName: owner?.name ?? null,
@@ -121,6 +131,7 @@ export function computerStatusPayload(_app: FastifyInstance, userId: string, row
     arch: meta?.arch ?? row?.arch ?? null,
     daemonVersion: meta?.daemonVersion ?? row?.daemon_version ?? null,
     runtimes,
+    entrypoints: meta?.entrypoints ?? normalizeEntrypoints(row?.entrypoints),
     connectedAt: meta?.connectedAt ?? null,
     computer: row ? serializeRow(row, userId) : null,
   };
@@ -130,9 +141,14 @@ function mintMachineTokenValue(): string {
   return "sk_machine_" + randomBytes(16).toString("hex").slice(0, 32);
 }
 
-export function connectCommand(serverUrl: string, token: string, serverName?: string): string {
+export function connectCommand(
+  serverUrl: string,
+  token: string,
+  serverName?: string,
+  launchCmd = config.DAEMON_LAUNCH_CMD,
+): string {
   const origin = serverUrl.replace(/\/+$/, "");
-  const base = `pnpm --filter @collabagent/daemon dev -- --server-url ${origin} --api-key ${token}`;
+  const base = `${launchCmd} --server-url ${origin} --api-key ${token}`;
   // --server 是运维声明（与 token scope 一致性校验 + 日志可读），不是权限边界
   if (!serverName) return base;
   return `${base} --server "${serverName.replace(/"/g, "")}"`;
@@ -177,6 +193,8 @@ export async function computerRoutes(app: FastifyInstance) {
     const viewerId = String(req.user.sub);
     return {
       computers: r.rows.map((row) => serializeRow(row, viewerId, { handle: row.owner_handle, name: row.owner_name })),
+      // Phase 4 rollout 开关：web 据此决定创建表单是否展示 bridge runtime/entrypoint
+      bridgeRuntimes: bridgeRuntimesEnabled(),
     };
   });
 

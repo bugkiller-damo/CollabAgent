@@ -1,8 +1,10 @@
+import type { RuntimeEntrypointProbe } from "@collabagent/shared";
 import { BRIDGE_RUNTIME_IDS, parseAgentDuty, WIRED_RUNTIME_IDS } from "@collabagent/shared";
 import type { FastifyInstance } from "fastify";
 import { sql } from "../db/connection.js";
 import { computerOnlineFor, decorateAgentPresence, setAgentDuty } from "../lib/agent-duty.js";
 import { requireOwnAgent } from "../lib/agent-helpers.js";
+import { bridgeRuntimesEnabled } from "../lib/config.js";
 import { getUserOrgIds, isOrgOwner } from "../lib/orgs.js";
 import { isMachineOnline } from "../lib/presence.js";
 import { broadcastProfileUpdate } from "../lib/profile-events.js";
@@ -139,15 +141,20 @@ export async function agentPublicRoutes(app: FastifyInstance) {
     const orgId = String(serverId);
 
     const runtimeId = String(runtime || "claude");
-    if (!(WIRED_RUNTIME_IDS as readonly string[]).includes(runtimeId)) {
+    const isBridge = (BRIDGE_RUNTIME_IDS as readonly string[]).includes(runtimeId);
+    // Phase 4：bridge runtime 由 SLOCK_BRIDGE_RUNTIMES rollout 开关门禁
+    // （daemon entrypoint probe 全链路 E2E 后才开）；二进制 runtime 仍走 WIRED。
+    if (isBridge ? !bridgeRuntimesEnabled() : !(WIRED_RUNTIME_IDS as readonly string[]).includes(runtimeId)) {
       return reply.status(400).send({ error: "runtime not wired", runtime: runtimeId });
     }
-    // Phase 1：entrypoint 只对 bridge runtime（manifest 驱动）有意义；
-    // claude 携带 entrypoint 是静态无效组合，fail-fast 而不是落库后由 daemon 死信。
-    if (entrypoint !== undefined && entrypoint !== null && String(entrypoint).trim()) {
-      if (!(BRIDGE_RUNTIME_IDS as readonly string[]).includes(runtimeId)) {
-        return reply.status(400).send({ error: "entrypoint not allowed for runtime", runtime: runtimeId });
-      }
+    // Phase 4：bridge runtime 必须显式指定 manifest entrypoint id；
+    // claude 等非 bridge runtime 携带 entrypoint 仍是静态无效组合，fail-fast。
+    const entrypointId = typeof entrypoint === "string" && entrypoint.trim() ? entrypoint.trim() : "";
+    if (isBridge && !entrypointId) {
+      return reply.status(400).send({ error: "entrypoint required for runtime", runtime: runtimeId });
+    }
+    if (!isBridge && entrypointId) {
+      return reply.status(400).send({ error: "entrypoint not allowed for runtime", runtime: runtimeId });
     }
 
     // 2026-09-19 server-scoped computers：目标 server 必须有我的计算机行（已注册，
@@ -189,7 +196,58 @@ export async function agentPublicRoutes(app: FastifyInstance) {
       const m = findDaemonMeta(boundKey);
       return m && (!m.serverId || m.serverId === orgId) ? m : undefined;
     })();
-    if (meta) {
+    // Phase 4：bridge runtime 以目标机的 live entrypoint probe 为准——
+    // meta 按 machineKey 隔离，computer A 的条目天然不能用于 computer B；
+    // meta 缺失（离线/旧 daemon）→ fail closed。
+    let bridgeEntrypoint: RuntimeEntrypointProbe | undefined;
+    if (isBridge) {
+      bridgeEntrypoint = meta?.entrypoints?.find((e) => e.id === entrypointId && e.runtime === runtimeId);
+      if (!bridgeEntrypoint) {
+        return reply.status(400).send({
+          error: "entrypoint not available on this computer",
+          code: "entrypoint_unavailable",
+          runtime: runtimeId,
+          entrypoint: entrypointId,
+        });
+      }
+      // installed / installed_unsupported 都是「探测通过」——后者表示官方目录
+      // 未接线，rollout flag 正是「未接线也可创建」的开关；其余状态 fail closed。
+      if (bridgeEntrypoint.status !== "installed" && bridgeEntrypoint.status !== "installed_unsupported") {
+        return reply.status(400).send({
+          error: `entrypoint probe not ready: ${bridgeEntrypoint.errorCode || bridgeEntrypoint.status}`,
+          code: "entrypoint_not_ready",
+          runtime: runtimeId,
+          entrypoint: entrypointId,
+          entrypointStatus: bridgeEntrypoint.status,
+        });
+      }
+      // 模型策略：fixed 锁死默认模型（API 显式覆盖即拒）；
+      // select 限 allowlist（空名单退化为只允许 defaultModel）。
+      if (bridgeEntrypoint.modelMode === "fixed") {
+        if (model && String(model) !== bridgeEntrypoint.defaultModel) {
+          return reply.status(400).send({
+            error: "model fixed by entrypoint",
+            code: "model_fixed",
+            runtime: runtimeId,
+            entrypoint: entrypointId,
+          });
+        }
+      } else {
+        const allowed = bridgeEntrypoint.models?.length
+          ? bridgeEntrypoint.models
+          : bridgeEntrypoint.defaultModel
+            ? [bridgeEntrypoint.defaultModel]
+            : [];
+        if (model && allowed.length && !allowed.includes(String(model))) {
+          return reply.status(400).send({
+            error: "model not allowed by entrypoint",
+            code: "model_not_allowed",
+            runtime: runtimeId,
+            entrypoint: entrypointId,
+          });
+        }
+      }
+    } else if (meta) {
       const probe = meta.runtimes.find((r) => r.id === runtimeId);
       if (probe && probe.status !== "installed") {
         return reply.status(400).send({
@@ -198,6 +256,8 @@ export async function agentPublicRoutes(app: FastifyInstance) {
         });
       }
     }
+    // bridge 的落库模型由 entrypoint 策略解析：缺省取 defaultModel。
+    const resolvedModel = isBridge ? String(model || bridgeEntrypoint!.defaultModel || "") : String(model || "sonnet");
 
     const result = await app.pg.query<{
       id: string;
@@ -219,10 +279,10 @@ export async function agentPublicRoutes(app: FastifyInstance) {
         avatarUrl || null,
         sql.json({
           runtime: runtimeId,
-          model: model || "sonnet",
+          model: resolvedModel,
           // Phase 1：bridge runtime 的本机 manifest 入口 ID（非命令/路径）；
           // claude 等无 entrypoint 的 runtime 不落该键。
-          ...(typeof entrypoint === "string" && entrypoint.trim() ? { entrypoint: entrypoint.trim() } : {}),
+          ...(entrypointId ? { entrypoint: entrypointId } : {}),
         }),
       ],
     );
@@ -240,8 +300,8 @@ export async function agentPublicRoutes(app: FastifyInstance) {
           name: agent.name,
           displayName: agent.display_name,
           runtime: runtimeId,
-          model: model || "sonnet",
-          ...(typeof entrypoint === "string" && entrypoint.trim() ? { entrypoint: entrypoint.trim() } : {}),
+          model: resolvedModel,
+          ...(entrypointId ? { entrypoint: entrypointId } : {}),
         },
         config: { runtime_profile: agent.runtime_profile },
       },
@@ -257,10 +317,13 @@ export async function agentPublicRoutes(app: FastifyInstance) {
     // P0.11：所有权校验收敛到 requireOwnAgent（与 /internal/agent 侧对齐）。此前只有
     // org 成员校验——共享 org 内任何成员都能改他人 agent（改 runtime/model 即重推
     // agent:start），是水平越权。web 侧编辑/删除本就按 ownedByMe 门控，服务端滞后。
-    const existing = await app.pg.query<{ duty: string; runtime_profile: unknown }>(
-      "SELECT duty, runtime_profile FROM agents WHERE id = $1",
-      [agentId],
-    );
+    const existing = await app.pg.query<{
+      duty: string;
+      runtime_profile: unknown;
+      computer_id: string | null;
+      server_id: string;
+      user_id: string;
+    }>("SELECT duty, runtime_profile, computer_id, server_id, user_id FROM agents WHERE id = $1", [agentId]);
     const wasOff = parseAgentDuty(existing.rows[0]?.duty) === "off";
     const {
       name,
@@ -317,15 +380,83 @@ export async function agentPublicRoutes(app: FastifyInstance) {
             ? entrypoint.trim()
             : undefined;
       const nextRuntime = runtime || prevRp.runtime || "claude";
-      // 与 POST 同一规则：claude 等无 entrypoint 的 runtime 不得携带/残留该键
+      const nextModel = model || prevRp.model || "sonnet";
+      // 与 POST 同一规则：claude 等无 bridge entrypoint 的 runtime 不得携带/残留该键
       if (nextEntrypoint && !(BRIDGE_RUNTIME_IDS as readonly string[]).includes(nextRuntime)) {
         return reply.status(400).send({ error: "entrypoint not allowed for runtime", runtime: nextRuntime });
       }
+      // Phase 4：PATCH 与 POST 同一门禁——把既有 agent 改成 bridge runtime（或在
+      // bridge runtime 上换 entrypoint/model）同样按绑定机 live probe 复核。
+      let bridgeEp: RuntimeEntrypointProbe | undefined;
+      if ((BRIDGE_RUNTIME_IDS as readonly string[]).includes(nextRuntime)) {
+        if (!bridgeRuntimesEnabled()) {
+          return reply.status(400).send({ error: "runtime not wired", runtime: nextRuntime });
+        }
+        if (!nextEntrypoint) {
+          return reply.status(400).send({ error: "entrypoint required for runtime", runtime: nextRuntime });
+        }
+        const prev = existing.rows[0];
+        const comp = prev?.computer_id
+          ? await app.pg.query<{ machine_uuid: string; user_id: string; server_id: string }>(
+              "SELECT machine_uuid, user_id, server_id FROM computers WHERE id = $1",
+              [prev.computer_id],
+            )
+          : { rows: [] };
+        const crow = comp.rows[0];
+        const meta =
+          crow && String(crow.user_id) === String(prev?.user_id)
+            ? (() => {
+                const m = findDaemonMeta(`${crow.user_id}:${crow.machine_uuid}`);
+                return m && (!m.serverId || m.serverId === String(crow.server_id)) ? m : undefined;
+              })()
+            : undefined;
+        const ep = meta?.entrypoints?.find((e) => e.id === nextEntrypoint && e.runtime === nextRuntime);
+        bridgeEp = ep;
+        if (!ep) {
+          return reply.status(400).send({
+            error: "entrypoint not available on this computer",
+            code: "entrypoint_unavailable",
+            runtime: nextRuntime,
+            entrypoint: nextEntrypoint,
+          });
+        }
+        if (ep.status !== "installed" && ep.status !== "installed_unsupported") {
+          return reply.status(400).send({
+            error: `entrypoint probe not ready: ${ep.errorCode || ep.status}`,
+            code: "entrypoint_not_ready",
+            runtime: nextRuntime,
+            entrypoint: nextEntrypoint,
+            entrypointStatus: ep.status,
+          });
+        }
+        if (ep.modelMode === "fixed") {
+          if (model !== undefined && String(model) !== ep.defaultModel) {
+            return reply.status(400).send({
+              error: "model fixed by entrypoint",
+              code: "model_fixed",
+              runtime: nextRuntime,
+              entrypoint: nextEntrypoint,
+            });
+          }
+        } else {
+          const allowed = ep.models?.length ? ep.models : ep.defaultModel ? [ep.defaultModel] : [];
+          if (allowed.length && !allowed.includes(String(nextModel))) {
+            return reply.status(400).send({
+              error: "model not allowed by entrypoint",
+              code: "model_not_allowed",
+              runtime: nextRuntime,
+              entrypoint: nextEntrypoint,
+            });
+          }
+        }
+      }
+      // fixed entrypoint：模型随 entrypoint 收敛到默认（换 entrypoint 时旧 model 不残留）
+      const finalModel = bridgeEp?.modelMode === "fixed" && bridgeEp.defaultModel ? bridgeEp.defaultModel : nextModel;
       sets.push(`runtime_profile = $${p++}::jsonb`);
       params.push(
         sql.json({
-          runtime: runtime || prevRp.runtime || "claude",
-          model: model || prevRp.model || "sonnet",
+          runtime: nextRuntime,
+          model: finalModel,
           ...(nextEntrypoint ? { entrypoint: nextEntrypoint } : {}),
         }),
       );

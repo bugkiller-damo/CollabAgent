@@ -11,7 +11,7 @@ import { isServerMember, resolveTenant } from "../lib/tenant.js";
 const CHANNELS_PREVIEW = 8;
 const CHANNELS_ALL = 200;
 
-function parseRuntimeProfile(v: unknown): { runtime?: string; model?: string } {
+function parseRuntimeProfile(v: unknown): { runtime?: string; model?: string; entrypoint?: string } {
   if (!v) return {};
   if (typeof v === "string") {
     try {
@@ -20,7 +20,7 @@ function parseRuntimeProfile(v: unknown): { runtime?: string; model?: string } {
       return {};
     }
   }
-  return v as { runtime?: string; model?: string };
+  return v as { runtime?: string; model?: string; entrypoint?: string };
 }
 
 function iso(v: unknown): string | null {
@@ -200,6 +200,7 @@ export async function peopleRoutes(app: FastifyInstance) {
     let createdAt = "";
     let runtime: string | undefined;
     let model: string | undefined;
+    let entrypoint: string | undefined;
     let isOnline: boolean | undefined;
     let duty: "on" | "off" | undefined;
     let presence: ReturnType<typeof agentListFields>["presence"] | undefined;
@@ -271,6 +272,7 @@ export async function peopleRoutes(app: FastifyInstance) {
       const rp = parseRuntimeProfile(row.runtime_profile);
       runtime = rp.runtime || "claude";
       model = rp.model || "sonnet";
+      entrypoint = rp.entrypoint;
 
       // 计算机解析：绑定机优先，其次属主在同 server 的任一机器行（与列表 LATERAL 同口径）
       const comp = await app.pg.query<{
@@ -434,6 +436,7 @@ export async function peopleRoutes(app: FastifyInstance) {
         ? {
             runtime,
             model,
+            entrypoint,
             isOnline,
             duty,
             presence,

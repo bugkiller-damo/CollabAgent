@@ -7,5 +7,8 @@
  */
 process.env.NODE_ENV = "test";
 process.env.PORT = process.env.PORT || "3011";
+// Phase 4：测试实例默认开 bridge runtime rollout——agents-bridge.test.ts 的门禁
+// 矩阵依赖 flag-on 路径；显式设为 "0" 可回测 flag-off 契约。
+process.env.SLOCK_BRIDGE_RUNTIMES = process.env.SLOCK_BRIDGE_RUNTIMES || "1";
 
 await import("../src/index.js");

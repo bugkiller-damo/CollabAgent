@@ -158,6 +158,8 @@ export interface PersonProfile {
   lastMessageAt?: string | null;
   runtime?: string;
   model?: string;
+  /** Phase 4：bridge runtime 的本机 manifest entrypoint id（非 bridge 为空） */
+  entrypoint?: string;
   /** @deprecated 用 presence；值为值班且办公室开门 */
   isOnline?: boolean;
   duty?: AgentDuty;

@@ -2,8 +2,10 @@ export { useAgentStore } from "./agentStore";
 export { useAuthStore } from "./authStore";
 export { type ChannelMember, useChannelStore } from "./channelStore";
 export {
+  type ComputerEntrypoint,
   type ComputerRecord,
   claudeInstalled,
+  type EntrypointStatus,
   type RuntimeProbe,
   runtimeCatalog,
   useComputerStore,

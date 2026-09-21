@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { AgentPresence, PersonChannelMembership, PersonProfile, PersonStats } from "@collabagent/shared";
-import { composePresence, PRESENCE_LABEL } from "@collabagent/shared";
+import { BRIDGE_RUNTIME_IDS, composePresence, PRESENCE_LABEL } from "@collabagent/shared";
 import { Crown } from "@lucide/vue";
 import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
@@ -163,6 +163,12 @@ const runtimeLabel = computed(() => {
   const id = profile.value?.runtime || "claude";
   return runtimeCatalog().find((c) => c.id === id)?.label || id;
 });
+
+// Phase 4：bridge runtime 的 entrypoint/model 由创建时 probe 策略锁定，
+// 行内编辑（claude 专用选项集）不适用于它们——只读展示。
+const isBridgeProfile = computed(() =>
+  (BRIDGE_RUNTIME_IDS as readonly string[]).includes(profile.value?.runtime || ""),
+);
 
 const modelLabel = computed(() => {
   const id = (profile.value?.model || "sonnet").toLowerCase();
@@ -558,7 +564,7 @@ async function expandChannels() {
                 :agent-id="profile.id"
                 field="runtime"
                 :value="profile.runtime || 'claude'"
-                :editable="canEditAgent"
+                :editable="canEditAgent && !isBridgeProfile"
                 kind="select"
                 :options="[{ value: 'claude', label: 'Claude' }]"
                 :extra-patch="{ model: profile.model || 'sonnet' }"
@@ -571,6 +577,10 @@ async function expandChannels() {
               </InlineAgentField>
             </dd>
           </div>
+          <div v-if="profile.entrypoint" class="grid grid-cols-[6.5rem_minmax(0,1fr)] gap-3 px-3 py-2.5">
+            <dt class="text-xs text-muted">Entrypoint</dt>
+            <dd class="min-w-0 break-all font-mono text-sm text-gray-800 dark:text-gray-200">{{ profile.entrypoint }}</dd>
+          </div>
           <div class="grid grid-cols-[6.5rem_minmax(0,1fr)] gap-3 px-3 py-2.5">
             <dt class="text-xs text-muted">模型</dt>
             <dd class="min-w-0 text-sm text-gray-800 dark:text-gray-200">
@@ -578,7 +588,7 @@ async function expandChannels() {
                 :agent-id="profile.id"
                 field="model"
                 :value="(profile.model || 'sonnet').toLowerCase()"
-                :editable="canEditAgent"
+                :editable="canEditAgent && !isBridgeProfile"
                 kind="select"
                 :options="[
                   { value: 'sonnet', label: 'Sonnet' },

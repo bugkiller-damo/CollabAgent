@@ -14,7 +14,9 @@ import Card from "../components/ui/Card.vue";
 import Input from "../components/ui/Input.vue";
 import Modal from "../components/ui/Modal.vue";
 import { usePolling } from "../composables";
+import { copyText } from "../lib/clipboard";
 import {
+  type ComputerEntrypoint,
   type ComputerRecord,
   claudeInstalled,
   runtimeCatalog,
@@ -71,6 +73,7 @@ const newDisplayName = ref("");
 const newDesc = ref("");
 const newAvatarUrl = ref("");
 const newRuntime = ref("claude");
+const newEntrypoint = ref("");
 const newModel = ref("sonnet");
 const createdNote = ref("");
 const confirmDeleteAgent = ref<AgentRow | null>(null);
@@ -126,14 +129,65 @@ const boundAgents = computed(() => {
   return agents.value.filter((a) => a.computer?.id === id);
 });
 const claude = computed(() => runtimes.value.find((r) => r.id === "claude"));
-const creatableRuntimes = computed(() =>
-  runtimes.value.filter((r) => r.status === "installed" && WIRED_RUNTIMES.has(r.id)),
+
+// Phase 4：entrypoint probe 成功态 = installed / installed_unsupported
+// （后者 = 官方目录未接线，server rollout flag 才是「可否创建」的门禁）
+const EP_USABLE = new Set(["installed", "installed_unsupported"]);
+const entrypoints = computed<ComputerEntrypoint[]>(() => computer.value?.entrypoints ?? []);
+const creatableEntrypoints = computed(() =>
+  computerStore.bridgeRuntimes ? entrypoints.value.filter((e) => EP_USABLE.has(e.status)) : [],
+);
+const creatableRuntimes = computed(() => {
+  const out = runtimes.value.filter((r) => r.status === "installed" && WIRED_RUNTIMES.has(r.id));
+  // bridge runtime 按「该机上至少一个可用 entrypoint」聚合出 runtime 级选项
+  const seen = new Set(out.map((r) => r.id));
+  for (const e of creatableEntrypoints.value) {
+    if (e.runtime && !seen.has(e.runtime)) {
+      seen.add(e.runtime);
+      out.push({ id: e.runtime, status: "installed" });
+    }
+  }
+  return out;
+});
+const newRuntimeIsBridge = computed(() => creatableEntrypoints.value.some((e) => e.runtime === newRuntime.value));
+const entrypointOptions = computed(() => creatableEntrypoints.value.filter((e) => e.runtime === newRuntime.value));
+const selectedEntrypoint = computed(
+  () => entrypointOptions.value.find((e) => e.id === newEntrypoint.value) ?? entrypointOptions.value[0],
 );
 const canCreate = computed(
   () => isMine.value && online.value && canAttachDetail.value && creatableRuntimes.value.length > 0,
 );
-const createReady = computed(() => canCreate.value && !!newName.value.trim() && !!newDisplayName.value.trim());
-const modelOptions = computed(() => CLAUDE_MODELS);
+const createReady = computed(
+  () =>
+    canCreate.value &&
+    !!newName.value.trim() &&
+    !!newDisplayName.value.trim() &&
+    (!newRuntimeIsBridge.value || !!selectedEntrypoint.value),
+);
+const modelOptions = computed(() => {
+  if (!newRuntimeIsBridge.value) return CLAUDE_MODELS;
+  const ep = selectedEntrypoint.value;
+  if (!ep) return [];
+  if (ep.modelMode === "fixed") {
+    return [{ value: ep.defaultModel || "", label: `${ep.defaultModel || "default"}（entrypoint 固定）` }];
+  }
+  const list = ep.models?.length ? ep.models : ep.defaultModel ? [ep.defaultModel] : [];
+  return list.map((m) => ({ value: m, label: m }));
+});
+const modelFixed = computed(() => newRuntimeIsBridge.value && selectedEntrypoint.value?.modelMode === "fixed");
+
+/** runtime/entrypoint 变化时收敛 model 选择到该 entrypoint 的策略内 */
+function syncCreateRuntimeDefaults() {
+  if (!newRuntimeIsBridge.value) {
+    newEntrypoint.value = "";
+    if (!CLAUDE_MODELS.some((m) => m.value === newModel.value)) newModel.value = "sonnet";
+    return;
+  }
+  newEntrypoint.value = selectedEntrypoint.value?.id ?? "";
+  const first = modelOptions.value[0]?.value ?? "";
+  if (!modelOptions.value.some((m) => m.value === newModel.value)) newModel.value = first;
+}
+watch([newRuntime, entrypointOptions], syncCreateRuntimeDefaults);
 
 function labelFor(id: string): string {
   return catalog.find((c) => c.id === id)?.label || id;
@@ -151,6 +205,12 @@ function chipHint(status: string): string {
   if (status === "installed") return "已安装";
   if (status === "installed_unsupported") return "已检测到，运行时尚未接入";
   return "未安装";
+}
+
+function entrypointHint(e: ComputerEntrypoint): string {
+  if (EP_USABLE.has(e.status)) return "可用";
+  if (e.errorCode) return `${e.status}：${e.errorCode}`;
+  return e.status;
 }
 
 function fmtTime(v: string | number | null | undefined): string {
@@ -255,7 +315,7 @@ function requestRotate(serverId: string) {
 async function copyCommand() {
   if (!tokenCommand.value) return;
   try {
-    await navigator.clipboard.writeText(tokenCommand.value);
+    await copyText(tokenCommand.value);
     copied.value = true;
     setTimeout(() => {
       copied.value = false;
@@ -271,7 +331,9 @@ function resetCreateForm() {
   newDesc.value = "";
   newAvatarUrl.value = "";
   newRuntime.value = creatableRuntimes.value[0]?.id || "claude";
+  newEntrypoint.value = "";
   newModel.value = "sonnet";
+  syncCreateRuntimeDefaults();
 }
 
 function openCreate() {
@@ -301,6 +363,8 @@ async function createAgent() {
       avatarUrl: newAvatarUrl.value.trim(),
       runtime: newRuntime.value,
       model: newModel.value,
+      // bridge runtime：entrypoint 为必填创建参数（server 按绑定机 probe 复核）
+      ...(newRuntimeIsBridge.value && selectedEntrypoint.value ? { entrypoint: selectedEntrypoint.value.id } : {}),
       // server-scoped computers：显式绑定该机——serverId 与 computerId 同出自行数据，
       // 服务端复核 (user, server, computer) 一致性后落 agents.computer_id
       serverId: c.serverId,
@@ -655,6 +719,27 @@ watch(
             已连上计算机，但 Claude 未装，@ 不会响应。安装：
             <code class="rounded bg-black/10 px-1 dark:bg-white/10">npm install -g @anthropic-ai/claude-code</code>
           </p>
+          <template v-if="entrypoints.length">
+            <p class="mb-1 mt-4 text-xs font-semibold uppercase tracking-wide text-muted">Bridge entrypoints</p>
+            <div class="grid gap-2 sm:grid-cols-2">
+              <div
+                v-for="e in entrypoints"
+                :key="e.id"
+                :class="[
+                  'rounded-lg border px-3 py-2 text-sm',
+                  chipClass(EP_USABLE.has(e.status) ? 'installed' : e.status === 'not_installed' ? 'not_installed' : 'misconfigured'),
+                ]"
+              >
+                <div class="flex items-center justify-between gap-2">
+                  <span class="font-medium">{{ e.label }}</span>
+                  <span class="text-[10px]">{{ entrypointHint(e) }}</span>
+                </div>
+                <p class="mt-0.5 truncate text-[11px] opacity-80">
+                  {{ e.runtime || "?" }} · {{ e.id }}<template v-if="e.version"> · {{ e.version }}</template>
+                </p>
+              </div>
+            </div>
+          </template>
         </Card>
 
         <Card v-if="isMine && canAttachDetail" class="space-y-3">
@@ -691,7 +776,7 @@ watch(
                 ? "先让这台机器的 daemon 上线，再创建 Agent。"
                 : !canAttachDetail
                   ? "只有 server 所有者能在本 server 放置 Agent。"
-                  : "安装 Claude Code 后才能创建。"
+                  : "该机上没有可创建的运行时——安装 Claude Code，或在 manifest 配置 bridge entrypoint。"
             }}
           </p>
           <p v-if="createdNote" class="text-xs text-blue-600 dark:text-blue-400">{{ createdNote }}</p>
@@ -810,8 +895,16 @@ watch(
             <option v-for="r in creatableRuntimes" :key="r.id" :value="r.id">{{ labelFor(r.id) }}</option>
           </select>
           <select
-            v-model="newModel"
+            v-if="newRuntimeIsBridge"
+            v-model="newEntrypoint"
             class="min-w-0 flex-1 rounded-md border border-gray-300 bg-gray-100 p-2 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+          >
+            <option v-for="e in entrypointOptions" :key="e.id" :value="e.id">{{ e.label }}</option>
+          </select>
+          <select
+            v-model="newModel"
+            :disabled="modelFixed"
+            class="min-w-0 flex-1 rounded-md border border-gray-300 bg-gray-100 p-2 text-sm text-gray-900 disabled:opacity-60 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
           >
             <option v-for="m in modelOptions" :key="m.value" :value="m.value">{{ m.label }}</option>
           </select>

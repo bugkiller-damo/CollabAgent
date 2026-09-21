@@ -1,4 +1,5 @@
 import type {
+  RuntimeEntrypointProbe,
   RuntimeProbe,
   WsChannelBroadcast,
   WsFromDaemonMessage,
@@ -17,7 +18,7 @@ import { inc } from "../lib/metrics.js";
 // P1.27：daemon 连接/断开镜像进跨实例在线注册表（Redis SET，其他实例的读路径可见）
 import { isComputerOnline, isMachineOnline, isUserScopeOnline, presenceAdd, presenceRemove } from "../lib/presence.js";
 import type { PubSub } from "../lib/pubsub.js";
-import { normalizeRuntimes } from "../lib/runtime-probe.js";
+import { normalizeEntrypoints, normalizeRuntimes } from "../lib/runtime-probe.js";
 // P1.28：入站帧运行时校验（此前 JSON.parse as X 零校验）——畸形/未知 type 帧整帧丢弃
 import { parseWsInbound, wsFromBrowserSchema, wsFromDaemonSchema } from "./validate.js";
 
@@ -41,6 +42,8 @@ export interface DaemonMeta {
   hostname: string;
   daemonVersion: string;
   runtimes: RuntimeProbe[];
+  /** Phase 4：bridge runtime entrypoint 探测摘要（daemon 未开 flag 时为 undefined） */
+  entrypoints?: RuntimeEntrypointProbe[];
   connectedAt: number;
   os?: string;
   arch?: string;
@@ -394,6 +397,9 @@ function registerConnection(connection: WebSocket, ident: ResolvedIdentity, isDa
             if (msg.hostname) meta.hostname = String(msg.hostname);
             if (msg.daemonVersion) meta.daemonVersion = String(msg.daemonVersion);
             meta.runtimes = runtimes;
+            // Phase 4：entrypoints 缺省 = 该 daemon 未开 bridge flag——清空旧值
+            // 避免「曾开过 flag 的探测结果」在 flag 关闭后残留。
+            meta.entrypoints = normalizeEntrypoints(msg.entrypoints);
             if (typeof msg.os === "string") meta.os = msg.os;
             if (typeof msg.arch === "string") meta.arch = msg.arch;
             daemonMeta.set(machineKey, meta);
@@ -659,6 +665,7 @@ async function finalizeDaemonReady(
     arch: typeof msg.arch === "string" ? msg.arch : undefined,
     daemonVersion: typeof msg.daemonVersion === "string" ? msg.daemonVersion : undefined,
     runtimes,
+    entrypoints: meta.entrypoints,
   });
   void import("../lib/agent-duty.js").then(({ broadcastOwnerPresence }) => broadcastOwnerPresence(wsPg, userId));
 }
@@ -672,7 +679,14 @@ function persistComputerReady(
   userId: string,
   serverId: string | null,
   machineUuid: string,
-  probe: { hostname?: string; os?: string; arch?: string; daemonVersion?: string; runtimes?: RuntimeProbe[] },
+  probe: {
+    hostname?: string;
+    os?: string;
+    arch?: string;
+    daemonVersion?: string;
+    runtimes?: RuntimeProbe[];
+    entrypoints?: RuntimeEntrypointProbe[];
+  },
 ): void {
   if (!wsPg || !serverId) return;
   const hostname = probe.hostname ? String(probe.hostname) : null;
@@ -701,6 +715,7 @@ function persistComputerReady(
              arch = COALESCE($6, arch),
              daemon_version = COALESCE($7, daemon_version),
              runtimes = $8::jsonb,
+             entrypoints = $9::jsonb,
              last_ready_at = now()
            WHERE user_id::text = $1 AND server_id::text = $2 AND machine_uuid LIKE 'legacy-%'
              AND NOT EXISTS (
@@ -708,21 +723,43 @@ function persistComputerReady(
                WHERE user_id::text = $1 AND server_id::text = $2 AND machine_uuid = $3
              )
            RETURNING id`,
-          [userId, serverId, machineUuid, hostname, os, arch, daemonVersion, JSON.stringify(probe.runtimes ?? [])],
+          [
+            userId,
+            serverId,
+            machineUuid,
+            hostname,
+            os,
+            arch,
+            daemonVersion,
+            JSON.stringify(probe.runtimes ?? []),
+            JSON.stringify(probe.entrypoints ?? []),
+          ],
         );
         if (claimed.rows.length > 0) return;
       }
       await wsPg!.query(
-        `INSERT INTO computers (user_id, server_id, machine_uuid, name, description, hostname, os, arch, daemon_version, runtimes, last_ready_at)
-         VALUES ($1, $2, $3, $4, '', $5, $6, $7, $8, $9::jsonb, now())
+        `INSERT INTO computers (user_id, server_id, machine_uuid, name, description, hostname, os, arch, daemon_version, runtimes, entrypoints, last_ready_at)
+         VALUES ($1, $2, $3, $4, '', $5, $6, $7, $8, $9::jsonb, $10::jsonb, now())
          ON CONFLICT (user_id, server_id, machine_uuid) DO UPDATE SET
            hostname = COALESCE(EXCLUDED.hostname, computers.hostname),
            os = COALESCE(EXCLUDED.os, computers.os),
            arch = COALESCE(EXCLUDED.arch, computers.arch),
            daemon_version = COALESCE(EXCLUDED.daemon_version, computers.daemon_version),
            runtimes = EXCLUDED.runtimes,
+           entrypoints = EXCLUDED.entrypoints,
            last_ready_at = now()`,
-        [userId, serverId, machineUuid, name, hostname, os, arch, daemonVersion, JSON.stringify(probe.runtimes ?? [])],
+        [
+          userId,
+          serverId,
+          machineUuid,
+          name,
+          hostname,
+          os,
+          arch,
+          daemonVersion,
+          JSON.stringify(probe.runtimes ?? []),
+          JSON.stringify(probe.entrypoints ?? []),
+        ],
       );
     } catch (err) {
       console.warn("[WS] persist computer ready failed:", (err as Error)?.message ?? err);
