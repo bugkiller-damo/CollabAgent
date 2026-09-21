@@ -119,6 +119,14 @@ function fail(err: unknown) {
   return { content: [{ type: "text" as const, text: `slock 调用失败：${message}` }], isError: true };
 }
 
+// §15.4 兜底：幂等锚由 worker SDK 无条件覆盖（turnId+seq），但 Claude 路径和
+// 非 SDK 自建 worker 没有注入层——schema 暴露的可选参数会被模型自发填垃圾值
+//（实机：DeepSeek 传 "x" → server 400 整回合死信）。非法 key 剥掉退化为无幂等
+// 发送，而不是让整个回合死在校验上。与 server 路由正则同口径。
+const IDEMPOTENCY_KEY_RE = /^[A-Za-z0-9:._-]{8,160}$/;
+const sanitizeIdempotencyKey = (k: unknown): string | undefined =>
+  typeof k === "string" && IDEMPOTENCY_KEY_RE.test(k) ? k : undefined;
+
 const server = new McpServer({ name: "slock", version: "0.1.0" });
 
 server.registerTool(
@@ -140,17 +148,18 @@ server.registerTool(
         .optional()
         .describe("可选：随消息附带的附件 id 列表（先用 upload_attachment 上传获得；拆条时只挂最后一条）"),
       // Phase 5 §15.4：幂等键由 worker SDK 自动注入（<turnId>:<tool>:<seq>），
-      // agent 无需也不应手写；拆条时各条派生 <key>#<i>，保证逐条去重。
+      // agent 无需也不应手写；拆条时各条派生 <key>:<i>，保证逐条去重。
       idempotencyKey: z.string().optional().describe("幂等去重键（由运行时注入，勿手写）"),
     },
   },
   async ({ target, content, threadId, attachmentIds, idempotencyKey }) => {
     try {
       const chunks = splitMessageContent(content);
+      const cleanKey = sanitizeIdempotencyKey(idempotencyKey);
       if (chunks.length === 1) {
         const result = await callSlock("/send", {
           method: "POST",
-          body: JSON.stringify({ target, content, threadId, attachmentIds, idempotencyKey }),
+          body: JSON.stringify({ target, content, threadId, attachmentIds, idempotencyKey: cleanKey }),
         });
         return ok(result);
       }
@@ -166,7 +175,7 @@ server.registerTool(
             content: chunks[i],
             threadId,
             attachmentIds: i === chunks.length - 1 ? attachmentIds : undefined,
-            idempotencyKey: idempotencyKey ? `${idempotencyKey}#${i}` : undefined,
+            idempotencyKey: cleanKey ? `${cleanKey}:${i}` : undefined,
           }),
         });
         const id =
@@ -337,7 +346,7 @@ server.registerTool(
     try {
       const result = await callSlock("/dispatch", {
         method: "POST",
-        body: JSON.stringify({ channel, toAgent, text, idempotencyKey }),
+        body: JSON.stringify({ channel, toAgent, text, idempotencyKey: sanitizeIdempotencyKey(idempotencyKey) }),
       });
       return ok(result);
     } catch (err) {

@@ -195,10 +195,13 @@ class SlockMcpClient:
         args = dict(arguments)
         with self._lock:
             turn = self._active_turn
-            if turn and name in _WRITE_TOOLS and "idempotencyKey" not in args:
+            if turn and name in _WRITE_TOOLS:
                 key = (turn, name)
                 seq = self._write_seq.get(key, 0)
                 self._write_seq[key] = seq + 1
+                # 无条件覆盖：幂等锚是平台资产（turnId+seq 由 SDK 持有）。
+                # 工具 schema 暴露了 idempotencyKey 可选参数，模型会自发填
+                # 垃圾值（实机：DeepSeek 传 "x" → server 400 拒收整回合）。
                 args["idempotencyKey"] = f"{turn}:{name}:{seq}"
         result = self._request("tools/call", {"name": name, "arguments": args}, timeout_s=timeout_s)
         if result is None:

@@ -128,10 +128,11 @@ class TestWriteIdempotency:
         out = client.call_tool("send_message", {"target": "#g", "content": "a"})
         assert "idempotencyKey" not in out
 
-    def test_caller_supplied_key_wins(self, client):
+    def test_caller_supplied_key_overwritten(self, client):
+        """模型自发填的 key 被 SDK 锚覆盖（实机：DeepSeek 传 "x" → server 400）。"""
         client.set_active_turn("turn-7")
         out = client.call_tool(
             "send_message",
-            {"target": "#g", "content": "a", "idempotencyKey": "custom-key-9"},
+            {"target": "#g", "content": "a", "idempotencyKey": "x"},
         )
-        assert '"idempotencyKey": "custom-key-9"' in out
+        assert '"idempotencyKey": "turn-7:send_message:0"' in out
