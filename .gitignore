@@ -29,3 +29,9 @@ docs/test_heredoc.md
 
 # DB dumps (contain real user data + bcrypt hashes)
 backups/
+
+# Python bridge artifacts
+bridges/python/.venv/
+bridges/python/.pytest_cache/
+__pycache__/
+*.pyc

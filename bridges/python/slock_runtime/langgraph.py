@@ -1,0 +1,449 @@
+"""LangGraph adapter：把 CompiledStateGraph 桥进 SARP/1 worker 生命周期。
+
+职责（§12.3）：
+- conversationId → configurable.thread_id（§11.2），slock_turn_id 进
+  configurable 做幂等审计，不替代 thread ID；
+- input_mapper 把 Slock turn 转为 graph 输入；默认 {"messages":[HumanMessage]}，
+  init.system_prompt 存在且 thread 为空（get_state().values 为空）时前置
+  SystemMessage（§12.5）；
+- stream_mode=["messages","updates","custom"] 三路事件：
+  messages → assistant.delta（仅 ai 类 chunk；ToolMessage 不进文本流）；
+  updates → tool.start/tool.end（AIMessage.tool_calls / ToolMessage）与
+  __interrupt__ 检测；custom → 仅 custom_event_mapper 显式放行的
+  progress（§12.3.4，不把私有事件透出）；
+- interrupt() → InterruptRecord + TurnOutcome(interrupted)；resume token
+  签发/单次消费由 runtime journal 兜底（§11.4），adapter 不碰；
+- turn.resume → Command(resume=value) 走原 checkpoint 恢复；
+- graph.checkpointer 决定 durableThreads：InMemorySaver/MemorySaver/None
+  → false，其余（SqliteSaver/Postgres…）→ true（§11.3）。
+
+纪律：
+- 模块零框架依赖——所有 langgraph/langchain 导入都在函数体内惰性进行，
+  `import slock_runtime` 在未装框架时也必须可用；
+- 不完整 graph state / checkpoint blob / secret 永远不进协议帧；
+  tool output 截断 ~4000 字符；stdout 只写协议帧。
+"""
+
+from __future__ import annotations
+
+import json
+import secrets
+import time
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
+
+from .errors import GRAPH_INPUT_INVALID, RUNTIME_ID_MISMATCH, SarpError
+from .mcp import SlockMcpClient
+from .protocol import SarpInitialize, SarpTurnStart
+from .runtime import InterruptRecord, TurnEmit, TurnOutcome, WorkerRuntime, new_resume_token
+
+TOOL_OUTPUT_MAX_CHARS = 4000  # §20.5：超大 tool output 截断
+_STREAM_MODES = ["messages", "updates", "custom"]
+# 进程内 checkpointer 类名——命中即 durableThreads=False（§11.3）
+_VOLATILE_CHECKPOINTERS = ("InMemorySaver", "MemorySaver")
+
+
+@dataclass(frozen=True)
+class SlockTool:
+    """Slock MCP 工具的运行时视图（§12.4）。
+
+    graph 工厂拿到的是「可调用的工具描述」而非裸 McpToolInfo——invoke()
+    经 worker 内唯一 SlockMcpClient 发出 tools/call；input_schema 为
+    MCP JSON Schema，可直接喂给 StructuredTool.from_function(args_schema=)。
+    """
+
+    name: str
+    description: str
+    input_schema: dict
+    call: Callable[[dict], str]
+
+    def invoke(self, arguments: dict | None = None) -> str:
+        return self.call(dict(arguments or {}))
+
+
+# ---------------------------------------------------------------------------
+# 默认 mapper
+# ---------------------------------------------------------------------------
+
+
+def _flatten_content(content: Any) -> str:
+    """message.content → 纯文本。str 直返；list-of-blocks 拼 text 块。"""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                if block.get("type") in (None, "text"):
+                    t = block.get("text")
+                    if isinstance(t, str):
+                        parts.append(t)
+            else:
+                t = getattr(block, "text", None)
+                if isinstance(t, str):
+                    parts.append(t)
+        return "".join(parts)
+    return str(content)
+
+
+def _default_input_mapper(init: SarpInitialize, turn: SarpTurnStart, fresh: bool) -> dict:
+    """§12.3.2：HumanMessage(turn.prompt)；thread 全新且有平台 prompt 时前置 SystemMessage。"""
+    from langchain_core.messages import HumanMessage, SystemMessage  # 惰性导入
+
+    msgs: list = []
+    if init.system_prompt and fresh:
+        msgs.append(SystemMessage(content=init.system_prompt))
+    msgs.append(HumanMessage(content=turn.prompt))
+    return {"messages": msgs}
+
+
+def _default_output_mapper(values: Any) -> str:
+    """终态 state.values → finalText：取最后一条 message 的 content 拍平。"""
+    if not isinstance(values, dict):
+        return ""
+    msgs = values.get("messages")
+    if isinstance(msgs, (list, tuple)) and msgs:
+        return _flatten_content(getattr(msgs[-1], "content", msgs[-1]))
+    return ""
+
+
+def _truncate(text: Any, limit: int = TOOL_OUTPUT_MAX_CHARS) -> str:
+    s = text if isinstance(text, str) else _flatten_content(text)
+    if not isinstance(s, str):
+        try:
+            s = json.dumps(s, ensure_ascii=False, default=str)
+        except Exception:
+            s = str(s)
+    return s if len(s) <= limit else s[:limit] + f"…[truncated {len(s) - limit} chars]"
+
+
+def _msg_kind(msg: Any) -> str:
+    """消息归类：真 langchain 消息看 .type（"ai"/"tool"/"human"/…），
+    鸭子类型对象退回类名小写——测试里的 fake message 也能走同一套逻辑。"""
+    t = getattr(msg, "type", None)
+    if isinstance(t, str) and t:
+        return t
+    return type(msg).__name__.lower()
+
+
+def _is_ai_kind(kind: str) -> bool:
+    return kind in ("ai", "aimessage", "aimessagechunk")
+
+
+def _is_tool_kind(kind: str) -> bool:
+    return kind in ("tool", "toolmessage", "toolmessagechunk")
+
+
+def _jsonable(v: Any) -> bool:
+    try:
+        json.dumps(v)
+        return True
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------
+# adapter
+# ---------------------------------------------------------------------------
+
+
+def _detect_langgraph_version() -> str | None:
+    try:
+        import importlib.metadata
+
+        return f"langgraph {importlib.metadata.version('langgraph')}"
+    except Exception:
+        return None
+
+
+def _thread_fresh(graph: Any, config: dict) -> bool:
+    """thread 是否无 checkpoint 历史。get_state 不可用/失败按 fresh 处理。"""
+    get_state = getattr(graph, "get_state", None)
+    if get_state is None:
+        return True
+    try:
+        snap = get_state(config)
+    except Exception:
+        return True
+    return not getattr(snap, "values", None)
+
+
+def _final_values(graph: Any, config: dict, fallback: dict) -> dict:
+    try:
+        snap = graph.get_state(config)
+        values = getattr(snap, "values", None)
+        if isinstance(values, dict):
+            return values
+    except Exception:
+        pass
+    return fallback
+
+
+def _iter_update_messages(update: Any):
+    """node update 负载里的消息对象：{'messages': [...]} / 单条 / 裸消息。"""
+    if isinstance(update, dict):
+        candidates = update.get("messages")
+        if isinstance(candidates, (list, tuple)):
+            yield from candidates
+        elif candidates is not None:
+            yield candidates
+    else:
+        yield update
+
+
+def serve_langgraph(
+    graph_or_factory: Any,
+    *,
+    input_mapper: Callable[[SarpInitialize, SarpTurnStart, bool], Any] | None = None,
+    output_mapper: Callable[[dict], str] | None = None,
+    interrupt_mapper: Callable[[Any], str] | None = None,
+    custom_event_mapper: Callable[[Any], str | None] | None = None,
+    cost_calculator: Callable[[dict], float | None] | None = None,
+    streaming: bool = True,
+    runtime_id: str = "langgraph",
+    framework_version: str | None = None,
+    transport: Any = None,
+    journal: Any = None,
+) -> int:
+    """LangGraph worker 入口。返回进程退出码（0 正常关停，2 协议/初始化失败）。
+
+    graph_or_factory：CompiledStateGraph 实例，或 `factory(init, tools) ->
+    graph` 工厂（§12.4：graph 不能在 import 时就 compile——Slock MCP tools
+    要等 initialize 下发后才有；tools 是 list[SlockTool]）。
+
+    mapper 签名：
+    - input_mapper(init, turn, fresh) -> graph input；fresh = thread 无
+      checkpoint 历史。默认规则见 _default_input_mapper。
+    - output_mapper(state_values) -> str：终态 get_state().values → finalText。
+    - interrupt_mapper(interrupt.value) -> str：审批提示文本。
+    - custom_event_mapper(custom_data) -> str|None：返回 str 才发 progress。
+    - cost_calculator(usage_dict) -> float|None：仅提供时才产出 costUsd。
+    """
+
+    state: dict[str, Any] = {"graph": None, "tools": [], "mcp_client": None}
+
+    # ---------------- 握手（§12.4 启动顺序） ----------------
+
+    def on_initialize(init: SarpInitialize, emit: TurnEmit) -> dict:
+        if init.runtime_id != runtime_id:
+            raise SarpError(
+                RUNTIME_ID_MISMATCH,
+                f"initialize.runtime.id={init.runtime_id!r} != worker runtime_id={runtime_id!r}",
+                retryable=False,
+            )
+        client: SlockMcpClient | None = None
+        tools: list[SlockTool] = []
+        if init.mcp is not None:
+            # 1) MCP client 先行：子进程随 worker 退出由 finally close() 兜底
+            client = SlockMcpClient(init.mcp)
+            client.start()
+            tools = [
+                SlockTool(
+                    name=t.name,
+                    description=t.description,
+                    input_schema=t.input_schema,
+                    call=lambda args, _n=t.name, _c=client: _c.call_tool(_n, args),
+                )
+                for t in client.list_tools()
+            ]
+        state["mcp_client"] = client
+        state["tools"] = tools
+
+        # 2) graph：工厂模式把 init + slock tools 交给用户构建
+        graph = graph_or_factory(init, tools) if callable(graph_or_factory) else graph_or_factory
+        state["graph"] = graph
+
+        # 3) durableThreads：持久 checkpointer 才算（§11.3）
+        cp = getattr(graph, "checkpointer", None)
+        durable = cp is not None and type(cp).__name__ not in _VOLATILE_CHECKPOINTERS
+
+        model_field: dict = {"overrides": bool(init.model)}
+        if init.model:
+            model_field["selected"] = init.model
+        return {
+            "capabilities": {
+                "persistentProcess": True,
+                "maxConcurrency": 1,
+                "streamingText": bool(streaming),
+                "toolEvents": True,
+                "interrupts": True,
+                "durableThreads": durable,
+                "mcp": client is not None,
+                "usage": "tokens",
+            },
+            "model": model_field,
+        }
+
+    # ---------------- 回合 ----------------
+
+    def _usage_out(seen: set, totals: dict, duration_ms: int) -> dict | None:
+        usage: dict[str, Any] = {}
+        token_keys = (
+            ("input_tokens", "inputTokens"),
+            ("output_tokens", "outputTokens"),
+            ("total_tokens", "totalTokens"),
+        )
+        for src, dst in token_keys:
+            if src in seen:
+                usage[dst] = totals[src]
+        usage["durationMs"] = duration_ms
+        if cost_calculator is not None:
+            cost = cost_calculator(usage)
+            if cost is not None:
+                usage["costUsd"] = cost
+        return usage if len(usage) > 1 else None  # 只有 durationMs 等于没数据
+
+    def _interrupt_record(interrupts: Any) -> InterruptRecord:
+        first = next(iter(interrupts), None)
+        value = getattr(first, "value", first)
+        prompt = interrupt_mapper(value) if interrupt_mapper else None
+        if not prompt:
+            prompt = str(value)
+        return InterruptRecord(
+            interrupt_id=f"lg-{secrets.token_hex(8)}",
+            resume_token=new_resume_token(),
+            prompt=prompt,
+            payload=value if _jsonable(value) else None,
+        )
+
+    def _handle_update(data: Any, emit: TurnEmit) -> Any | None:
+        """updates 事件：返回捕获到的 Interrupt 元组（若有）。"""
+        if not isinstance(data, dict):
+            return None
+        found = None
+        for node, update in data.items():
+            if node == "__interrupt__":
+                found = update  # tuple/list of Interrupt
+                continue
+            for msg in _iter_update_messages(update):
+                kind = _msg_kind(msg)
+                if _is_tool_kind(kind):
+                    call_id = getattr(msg, "tool_call_id", None) or getattr(msg, "id", "") or ""
+                    ok = getattr(msg, "status", "success") == "success"
+                    text = _truncate(getattr(msg, "content", ""))
+                    emit.tool_end(
+                        str(call_id),
+                        ok,
+                        name=getattr(msg, "name", None),
+                        provider="langgraph",
+                        output=text,
+                        error=None if ok else text,
+                    )
+                elif _is_ai_kind(kind):
+                    for tc in getattr(msg, "tool_calls", None) or ():
+                        if not isinstance(tc, dict):
+                            continue
+                        emit.tool_start(
+                            str(tc.get("id") or ""),
+                            str(tc.get("name") or ""),
+                            provider="langgraph",
+                            input=tc.get("args"),
+                        )
+        return found
+
+    def run_turn(init: SarpInitialize, turn: SarpTurnStart, emit: TurnEmit, cancelled) -> TurnOutcome:
+        graph = state["graph"]
+        started = time.monotonic()
+        # §11.2：thread_id 控 checkpoint 连续性；slock_turn_id 供幂等审计
+        config = {"configurable": {"thread_id": turn.conversation_id, "slock_turn_id": turn.turn_id}}
+
+        if turn.resume is not None:
+            from langgraph.types import Command  # 惰性导入：无 resume 不碰 langgraph
+
+            graph_input = Command(resume=turn.resume.value)
+        else:
+            fresh = _thread_fresh(graph, config)
+            mapper = input_mapper or _default_input_mapper
+            try:
+                graph_input = mapper(init, turn, fresh)
+            except SarpError:
+                raise
+            except Exception as e:
+                raise SarpError(GRAPH_INPUT_INVALID, f"input_mapper failed: {e}", retryable=False) from e
+
+        seen_tokens: set = set()
+        totals = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        last_updates: dict = {}
+        interrupts = None
+
+        def _elapsed() -> int:
+            return int((time.monotonic() - started) * 1000)
+
+        if streaming:
+            for mode, data in graph.stream(graph_input, config, stream_mode=_STREAM_MODES):
+                if cancelled.is_set():
+                    return TurnOutcome(status="cancelled")
+                if mode == "messages":
+                    if isinstance(data, (tuple, list)) and len(data) == 2:
+                        chunk, _meta = data
+                    else:
+                        chunk, _meta = data, {}
+                    if _is_ai_kind(_msg_kind(chunk)):
+                        text = _flatten_content(getattr(chunk, "content", None))
+                        if text:
+                            emit.delta(text)
+                    um = getattr(chunk, "usage_metadata", None)
+                    if isinstance(um, dict):
+                        for k in totals:
+                            v = um.get(k)
+                            if isinstance(v, (int, float)):
+                                totals[k] += int(v)
+                                seen_tokens.add(k)
+                elif mode == "updates":
+                    if isinstance(data, dict):
+                        for node, upd in data.items():
+                            if node != "__interrupt__" and isinstance(upd, dict):
+                                last_updates.update(upd)
+                    interrupts = _handle_update(data, emit) or interrupts
+                elif mode == "custom":
+                    mapped = custom_event_mapper(data) if custom_event_mapper else None
+                    if isinstance(mapped, str):
+                        emit.progress(mapped)
+                if interrupts:
+                    return TurnOutcome(
+                        status="interrupted",
+                        interrupt=_interrupt_record(interrupts),
+                        usage=_usage_out(seen_tokens, totals, _elapsed()),
+                    )
+        else:
+            result = graph.invoke(graph_input, config)
+            if cancelled.is_set():
+                return TurnOutcome(status="cancelled")
+            if isinstance(result, dict):
+                last_updates.update(result)
+                intr = result.get("__interrupt__")
+                if intr:
+                    return TurnOutcome(
+                        status="interrupted",
+                        interrupt=_interrupt_record(intr),
+                        usage=_usage_out(seen_tokens, totals, _elapsed()),
+                    )
+
+        values = _final_values(graph, config, last_updates)
+        out_map = output_mapper or _default_output_mapper
+        final_text = out_map(values)
+        if final_text is not None and not isinstance(final_text, str):
+            final_text = str(final_text)
+        return TurnOutcome(
+            status="success",
+            final_text=final_text,
+            usage=_usage_out(seen_tokens, totals, _elapsed()),
+        )
+
+    rt = WorkerRuntime(
+        runtime_id=runtime_id,
+        framework_version=framework_version or _detect_langgraph_version(),
+        transport=transport,
+        journal=journal,
+    )
+    try:
+        return rt.serve(run_turn, on_initialize)
+    finally:
+        client = state["mcp_client"]
+        if client is not None:
+            client.close()

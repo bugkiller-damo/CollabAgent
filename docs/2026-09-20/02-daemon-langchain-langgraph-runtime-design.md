@@ -1,7 +1,7 @@
 # Daemon 接入 LangChain / LangGraph 详细设计
 
 > 日期：2026-09-20
-> 状态：Phase 0、Phase 1、Phase 2 已实施并验证；Phase 3–5 尚未实施
+> 状态：Phase 0、Phase 1、Phase 2、Phase 3 已实施并验证；Phase 4–5 尚未实施
 > 关联审计：[01-daemon-claude-decoupling-audit.md](./01-daemon-claude-decoupling-audit.md)
 > 范围：`packages/daemon/` 为主，包含必要的 shared / server / web 协议改动
 
@@ -1513,27 +1513,56 @@ server 侧新增 `agents.test.ts` Phase 1 集成用例（entrypoint 落库/保�
 - SARP/1 Python SDK（`slock_runtime`）属 Phase 3——本阶段 daemon 侧契约已冻结，
   SDK 实现须与 `sarp-protocol.ts` + fixture worker 逐帧对齐。
 
-### Phase 3：Python LangChain / LangGraph bridge
+### Phase 3：Python LangChain / LangGraph bridge（**已实施并验证**）
 
 复杂度：高
 风险：高
 
-实施：
+实施（已落地，`bridges/`）：
 
-1. Python SARP transport。
-2. LangChain agent adapter。
-3. LangGraph adapter、durable checkpointer 与 interrupt/resume。
-4. Slock MCP tool loader。
-5. usage / provider error mapping。
-6. 两个可运行示例与跨语言 contract fixtures。
+1. Python SARP transport——`slock_runtime/{protocol,transport,runtime}.py`：
+   逐字段镜像 `sarp-protocol.ts` 的帧编解码 + 信封/schema/seq 单调校验；
+   主循环 `WorkerRuntime.serve()`：initialize 握手 → ready 回显 requestId →
+   串行回合（`_turn_lock` 互斥的 pending 队列）→ turn.cancel 协作取消 →
+   shutdown → runtime.stopped；Windows 下 stdout 走 `.buffer` 裸 UTF-8。
+2. LangChain agent adapter——`slock_runtime/langchain.py` `serve_langchain()`：
+   astream_events v2 事件映射（on_chat_model_stream→delta、
+   on_tool_start/end→tool 帧、usage_metadata→usage），platform
+   systemPrompt 前置注入，无 durable/interrupt 能力如实上报。
+3. LangGraph adapter——`slock_runtime/langgraph.py` `serve_langgraph()`：
+   `configurable.thread_id = conversationId` + `slock_turn_id` 审计；
+   messages/updates/custom 三模流；`__interrupt__` → InterruptRecord；
+   resume → `Command(resume=value)`；checkpointer 类名判 durableThreads。
+4. Slock MCP tool loader——`slock_runtime/mcp.py` `SlockMcpClient`：
+   stdio JSON-RPC（initialize/tools/list/tools/call），单 client 复用，
+   子进程随 worker 退出 close()，env 白名单最小继承。
+5. usage / provider error mapping——`errors.py` 类名+HTTP status 双轨
+   映射到 wire 码（rate limit→retryable+retryAfterMs、auth→permanent、
+   5xx/网络→retryable、输入校验→permanent、未知→WORKER_ERROR）。
+6. 幂等与 resume token——`idempotency.py` `TurnJournal`：
+   `<workspace>/.slock/runtime-state.sqlite`（0600），turnId→终态摘要
+   回放 + resume token 单次消费；interrupted 终态由 runtime 自动签发。
+7. 两个可运行示例：`bridges/examples/langgraph-agent/`（CompiledStateGraph
+   + SqliteSaver + interrupt 审批门）、`bridges/examples/langchain-agent/`。
+8. 跨语言 contract fixtures——`bridges/fixtures/*.jsonl`：daemon 编码帧
+   由 `test/sarp-contract-fixtures.test.ts` 生成（`SARP_WRITE_FIXTURES=1`
+   重新生成），Python 侧 `test_contract_fixtures.py` 解码校验，反向同理。
 
-验收：
+验收结果：
 
-- LangChain 示例能接收 Slock 消息、调用 Slock MCP tool、返回 finalText。
-- LangGraph 示例在进程重启后保持 thread state。
-- interrupt 提示能发回频道，下一条同 conversation 消息能 resume。
-- graph state 与 secret 不出现在 protocol 和日志。
-- provider rate limit 被标记为 retryable，鉴权失败为 permanent。
+- ✅ LangGraph 真机端到端：`test/sarp-langgraph-e2e.test.ts` spawn 真
+  Python+真 CompiledStateGraph+真 SqliteSaver——两回合记忆、
+  **worker 进程重启后 checkpoint 恢复**、conversationId 隔离、
+  interrupt→Command(resume) 续跑 5/5 通过。
+- ✅ 裸 SDK worker e2e：`test/sarp-python-worker.test.ts` 5/5——
+  握手/回合/interrupt token 签发消费/伪造 token 拒绝/stdout 纯净违规。
+- ✅ Python 单测 52+ 全绿（protocol/errors/idempotency/runtime/fixtures）。
+- ✅ graph state/secret 不进帧（adapter 只透 delta/tool 摘要/finalText）。
+- ⏳ LangChain 示例 MCP 调用与 rate-limit 分类由 adapter 测试覆盖；
+  真实 LLM 提供商冒烟需 API key，留 CI。
+
+差异说明：agent.id 允许空串（daemon initFields fallback 会发 `""`，
+worker 侧容错解析）；resume token 签发收敛进 runtime 层而非 adapter。
 
 ### Phase 4：server / web 正式接线
 

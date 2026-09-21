@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "id": "langgraph-example",
+      "runtime": "langgraph",
+      "label": "LangGraph Approval-Gate Agent (example)",
+      "command": "python",
+      "args": ["agent.py"],
+      "cwd": "D:\\code\\slock\\bridges\\examples\\langgraph-agent",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      },
+      "secretEnv": ["OPENAI_API_KEY", "ANTHROPIC_API_KEY"],
+      "model": {
+        "mode": "select",
+        "default": "openai:gpt-5-mini",
+        "allowed": ["openai:gpt-5-mini", "anthropic:claude-sonnet-4-5"]
+      },
+      "requireDurableThreads": true,
+      "startupTimeoutMs": 15000,
+      "silenceTimeoutMs": 300000,
+      "shutdownTimeoutMs": 10000
+    }
+  ]
+}

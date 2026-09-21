@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "id": "langchain-agent",
+      "runtime": "langchain",
+      "label": "LangChain Example Agent",
+      "command": "python",
+      "args": ["agent.py"],
+      "cwd": "D:\\code\\slock\\bridges\\examples\\langchain-agent",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      },
+      "secretEnv": [],
+      "model": {
+        "mode": "select",
+        "default": "openai:gpt-4o-mini",
+        "allowed": ["openai:gpt-4o-mini", "anthropic:claude-sonnet-4-5"]
+      },
+      "requireDurableThreads": false,
+      "startupTimeoutMs": 15000,
+      "silenceTimeoutMs": 300000,
+      "shutdownTimeoutMs": 10000
+    }
+  ]
+}
