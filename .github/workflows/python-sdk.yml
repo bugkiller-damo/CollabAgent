@@ -1,0 +1,209 @@
+name: Python SDK
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "bridges/**"
+      - "packages/daemon/src/sarp-protocol.ts"
+      - "packages/daemon/src/sarp-conformance.ts"
+      - "packages/daemon/src/agent-runtime-manifest.ts"
+      - "packages/daemon/src/drivers/jsonl-bridge-runtime.ts"
+      - "packages/daemon/src/drivers/persistent-jsonl-worker.ts"
+      - "packages/daemon/src/drivers/runtime-entrypoint-probe.ts"
+      - "packages/daemon/test/sarp-python-worker.test.ts"
+      - "packages/daemon/test/sarp-langgraph-e2e.test.ts"
+      - "packages/daemon/test/sarp-template-manifest-e2e.test.ts"
+      - "packages/daemon/test/fixtures/**"
+      - "docs/2026-09-21/02-sarp1-protocol.md"
+      - ".github/workflows/python-sdk.yml"
+  pull_request:
+    paths:
+      - "bridges/**"
+      - "packages/daemon/src/sarp-protocol.ts"
+      - "packages/daemon/src/sarp-conformance.ts"
+      - "packages/daemon/src/agent-runtime-manifest.ts"
+      - "packages/daemon/src/drivers/jsonl-bridge-runtime.ts"
+      - "packages/daemon/src/drivers/persistent-jsonl-worker.ts"
+      - "packages/daemon/src/drivers/runtime-entrypoint-probe.ts"
+      - "packages/daemon/test/sarp-python-worker.test.ts"
+      - "packages/daemon/test/sarp-langgraph-e2e.test.ts"
+      - "packages/daemon/test/sarp-template-manifest-e2e.test.ts"
+      - "packages/daemon/test/fixtures/**"
+      - "docs/2026-09-21/02-sarp1-protocol.md"
+      - ".github/workflows/python-sdk.yml"
+  workflow_dispatch:
+
+# bridges/python（slock-runtime）质量门：
+#   test                      — Ubuntu 22.04/24.04 + Windows Server 2022 ×
+#                               Python 3.10/3.13 全量 pytest（含 contract
+#                               fixtures 与真实 adapter/template 冒烟）
+#   minimum-dependencies      — ubuntu-24.04 Python 3.10 + 声明的最低框架
+#                               版本，锁定 extras 下界的真实兼容性
+#   smoke                     — macos-latest Python 3.12 非 editable 安装 +
+#                               双模板 probe + 单回合冒烟（best-effort 覆盖，
+#                               非主要内部目标）
+#   quality                   — 单 ubuntu-24.04 跑 ruff/mypy/build/twine
+#                               （不随矩阵重复）
+#   daemon-bridge-integration — ubuntu-24.04 + windows-2022 × Python 3.12：
+#                               真实 SARP worker / LangGraph E2E / manifest→
+#                               probe→driver→模板 worker 三件 daemon 测试
+#   centos-stream-9           — quay.io/centos/centos:stream9 容器内
+#                               AppStream Python 3.11 + Node 20：SDK 全量
+#                               pytest + 模板 probe/冒烟 + 三件 daemon 测试
+
+jobs:
+  test:
+    name: pytest · ${{ matrix.os }} · Python ${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04, windows-2022]
+        python-version: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: bridges/python/pyproject.toml
+      - name: Install package with all extras
+        working-directory: bridges/python
+        run: python -m pip install -e ".[langchain,langgraph,dev]"
+      - name: Run full test suite
+        working-directory: bridges/python
+        run: python -m pytest tests -q
+
+  minimum-dependencies:
+    name: pytest · ubuntu-24.04 · Python 3.10 · declared minimums
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+          cache-dependency-path: bridges/python/pyproject.toml
+      - name: Install with exact declared minimums
+        working-directory: bridges/python
+        run: >-
+          python -m pip install -e ".[langchain,langgraph,dev]"
+          "langchain==1.4.2" "langchain-core==1.6.3"
+          "langgraph==1.2.11" "langgraph-checkpoint-sqlite==3.1.1"
+      - name: Run full test suite
+        working-directory: bridges/python
+        run: python -m pytest tests -q
+
+  smoke:
+    name: smoke · macos-latest · Python 3.12
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: bridges/python/pyproject.toml
+      - name: Install package (non-editable) with all extras
+        run: python -m pip install "bridges/python[langchain,langgraph]"
+      - name: Template probe + one-turn smoke
+        run: |
+          python bridges/templates/langchain-agent/agent.py --slock-probe
+          python bridges/templates/langgraph-agent/agent.py --slock-probe
+          python bridges/templates/smoke_one_turn.py bridges/templates/langchain-agent/agent.py langchain
+          python bridges/templates/smoke_one_turn.py bridges/templates/langgraph-agent/agent.py langgraph
+      - name: Import resolves from site-packages
+        run: |
+          python -c "import slock_runtime; p = slock_runtime.__file__; print(p); assert 'site-packages' in p, p"
+
+  daemon-bridge-integration:
+    name: daemon bridge · ${{ matrix.os }} · Python 3.12
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: pnpm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: bridges/python/pyproject.toml
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Install Python SDK with framework extras
+        run: python -m pip install "bridges/python[langchain,langgraph]"
+      - name: Run daemon SARP worker / LangGraph / template-manifest tests
+        env:
+          SLOCK_TEST_PYTHON: python
+        run: >-
+          pnpm --filter @collabagent/daemon exec vitest run
+          test/sarp-python-worker.test.ts
+          test/sarp-langgraph-e2e.test.ts
+          test/sarp-template-manifest-e2e.test.ts
+
+  centos-stream-9:
+    name: centos-stream-9 · AppStream Python 3.11 + Node 20
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Run SDK + daemon bridge tests inside CentOS Stream 9 container
+        run: |
+          docker run --rm \
+            -e CI=1 -e PYTHONUTF8=1 \
+            -v "$GITHUB_WORKSPACE:/workspace" -w /workspace \
+            quay.io/centos/centos:stream9 \
+            /bin/bash -euxo pipefail -c '
+              dnf -y module install nodejs:20
+              dnf -y install python3.11 python3.11-pip git gcc gcc-c++ make
+              npm install -g pnpm@9.15.9
+              python3.11 -m pip install --upgrade "pip>=24,<26"
+              python3.11 -m pip install "/workspace/bridges/python[langchain,langgraph,dev]"
+              cd /workspace/bridges/python
+              python3.11 -m pytest tests -q
+              cd /workspace
+              python3.11 bridges/templates/langchain-agent/agent.py --slock-probe
+              python3.11 bridges/templates/langgraph-agent/agent.py --slock-probe
+              python3.11 bridges/templates/smoke_one_turn.py bridges/templates/langchain-agent/agent.py langchain
+              python3.11 bridges/templates/smoke_one_turn.py bridges/templates/langgraph-agent/agent.py langgraph
+              pnpm install --frozen-lockfile
+              SLOCK_TEST_PYTHON=python3.11 pnpm --filter @collabagent/daemon exec vitest run \
+                test/sarp-python-worker.test.ts \
+                test/sarp-langgraph-e2e.test.ts \
+                test/sarp-template-manifest-e2e.test.ts
+            '
+
+  quality:
+    name: quality · ruff + mypy + build + twine
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: bridges/python/pyproject.toml
+      - name: Install dev tools
+        working-directory: bridges/python
+        run: python -m pip install -e ".[dev]"
+      - name: ruff
+        working-directory: bridges/python
+        run: python -m ruff check slock_runtime tests
+      - name: mypy
+        working-directory: bridges/python
+        run: python -m mypy slock_runtime
+      - name: build
+        working-directory: bridges/python
+        run: python -m build
+      - name: twine check
+        working-directory: bridges/python
+        run: python -m twine check dist/*

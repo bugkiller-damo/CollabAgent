@@ -1,0 +1,84 @@
+name: Python SDK Release
+
+on:
+  push:
+    tags:
+      - "slock-runtime-v*"
+
+# 发布 slock-runtime 到 PyPI（trusted publishing，无 API token，最小权限拆分）：
+#   build   — 只读权限：构建 wheel+sdist、tag/包版本对账、twine check、
+#             两个 clean venv extras 冒烟、上传 artifact。无 environment、无 id-token。
+#   publish — needs: build；仅 `id-token: write` + `contents: read`；
+#             不 checkout 源码，下载 artifact 后 gh-action-pypi-publish。
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build · verify slock-runtime
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: bridges/python/pyproject.toml
+      - name: Install dev tools
+        working-directory: bridges/python
+        run: python -m pip install -e ".[dev]"
+      - name: Build wheel and sdist
+        working-directory: bridges/python
+        run: python -m build
+      - name: Verify tag matches package version
+        run: |
+          tag="${GITHUB_REF_NAME#slock-runtime-v}"
+          ver="$(cd bridges/python && python -c 'import slock_runtime._version as v; print(v.__version__)')"
+          echo "tag=$tag package=$ver"
+          test "$tag" = "$ver"
+      - name: twine check
+        working-directory: bridges/python
+        run: python -m twine check dist/*
+      - name: Clean venv — wheel[langchain] + template smoke
+        run: |
+          WHEEL="$(ls bridges/python/dist/slock_runtime-*-py3-none-any.whl)"
+          python -m venv /tmp/venv-langchain
+          /tmp/venv-langchain/bin/pip install "${WHEEL}[langchain]"
+          /tmp/venv-langchain/bin/python -c "import slock_runtime; p = slock_runtime.__file__; print(p); assert 'site-packages' in p, p"
+          /tmp/venv-langchain/bin/python bridges/templates/langchain-agent/agent.py --slock-probe
+          /tmp/venv-langchain/bin/python bridges/templates/smoke_one_turn.py bridges/templates/langchain-agent/agent.py langchain
+      - name: Clean venv — wheel[langgraph] + template smoke
+        run: |
+          WHEEL="$(ls bridges/python/dist/slock_runtime-*-py3-none-any.whl)"
+          python -m venv /tmp/venv-langgraph
+          /tmp/venv-langgraph/bin/pip install "${WHEEL}[langgraph]"
+          /tmp/venv-langgraph/bin/python -c "import slock_runtime; p = slock_runtime.__file__; print(p); assert 'site-packages' in p, p"
+          /tmp/venv-langgraph/bin/python bridges/templates/langgraph-agent/agent.py --slock-probe
+          /tmp/venv-langgraph/bin/python bridges/templates/smoke_one_turn.py bridges/templates/langgraph-agent/agent.py langgraph
+      - name: Upload dist artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: slock-runtime-dist
+          path: bridges/python/dist/
+
+  publish:
+    name: publish slock-runtime to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write # PyPI trusted publishing
+      contents: read
+    steps:
+      - name: Download dist artifacts
+        uses: actions/download-artifact@v5
+        with:
+          name: slock-runtime-dist
+          path: dist/
+      - name: Publish to PyPI (trusted publishing)
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/

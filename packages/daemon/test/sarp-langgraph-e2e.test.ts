@@ -1,4 +1,5 @@
-import { existsSync, mkdtempSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -17,13 +18,34 @@ import {
  * Command(resume=) 都由框架真实语义承担（设计文档 §20.4 矩阵的
  * daemon 侧端到端部分；SDK 内部矩阵在 bridges/python/tests）。
  *
- * 需要 bridges/python/.venv（langgraph 已装）；缺则整个文件 skip。
+ * 需要能 import LangGraph 框架的 Python 解释器（fixture 的 slock_runtime
+ * 经 spawn 期 PYTHONPATH 注入，故选择探针只验证框架依赖）。候选顺序与
+ * sarp-python-worker 相同：SLOCK_TEST_PYTHON → 仓库本地 venv（win32
+ * `.venv/Scripts/python.exe`，其他平台 `.venv/bin/python`）→ `python3`
+ * → `python`；存在但缺框架依赖的候选被跳过，全部不可用才 skip 整个文件。
  */
 
 const SDK_DIR = join(__dirname, "../../../bridges/python");
-const VENV_PY = join(SDK_DIR, ".venv", "Scripts", "python.exe");
+const VENV_PY = join(
+  SDK_DIR,
+  ".venv",
+  ...(process.platform === "win32" ? ["Scripts", "python.exe"] : ["bin", "python"]),
+);
 const FIXTURE = join(__dirname, "fixtures", "sarp_langgraph_worker.py");
-const maybe = existsSync(VENV_PY) ? describe : describe.skip;
+
+const FRAMEWORK_PROBE = ["-c", "import langchain_core, langgraph; from langgraph.checkpoint.sqlite import SqliteSaver"];
+
+const findPython = (): string | null => {
+  const candidates = [process.env.SLOCK_TEST_PYTHON, VENV_PY, "python3", "python"].filter(Boolean) as string[];
+  for (const c of candidates) {
+    const r = spawnSync(c, FRAMEWORK_PROBE, { stdio: "pipe" });
+    if (r.status === 0) return c;
+  }
+  return null;
+};
+
+const PYTHON = findPython();
+const maybe = PYTHON ? describe : describe.skip;
 
 const openWorker = (
   workspace: string,
@@ -37,7 +59,7 @@ const openWorker = (
     entrypoint: "lg-e2e",
     workspace,
     spawnSpec: {
-      command: VENV_PY,
+      command: PYTHON!,
       args: [FIXTURE],
       cwd: workspace,
       env: { PYTHONPATH: SDK_DIR, PYTHONUNBUFFERED: "1", ...fxEnv },
