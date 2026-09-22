@@ -501,3 +501,41 @@ describe("slock-mcp-server 剩余 12 工具（A6 回归网）", () => {
     expect(lastRequest?.path).toBe("/internal/agent/agent-under-test/reminders/r-42");
   });
 });
+
+// 批次 C（P1.6）：SLOCK_MCP_TOOL_ALLOWLIST——平台 MCP server 侧收敛兜底。
+// SDK tools/list 过滤可被 worker 绕过；这里才是真实暴露面（名单外工具不注册）。
+describe("SLOCK_MCP_TOOL_ALLOWLIST（P1.6 暴露面收敛）", () => {
+  it(
+    "名单外工具不注册——tools/list 只回名单内，名单外 call 不命中",
+    async () => {
+      const client = await spawnMcpClient({ SLOCK_MCP_TOOL_ALLOWLIST: "send_message,read_history" });
+      try {
+        const res = await client.listTools();
+        const names = res.result.tools.map((t: any) => t.name).sort();
+        expect(names).toEqual(["read_history", "send_message"]);
+        // 名单外工具未被注册——MCP 层 unknown tool（不打 HTTP）
+        const before = requestLog.length;
+        const bad = await client.callTool("dispatch_task", { channel: "#g", toAgent: "w", text: "t" });
+        expect(bad.result?.isError === true || bad.error != null).toBe(true);
+        expect(requestLog.length).toBe(before);
+      } finally {
+        client.close();
+      }
+    },
+    SPAWN_TEST_TIMEOUT,
+  );
+
+  it(
+    "env 缺省/空串 → 全量工具（旧行为不变，不收敛）",
+    async () => {
+      const client = await spawnMcpClient({ SLOCK_MCP_TOOL_ALLOWLIST: "  , ," });
+      try {
+        const res = await client.listTools();
+        expect(res.result.tools).toHaveLength(17);
+      } finally {
+        client.close();
+      }
+    },
+    SPAWN_TEST_TIMEOUT,
+  );
+});

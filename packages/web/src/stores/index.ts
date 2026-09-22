@@ -10,6 +10,7 @@ export {
   runtimeCatalog,
   useComputerStore,
 } from "./computerStore";
+export { useInterruptStore } from "./interruptStore";
 export { threadBufferKey, useMessageStore } from "./messageStore";
 export { useNotificationStore } from "./notificationStore";
 export { hasOwnServer, type ServerItem, useServerStore } from "./serverStore";

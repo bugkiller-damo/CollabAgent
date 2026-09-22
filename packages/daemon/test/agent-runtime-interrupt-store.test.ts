@@ -118,6 +118,72 @@ describe("createRuntimeInterruptStore", () => {
     expect(store.clearAgent("a1")).toBe(0);
   });
 
+  it("批次 C（P1.4）：onChange 在每次集合变更后收到最新全量；no-op 不触发", () => {
+    const path = tmpFile();
+    const calls: PendingRuntimeInterrupt[][] = [];
+    const store = createRuntimeInterruptStore(path, {
+      now: () => 2000,
+      ttlMs: 100,
+      onChange: (records) => calls.push(records.map((r) => ({ ...r }))),
+    });
+
+    store.put(rec());
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toHaveLength(1);
+    expect(calls[0]![0]!.interruptId).toBe("i9");
+
+    // delete 不存在的键 / 兼容 take（不清除）= 集合未变，不通知
+    expect(store.delete("a1", "missing-conv")).toBe(false);
+    store.take("a1", "slock:v1:a1:thread:t1", "langgraph", "ep-1");
+    expect(calls).toHaveLength(1);
+
+    // take 惰性清过期 → 通知空表（另一实例读同一文件，now 已越过 expiresAt）
+    const calls2: PendingRuntimeInterrupt[][] = [];
+    const store2 = createRuntimeInterruptStore(path, {
+      now: () => 999_999,
+      ttlMs: 100,
+      onChange: (r) => calls2.push([...r]),
+    });
+    expect(store2.take("a1", "slock:v1:a1:thread:t1", "langgraph", "ep-1")).toBeNull();
+    expect(calls2).toHaveLength(1);
+    expect(calls2[0]).toHaveLength(0);
+  });
+
+  it("批次 C（P1.4）：agentName/channel/threadId 展示字段随记录往返；旧记录缺省兼容", () => {
+    const path = tmpFile();
+    const store = createRuntimeInterruptStore(path);
+    store.put(rec({ agentName: "researcher", channel: "general", threadId: "th-1" }));
+    const got = store.list()[0]!;
+    expect(got.agentName).toBe("researcher");
+    expect(got.channel).toBe("general");
+    expect(got.threadId).toBe("th-1");
+
+    // 旧磁盘记录（无展示字段）load 不炸、take 照常
+    writeFileSync(
+      path,
+      JSON.stringify({
+        records: [
+          {
+            agentId: "a1",
+            runtime: "langgraph",
+            entrypoint: "ep-1",
+            conversationId: "c-old",
+            interruptId: "i0",
+            resumeToken: "r0",
+            prompt: "?",
+            createdAt: 1,
+            expiresAt: Date.now() + 60_000,
+          },
+        ],
+      }),
+      "utf-8",
+    );
+    const store2 = createRuntimeInterruptStore(path);
+    const old = store2.take("a1", "c-old", "langgraph", "ep-1");
+    expect(old?.resumeToken).toBe("r0");
+    expect(old?.agentName).toBeUndefined();
+  });
+
   it("损坏文件 → 空集起步不炸", () => {
     const path = tmpFile();
     writeFileSync(path, "{oops", "utf-8");

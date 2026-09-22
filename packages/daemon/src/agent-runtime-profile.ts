@@ -21,6 +21,8 @@ export interface ResolvedAgentRuntimeProfile {
   runtime: string;
   model?: string;
   entrypoint?: string;
+  /** 批次 C（P1.6）：manifest 条目的 MCP 工具暴露面收敛（空/undefined = 不收敛） */
+  mcpToolAllowlist?: string[];
   identity: string;
   manifestRevision?: string;
   error?: RuntimeProfileIssue;
@@ -179,6 +181,11 @@ export function resolveAgentRuntimeProfile(
     runtime,
     model,
     entrypoint,
+    // P1.6：allowlist 进 identity——名单变化即换会话身份（旧会话带着旧
+    // initialize 载荷复用会让名单编辑不生效），manifestEntry.revision 已含
+    // 该字段（revision=全字段 hash），显式列出只是可读性。
+    // `?.`：manifest 校验路径必给 []，但测试/反序列化的裸 entry 可能缺省
+    ...(manifestEntry.mcpToolAllowlist?.length ? { mcpToolAllowlist: manifestEntry.mcpToolAllowlist } : {}),
     identity: identity(runtime, model, entrypoint, manifestEntry.revision),
     manifestRevision: manifestEntry.revision,
   };

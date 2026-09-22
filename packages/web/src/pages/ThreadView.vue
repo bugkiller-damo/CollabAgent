@@ -3,6 +3,7 @@ import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { apiClient } from "../api";
 import AgentProgressBar from "../components/agent/AgentProgressBar.vue";
+import PendingInterruptBanner from "../components/agent/PendingInterruptBanner.vue";
 import AttachmentView from "../components/chat/AttachmentView.vue";
 import MarkdownContent from "../components/chat/MarkdownContent.vue";
 import MessageComposer from "../components/chat/MessageComposer.vue";
@@ -14,7 +15,14 @@ import Avatar from "../components/ui/Avatar.vue";
 import type { MentionScope } from "../composables";
 import { formatTime } from "../lib/formatTime";
 import { channelPath, scopedChannelKey } from "../lib/nav";
-import { threadBufferKey, useChannelStore, useMessageStore, useServerStore, useUiStore } from "../stores";
+import {
+  threadBufferKey,
+  useChannelStore,
+  useInterruptStore,
+  useMessageStore,
+  useServerStore,
+  useUiStore,
+} from "../stores";
 
 interface ThreadMsg {
   id: string;
@@ -37,6 +45,7 @@ const messageStore = useMessageStore();
 const channelStore = useChannelStore();
 const uiStore = useUiStore();
 const serverStore = useServerStore();
+const interruptStore = useInterruptStore();
 
 const channelName = computed(() => route.params.channelName as string);
 const threadId = computed(() => route.params.threadId as string);
@@ -54,6 +63,11 @@ const threadKey = computed(() => {
 
 const channelHomePath = computed(() =>
   routeServerId.value ? channelPath(routeServerId.value, channelName.value) : `/channels/${channelName.value}`,
+);
+
+// 批次 C（P1.4）：本线程的 pending interrupt——批准=在本线程回复，驳回走 dismiss
+const pendingInterrupts = computed(() =>
+  channelName.value && threadId.value ? interruptStore.forChannel(channelName.value, threadId.value) : [],
 );
 
 // React 版 useMessageStore((s) => (threadKey ? s.messagesByTarget[threadKey] : undefined)) || []
@@ -203,6 +217,7 @@ function openSender(msg: { senderHandle?: string }) {
     />
 
     <AgentProgressBar :channel-name="channelName" />
+    <PendingInterruptBanner :items="pendingInterrupts" />
 
     <div class="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
       <!-- P1-16：加载中显示骨架（首载 parent 为 null 期间），不再整块空白 -->

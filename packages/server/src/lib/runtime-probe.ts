@@ -1,4 +1,9 @@
-import type { RuntimeEntrypointProbe, RuntimeProbe, RuntimeProbeStatus } from "@collabagent/shared";
+import type {
+  PendingInterruptSummary,
+  RuntimeEntrypointProbe,
+  RuntimeProbe,
+  RuntimeProbeStatus,
+} from "@collabagent/shared";
 
 const STATUSES = new Set<RuntimeProbeStatus>(["installed", "not_installed", "installed_unsupported"]);
 
@@ -74,7 +79,63 @@ export function normalizeEntrypoints(raw: unknown): RuntimeEntrypointProbe[] {
     if (errorCode) ep.errorCode = errorCode;
     const errorMessage = optStr(rec.errorMessage);
     if (errorMessage) ep.errorMessage = errorMessage;
+    // 批次 C（P1.5）：运行诊断摘要——白名单字段（lastError{code,message,at}/
+    // lastOkAt），其余一律剥离（防御：上游若误带命令/env 在此被剥掉）。
+    if (typeof rec.diagnostics === "object" && rec.diagnostics !== null && !Array.isArray(rec.diagnostics)) {
+      const d = rec.diagnostics as Record<string, unknown>;
+      const diag: NonNullable<RuntimeEntrypointProbe["diagnostics"]> = {};
+      const lastError =
+        typeof d.lastError === "object" && d.lastError !== null ? (d.lastError as Record<string, unknown>) : null;
+      if (lastError) {
+        const message = optStr(lastError.message);
+        const at = optStr(lastError.at);
+        if (message && at) {
+          diag.lastError = {
+            message: message.slice(0, 600),
+            at,
+            ...(optStr(lastError.code) ? { code: optStr(lastError.code) } : {}),
+          };
+        }
+      }
+      const lastOkAt = optStr(d.lastOkAt);
+      if (lastOkAt) diag.lastOkAt = lastOkAt;
+      if (diag.lastError || diag.lastOkAt) ep.diagnostics = diag;
+    }
     out.push(ep);
+  }
+  return out;
+}
+
+const optNum = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+
+/**
+ * 批次 C（P1.4）：interrupts:state 的 pending 摘要归一化。daemon 契约上
+ * 不含 resumeToken，这里仍按白名单字段重建——纵深防御：任何协议外字段
+ * （含万一误发的 resumeToken）都被剥掉，browser/DB 只见安全摘要。
+ */
+export function normalizeInterrupts(raw: unknown): PendingInterruptSummary[] {
+  if (!Array.isArray(raw)) return [];
+  const out: PendingInterruptSummary[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const rec = item as Record<string, unknown>;
+    const agentId = optStr(rec.agentId);
+    const conversationId = optStr(rec.conversationId);
+    const interruptId = optStr(rec.interruptId);
+    const prompt = optStr(rec.prompt) ?? "";
+    const createdAt = optNum(rec.createdAt);
+    const expiresAt = optNum(rec.expiresAt);
+    if (!agentId || !conversationId || !interruptId || createdAt === undefined || expiresAt === undefined) continue;
+    const summary: PendingInterruptSummary = { agentId, conversationId, interruptId, prompt, createdAt, expiresAt };
+    const agentName = optStr(rec.agentName);
+    if (agentName) summary.agentName = agentName;
+    const runtime = optStr(rec.runtime);
+    if (runtime) summary.runtime = runtime;
+    const channel = optStr(rec.channel);
+    if (channel) summary.channel = channel;
+    const threadId = optStr(rec.threadId);
+    if (threadId) summary.threadId = threadId;
+    out.push(summary);
   }
   return out;
 }

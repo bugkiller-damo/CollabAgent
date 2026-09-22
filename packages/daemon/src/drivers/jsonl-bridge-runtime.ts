@@ -20,6 +20,7 @@ import { BRIDGE_RUNTIME_IDS } from "@collabagent/shared";
 import type { AgentRuntimeDriver, AgentRuntimeOpenOptions, AgentRuntimeSession } from "../agent-runtime-driver.js";
 import type { RuntimeManifestEntry, RuntimeManifestSnapshot } from "../agent-runtime-manifest.js";
 import { DispatchError } from "../errors.js";
+import { createRuntimeSecretStore } from "../runtime-secret-store.js";
 import { type JsonlWorkerSessionOptions, PersistentJsonlWorkerSession } from "./persistent-jsonl-worker.js";
 import { resolveCommandOnPath } from "./probe.js";
 
@@ -31,6 +32,8 @@ export interface JsonlBridgeDriverDeps {
   spawnSession?: (opts: JsonlWorkerSessionOptions) => AgentRuntimeSession;
   resolveCommand?: (command: string) => string | null;
   cwdExists?: (cwd: string) => boolean;
+  /** P1.1：secretRefs 的取值源（本机 secret store）；缺省按默认路径建 store */
+  resolveSecretRef?: (entrypoint: string, name: string) => string | undefined;
 }
 
 const defaultResolveCommand = (command: string): string | null => {
@@ -53,6 +56,7 @@ const resolveSpawnSpec = (
   sourceEnv: NodeJS.ProcessEnv,
   resolveCommand: (c: string) => string | null,
   cwdExists: (c: string) => boolean,
+  resolveSecretRef: (entrypoint: string, name: string) => string | undefined,
 ): JsonlWorkerSessionOptions["spawnSpec"] => {
   if (!cwdExists(entry.cwd)) {
     throw new DispatchError("cwd-not-found", `entrypoint "${entry.id}": working directory unavailable`);
@@ -72,6 +76,18 @@ const resolveSpawnSpec = (
     }
     secrets[name] = v;
   }
+  // P1.1：secretRefs 从本机 store 取值——同 secretEnv 的 fail-fast 规则，
+  // 缺失即永久错误（补值后下条消息自然成功，重试无意义）。
+  for (const name of entry.secretRefs) {
+    const v = resolveSecretRef(entry.id, name);
+    if (v === undefined || v === "") {
+      throw new DispatchError(
+        "secret-ref-missing",
+        `entrypoint "${entry.id}": required secret ref "${name}" is not in the local secret store`,
+      );
+    }
+    secrets[name] = v;
+  }
   // manifest env → secretEnv → 平台 SLOCK_* 变量（最后胜出：平台不被配置改投）
   return { command, args: [...entry.args], cwd: entry.cwd, env: { ...entry.env, ...secrets, ...platformEnv } };
 };
@@ -80,6 +96,12 @@ export const createJsonlBridgeRuntimeDriver = (deps: JsonlBridgeDriverDeps): Age
   const sourceEnv = deps.env ?? process.env;
   const resolveCommand = deps.resolveCommand ?? defaultResolveCommand;
   const cwdExists = deps.cwdExists ?? defaultCwdExists;
+  const resolveSecretRef =
+    deps.resolveSecretRef ??
+    (() => {
+      const store = createRuntimeSecretStore();
+      return (entrypoint: string, name: string) => store.get(entrypoint, name);
+    })();
   const spawnSession =
     deps.spawnSession ?? ((opts: JsonlWorkerSessionOptions) => new PersistentJsonlWorkerSession(opts));
 
@@ -102,7 +124,7 @@ export const createJsonlBridgeRuntimeDriver = (deps: JsonlBridgeDriverDeps): Age
       if (!entry) {
         throw new DispatchError("entrypoint-not-found", `entrypoint "${options.entrypoint}" not in local manifest`);
       }
-      const spawnSpec = resolveSpawnSpec(entry, options.env, sourceEnv, resolveCommand, cwdExists);
+      const spawnSpec = resolveSpawnSpec(entry, options.env, sourceEnv, resolveCommand, cwdExists, resolveSecretRef);
 
       return spawnSession({
         agentName: options.agentName,

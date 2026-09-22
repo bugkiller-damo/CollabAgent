@@ -13,14 +13,19 @@ import Input from "../ui/Input.vue";
 const props = withDefaults(
   defineProps<{
     agentId: string;
-    field: "displayName" | "description" | "runtime" | "model" | "avatarUrl";
+    field: "displayName" | "description" | "runtime" | "model" | "avatarUrl" | "entrypoint";
     /** 展示值，也是编辑草稿的种子值 */
     value: string;
     /** 不可编辑（非自己的 agent）时只渲染 slot，不出铅笔 */
     editable?: boolean;
     kind?: "text" | "select";
     options?: { value: string; label: string }[];
-    extraPatch?: Record<string, string>;
+    /**
+     * 随 PATCH 捎带的兄弟字段当前值。批次 C（P1.3）起支持函数形态——
+     * bridge 的 runtime/entrypoint/model 是耦合三元组（换 entrypoint 要按
+     * 新 entrypoint 重算 runtime/model），回调拿到用户选定的 draft。
+     */
+    extraPatch?: Record<string, string> | ((draft: string) => Record<string, string>);
   }>(),
   { editable: true, kind: "text", options: undefined, extraPatch: undefined },
 );
@@ -49,7 +54,8 @@ async function confirm() {
   if (saving.value) return;
   saving.value = true;
   try {
-    await apiPatch(`/api/agents/${props.agentId}`, { ...props.extraPatch, [props.field]: draft.value });
+    const extra = typeof props.extraPatch === "function" ? props.extraPatch(draft.value) : props.extraPatch;
+    await apiPatch(`/api/agents/${props.agentId}`, { ...extra, [props.field]: draft.value });
     editing.value = false;
     emit("saved", draft.value);
   } catch (err: any) {

@@ -94,6 +94,9 @@ export function pickLocalTriageAgent(triageAgents: unknown, hasAgent: (name: str
   return triageAgents.find((n): n is string => typeof n === "string" && hasAgent(n));
 }
 
+/** 无 turnSeed 路径（nudge/直派）的进程内序号——ms 时间戳 + 序号防同毫秒撞号 */
+let nextFallbackTurnId = 1;
+
 export interface IDispatch {
   /**
    * A4：kind 标注消息语义——入桶判别（分诊/巡检/守卫追问不与 @ 消息合并）
@@ -243,6 +246,12 @@ export interface DispatchDeps {
    * 变化自动复位。
    */
   crashGuard?: IWorkerCrashGuard;
+  /**
+   * 批次 C（P1.5）：entrypoint 运行诊断——bridge dispatch 的 worker 失败
+   * 记 lastError（DispatchError 消息已含脱敏 stderr 尾），恢复成功记
+   * lastOkAt 并清错。缺省不打点（测试可不传）。
+   */
+  diagnostics?: import("./runtime-diagnostics.js").IRuntimeDiagnostics;
 }
 
 /**
@@ -415,7 +424,7 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
       runtimeProfile.manifestRevision,
     );
     const turn = {
-      turnId: turnSeed?.turnId ?? `turn-${Date.now().toString(36)}`,
+      turnId: turnSeed?.turnId ?? `turn-${Date.now().toString(36)}-${nextFallbackTurnId++}`,
       conversationId,
       attempt: turnSeed?.attempt ?? 1,
       sender: turnSeed?.sender,
@@ -485,6 +494,7 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
       turn,
       interruptStore: deps.interruptStore,
       crashGuard,
+      diagnostics: deps.diagnostics,
       haltGen,
       serverUrl: options.serverUrl,
       apiKey: options.apiKey,

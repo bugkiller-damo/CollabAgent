@@ -85,7 +85,14 @@ export interface AgentRuntimeOpenOptions {
    */
   agent?: { id: string; name: string; displayName?: string; description?: string };
   platformPrompt?: string;
-  mcp?: { transport: "stdio"; command: string; args: string[]; env?: Record<string, string> };
+  mcp?: {
+    transport: "stdio";
+    command: string;
+    args: string[];
+    env?: Record<string, string>;
+    /** P1.6：manifest 条目的 MCP 工具暴露面收敛（缺省 = 全部工具） */
+    allowTools?: string[];
+  };
 }
 
 export interface AgentRuntimeDriver {

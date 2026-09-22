@@ -124,6 +124,11 @@ export interface AgentDispatchQueue {
 
 let nextId = 1;
 let nextTurnId = 1;
+// §15.4：turnId 是 worker journal 幂等键，必须跨 daemon 重启唯一——纯进程
+// 计数器重启归零会让新回合撞上历史终态（replay 旧 error/success/interrupted，
+// 图根本不跑；实机事故 2026-09-22）。boot nonce 隔离命名空间，队列内 retry
+// 仍复用 item.turnId（同一逻辑回合幂等语义不变）。
+const turnBootNonce = `b${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
 /** A4：(channel, thread, kind) 分桶——合并/去重/重试都在同桶内进行 */
 interface BucketState {
@@ -407,7 +412,7 @@ export const createAgentDispatchQueue = (opts: DispatchQueueOptions): AgentDispa
           enqueuedAt: now(),
           attempts: maxRetries,
           threadId: input.threadId,
-          turnId: `turn-${nextTurnId++}`,
+          turnId: `turn-${turnBootNonce}-${nextTurnId++}`,
           sourceId: input.sourceId,
           sender: input.sender,
         };
@@ -440,7 +445,7 @@ export const createAgentDispatchQueue = (opts: DispatchQueueOptions): AgentDispa
         enqueuedAt: now(),
         attempts: 0,
         threadId: input.threadId,
-        turnId: `turn-${nextTurnId++}`,
+        turnId: `turn-${turnBootNonce}-${nextTurnId++}`,
         sourceId: input.sourceId,
         sender: input.sender,
       };

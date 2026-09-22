@@ -40,6 +40,23 @@ const readySchema = z
   })
   .passthrough();
 
+// 批次 B（P1.2）：manifest CRUD 后 daemon 重跑 probe 的增量上报
+const entrypointsRefreshSchema = z
+  .object({
+    type: z.literal("entrypoints:refresh"),
+    entrypoints: z.array(z.unknown()).optional(), // normalizeEntrypoints 归一化
+  })
+  .passthrough();
+
+// 批次 C（P1.4）：pending interrupt 全量快照——安全摘要（无 resumeToken），
+// normalizeInterrupts 归一化后按连接 scope 中继给属主浏览器。
+const interruptsStateSchema = z
+  .object({
+    type: z.literal("interrupts:state"),
+    interrupts: z.array(z.unknown()),
+  })
+  .passthrough();
+
 const agentStatusSchema = z
   .object({
     type: z.literal("agent:status"),
@@ -126,6 +143,8 @@ const pongSchema = z.object({ type: z.literal("pong") }).passthrough();
 
 export const wsFromDaemonSchema = z.union([
   readySchema,
+  entrypointsRefreshSchema,
+  interruptsStateSchema,
   agentStatusSchema,
   deliveryQueuedSchema,
   deliveryDeadLetterSchema,
@@ -153,6 +172,8 @@ export const wsFromBrowserSchema = z.union([
       rows: z.number().optional(),
     })
     .passthrough(),
+  // 批次 C（P1.4）：审批面驳回——server 校验属主后路由到托管 daemon
+  z.object({ type: z.literal("interrupt:dismiss"), agentId: str, conversationId: str }).passthrough(),
   pongSchema,
 ]);
 

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { normalizeEntrypoints, normalizeRuntimes, runtimeChipLabels } from "../src/lib/runtime-probe.js";
+import {
+  normalizeEntrypoints,
+  normalizeInterrupts,
+  normalizeRuntimes,
+  runtimeChipLabels,
+} from "../src/lib/runtime-probe.js";
 
 describe("normalizeRuntimes", () => {
   it("旧 string[] 当成 installed", () => {
@@ -120,5 +125,106 @@ describe("normalizeEntrypoints", () => {
     const [e] = normalizeEntrypoints([{ id: "bare", status: "installed", models: ["ok", "", 3, "  "] }]);
     expect(e.label).toBe("bare");
     expect(e.models).toEqual(["ok"]);
+  });
+
+  it("批次 C（P1.5）：diagnostics 白名单透传（lastError{code,message,at}/lastOkAt）", () => {
+    const [e] = normalizeEntrypoints([
+      {
+        id: "ep-1",
+        status: "installed_unsupported",
+        diagnostics: {
+          lastError: { code: "runtime-start-timeout", message: "worker t/o", at: "2026-09-22T00:00:00.000Z" },
+          lastOkAt: "2026-09-21T00:00:00.000Z",
+        },
+      },
+    ]);
+    expect(e.diagnostics).toEqual({
+      lastError: { code: "runtime-start-timeout", message: "worker t/o", at: "2026-09-22T00:00:00.000Z" },
+      lastOkAt: "2026-09-21T00:00:00.000Z",
+    });
+  });
+
+  it("批次 C（P1.5）：diagnostics 剥离非白名单字段（防误带 command/env/secret）", () => {
+    const [e] = normalizeEntrypoints([
+      {
+        id: "ep-1",
+        status: "installed_unsupported",
+        diagnostics: {
+          lastError: {
+            code: "x",
+            message: "m",
+            at: "t",
+            command: "python -m worker", // 非白名单字段——剥掉
+            stderr: "raw tail",
+          },
+          lastOkAt: "ok-t",
+          env: { KEY: "v" },
+          cwd: "/abs/path",
+        },
+      },
+    ]);
+    expect(e.diagnostics?.lastError).toEqual({ code: "x", message: "m", at: "t" });
+    expect(JSON.stringify(e.diagnostics)).not.toContain("python -m worker");
+    expect(JSON.stringify(e.diagnostics)).not.toContain("/abs/path");
+    expect(JSON.stringify(e.diagnostics)).not.toContain("raw tail");
+  });
+
+  it("批次 C（P1.5）：diagnostics 畸形（缺 message/at / 非对象）→ 不携带该字段", () => {
+    const [a] = normalizeEntrypoints([
+      { id: "a", status: "installed", diagnostics: { lastError: { message: "m" } } }, // 缺 at
+    ]);
+    expect(a.diagnostics).toBeUndefined();
+    const [b] = normalizeEntrypoints([{ id: "b", status: "installed", diagnostics: "broken" }]);
+    expect(b.diagnostics).toBeUndefined();
+    const [c] = normalizeEntrypoints([
+      { id: "c", status: "installed", diagnostics: { lastError: { message: "x".repeat(1000), at: "t" } } },
+    ]);
+    expect(c.diagnostics?.lastError?.message.length).toBe(600); // 再截断兜底
+  });
+});
+
+// 批次 C（P1.4）：interrupts:state 摘要归一化——resumeToken/本地字段不出 server 边界
+describe("normalizeInterrupts", () => {
+  const base = {
+    agentId: "a1",
+    conversationId: "slock:v1:a1:channel:general",
+    interruptId: "i1",
+    prompt: "批准部署？",
+    createdAt: 1000,
+    expiresAt: 2000,
+  };
+
+  it("合法摘要全字段保留（含 agentName/runtime/channel/threadId）", () => {
+    expect(
+      normalizeInterrupts([
+        { ...base, agentName: "researcher", runtime: "langgraph", channel: "general", threadId: "th-1" },
+      ]),
+    ).toEqual([{ ...base, agentName: "researcher", runtime: "langgraph", channel: "general", threadId: "th-1" }]);
+  });
+
+  it("resumeToken / 协议外字段被剥离（纵深防御：契约不该含，万一误发也剥）", () => {
+    const [i] = normalizeInterrupts([{ ...base, resumeToken: "SECRET-TOKEN", command: "python", cwd: "/x" }]);
+    expect(i).toEqual(base);
+    expect(JSON.stringify(i)).not.toContain("SECRET-TOKEN");
+    expect(JSON.stringify(i)).not.toContain("python");
+  });
+
+  it("必填字段缺失/错型 → 该条丢弃（半帧不进审批面）", () => {
+    expect(
+      normalizeInterrupts([
+        base,
+        { ...base, conversationId: "" }, // 缺 conversationId
+        { ...base, interruptId: 7 }, // 错型
+        { ...base, expiresAt: "soon" }, // 错型
+        "junk",
+        null,
+      ]),
+    ).toEqual([base]);
+  });
+
+  it("非数组 → []", () => {
+    expect(normalizeInterrupts(undefined)).toEqual([]);
+    expect(normalizeInterrupts("x")).toEqual([]);
+    expect(normalizeInterrupts({ interrupts: [] })).toEqual([]);
   });
 });

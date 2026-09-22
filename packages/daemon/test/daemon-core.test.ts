@@ -332,6 +332,83 @@ describe("daemon-core 消息路由", () => {
     });
   });
 
+  describe("interrupt:dismiss（批次 C / P1.4）", () => {
+    it("web 驳回 → 删本地 pending 记录（resumeToken 随记录作废）", async () => {
+      const interruptStore = { delete: vi.fn(() => true) };
+      runtime.__getInterruptStore = vi.fn(() => interruptStore);
+      await call({ type: "interrupt:dismiss", agentId: AGENT_ID, conversationId: "conv-1" });
+      expect(interruptStore.delete).toHaveBeenCalledWith(AGENT_ID, "conv-1");
+    });
+
+    it("缺 agentId/conversationId 的半帧 → 不触 store", async () => {
+      const interruptStore = { delete: vi.fn(() => true) };
+      runtime.__getInterruptStore = vi.fn(() => interruptStore);
+      await call({ type: "interrupt:dismiss", agentId: "", conversationId: "" });
+      expect(interruptStore.delete).not.toHaveBeenCalled();
+    });
+
+    it("sendInterruptsState：安全摘要——无 resumeToken、prompt 脱敏+截断、过期滤掉", () => {
+      (core as unknown as { sendInterruptsState(r?: unknown[]): void }).sendInterruptsState([
+        {
+          agentId: "a1",
+          agentName: "researcher",
+          conversationId: "c1",
+          interruptId: "i1",
+          resumeToken: "SECRET-RESUME-TOKEN", // 契约外字段——绝不外发
+          prompt: `批准？token=sk_agent_${"a".repeat(32)}`,
+          runtime: "langgraph",
+          channel: "general",
+          threadId: "th-1",
+          createdAt: 1,
+          expiresAt: Date.now() + 60_000,
+        },
+        {
+          agentId: "a2",
+          conversationId: "c2",
+          interruptId: "i2",
+          resumeToken: "x",
+          prompt: "expired",
+          runtime: "langgraph",
+          createdAt: 1,
+          expiresAt: 1, // 已过期——快照里滤掉
+        },
+      ]);
+      const msg = sent.find((m) => m.type === "interrupts:state");
+      expect(msg).toBeTruthy();
+      const interrupts = msg!.interrupts as Array<Record<string, unknown>>;
+      expect(interrupts).toHaveLength(1);
+      expect(interrupts[0]).toMatchObject({
+        agentId: "a1",
+        agentName: "researcher",
+        conversationId: "c1",
+        interruptId: "i1",
+        channel: "general",
+        threadId: "th-1",
+        runtime: "langgraph",
+      });
+      expect(JSON.stringify(msg)).not.toContain("SECRET-RESUME-TOKEN");
+      expect(JSON.stringify(msg)).not.toContain("resumeToken");
+      expect(String(interrupts[0]!.prompt)).not.toContain(`sk_agent_${"a".repeat(32)}`);
+      expect(String(interrupts[0]!.prompt)).toContain("sk_agent_***");
+
+      // 截断：>500 字符 prompt 收到 500
+      (core as unknown as { sendInterruptsState(r?: unknown[]): void }).sendInterruptsState([
+        {
+          agentId: "a1",
+          conversationId: "c1",
+          interruptId: "i1",
+          resumeToken: "x",
+          prompt: "长".repeat(800),
+          runtime: "langgraph",
+          createdAt: 1,
+          expiresAt: Date.now() + 60_000,
+        },
+      ]);
+      const last = sent.filter((m) => m.type === "interrupts:state").at(-1)!;
+      expect(String((last.interrupts as Array<Record<string, unknown>>)[0]!.prompt)).toHaveLength(500);
+    });
+  });
+
   describe("workspace:read / ping", () => {
     it("读文件：不存在回 exists:false", async () => {
       await call({ type: "workspace:read", requestId: "r1", agentName: "nonexistent-agent", path: "MEMORY.md" });

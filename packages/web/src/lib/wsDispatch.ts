@@ -3,6 +3,7 @@ import {
   useAgentStore,
   useAuthStore,
   useChannelStore,
+  useInterruptStore,
   useMessageStore,
   useServerStore,
 } from "../stores";
@@ -24,6 +25,7 @@ export function dispatchWsEvent(msg: WsServerEvent): void {
   const notificationStore = useNotificationStore();
   const terminalStore = useTerminalStore();
   const serverStore = useServerStore();
+  const interruptStore = useInterruptStore();
 
   // 统一按 string 取 type：WsServerEvent 是多个来源的并集（shared WsServerMessage +
   // LocalWsEvent + AgentStatusEvent），直接解构会被 TS 收窄成单一 union 而误报无可比性
@@ -84,6 +86,12 @@ export function dispatchWsEvent(msg: WsServerEvent): void {
     const id = a.agentName || a.agentId || "agent";
     const status = type === "agent:status" ? a.status || "idle" : "working";
     agentStore.updateStatus(id, status as AgentActivity, a.detail || "");
+  }
+  // 批次 C（P1.4）：daemon 的 pending interrupt 全量快照（per-machine 置换；
+  // daemon 断连 server 推空表清条目）。审批门组件读 interruptStore 按会话过滤。
+  if (type === "agent:interrupts") {
+    const m = msg as { machineUuid?: string | null; interrupts?: unknown };
+    interruptStore.setMachine(m.machineUuid, Array.isArray(m.interrupts) ? m.interrupts : []);
   }
   // 门控投递反馈：daemon 把发给忙碌 agent 的消息排队了（agent 空闲后按序投递，不丢）
   if (type === "agent:delivery-queued") {

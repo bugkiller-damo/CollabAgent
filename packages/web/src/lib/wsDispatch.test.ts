@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useAgentStore } from "../stores/agentStore";
 import { useAuthStore } from "../stores/authStore";
 import { useChannelStore } from "../stores/channelStore";
+import { useInterruptStore } from "../stores/interruptStore";
 import { useMessageStore } from "../stores/messageStore";
 import { useNotificationStore } from "../stores/notificationStore";
 import { useServerStore } from "../stores/serverStore";
@@ -129,6 +130,32 @@ describe("wsDispatch", () => {
     } as any);
     expect(terminalStore.obsFrames.alice).toHaveLength(1);
     expect(terminalStore.obsFrames.alice[0].payload.text).toBe("hi");
+  });
+
+  it("agent:interrupts → interruptStore 按机置换；空表清条目", () => {
+    const interruptStore = useInterruptStore();
+    const item = {
+      agentId: "a1",
+      agentName: "researcher",
+      conversationId: "slock:v1:a1:channel:general",
+      interruptId: "i1",
+      prompt: "批准？",
+      runtime: "langgraph",
+      channel: "general",
+      createdAt: 1,
+      expiresAt: Date.now() + 60_000,
+    };
+    dispatchWsEvent({ type: "agent:interrupts", machineUuid: "m1", interrupts: [item] } as any);
+    expect(interruptStore.all).toHaveLength(1);
+    expect(interruptStore.forChannel("general")[0].interruptId).toBe("i1");
+
+    // daemon 断连/快照清空 → server 推空表 → 该机条目移除
+    dispatchWsEvent({ type: "agent:interrupts", machineUuid: "m1", interrupts: [] } as any);
+    expect(interruptStore.all).toHaveLength(0);
+
+    // 畸形帧（interrupts 非数组）→ 归一为空表不炸
+    dispatchWsEvent({ type: "agent:interrupts", machineUuid: "m1", interrupts: "broken" } as any);
+    expect(interruptStore.all).toHaveLength(0);
   });
 
   it("agent:progress 写入频道顶栏状态", () => {

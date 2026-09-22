@@ -47,6 +47,14 @@ class SlockMcpClient:
 
     def __init__(self, descriptor: SarpMcpDescriptor):
         self._desc = descriptor
+        # 批次 C（P1.6）：manifest mcpToolAllowlist——SDK 侧暴露面收敛。
+        # None/空 = 不收敛；非空集合时 tools/list 过滤 + tools/call 拒绝名单外
+        # 名字。非权限边界（worker 可绕过 SDK 直连 MCP server）；真正授权在
+        # scoped token / server policy——平台 server 侧也经 SLOCK_MCP_TOOL_ALLOWLIST
+        # 收到同一名单，双轨收敛。
+        self._allow: frozenset[str] | None = (
+            frozenset(descriptor.allow_tools) if descriptor.allow_tools else None
+        )
         self._proc: subprocess.Popen | None = None
         self._next_id = 1
         self._pending: dict[int, threading.Event] = {}
@@ -182,9 +190,12 @@ class SlockMcpClient:
         result = self._request("tools/list", {})
         tools = []
         for t in (result or {}).get("tools", []):
+            name = str(t.get("name", ""))
+            if self._allow is not None and name not in self._allow:
+                continue  # P1.6：名单外工具不对 adapter/模型暴露
             tools.append(
                 McpToolInfo(
-                    name=str(t.get("name", "")),
+                    name=name,
                     description=str(t.get("description", "")),
                     input_schema=t.get("inputSchema") or {"type": "object", "properties": {}},
                 )
@@ -193,6 +204,14 @@ class SlockMcpClient:
 
     def call_tool(self, name: str, arguments: dict, timeout_s: float = 60.0) -> str:
         """tools/call → 拼合 text content 返回。isError 时抛异常由上层映射。"""
+        # P1.6：名单外调用直接拒——list_tools 已过滤，这里兜住「模型幻觉出
+        # 名单外名字 / adapter 绕过 list 直调」的路径（仍是 SDK 内防线）。
+        if self._allow is not None and name not in self._allow:
+            raise SarpError(
+                MCP_START_FAILED,
+                f"mcp tool {name} is not in the entrypoint allowlist",
+                retryable=False,
+            )
         args = dict(arguments)
         with self._lock:
             turn = self._active_turn

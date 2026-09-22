@@ -1,4 +1,5 @@
 import type {
+  PendingInterruptSummary,
   RuntimeEntrypointProbe,
   RuntimeProbe,
   WsChannelBroadcast,
@@ -18,7 +19,7 @@ import { inc } from "../lib/metrics.js";
 // P1.27：daemon 连接/断开镜像进跨实例在线注册表（Redis SET，其他实例的读路径可见）
 import { isComputerOnline, isMachineOnline, isUserScopeOnline, presenceAdd, presenceRemove } from "../lib/presence.js";
 import type { PubSub } from "../lib/pubsub.js";
-import { normalizeEntrypoints, normalizeRuntimes } from "../lib/runtime-probe.js";
+import { normalizeEntrypoints, normalizeInterrupts, normalizeRuntimes } from "../lib/runtime-probe.js";
 // P1.28：入站帧运行时校验（此前 JSON.parse as X 零校验）——畸形/未知 type 帧整帧丢弃
 import { parseWsInbound, wsFromBrowserSchema, wsFromDaemonSchema } from "./validate.js";
 
@@ -44,6 +45,8 @@ export interface DaemonMeta {
   runtimes: RuntimeProbe[];
   /** Phase 4：bridge runtime entrypoint 探测摘要（daemon 未开 flag 时为 undefined） */
   entrypoints?: RuntimeEntrypointProbe[];
+  /** 批次 C（P1.4）：该机器最近一次 interrupts:state 的安全摘要（断开时清空并通知浏览器） */
+  interrupts?: PendingInterruptSummary[];
   connectedAt: number;
   os?: string;
   arch?: string;
@@ -409,6 +412,33 @@ function registerConnection(connection: WebSocket, ident: ResolvedIdentity, isDa
             void finalizeDaemonReady(connection, meta, msg, runtimes);
             break;
           }
+          case "entrypoints:refresh": {
+            // 批次 B（P1.2）：manifest CRUD 后 daemon 重跑 probe 的增量上报——
+            // 不随 ready 全量重发，只更新本连接对应 computer 行的 entrypoints
+            // 摘要（内存 meta + DB 行）；pre-ready 连接没有 machineUuid 可定位，
+            // 刷新帧直接忽略（ready 时全量会带上最新值）。
+            const key = daemonKeyOf.get(connection);
+            const meta = key ? daemonMeta.get(key) : undefined;
+            if (!meta?.machineUuid) break;
+            meta.entrypoints = normalizeEntrypoints(msg.entrypoints);
+            persistComputerEntrypoints(meta.userId, meta.serverId, meta.machineUuid, meta.entrypoints);
+            break;
+          }
+          case "interrupts:state": {
+            // 批次 C（P1.4）：pending interrupt 全量快照——normalize 白名单
+            // 重建（resumeToken 等协议外字段在此被剥掉）→ 存 meta + 中继给
+            // 属主的全部浏览器连接（多标签页同步）。pre-ready 帧忽略。
+            const key = daemonKeyOf.get(connection);
+            const meta = key ? daemonMeta.get(key) : undefined;
+            if (!meta) break;
+            meta.interrupts = normalizeInterrupts(msg.interrupts);
+            sendToUser(userId, {
+              type: "agent:interrupts",
+              machineUuid: meta.machineUuid,
+              interrupts: meta.interrupts,
+            });
+            break;
+          }
           case "agent:status":
             // 转发给该用户的浏览器（Agent 状态栏实时显示，G7 last_pty_line）
             sendToUser(userId, msg);
@@ -530,6 +560,11 @@ function registerConnection(connection: WebSocket, ident: ResolvedIdentity, isDa
       if (stillOwner && meta?.presenceMember) {
         presenceRemove(meta.presenceMember);
       }
+      // 批次 C（P1.4）：daemon 断连后其 pending 不可达——浏览器侧清空该机器
+      // 的审批门（daemon 重连时会以全量快照重建，pending 仍在 daemon 盘上）。
+      if (stillOwner && meta?.machineUuid && meta.interrupts?.length) {
+        sendToUser(userId, { type: "agent:interrupts", machineUuid: meta.machineUuid, interrupts: [] });
+      }
       console.log(`[WS] Daemon disconnected: user=${userId} machine=${meta?.machineUuid ?? "pre-ready"}`);
       refreshUserSubscription(userId);
       void import("../lib/agent-duty.js").then(({ broadcastOwnerPresence }) => broadcastOwnerPresence(wsPg, userId));
@@ -588,6 +623,18 @@ function registerConnection(connection: WebSocket, ident: ResolvedIdentity, isDa
               );
             }
           });
+        } else if (msg.type === "interrupt:dismiss") {
+          // 批次 C（P1.4）：审批面驳回——仅限 agent 属主本人（pending 是
+          // owner 私域数据，频道同事无权驳回别人的审批），路由到托管该机
+          // 器的 daemon 连接删 pending（resumeToken 随记录作废）。
+          void resolveInterruptDismissTarget(userId, msg.agentId).then((t) => {
+            if (t)
+              sendToDaemon(
+                t.target,
+                { type: "interrupt:dismiss", agentId: msg.agentId, conversationId: msg.conversationId },
+                { scope: t.scope },
+              );
+          });
         }
       } catch {
         /* ignore */
@@ -602,6 +649,50 @@ function registerConnection(connection: WebSocket, ident: ResolvedIdentity, isDa
 
     attachHeartbeat(connection);
     connection.send(JSON.stringify({ type: "connected", time: new Date().toISOString() }));
+    // 批次 C（P1.4）：浏览器连接即补推该用户各机器当前的 pending interrupt
+    // 快照——面板打开时不必等下一次变更（daemon 侧重启后断线重推已对齐）。
+    for (const meta of daemonMeta.values()) {
+      if (meta.userId === userId && meta.interrupts?.length) {
+        try {
+          connection.send(
+            JSON.stringify({ type: "agent:interrupts", machineUuid: meta.machineUuid, interrupts: meta.interrupts }),
+          );
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  }
+}
+
+/**
+ * 批次 C（P1.4）：interrupt:dismiss 的路由解析——agentId → 属主校验
+ * （agents.user_id === 浏览器 userId，驳回是 owner 私域操作）→ 托管机器
+ * machineKey + server scope。查不到/非属主 → null（静默丢，与其他
+ * browser→daemon 控制帧同纪律）。
+ */
+async function resolveInterruptDismissTarget(
+  userId: string,
+  agentId: string,
+): Promise<{ target: string; scope: string | null } | null> {
+  if (!wsPg) return null;
+  try {
+    const r = await wsPg.query<{ user_id: string; server_id: string | null; machine_uuid: string | null }>(
+      `SELECT a.user_id, a.server_id, c.machine_uuid
+         FROM agents a
+         LEFT JOIN computers c ON c.id = a.computer_id
+        WHERE a.id = $1 AND a.user_id::text = $2
+        LIMIT 1`,
+      [agentId, userId],
+    );
+    const row = r.rows[0];
+    if (!row) return null;
+    const uid = String(row.user_id);
+    const scope = row.server_id ? String(row.server_id) : null;
+    const target = row.machine_uuid ? `${uid}:${row.machine_uuid}` : (machineKeyForScope(uid, scope) ?? uid);
+    return { target, scope };
+  } catch {
+    return null;
   }
 }
 
@@ -765,6 +856,27 @@ function persistComputerReady(
       console.warn("[WS] persist computer ready failed:", (err as Error)?.message ?? err);
     }
   })();
+}
+
+/**
+ * 批次 B（P1.2）：entrypoints:refresh 的落盘面——只更新既有 computer 行的
+ * entrypoints 列（不 upsert：行由 ready upsert 负责，refresh 打到不存在的
+ * (user,server,machine) 组合时不建行，避免刷新帧伪造注册）。
+ */
+function persistComputerEntrypoints(
+  userId: string,
+  serverId: string | null,
+  machineUuid: string,
+  entrypoints: RuntimeEntrypointProbe[],
+): void {
+  if (!wsPg || !serverId) return;
+  void wsPg
+    .query(
+      `UPDATE computers SET entrypoints = $4::jsonb
+       WHERE user_id::text = $1 AND server_id::text = $2 AND machine_uuid = $3`,
+      [userId, serverId, machineUuid, JSON.stringify(entrypoints)],
+    )
+    .catch((err) => console.warn("[WS] persist entrypoints refresh failed:", (err as Error)?.message ?? err));
 }
 
 /**

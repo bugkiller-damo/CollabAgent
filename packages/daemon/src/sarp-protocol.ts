@@ -29,6 +29,12 @@ export interface SarpMcpDescriptor {
   command: string;
   args: string[];
   env?: Record<string, string>;
+  /**
+   * 批次 C（P1.6）：工具暴露面收敛——SDK 据此过滤 tools/list 并拒绝名单外
+   * tools/call。非权限边界（worker 可绕过 SDK）；真正授权在 scoped token /
+   * server policy。缺省 = 不收敛。
+   */
+  allowTools?: string[];
 }
 
 export interface SarpInitializeFields {

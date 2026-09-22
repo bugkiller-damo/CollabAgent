@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://slock.dev/schemas/runtime-manifest.schema.json",
+  "title": "Slock Runtime Manifest",
+  "description": "Local runtime manifest for Slock daemon bridge runtimes (SARP/1). Default location: <slockDir()>/runtimes.json (override via SLOCK_RUNTIME_MANIFEST). This schema is an authoring aid — packages/daemon/src/agent-runtime-manifest.ts (validateEntry) is the authoritative validator and is fail-closed. NOTE: secret VALUES never appear in this file; secretEnv names resolve from the daemon process environment and secretRefs names resolve from the local daemon-side secret store.",
+  "type": "object",
+  "required": ["version", "entries"],
+  "properties": {
+    "version": { "const": 1 },
+    "entries": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/entry" }
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "envName": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+      "description": "Environment variable NAME only — never a value. Names beginning with SLOCK_ (case-insensitive), dangerous injection keys (NODE_OPTIONS, PYTHONPATH, LD_PRELOAD, DYLD_INSERT_LIBRARIES) are rejected by the validator."
+    },
+    "entry": {
+      "type": "object",
+      "required": ["id", "runtime", "label", "command", "cwd", "model"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+          "description": "Stable entrypoint identifier; unique within the manifest."
+        },
+        "runtime": {
+          "enum": ["langchain", "langgraph"],
+          "description": "Bridge runtime family. Claude is the built-in default and is NOT declared here."
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "Human display label (safe to surface in server metadata)."
+        },
+        "command": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^;&|`<>\\r\\n]+$",
+          "description": "Executable name (resolved on PATH) or absolute path. Shell operators are rejected — the daemon never invokes a shell."
+        },
+        "args": {
+          "type": "array",
+          "maxItems": 128,
+          "items": { "type": "string", "maxLength": 4096, "pattern": "^[^\\r\\n]*$" },
+          "default": []
+        },
+        "cwd": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Absolute working directory for the worker process."
+        },
+        "env": {
+          "type": "object",
+          "propertyNames": { "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+          "additionalProperties": { "type": "string", "maxLength": 16384 },
+          "description": "Plain (non-secret) env for the worker. Rejected names: SLOCK_* (any case), dangerous injection keys, and credential-like names (…TOKEN/SECRET/PASSWORD/PASS/API_KEY/PRIVATE_KEY/ACCESS_KEY/CLIENT_SECRET…). Never put secret values here."
+        },
+        "secretEnv": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/envName" },
+          "description": "Env NAMES resolved from the daemon process environment at spawn/probe time. Values are never stored in the manifest."
+        },
+        "secretRefs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/envName" },
+          "description": "Env NAMES resolved from the local daemon-side secret store (<slockDir()>/runtime-secrets.json, mode 0600) at spawn/probe time. Manage via `slock runtime secret set|unset|list`. Must not overlap env or secretEnv names (case-insensitive)."
+        },
+        "mcpToolAllowlist": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_-]{0,63}$" },
+          "description": "Optional allowlist of platform MCP tool names (e.g. send_message, read_history) exposed to this entrypoint's worker. Sent to the SDK via initialize.platform.mcp.allowTools AND enforced in the platform MCP server (SLOCK_MCP_TOOL_ALLOWLIST). Omit/empty = all tools. NOT a permission boundary — real authorization stays with scoped tokens / server policy."
+        },
+        "model": {
+          "type": "object",
+          "required": ["mode", "default"],
+          "properties": {
+            "mode": {
+              "enum": ["fixed", "select"],
+              "description": "fixed: only `default` is used. select: callers may choose from `allowed`."
+            },
+            "default": { "type": "string", "minLength": 1 },
+            "allowed": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 },
+              "description": "Required (non-empty, must contain `default`) when mode=select; ignored for fixed."
+            }
+          },
+          "additionalProperties": true
+        },
+        "requireDurableThreads": {
+          "type": "boolean",
+          "default": false,
+          "description": "LangGraph: require checkpoint-backed durable threads (resume after restart)."
+        },
+        "startupTimeoutMs": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 120000,
+          "default": 15000,
+          "description": "initialize → runtime.ready deadline."
+        },
+        "silenceTimeoutMs": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 3600000,
+          "default": 300000,
+          "description": "Max silence during a turn before the worker is declared stuck."
+        },
+        "shutdownTimeoutMs": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 60000,
+          "default": 10000,
+          "description": "shutdown → runtime.stopped deadline."
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

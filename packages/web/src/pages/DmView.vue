@@ -4,6 +4,7 @@ import { computed, nextTick, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { apiGet } from "../api";
 import AgentProgressBar from "../components/agent/AgentProgressBar.vue";
+import PendingInterruptBanner from "../components/agent/PendingInterruptBanner.vue";
 import MessageComposer, { type ComposerAttachment } from "../components/chat/MessageComposer.vue";
 import MessageRow from "../components/chat/MessageRow.vue";
 import PendingRow from "../components/chat/PendingRow.vue";
@@ -11,7 +12,7 @@ import EmptyState from "../components/EmptyState.vue";
 import PageHeader from "../components/layout/PageHeader.vue";
 import MessageSkeleton from "../components/skeleton/MessageSkeleton.vue";
 import Avatar from "../components/ui/Avatar.vue";
-import { useChannelStore, useMessageStore, useUiStore } from "../stores";
+import { useChannelStore, useInterruptStore, useMessageStore, useUiStore } from "../stores";
 
 const EMPTY: Message[] = [];
 
@@ -27,6 +28,7 @@ const route = useRoute();
 const messageStore = useMessageStore();
 const channelStore = useChannelStore();
 const uiStore = useUiStore();
+const interruptStore = useInterruptStore();
 
 const peerName = computed(() => route.params.peerName as string);
 const peer = ref<Peer | null>(null);
@@ -53,6 +55,8 @@ const online = computed(() => uiStore.online);
 const title = computed(() => peer.value?.displayName || peer.value?.handle || peerName.value || "私信");
 const subtitle = computed(() => `@${peer.value?.handle || peerName.value || ""}`);
 const isAgent = computed(() => peer.value?.type === "agent");
+// 批次 C（P1.4）：DM 对端 agent 的 pending interrupt（channel = dm:@<senderHandle>）
+const pendingInterrupts = computed(() => (isAgent.value ? interruptStore.forDm(peer.value?.id) : []));
 // 页头头像：成员缓存行存在即以它为准（profile:update 就地回写，清空也同步为字母兜底），
 // 未缓存时用 resolve 快照兜底
 const peerAvatarUrl = computed(() => {
@@ -179,6 +183,7 @@ function setAttachments(next: ComposerAttachment[]) {
     </PageHeader>
 
     <AgentProgressBar :channel-name="'dm:@' + (peer?.handle || peerName)" :agent-name="isAgent ? peer?.handle || peerName : undefined" />
+    <PendingInterruptBanner :items="pendingInterrupts" />
 
     <div v-if="error" class="flex flex-1 items-center justify-center p-4">
       <EmptyState icon="alert" title="无法打开私信" :description="error" />

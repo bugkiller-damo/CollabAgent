@@ -103,6 +103,12 @@ export interface DispatchHeadlessTurnOpts {
    * 会话被丢/回收/停止时由调用方清对应条目。
    */
   credentialIssuedAt: Map<string, number>;
+  /**
+   * 批次 C（P1.5）：entrypoint 运行诊断——bridge dispatch 失败记 lastError
+   * （DispatchError 消息已含脱敏 stderr 尾），回合达终态记 lastOkAt。
+   * 仅 bridge runtime 打点（claude 无 entrypoint 概念）。
+   */
+  diagnostics?: import("./runtime-diagnostics.js").IRuntimeDiagnostics;
 }
 
 /**
@@ -308,6 +314,10 @@ export const dispatchHeadlessTurn = async (opts: DispatchHeadlessTurnOpts): Prom
           try {
             const mcpBundlePath = await bundleSlockMcpServer();
             if (mcpBundlePath) {
+              // P1.6：manifest mcpToolAllowlist 双轨下发——allowTools 给 worker
+              // SDK 过滤 tools/list；env 给平台 MCP server 侧不注册名单外工具
+              // （worker 可绕过 SDK，server 侧注册面才是收敛的兜底）。
+              const allowTools = runtimeProfile.mcpToolAllowlist;
               mcpDescriptor = {
                 transport: "stdio",
                 command: "node",
@@ -316,7 +326,9 @@ export const dispatchHeadlessTurn = async (opts: DispatchHeadlessTurnOpts): Prom
                   SLOCK_AGENT_ID: agentId,
                   SLOCK_AGENT_TOKEN_FILE: tokenFile,
                   SLOCK_SERVER_URL: opts.serverUrl,
+                  ...(allowTools?.length ? { SLOCK_MCP_TOOL_ALLOWLIST: allowTools.join(",") } : {}),
                 },
+                ...(allowTools?.length ? { allowTools } : {}),
               };
             }
           } catch (err) {
@@ -474,6 +486,8 @@ export const dispatchHeadlessTurn = async (opts: DispatchHeadlessTurnOpts): Prom
         // Phase 5：回合到达终态 = worker 健康——复位熔断计数（含 interrupted/
         // error 终态：worker 活着，失败在 provider/图内部，不是 crash）。
         opts.crashGuard?.recordSuccess(agentName, runtimeProfile.identity);
+        // P1.5：恢复信号——仅当该 entrypoint 挂着 lastError 时才落盘/通知。
+        if (runtimeProfile.entrypoint) opts.diagnostics?.recordOk(runtimeProfile.entrypoint);
         // Phase 2（§11.4）：interrupt 簿记——interrupted 写 pending（resumeToken
         // 一次性，同 conversation 下条消息带它恢复）；resume 回合到达任何非
         // interrupted 终态都清 pending：token 已被 worker 消费（used=1），
@@ -484,6 +498,9 @@ export const dispatchHeadlessTurn = async (opts: DispatchHeadlessTurnOpts): Prom
           try {
             opts.interruptStore?.put({
               agentId,
+              agentName,
+              channel: channelName,
+              threadId,
               runtime: runtimeProfile.runtime,
               entrypoint: runtimeProfile.entrypoint,
               revision: runtimeProfile.manifestRevision,
@@ -599,6 +616,18 @@ export const dispatchHeadlessTurn = async (opts: DispatchHeadlessTurnOpts): Prom
     releaseToIdle(agentName);
     idleReclaimer.touch(agentName);
     abortTurnGuards(agentName, turnGuards, progressTurns, opts.onProgress);
+    // P1.5：bridge dispatch 失败按 entrypoint 记诊断（错误消息上游已含
+    // 脱敏 stderr 尾；recordError 内部再过一次 redact 兜底）。
+    if (isBridge && runtimeProfile.entrypoint) {
+      try {
+        opts.diagnostics?.recordError(runtimeProfile.entrypoint, {
+          code: err instanceof DispatchError ? err.code : undefined,
+          message: errMessage(err),
+        });
+      } catch {
+        /* 诊断是旁路 */
+      }
+    }
     console.error("[Daemon] dispatchToAgent failed:", errMessage(err));
     throw err;
   }

@@ -7,7 +7,16 @@ import { useRoute, useRouter } from "vue-router";
 import { apiClient, apiGet, apiPatch, apiPost } from "../../api";
 import { isPresetAvatarUrl } from "../../lib/defaultAvatars";
 import { channelPath, parseChannelRoute } from "../../lib/nav";
-import { runtimeCatalog, useAgentStore, useAuthStore, useChannelStore, useServerStore, useUiStore } from "../../stores";
+import {
+  type ComputerEntrypoint,
+  type ComputerRecord,
+  runtimeCatalog,
+  useAgentStore,
+  useAuthStore,
+  useChannelStore,
+  useServerStore,
+  useUiStore,
+} from "../../stores";
 import { toast } from "../../stores/toastStore";
 import AgentPatrolPanel from "../admin/AgentPatrolPanel.vue";
 import AgentWorkspacePanel from "../agent/AgentWorkspacePanel.vue";
@@ -164,11 +173,90 @@ const runtimeLabel = computed(() => {
   return runtimeCatalog().find((c) => c.id === id)?.label || id;
 });
 
-// Phase 4：bridge runtime 的 entrypoint/model 由创建时 probe 策略锁定，
-// 行内编辑（claude 专用选项集）不适用于它们——只读展示。
+// Phase 4：bridge runtime 的 entrypoint/model 由创建时 probe 策略锁定。
+// 批次 C（P1.3）：放开行内编辑——选项集来自绑定机最近 probe 摘要
+// （/api/computers/:id），runtime/entrypoint/model 作为耦合三元组一起 PATCH，
+// server 侧 Phase 4 live-probe 复核兜底非法组合。
 const isBridgeProfile = computed(() =>
   (BRIDGE_RUNTIME_IDS as readonly string[]).includes(profile.value?.runtime || ""),
 );
+
+/** 与 ComputerView 创建流程同口径：probe 成功态才进选项 */
+const EP_USABLE = new Set(["installed", "installed_unsupported"]);
+const boundEntrypoints = ref<ComputerEntrypoint[]>([]);
+const usableEntrypoints = computed(() => boundEntrypoints.value.filter((e) => EP_USABLE.has(e.status)));
+const bridgeEditable = computed(() => canEditAgent.value && usableEntrypoints.value.length > 0);
+
+/** 可选 runtime = 绑定机上至少一个可用 entrypoint 的 bridge runtime */
+const bridgeRuntimeOptions = computed(() => {
+  const seen = new Set<string>();
+  const out: { value: string; label: string }[] = [];
+  for (const e of usableEntrypoints.value) {
+    if (!e.runtime || seen.has(e.runtime)) continue;
+    seen.add(e.runtime);
+    out.push({ value: e.runtime, label: runtimeCatalog().find((c) => c.id === e.runtime)?.label || e.runtime });
+  }
+  return out;
+});
+
+/** 可选 entrypoint = 绑定机全部可用条目（跨 runtime——选定即同时定 runtime） */
+const bridgeEntrypointOptions = computed(() =>
+  usableEntrypoints.value.map((e) => ({ value: e.id, label: `${e.label}（${e.runtime || "?"}）` })),
+);
+
+const currentEntrypoint = computed(
+  () => usableEntrypoints.value.find((e) => e.id === profile.value?.entrypoint) ?? null,
+);
+
+/** bridge 模型选项 = 当前 entrypoint 的 model 策略（fixed 时只读展示） */
+const bridgeModelOptions = computed(() => {
+  const ep = currentEntrypoint.value;
+  if (!ep) return [];
+  if (ep.modelMode === "fixed") {
+    return [{ value: ep.defaultModel || "", label: `${ep.defaultModel || "default"}（entrypoint 固定）` }];
+  }
+  const list = ep.models?.length ? ep.models : ep.defaultModel ? [ep.defaultModel] : [];
+  return list.map((m) => ({ value: m, label: m }));
+});
+const bridgeModelFixed = computed(() => currentEntrypoint.value?.modelMode === "fixed");
+
+/** 新 entrypoint 下的合法 model：沿用当前 model（在 allowed 内），否则回落默认 */
+function modelForEntrypoint(ep: ComputerEntrypoint | undefined): string {
+  if (!ep) return profile.value?.model || "";
+  const cur = (profile.value?.model || "").trim();
+  if (ep.modelMode !== "fixed" && cur && (ep.models || []).includes(cur)) return cur;
+  return ep.defaultModel || ep.models?.[0] || "";
+}
+
+// PATCH 载荷按「选定的 draft」组装耦合三元组（extraPatch 函数形态）——
+// 单发 {runtime}/{entrypoint} 会被 server 复核成非法组合拦下。
+const bridgeRuntimePatch = (draft: string): Record<string, string> => {
+  const ep = usableEntrypoints.value.find((e) => e.runtime === draft);
+  return { entrypoint: ep?.id ?? "", model: modelForEntrypoint(ep) };
+};
+const bridgeEntrypointPatch = (draft: string): Record<string, string> => {
+  const ep = usableEntrypoints.value.find((e) => e.id === draft);
+  return { runtime: ep?.runtime || profile.value?.runtime || "", model: modelForEntrypoint(ep) };
+};
+
+/** runtime/entrypoint 保存后本地同步三元组（saved 只带本字段值，其余一起写） */
+function applyBridgeSaved(field: "runtime" | "entrypoint", draft: string) {
+  const p = profile.value;
+  if (!p) return;
+  const next = { ...p };
+  if (field === "runtime") {
+    const ep = usableEntrypoints.value.find((e) => e.runtime === draft);
+    next.runtime = draft;
+    next.entrypoint = ep?.id;
+    next.model = modelForEntrypoint(ep);
+  } else {
+    const ep = usableEntrypoints.value.find((e) => e.id === draft);
+    next.entrypoint = draft;
+    next.runtime = ep?.runtime || p.runtime;
+    next.model = modelForEntrypoint(ep);
+  }
+  profile.value = next;
+}
 
 const modelLabel = computed(() => {
   const id = (profile.value?.model || "sonnet").toLowerCase();
@@ -207,6 +295,18 @@ async function load() {
     // 显式租户语境：人类档案的「创建的 Agent」按当前 server 过滤（频道/统计同口径收窄）
     if (serverStore.activeServerId) params.serverId = serverStore.activeServerId;
     profile.value = await apiGet<PersonProfile>(`/api/people/${encodeURIComponent(h)}`, params);
+    // 批次 C（P1.3）：bridge agent 的编辑选项来自绑定机最近 probe 摘要——
+    // member 可读详情（同 ComputerView 深链口径）；拉不到就保持只读展示。
+    boundEntrypoints.value = [];
+    const compId = profile.value?.computer?.id;
+    if (profile.value?.type === "agent" && profile.value.ownedByMe && isBridgeProfile.value && compId) {
+      try {
+        const d = await apiGet<{ computer: ComputerRecord }>(`/api/computers/${compId}`);
+        boundEntrypoints.value = d.computer?.entrypoints ?? [];
+      } catch {
+        boundEntrypoints.value = [];
+      }
+    }
     try {
       stats.value = await apiGet<PersonStats>(`/api/people/${encodeURIComponent(h)}/stats`, {
         days: "7",
@@ -574,11 +674,11 @@ async function expandChannels() {
                 :agent-id="profile.id"
                 field="runtime"
                 :value="profile.runtime || 'claude'"
-                :editable="canEditAgent && !isBridgeProfile"
+                :editable="isBridgeProfile ? bridgeEditable : canEditAgent"
                 kind="select"
-                :options="[{ value: 'claude', label: 'Claude' }]"
-                :extra-patch="{ model: profile.model || 'sonnet' }"
-                @saved="applyField('runtime', $event)"
+                :options="isBridgeProfile ? bridgeRuntimeOptions : [{ value: 'claude', label: 'Claude' }]"
+                :extra-patch="isBridgeProfile ? bridgeRuntimePatch : { model: profile.model || 'sonnet' }"
+                @saved="isBridgeProfile ? applyBridgeSaved('runtime', $event) : applyField('runtime', $event)"
               >
                 <span class="min-w-0">
                   {{ runtimeLabel }}
@@ -587,9 +687,25 @@ async function expandChannels() {
               </InlineAgentField>
             </dd>
           </div>
-          <div v-if="profile.entrypoint" class="grid grid-cols-[6.5rem_minmax(0,1fr)] gap-3 px-3 py-2.5">
+          <div
+            v-if="isBridgeProfile || profile.entrypoint"
+            class="grid grid-cols-[6.5rem_minmax(0,1fr)] gap-3 px-3 py-2.5"
+          >
             <dt class="text-xs text-muted">Entrypoint</dt>
-            <dd class="min-w-0 break-all font-mono text-sm text-gray-800 dark:text-gray-200">{{ profile.entrypoint }}</dd>
+            <dd class="min-w-0 text-sm text-gray-800 dark:text-gray-200">
+              <InlineAgentField
+                :agent-id="profile.id"
+                field="entrypoint"
+                :value="profile.entrypoint || ''"
+                :editable="bridgeEditable"
+                kind="select"
+                :options="bridgeEntrypointOptions"
+                :extra-patch="bridgeEntrypointPatch"
+                @saved="applyBridgeSaved('entrypoint', $event)"
+              >
+                <span class="min-w-0 break-all font-mono">{{ profile.entrypoint || "未设置" }}</span>
+              </InlineAgentField>
+            </dd>
           </div>
           <div class="grid grid-cols-[6.5rem_minmax(0,1fr)] gap-3 px-3 py-2.5">
             <dt class="text-xs text-muted">模型</dt>
@@ -597,20 +713,29 @@ async function expandChannels() {
               <InlineAgentField
                 :agent-id="profile.id"
                 field="model"
-                :value="(profile.model || 'sonnet').toLowerCase()"
-                :editable="canEditAgent && !isBridgeProfile"
+                :value="isBridgeProfile ? profile.model || '' : (profile.model || 'sonnet').toLowerCase()"
+                :editable="isBridgeProfile ? bridgeEditable && !bridgeModelFixed : canEditAgent"
                 kind="select"
-                :options="[
-                  { value: 'sonnet', label: 'Sonnet' },
-                  { value: 'opus', label: 'Opus' },
-                  { value: 'haiku', label: 'Haiku' },
-                ]"
-                :extra-patch="{ runtime: profile.runtime || 'claude' }"
+                :options="
+                  isBridgeProfile
+                    ? bridgeModelOptions
+                    : [
+                        { value: 'sonnet', label: 'Sonnet' },
+                        { value: 'opus', label: 'Opus' },
+                        { value: 'haiku', label: 'Haiku' },
+                      ]
+                "
+                :extra-patch="
+                  isBridgeProfile
+                    ? { runtime: profile.runtime || '', entrypoint: profile.entrypoint || '' }
+                    : { runtime: profile.runtime || 'claude' }
+                "
                 @saved="applyField('model', $event)"
               >
                 <span class="min-w-0">
                   {{ modelLabel }}
                   <span class="ml-1 text-xs text-muted">{{ profile.model || "sonnet" }}</span>
+                  <span v-if="bridgeModelFixed" class="ml-1 text-xs text-muted">entrypoint 固定</span>
                 </span>
               </InlineAgentField>
             </dd>

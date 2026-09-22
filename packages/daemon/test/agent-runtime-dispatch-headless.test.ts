@@ -10,6 +10,7 @@ const {
   writeSystemPromptFileMock,
   writeAgentTokenFileMock,
   createWorkspaceDirMock,
+  bundleSlockMcpServerMock,
 } = vi.hoisted(() => {
   class FakePersistentClaude {
     static instances: FakePersistentClaude[] = [];
@@ -38,17 +39,19 @@ const {
   const writeSystemPromptFileMock = vi.fn(() => "prompt.md");
   const writeAgentTokenFileMock = vi.fn(() => "token-path");
   const createWorkspaceDirMock = vi.fn(() => "D:/tmp-p112");
+  const bundleSlockMcpServerMock = vi.fn(async () => null as string | null);
   return {
     FakePersistentClaude,
     fetchDispatchContextMock,
     writeSystemPromptFileMock,
     writeAgentTokenFileMock,
     createWorkspaceDirMock,
+    bundleSlockMcpServerMock,
   };
 });
 
 vi.mock("../src/drivers/persistent-claude.js", () => ({ PersistentClaude: FakePersistentClaude }));
-vi.mock("../src/mcp-bundle.js", () => ({ bundleSlockMcpServer: async () => null }));
+vi.mock("../src/mcp-bundle.js", () => ({ bundleSlockMcpServer: bundleSlockMcpServerMock }));
 vi.mock("../src/agent-startup.js", async (importActual) => {
   const actual = await importActual<typeof import("../src/agent-startup.js")>();
   return {
@@ -70,11 +73,12 @@ import {
   ensurePersistentSession,
 } from "../src/agent-runtime-dispatch-headless.js";
 import type { AgentRuntimeSession } from "../src/agent-runtime-driver.js";
-import type { RuntimeManifestSnapshot } from "../src/agent-runtime-manifest.js";
+import type { RuntimeManifestEntry, RuntimeManifestSnapshot } from "../src/agent-runtime-manifest.js";
 import { resolveAgentRuntimeProfile } from "../src/agent-runtime-profile.js";
 import { createAgentStateMachine } from "../src/agent-runtime-state.js";
 import type { IAgentSessionStore } from "../src/agent-session-store.js";
 import { createClaudeRuntimeDriver } from "../src/drivers/claude-runtime.js";
+import { DispatchError } from "../src/errors.js";
 import { createIdleReclaimer } from "../src/idle-reclaimer.js";
 
 /** 空 manifest：bridge entrypoint 不存在；claude 解析不消费它。 */
@@ -489,5 +493,136 @@ describe("resume 回合的 pending interrupt 清理（死 token 回归）", () =
     await dispatchHeadlessTurn(opts);
     expect(store.delete).not.toHaveBeenCalled();
     expect(store.put).not.toHaveBeenCalled();
+  });
+});
+
+describe("批次 C：bridge MCP allowlist / 诊断打点 / interrupt 上下文字段", () => {
+  afterEach(() => {
+    resetEnv();
+    bundleSlockMcpServerMock.mockReset().mockResolvedValue(null);
+  });
+
+  const bridgeEntry = (over: Record<string, unknown> = {}): RuntimeManifestEntry => ({
+    id: "ep-1",
+    runtime: "langgraph",
+    label: "Graph",
+    command: "python",
+    args: ["-m", "worker"],
+    cwd: "/srv/work",
+    env: {},
+    secretEnv: [],
+    secretRefs: [],
+    mcpToolAllowlist: [],
+    model: { mode: "fixed", default: "gpt-4o", allowed: [] },
+    requireDurableThreads: false,
+    startupTimeoutMs: 5_000,
+    silenceTimeoutMs: 60_000,
+    shutdownTimeoutMs: 5_000,
+    revision: "rev-1",
+    ...over,
+  });
+
+  const bridgeManifest = (e: RuntimeManifestEntry): RuntimeManifestSnapshot => ({
+    path: "<test>",
+    revision: "mrev",
+    entries: new Map([[e.id, e]]),
+    invalidEntries: new Map(),
+  });
+
+  /** fake bridge driver：捕获 openSession 选项，send 返回脚本化终态 */
+  const fakeBridgeDriver = (sendImpl: () => Promise<unknown>) => {
+    const session = { send: vi.fn(sendImpl), stop: vi.fn() };
+    const openSession = vi.fn(() => session as unknown as AgentRuntimeSession);
+    return {
+      openSession,
+      driver: { runtimeIds: ["langgraph"], openSession } as unknown as DispatchHeadlessTurnOpts["runtimeDriver"],
+    };
+  };
+
+  const bridgeOpts = (entry: RuntimeManifestEntry, over: Partial<DispatchHeadlessTurnOpts> = {}) =>
+    makeOpts({
+      runtimeProfile: resolveAgentRuntimeProfile({ runtime: "langgraph", entrypoint: entry.id }, bridgeManifest(entry)),
+      ...over,
+    });
+
+  const diagnosticsStub = () => ({
+    recordError: vi.fn(),
+    recordOk: vi.fn(),
+    get: vi.fn(),
+    all: vi.fn(() => ({})),
+    subscribe: vi.fn(() => () => {}),
+  });
+
+  it("P1.6：mcpToolAllowlist → mcp.allowTools + SLOCK_MCP_TOOL_ALLOWLIST 双轨下发", async () => {
+    bundleSlockMcpServerMock.mockResolvedValue("mcp-bundle.cjs");
+    const { driver, openSession } = fakeBridgeDriver(async () => ({ status: "success" }));
+    await dispatchHeadlessTurn(
+      bridgeOpts(bridgeEntry({ mcpToolAllowlist: ["send_message", "dispatch_task"] }), { runtimeDriver: driver }),
+    );
+    const mcp = openSession.mock.calls[0]![0].mcp!;
+    expect(mcp.allowTools).toEqual(["send_message", "dispatch_task"]);
+    expect(mcp.env?.SLOCK_MCP_TOOL_ALLOWLIST).toBe("send_message,dispatch_task");
+  });
+
+  it("P1.6：空 allowlist → 不带 allowTools/env 键（不收敛语义）", async () => {
+    bundleSlockMcpServerMock.mockResolvedValue("mcp-bundle.cjs");
+    const { driver, openSession } = fakeBridgeDriver(async () => ({ status: "success" }));
+    await dispatchHeadlessTurn(bridgeOpts(bridgeEntry(), { runtimeDriver: driver }));
+    const mcp = openSession.mock.calls[0]![0].mcp!;
+    expect(mcp.allowTools).toBeUndefined();
+    expect(mcp.env?.SLOCK_MCP_TOOL_ALLOWLIST).toBeUndefined();
+  });
+
+  it("P1.5：bridge dispatch 失败 → diagnostics.recordError 记 entrypoint + DispatchError 码", async () => {
+    const diagnostics = diagnosticsStub();
+    const { driver } = fakeBridgeDriver(async () => {
+      throw new DispatchError("runtime-start-timeout", "worker t/o");
+    });
+    await expect(
+      dispatchHeadlessTurn(bridgeOpts(bridgeEntry(), { runtimeDriver: driver, diagnostics })),
+    ).rejects.toThrow(/t\/o/);
+    expect(diagnostics.recordError).toHaveBeenCalledWith(
+      "ep-1",
+      expect.objectContaining({ code: "runtime-start-timeout" }),
+    );
+    expect(diagnostics.recordOk).not.toHaveBeenCalled();
+  });
+
+  it("P1.5：bridge 回合到终态 → diagnostics.recordOk（清错信号，仅在挂错时落盘）", async () => {
+    const diagnostics = diagnosticsStub();
+    const { driver } = fakeBridgeDriver(async () => ({ status: "success" }));
+    await dispatchHeadlessTurn(bridgeOpts(bridgeEntry(), { runtimeDriver: driver, diagnostics }));
+    expect(diagnostics.recordOk).toHaveBeenCalledWith("ep-1");
+  });
+
+  it("P1.4：interrupted 终态 → put 携带 agentName/channel/threadId（审批面匹配用）", async () => {
+    const store = {
+      put: vi.fn(),
+      take: vi.fn(() => null),
+      clearIncompatible: vi.fn(() => 0),
+      delete: vi.fn(() => true),
+      clearAgent: vi.fn(() => 0),
+      list: vi.fn(() => []),
+    };
+    const { driver } = fakeBridgeDriver(async () => ({
+      status: "interrupted",
+      interrupt: { interruptId: "i9", resumeToken: "rt-1", prompt: "批准执行？" },
+    }));
+    await dispatchHeadlessTurn(
+      bridgeOpts(bridgeEntry(), { runtimeDriver: driver, interruptStore: store, threadId: "th-9" }),
+    );
+    expect(store.put).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "id-alice",
+        agentName: "alice",
+        channel: "general",
+        threadId: "th-9",
+        runtime: "langgraph",
+        entrypoint: "ep-1",
+        revision: "rev-1",
+        resumeToken: "rt-1",
+        prompt: "批准执行？",
+      }),
+    );
   });
 });

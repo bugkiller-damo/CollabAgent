@@ -42,6 +42,17 @@ export async function dispatchDaemonMessage(ctx: HandlerContext, msg: WsToDaemon
     case "workspace:read":
       handleWorkspaceRead(ctx, msg);
       break;
+    case "interrupt:dismiss":
+      // 批次 C（P1.4）：web 审批面驳回——删本地 pending 记录（resumeToken
+      // 随记录一并作废）；store.delete 触发 onChange → 回推新快照。
+      if (msg.agentId && msg.conversationId) {
+        try {
+          ctx.runtime.__getInterruptStore().delete(msg.agentId, msg.conversationId);
+        } catch (err) {
+          console.warn(`[Daemon] interrupt dismiss failed: ${(err as Error)?.message}`);
+        }
+      }
+      break;
     case "ping":
       handlePing(ctx);
       break;

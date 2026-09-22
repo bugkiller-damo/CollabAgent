@@ -5,6 +5,7 @@ import { computed, nextTick, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { apiGet } from "../api";
 import AgentProgressBar from "../components/agent/AgentProgressBar.vue";
+import PendingInterruptBanner from "../components/agent/PendingInterruptBanner.vue";
 import ChannelMembersPanel from "../components/channel/ChannelMembersPanel.vue";
 import ChannelSettingsModal from "../components/channel/ChannelSettingsModal.vue";
 import MessageComposer, { type ComposerAttachment } from "../components/chat/MessageComposer.vue";
@@ -17,7 +18,14 @@ import PageHeader from "../components/layout/PageHeader.vue";
 import MessageSkeleton from "../components/skeleton/MessageSkeleton.vue";
 import IconButton from "../components/ui/IconButton.vue";
 import { channelPath, lastChannelKey, scopedChannelKey, tasksPath } from "../lib/nav";
-import { useAgentStore, useChannelStore, useMessageStore, useServerStore, useUiStore } from "../stores";
+import {
+  useAgentStore,
+  useChannelStore,
+  useInterruptStore,
+  useMessageStore,
+  useServerStore,
+  useUiStore,
+} from "../stores";
 
 const VIRTUAL_THRESHOLD = 100;
 const EMPTY_MSGS: Message[] = [];
@@ -29,6 +37,7 @@ const channelStore = useChannelStore();
 const uiStore = useUiStore();
 const agentStore = useAgentStore();
 const serverStore = useServerStore();
+const interruptStore = useInterruptStore();
 
 // ---- 路由参数（React: useParams / useLocation / useNavigate）----
 const channelName = computed<string | undefined>(() => {
@@ -58,6 +67,8 @@ const loadError = computed(() => (target.value ? messageStore.loadError[target.v
 const currentChannel = computed<any>(() => channelStore.channels.find((c) => c.name === channelName.value));
 const online = computed(() => uiStore.online);
 const terminalAgent = computed(() => uiStore.terminalAgent);
+// 批次 C（P1.4）：本频道（含线程）的 pending interrupt——线程项渲染「去线程回复」入口
+const pendingInterrupts = computed(() => (channelName.value ? interruptStore.forChannelAll(channelName.value) : []));
 
 // ---- 本地状态 ----
 const showMembers = ref(false);
@@ -402,6 +413,7 @@ function goGeneral() {
       </PageHeader>
 
       <AgentProgressBar :channel-name="channelName || ''" />
+      <PendingInterruptBanner :items="pendingInterrupts" :server-id="routeServerId" />
 
       <div v-if="isEmpty" class="min-h-0 flex-1 overflow-y-auto p-4">
         <MessageSkeleton v-if="loading" />

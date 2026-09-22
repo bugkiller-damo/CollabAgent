@@ -42,6 +42,10 @@ class SarpMcpDescriptor:
     command: str
     args: tuple[str, ...] = ()
     env: dict[str, str] | None = None
+    """批次 C（P1.6）：manifest mcpToolAllowlist 经 initialize.platform.mcp
+    下发——SDK 过滤 tools/list 并拒绝名单外 tools/call。空/None = 不收敛。
+    非权限边界：真正授权在 scoped token / server policy。"""
+    allow_tools: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -243,6 +247,15 @@ def decode_daemon_frame(line: bytes | str) -> SarpDaemonMessage | None:
                 if not isinstance(raw_env, dict):
                     _fail("invalid-schema", f"{t}.platform.mcp.env: object required", t)
                 mcp_env = {str(k): str(v) for k, v in raw_env.items()}
+        mcp_allow: tuple[str, ...] | None = None
+        if mcp is not None:
+            # P1.6：allowTools 缺省/空表 = 不收敛；非 array 直接拒（fail-closed，
+            # 畸形配置宁可握手失败也不静默放开全量工具面）。
+            raw_allow = mcp.get("allowTools")
+            if raw_allow is not None:
+                if not isinstance(raw_allow, list):
+                    _fail("invalid-schema", f"{t}.platform.mcp.allowTools: array required", t)
+                mcp_allow = tuple(_req_str_item(a, f"{t}.platform.mcp.allowTools") for a in raw_allow)
         return SarpInitialize(
             seq=seq,
             request_id=_req_str(o, "requestId", t),
@@ -261,7 +274,12 @@ def decode_daemon_frame(line: bytes | str) -> SarpDaemonMessage | None:
             server_url=_opt_str(platform, "serverUrl", f"{t}.platform"),
             token_file=_opt_str(platform, "tokenFile", f"{t}.platform"),
             mcp=(
-                SarpMcpDescriptor(command=_req_str(mcp, "command", f"{t}.platform.mcp"), args=mcp_args, env=mcp_env)
+                SarpMcpDescriptor(
+                    command=_req_str(mcp, "command", f"{t}.platform.mcp"),
+                    args=mcp_args,
+                    env=mcp_env,
+                    allow_tools=mcp_allow,
+                )
                 if mcp
                 else None
             ),

@@ -119,6 +119,46 @@ describe("loadRuntimeManifest", () => {
     expect(snap.invalidEntries.get("ep-1")?.code).toBe(code);
   });
 
+  it("P1.6：mcpToolAllowlist 合法 → 解析去重；缺省 → 空表（不收敛）", () => {
+    const p = writeManifest(tmp(), {
+      version: 1,
+      entries: [validEntry({ mcpToolAllowlist: ["send_message", "dispatch_task", "send_message"] })],
+    });
+    const snap = loadRuntimeManifest(p);
+    expect(snap.entries.get("ep-1")?.mcpToolAllowlist).toEqual(["send_message", "dispatch_task"]);
+
+    const p2 = writeManifest(tmp(), { version: 1, entries: [validEntry()] });
+    expect(loadRuntimeManifest(p2).entries.get("ep-1")?.mcpToolAllowlist).toEqual([]);
+  });
+
+  it.each([
+    ["非数组", { mcpToolAllowlist: "send_message" }],
+    ["含非法工具名", { mcpToolAllowlist: ["send_message", "bad;tool"] }],
+    ["含非字符串项", { mcpToolAllowlist: ["send_message", 7] }],
+    ["超过 64 项", { mcpToolAllowlist: Array.from({ length: 65 }, (_, i) => `tool_${i}`) }],
+  ])("P1.6：mcpToolAllowlist %s → entry-mcp-allowlist-invalid（fail-closed）", (_l, over) => {
+    const p = writeManifest(tmp(), {
+      version: 1,
+      entries: [validEntry(over), validEntry({ id: "ep-ok" })],
+    });
+    const snap = loadRuntimeManifest(p);
+    expect(snap.invalidEntries.get("ep-1")?.code).toBe("entry-mcp-allowlist-invalid");
+    expect(snap.entries.has("ep-ok")).toBe(true);
+  });
+
+  it("P1.6：mcpToolAllowlist 进条目 revision——名单变化即换 runtime 身份", () => {
+    const dir = tmp();
+    const p = writeManifest(dir, { version: 1, entries: [validEntry()] });
+    const a = loadRuntimeManifest(p).entries.get("ep-1")!.revision;
+    writeFileSync(
+      p,
+      JSON.stringify({ version: 1, entries: [validEntry({ mcpToolAllowlist: ["send_message"] })] }),
+      "utf-8",
+    );
+    const b = loadRuntimeManifest(p).entries.get("ep-1")!.revision;
+    expect(b).not.toBe(a);
+  });
+
   it("重复 id → 两者都不可用（entry-id-duplicate）", () => {
     const p = writeManifest(tmp(), { version: 1, entries: [validEntry(), validEntry()] });
     const snap = loadRuntimeManifest(p);

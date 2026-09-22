@@ -6,9 +6,30 @@ import { parseWsInbound, wsFromBrowserSchema, wsFromDaemonSchema } from "../src/
 // 若未来 shared 加了 type 而这里漏改，本文件的成员清单即是最小对齐清单。
 // 在线行为（畸形帧不断连、合法帧中继）由 ws.test.ts 的 P1.28 用例覆盖。
 
-/** daemon→server 全部 12 个 type 的最小合法帧 */
+/** daemon→server 全部 14 个 type 的最小合法帧 */
 const DAEMON_FRAMES: Record<string, unknown> = {
   ready: { type: "ready", capabilities: ["send"], runtimes: ["node:20"], hostname: "h", daemonVersion: "0.1.0" },
+  // 批次 B（P1.2）：manifest CRUD 后 probe 摘要的增量上报
+  "entrypoints:refresh": {
+    type: "entrypoints:refresh",
+    entrypoints: [{ id: "ep-1", runtime: "langgraph", label: "G", status: "installed_unsupported" }],
+  },
+  // 批次 C（P1.4）：pending interrupt 全量快照（安全摘要，无 resumeToken）
+  "interrupts:state": {
+    type: "interrupts:state",
+    interrupts: [
+      {
+        agentId: "a",
+        conversationId: "slock:v1:a:channel:general",
+        interruptId: "i1",
+        prompt: "批准？",
+        runtime: "langgraph",
+        channel: "general",
+        createdAt: 1,
+        expiresAt: 2,
+      },
+    ],
+  },
   "agent:status": { type: "agent:status", agentId: "a", agentName: "x", status: "running", detail: "" },
   "agent:delivery-queued": { type: "agent:delivery-queued", agentName: "x", channelName: "#general" },
   "agent:delivery-dead-letter": {
@@ -48,12 +69,14 @@ const DAEMON_FRAMES: Record<string, unknown> = {
   pong: { type: "pong" },
 };
 
-/** browser→server 全部 5 个 type 的最小合法帧 */
+/** browser→server 全部 6 个 type 的最小合法帧 */
 const BROWSER_FRAMES: Record<string, unknown> = {
   "terminal:watch": { type: "terminal:watch", agentName: "x" },
   "terminal:unwatch": { type: "terminal:unwatch", agentName: "x" },
   "terminal:history": { type: "terminal:history", agentName: "x" },
   "terminal:resize": { type: "terminal:resize", agentName: "x", cols: 120, rows: 40 },
+  // 批次 C（P1.4）：审批面驳回 → server 属主校验后路由到托管 daemon
+  "interrupt:dismiss": { type: "interrupt:dismiss", agentId: "a", conversationId: "slock:v1:a:channel:g" },
   pong: { type: "pong" },
 };
 
@@ -112,6 +135,9 @@ describe("WS 入站校验：daemon→server 逐 type 对齐", () => {
     expect(
       parseDaemon(JSON.stringify({ type: "agent:status", agentId: 7, agentName: "x", status: "s", detail: "" })),
     ).toBeNull();
+    // interrupts:state 缺 interrupts 数组
+    expect(parseDaemon(JSON.stringify({ type: "interrupts:state" }))).toBeNull();
+    expect(parseDaemon(JSON.stringify({ type: "interrupts:state", interrupts: "x" }))).toBeNull();
   });
 
   it("多余字段放行（passthrough 前向兼容）", () => {
@@ -144,5 +170,11 @@ describe("WS 入站校验：browser→server 逐 type 对齐", () => {
       "browser-test",
     );
     expect(out).toBeNull();
+  });
+
+  it("interrupt:dismiss 缺 conversationId → 丢帧（防半帧把整 agent 的 pending 误清）", () => {
+    expect(
+      parseWsInbound(JSON.stringify({ type: "interrupt:dismiss", agentId: "a" }), wsFromBrowserSchema, "browser-test"),
+    ).toBeNull();
   });
 });

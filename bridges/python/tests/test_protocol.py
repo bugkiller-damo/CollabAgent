@@ -91,6 +91,42 @@ class TestInitializeDecode:
             decode_daemon_frame(_frame("initialize", **f))
         assert e.value.reason == "invalid-schema"
 
+    def test_mcp_allow_tools_parsed(self):
+        """P1.6：allowTools 数组 → descriptor.allow_tools 元组。"""
+        f = dict(INIT_FIELDS)
+        f["platform"] = {
+            "mcp": {"command": "node", "args": [], "allowTools": ["send_message", "read_history"]},
+        }
+        msg = decode_daemon_frame(_frame("initialize", **f))
+        assert msg.mcp is not None
+        assert msg.mcp.allow_tools == ("send_message", "read_history")
+
+    def test_mcp_allow_tools_absent_or_empty_means_unrestricted(self):
+        """P1.6：缺省/空表 = 不收敛（None）。"""
+        f = dict(INIT_FIELDS)
+        msg = decode_daemon_frame(_frame("initialize", **f))  # mcp 无 allowTools 键
+        assert msg.mcp is not None and msg.mcp.allow_tools is None
+
+        f["platform"] = {"mcp": {"command": "node", "allowTools": []}}
+        msg = decode_daemon_frame(_frame("initialize", **f))
+        assert msg.mcp is not None and msg.mcp.allow_tools == ()
+
+    def test_mcp_allow_tools_non_array_rejected(self):
+        """P1.6：非 array → invalid-schema（fail-closed，不静默放开工具面）。"""
+        for bad in ("send_message", 42, {"a": 1}):
+            f = dict(INIT_FIELDS)
+            f["platform"] = {"mcp": {"command": "node", "allowTools": bad}}
+            with pytest.raises(SarpProtocolError) as e:
+                decode_daemon_frame(_frame("initialize", **f))
+            assert e.value.reason == "invalid-schema"
+
+    def test_mcp_allow_tools_non_string_item_rejected(self):
+        f = dict(INIT_FIELDS)
+        f["platform"] = {"mcp": {"command": "node", "allowTools": ["ok", 7]}}
+        with pytest.raises(SarpProtocolError) as e:
+            decode_daemon_frame(_frame("initialize", **f))
+        assert e.value.reason == "invalid-schema"
+
     def test_missing_request_id(self):
         f = dict(INIT_FIELDS)
         del f["requestId"]

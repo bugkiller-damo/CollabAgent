@@ -501,4 +501,40 @@ describe("agent-dispatch-queue", () => {
     expect(onRetry.mock.calls[0][3]).toBe(40); // max(~5, 40) = 40
     q.dispose();
   });
+
+  it("Phase 5：turnId 跨 daemon 重启唯一——重启后不与历史 journal 记录碰撞", async () => {
+    // 实机事故（2026-09-22）：纯进程计数器重启归零，新回合 turnId 撞上 worker
+    // journal 里昨天的同号终态 → worker 幂等回放旧 error/success，图根本没跑。
+    // 模拟「重启」：resetModules 后重新 import = 新进程模块态。
+    const deliver1 = vi.fn().mockResolvedValue(undefined);
+    const q1 = createAgentDispatchQueue({ deliver: deliver1 });
+    const r1 = q1.enqueue(makeItem());
+    if (r1.status !== "queued") throw new Error("expected queued");
+    q1.enqueue({ ...makeItem(), content: "second" });
+    await flush();
+    q1.dispose();
+    const bootOneIds = new Set<string>([
+      r1.item.turnId,
+      ...deliver1.mock.calls.flatMap((c) => (c[1] as DispatchQueueItem[]).map((i) => i.turnId)),
+    ]);
+    expect(bootOneIds.size).toBeGreaterThan(0);
+
+    vi.resetModules();
+    const fresh = await import("../src/agent-dispatch-queue.js");
+    const deliver2 = vi.fn().mockResolvedValue(undefined);
+    const q2 = fresh.createAgentDispatchQueue({ deliver: deliver2 });
+    const seen = new Set<string>();
+    for (let i = 0; i < 3; i++) {
+      const r = q2.enqueue({ ...makeItem(), content: `post-restart-${i}` });
+      if (r.status !== "queued") throw new Error("expected queued");
+      seen.add(r.item.turnId);
+    }
+    await flush();
+    for (const c of deliver2.mock.calls) for (const item of c[1]) seen.add(item.turnId);
+    q2.dispose();
+    vi.resetModules();
+
+    for (const id of bootOneIds) expect(seen.has(id)).toBe(false);
+    expect([...seen].every((id) => id.startsWith("turn-"))).toBe(true);
+  });
 });

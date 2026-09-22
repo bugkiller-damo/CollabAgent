@@ -91,6 +91,60 @@ class TestTools:
         assert "method not found" in ei.value.wire.message
 
 
+class TestAllowlist:
+    """批次 C（P1.6）：initialize.platform.mcp.allowTools 的 SDK 侧收敛。
+
+    fixture server 只暴露 slock_echo——用名单含/不含它来验证两个方向。
+    SDK 过滤不是权限边界（worker 可直连 MCP server）；平台 server 侧
+    经 SLOCK_MCP_TOOL_ALLOWLIST 不注册名单外工具才是收敛兜底。
+    """
+
+    def _client(self, allow: tuple[str, ...] | None):
+        c = SlockMcpClient(
+            SarpMcpDescriptor(command=sys.executable, args=("-u", str(FIXTURE)), allow_tools=allow)
+        )
+        c.start()
+        return c
+
+    def test_allowlisted_tool_listed_and_callable(self):
+        c = self._client(("slock_echo", "send_message"))
+        try:
+            assert [t.name for t in c.list_tools()] == ["slock_echo"]
+            out = c.call_tool("slock_echo", {"text": "hi"})
+            assert '"text": "hi"' in out
+        finally:
+            c.close()
+
+    def test_unlisted_tool_filtered_from_list(self):
+        c = self._client(("send_message",))  # slock_echo 不在名单
+        try:
+            assert c.list_tools() == []
+        finally:
+            c.close()
+
+    def test_unlisted_call_rejected_non_retryable(self):
+        """名单外 tools/call 直接拒——兜住「模型幻觉名单外名字 / adapter
+        绕过 list 直调」路径；non-retryable 让 daemon 不做无谓重试。"""
+        c = self._client(("send_message",))
+        try:
+            with pytest.raises(SarpError) as ei:
+                c.call_tool("slock_echo", {"text": "hi"})
+            assert ei.value.wire.retryable is False
+            assert "allowlist" in ei.value.wire.message
+        finally:
+            c.close()
+
+    def test_empty_allowlist_means_unrestricted(self):
+        """allow_tools=() / None 语义一致：不收敛。"""
+        for allow in ((), None):
+            c = self._client(allow)
+            try:
+                assert [t.name for t in c.list_tools()] == ["slock_echo"]
+                assert '"text": "x"' in c.call_tool("slock_echo", {"text": "x"})
+            finally:
+                c.close()
+
+
 class TestWriteIdempotency:
     """§15.4：写工具自动注入 <turnId>:<tool>:<seq> 幂等键。"""
 

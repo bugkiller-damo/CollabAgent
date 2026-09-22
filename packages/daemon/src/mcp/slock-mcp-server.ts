@@ -129,7 +129,31 @@ const sanitizeIdempotencyKey = (k: unknown): string | undefined =>
 
 const server = new McpServer({ name: "slock", version: "0.1.0" });
 
-server.registerTool(
+/**
+ * 批次 C（P1.6）：manifest mcpToolAllowlist 由 daemon 经 env
+ * （SLOCK_MCP_TOOL_ALLOWLIST，逗号分隔）下发——名单外工具不注册，
+ * tools/list 天然收敛。缺省/空 = 全量暴露（旧行为）。
+ *
+ * 纪律：这是「暴露面收敛」而非权限边界——worker 可绕过 SDK 直连本
+ * server，真正的授权仍在 scoped token / server 路由策略。SDK 侧经
+ * initialize.platform.mcp.allowTools 拿到同一名单做 tools/list 过滤
+ * + tools/call 拒绝，双轨一致。
+ */
+const TOOL_ALLOWLIST: ReadonlySet<string> | null = (() => {
+  const raw = process.env.SLOCK_MCP_TOOL_ALLOWLIST;
+  if (!raw || !raw.trim()) return null;
+  const names = raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return names.length ? new Set(names) : null;
+})();
+const registerTool: typeof server.registerTool = ((name: string, ...rest: unknown[]) => {
+  if (TOOL_ALLOWLIST && !TOOL_ALLOWLIST.has(name)) return undefined as never;
+  return (server.registerTool as (...a: unknown[]) => unknown)(name, ...rest);
+}) as typeof server.registerTool;
+
+registerTool(
   "send_message",
   {
     title: "发送消息",
@@ -189,7 +213,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "upload_attachment",
   {
     title: "上传附件",
@@ -216,7 +240,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "list_tasks",
   {
     title: "查看任务",
@@ -237,7 +261,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "create_tasks",
   {
     title: "创建任务",
@@ -260,7 +284,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "claim_tasks",
   {
     title: "认领任务",
@@ -283,7 +307,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "update_task_status",
   {
     title: "更新任务状态",
@@ -307,7 +331,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "unclaim_task",
   {
     title: "放弃认领任务",
@@ -330,7 +354,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "dispatch_task",
   {
     title: "派发任务",
@@ -355,7 +379,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "list_dispatches",
   {
     title: "查看派发任务",
@@ -376,7 +400,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "report_task",
   {
     title: "回报任务",
@@ -400,7 +424,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "cancel_dispatch",
   {
     title: "撤回派发任务",
@@ -423,7 +447,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "read_history",
   {
     title: "读取历史消息",
@@ -446,7 +470,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "check_messages",
   {
     title: "查收新消息",
@@ -463,7 +487,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "search_messages",
   {
     title: "搜索消息",
@@ -489,7 +513,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "schedule_reminder",
   {
     title: "设置提醒",
@@ -518,7 +542,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "list_reminders",
   {
     title: "列出提醒",
@@ -538,7 +562,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "cancel_reminder",
   {
     title: "取消提醒",

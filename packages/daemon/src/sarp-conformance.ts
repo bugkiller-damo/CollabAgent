@@ -45,6 +45,15 @@ export interface ConformanceOptions {
   expectModel?: string;
   /** worker 实现了 turn journal → 跑 replay 检查（slock_runtime SDK = true） */
   expectJournal?: boolean;
+  /**
+   * 批次 B：跳过所有真实回合检查（turn-lifecycle/seq/eventseq/cancel/replay
+   * 全部 skip）——turn.start 会驱动 worker 业务逻辑，可能调真实 provider
+   * 烧额度或产生第三方副作用；CLI `slock runtime check` 默认加此开关，
+   * 显式 --run-turns 才跑完整回合面。handshake/malformed/shutdown 仍执行。
+   */
+  skipTurns?: boolean;
+  /** initialize.workspace.path（缺省 = spawnSpec.cwd）——check CLI 传临时目录 */
+  workspacePath?: string;
   /** 每步等待上限，默认 8000ms */
   stepTimeoutMs?: number;
   /** 自定义 spawn（测试注入） */
@@ -219,7 +228,7 @@ export const runSarpConformance = async (opts: ConformanceOptions): Promise<Conf
         entrypoint: opts.entrypoint ?? "conformance",
         ...(opts.expectModel !== undefined ? { model: opts.expectModel } : {}),
       },
-      workspace: { path: opts.spawnSpec.cwd },
+      workspace: { path: opts.workspacePath ?? opts.spawnSpec.cwd },
       platform: {},
       limits: { maxFrameBytes: 1048576, silenceTimeoutMs: Math.max(t * 4, 30000), shutdownTimeoutMs: 5000 },
     });
@@ -272,92 +281,103 @@ export const runSarpConformance = async (opts: ConformanceOptions): Promise<Conf
       }
     };
 
-    /* ---------------- turn-lifecycle ---------------- */
-    worker.send({
-      type: "turn.start",
-      turnId: "conf-t1",
-      conversationId: "conf-conv",
-      attempt: 1,
-      source: { kind: "message", channel: "conformance" },
-      prompt: "conformance check",
-    });
-    let t1Frames: Frame[];
-    try {
-      t1Frames = await readTurnFrames();
-    } catch (err) {
-      fail("turn-lifecycle", `no turn.end: ${(err as Error).message}`);
-      return { ok: false, checks, stderrTail: worker.stderrTail() };
-    }
-    const t1End = t1Frames[t1Frames.length - 1]!;
-    if (t1End.turnId !== "conf-t1") {
-      fail("turn-lifecycle", `turn.end.turnId=${t1End.turnId} != conf-t1`);
-    } else if (!["success", "error", "cancelled", "interrupted"].includes(String(t1End.status))) {
-      fail("turn-lifecycle", `turn.end.status=${t1End.status} unknown`);
+    /* ---------------- turn-lifecycle / seq / eventseq / cancel / replay ----------------
+     * skipTurns：真实回合会驱动 worker 业务逻辑（可能调 provider/副作用）——
+     * CLI check 默认不跑；整段标 skip 保持报告形状完整。 */
+    if (opts.skipTurns) {
+      skip("turn-lifecycle", "skipTurns (no real turn started)");
+      skip("seq-monotonic", "skipTurns");
+      skip("eventseq-monotonic", "skipTurns");
+      skip("cancel", "skipTurns");
+      skip("replay", "skipTurns");
     } else {
-      pass("turn-lifecycle", `turn.end status=${t1End.status}`);
-    }
-    pass("seq-monotonic", `last seq=${lastSeq}`);
-
-    const turnScoped = t1Frames.filter((f) => f.turnId === "conf-t1" && f.eventSeq !== undefined);
-    const eventSeqs = turnScoped.map((f) => f.eventSeq as number);
-    const monotonic = eventSeqs.every((v, i) => i === 0 || v > eventSeqs[i - 1]!);
-    if (eventSeqs.length === 0) {
-      fail("eventseq-monotonic", "no turn-scoped frames with eventSeq");
-    } else if (!monotonic || eventSeqs[0] !== 1) {
-      fail("eventseq-monotonic", `eventSeq not strictly increasing from 1: ${eventSeqs.join(",")}`);
-    } else {
-      pass("eventseq-monotonic", `${eventSeqs.length} frames, 1..${eventSeqs[eventSeqs.length - 1]}`);
-    }
-
-    /* ---------------- cancel ---------------- */
-    if (ready.capabilities?.interrupts !== false) {
+      /* ---------------- turn-lifecycle ---------------- */
       worker.send({
         type: "turn.start",
-        turnId: "conf-tc",
+        turnId: "conf-t1",
         conversationId: "conf-conv",
         attempt: 1,
         source: { kind: "message", channel: "conformance" },
-        prompt: "long turn to cancel",
+        prompt: "conformance check",
       });
-      worker.send({ type: "turn.cancel", turnId: "conf-tc", reason: "conformance cancel" });
+      let t1Frames: Frame[];
       try {
-        const cFrames = await readTurnFrames();
-        const cEnd = cFrames[cFrames.length - 1]!;
-        if (cEnd.status === "cancelled" || cEnd.status === "success") {
-          pass("cancel", `turn.end status=${cEnd.status}`);
-        } else {
-          fail("cancel", `unexpected status=${cEnd.status}`);
-        }
+        t1Frames = await readTurnFrames();
       } catch (err) {
-        fail("cancel", `no terminal after cancel: ${(err as Error).message}`);
+        fail("turn-lifecycle", `no turn.end: ${(err as Error).message}`);
+        return { ok: false, checks, stderrTail: worker.stderrTail() };
       }
-    } else {
-      skip("cancel", "capabilities.interrupts=false");
-    }
+      const t1End = t1Frames[t1Frames.length - 1]!;
+      if (t1End.turnId !== "conf-t1") {
+        fail("turn-lifecycle", `turn.end.turnId=${t1End.turnId} != conf-t1`);
+      } else if (!["success", "error", "cancelled", "interrupted"].includes(String(t1End.status))) {
+        fail("turn-lifecycle", `turn.end.status=${t1End.status} unknown`);
+      } else {
+        pass("turn-lifecycle", `turn.end status=${t1End.status}`);
+      }
+      pass("seq-monotonic", `last seq=${lastSeq}`);
 
-    /* ---------------- journal replay ---------------- */
-    if (opts.expectJournal) {
-      worker.send({
-        type: "turn.start",
-        turnId: "conf-t1", // 与已完成回合同 turnId → 应回放同终态，不重跑
-        conversationId: "conf-conv",
-        attempt: 2,
-        source: { kind: "message", channel: "conformance" },
-        prompt: "replay probe",
-      });
-      try {
-        const rFrames = await readTurnFrames();
-        const rEnd = rFrames[rFrames.length - 1]!;
-        if (rEnd.status === t1End.status) {
-          pass("replay", `replayed turn.end status=${rEnd.status}`);
-        } else {
-          fail("replay", `replay status=${rEnd.status} != original ${t1End.status}`);
-        }
-      } catch (err) {
-        fail("replay", `no replayed turn.end: ${(err as Error).message}`);
+      const turnScoped = t1Frames.filter((f) => f.turnId === "conf-t1" && f.eventSeq !== undefined);
+      const eventSeqs = turnScoped.map((f) => f.eventSeq as number);
+      const monotonic = eventSeqs.every((v, i) => i === 0 || v > eventSeqs[i - 1]!);
+      if (eventSeqs.length === 0) {
+        fail("eventseq-monotonic", "no turn-scoped frames with eventSeq");
+      } else if (!monotonic || eventSeqs[0] !== 1) {
+        fail("eventseq-monotonic", `eventSeq not strictly increasing from 1: ${eventSeqs.join(",")}`);
+      } else {
+        pass("eventseq-monotonic", `${eventSeqs.length} frames, 1..${eventSeqs[eventSeqs.length - 1]}`);
       }
-    } else {
-      skip("replay", "expectJournal=false");
+
+      /* ---------------- cancel ---------------- */
+      if (ready.capabilities?.interrupts !== false) {
+        worker.send({
+          type: "turn.start",
+          turnId: "conf-tc",
+          conversationId: "conf-conv",
+          attempt: 1,
+          source: { kind: "message", channel: "conformance" },
+          prompt: "long turn to cancel",
+        });
+        worker.send({ type: "turn.cancel", turnId: "conf-tc", reason: "conformance cancel" });
+        try {
+          const cFrames = await readTurnFrames();
+          const cEnd = cFrames[cFrames.length - 1]!;
+          if (cEnd.status === "cancelled" || cEnd.status === "success") {
+            pass("cancel", `turn.end status=${cEnd.status}`);
+          } else {
+            fail("cancel", `unexpected status=${cEnd.status}`);
+          }
+        } catch (err) {
+          fail("cancel", `no terminal after cancel: ${(err as Error).message}`);
+        }
+      } else {
+        skip("cancel", "capabilities.interrupts=false");
+      }
+
+      /* ---------------- journal replay ---------------- */
+      if (opts.expectJournal) {
+        worker.send({
+          type: "turn.start",
+          turnId: "conf-t1", // 与已完成回合同 turnId → 应回放同终态，不重跑
+          conversationId: "conf-conv",
+          attempt: 2,
+          source: { kind: "message", channel: "conformance" },
+          prompt: "replay probe",
+        });
+        try {
+          const rFrames = await readTurnFrames();
+          const rEnd = rFrames[rFrames.length - 1]!;
+          if (rEnd.status === t1End.status) {
+            pass("replay", `replayed turn.end status=${rEnd.status}`);
+          } else {
+            fail("replay", `replay status=${rEnd.status} != original ${t1End.status}`);
+          }
+        } catch (err) {
+          fail("replay", `no replayed turn.end: ${(err as Error).message}`);
+        }
+      } else {
+        skip("replay", "expectJournal=false");
+      }
     }
 
     /* ---------------- malformed-stdin ---------------- */

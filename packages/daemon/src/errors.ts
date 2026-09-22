@@ -69,6 +69,8 @@ export type DispatchErrorCode =
   | "cwd-not-found"
   /** secretEnv 引用的环境变量在 daemon env 中缺失——重试无意义 */
   | "secret-env-missing"
+  /** secretRefs 引用的键在本机 secret store 中缺失——重试无意义（P1.1） */
+  | "secret-ref-missing"
   /** Phase 5：crash-loop 熔断期内的快速失败——熔断期重试只是空转 */
   | "worker-crash-loop"
   /** 未映射的 worker 错误码兜底——永久（worker 想要可重试必须报已知码） */
@@ -98,6 +100,7 @@ const NON_RETRIABLE: ReadonlySet<DispatchErrorCode> = new Set([
   "command-not-found",
   "cwd-not-found",
   "secret-env-missing",
+  "secret-ref-missing",
   // worker-crash-loop：熔断期内的快速失败必须立即死信而非重试——
   // 重试等于在冷却期内继续烧 spawn 探测，违背熔断本意。冷却结束后
   // 由「新消息到达」自然触发一次探测派发。

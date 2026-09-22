@@ -1,10 +1,11 @@
 import { existsSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { WsFromDaemonMessage } from "@collabagent/shared";
+import type { PendingInterruptSummary, WsFromDaemonMessage } from "@collabagent/shared";
 import { WebSocket } from "ws";
 import { createJsonCostTracker, defaultCostStorePath } from "./agent-cost-tracker.js";
 import { createJsonRunStore, defaultStorePath } from "./agent-run-store.js";
 import { createAgentRuntime, type IAgentRuntime } from "./agent-runtime.js";
+import type { PendingRuntimeInterrupt } from "./agent-runtime-interrupt-store.js";
 import { createJsonAgentSessionStore, defaultAgentSessionStorePath } from "./agent-session-store.js";
 import { createJsonThreadSessionStore, defaultThreadSessionStorePath } from "./agent-thread-sessions.js";
 import { loadDaemonEnv } from "./config.js";
@@ -16,6 +17,16 @@ import { createLiveRunRegistry } from "./live-run-registry.js";
 import { resolveMachineUuid } from "./machine-id.js";
 import { mkdirPrivateSync, slockDir } from "./private-dir.js";
 import { buildReadyPayload, probeBridgeEntrypoints } from "./ready-payload.js";
+import { redactSecrets } from "./redact.js";
+// 批次 C（P1.5）：entrypoint 运行诊断——dispatch 打点在 agent-runtime 内部，
+// 这里持实例只为给 entrypoint refresher 供数据源 + 变更时触发重推。
+import {
+  attachDiagnostics,
+  createRuntimeDiagnostics,
+  defaultDiagnosticsPath,
+  type IRuntimeDiagnostics,
+} from "./runtime-diagnostics.js";
+import { createEntrypointRefresher, type EntrypointRefresher } from "./runtime-entrypoint-refresh.js";
 import { setupSlockWrapper } from "./setup-slock-wrapper.js";
 import type { DaemonConfig } from "./types/index.js";
 
@@ -41,6 +52,12 @@ export class DaemonCore {
   private terminalLastFrame = new Map<string, string>();
   /** B1：观看期间的观察帧转发订阅（agentName → unsubscribe） */
   private terminalObsUnsubs = new Map<string, () => void>();
+  /** 批次 B：manifest 变更 watcher——CRUD 后重跑 probe 并推 entrypoints:refresh */
+  private entrypointRefresher: EntrypointRefresher | null = null;
+  /** 批次 C（P1.5）：entrypoint 运行诊断 store（dispatch 打点经 runtime 注入） */
+  private diagnostics: IRuntimeDiagnostics;
+  /** 批次 C（P1.4）：诊断 store 的变更订阅（stop 时退订） */
+  private diagnosticsUnsub: (() => void) | null = null;
 
   constructor(private config: DaemonConfig) {
     this.serverUrl = config.serverUrl;
@@ -61,6 +78,9 @@ export class DaemonCore {
     // daemon 重启不丢——这正是 autostartCrashedAgents 注释里「上下文由
     // session resume 保住」的默认路径实现。
     const agentSessionStore = createJsonAgentSessionStore(defaultAgentSessionStorePath());
+    // P1.5：诊断 store 在 runtime 之前建好——既注入 dispatch 打点，也供
+    // entrypoint refresher 合并上报（同一实例两路消费）。
+    this.diagnostics = createRuntimeDiagnostics(defaultDiagnosticsPath());
     // 「计划内重启」标记（supervisor watch 重启 / 上次优雅 stop 写入）：
     // 有标记说明上次不是崩溃——run 记录虽然是 stale 的，但那是故意停掉的，
     // 不该触发 autostart 把 agent 全部拉起一遍（2026-07-18 实测：热重启后
@@ -140,6 +160,10 @@ export class DaemonCore {
         costTracker: this.costReporter?.tracker ?? costTracker,
         threadSessions,
         agentSessionStore,
+        diagnostics: this.diagnostics,
+        // P1.4：pending interrupt 集合变更 → 全量快照推 server（resumeToken
+        // 在此被剥掉——sendInterruptsState 只映射安全摘要字段）。
+        onInterruptsChange: (records) => this.sendInterruptsState(records),
       },
       liveRunRegistry,
       runStore,
@@ -224,6 +248,7 @@ export class DaemonCore {
     await this.runtime.loadExistingAgents();
     this.wireAgentOutput();
     this.startStatusReporter();
+    this.startEntrypointRefresher();
     this.costReporter?.start();
     await this.autostartCrashedAgents();
   }
@@ -279,6 +304,50 @@ export class DaemonCore {
     };
     this.statusReporter = setInterval(tick, 3000);
     if (typeof this.statusReporter.unref === "function") this.statusReporter.unref();
+  }
+
+  /**
+   * 批次 B（P1.2）：manifest 变更 watcher——`slock runtime add|edit|remove`
+   * 或手写改 runtimes.json 后，mtime loader 观察 revision 迁移 → 重跑
+   * `probeRuntimeEntrypoints` → `entrypoints:refresh` 推送 server meta，
+   * 不依赖 daemon 重启重发 ready。flag 关闭时不上报（与 ready 同纪律）。
+   */
+  private startEntrypointRefresher(): void {
+    if (this.entrypointRefresher || !loadDaemonEnv().experimentalBridgeRuntimes) return;
+    this.entrypointRefresher = createEntrypointRefresher({
+      loader: this.runtime.__getManifestLoader(),
+      send: (probes) => this.sendWs({ type: "entrypoints:refresh", entrypoints: probes }),
+      diagnostics: this.diagnostics,
+    });
+    // P1.5：诊断状态迁移（新错误 / 错误→恢复）即重推最近一份 probe 摘要——
+    // 不重跑 probe（那是真 spawn），server meta 携带最新 lastError/lastOkAt。
+    this.diagnosticsUnsub = this.diagnostics.subscribe(() => this.entrypointRefresher?.resend());
+    this.entrypointRefresher.start();
+  }
+
+  /**
+   * 批次 C（P1.4）：pending interrupt → 安全摘要 → interrupts:state。
+   * resumeToken/secret 一律不出 daemon；prompt 过 redact + 截断；
+   * 过期未惰性清除的记录在此过滤掉。
+   */
+  private sendInterruptsState(records?: PendingRuntimeInterrupt[]): void {
+    const now = Date.now();
+    const list = records ?? this.runtime.__getInterruptStore().list();
+    const interrupts: PendingInterruptSummary[] = list
+      .filter((r) => r.expiresAt > now)
+      .map((r) => ({
+        agentId: r.agentId,
+        ...(r.agentName ? { agentName: r.agentName } : {}),
+        conversationId: r.conversationId,
+        interruptId: r.interruptId,
+        prompt: redactSecrets(r.prompt).slice(0, 500),
+        runtime: r.runtime,
+        ...(r.channel ? { channel: r.channel } : {}),
+        ...(r.threadId ? { threadId: r.threadId } : {}),
+        createdAt: r.createdAt,
+        expiresAt: r.expiresAt,
+      }));
+    this.sendWs({ type: "interrupts:state", interrupts });
   }
 
   /**
@@ -358,13 +427,19 @@ export class DaemonCore {
     this.ws.on("open", () => {
       console.log("[Daemon] Connected to server");
       this.reconnectDelay = 1000;
+      const entrypoints = probeBridgeEntrypoints();
       this.sendWs(
         buildReadyPayload(
           undefined,
           { machineUuid: this.machineUuid, serverName: this.serverName },
-          probeBridgeEntrypoints(),
+          // P1.5：ready 的 probe 摘要同样带运行诊断（上次会话遗留的错误
+          // 不该等第一次 dispatch/refresh 才浮出水面）。
+          entrypoints ? attachDiagnostics(entrypoints, this.diagnostics) : undefined,
         ),
       );
+      // P1.4：重连后补发 pending interrupt 快照——onChange 只推增量事件，
+      // 断线期间的变更靠这次全量对齐（与 ready 的 entrypoints 同纪律）。
+      if (loadDaemonEnv().experimentalBridgeRuntimes) this.sendInterruptsState();
     });
     this.ws.on("message", (data) => {
       try {
@@ -434,6 +509,10 @@ export class DaemonCore {
       clearInterval(this.statusReporter);
       this.statusReporter = null;
     }
+    this.entrypointRefresher?.stop();
+    this.entrypointRefresher = null;
+    this.diagnosticsUnsub?.();
+    this.diagnosticsUnsub = null;
     for (const timer of this.terminalWatchers.values()) clearInterval(timer);
     this.terminalWatchers.clear();
     this.terminalLastFrame.clear();

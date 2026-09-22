@@ -26,6 +26,7 @@ import { createJsonlBridgeRuntimeDriver } from "./drivers/jsonl-bridge-runtime.j
 import { errMessage } from "./errors.js";
 import { createIdleReclaimer, reclaimIdleAgent } from "./idle-reclaimer.js";
 import { createPostStartInputWriter, type PostStartInputWriter } from "./post-start-input-writer.js";
+import { createRuntimeDiagnostics, defaultDiagnosticsPath } from "./runtime-diagnostics.js";
 import type {
   AgentStatus,
   IAgentManager,
@@ -110,6 +111,18 @@ export interface AgentRuntimeOptions {
    * 测试可注入缩短冷却的实现。
    */
   crashGuard?: import("./agent-runtime-crash-guard.js").IWorkerCrashGuard;
+  /**
+   * 批次 C（P1.5）：entrypoint 运行诊断（runtime-diagnostics.json）。
+   * 缺省按默认路径创建；dispatch 路径在 worker 失败/恢复时打点，
+   * 内容变化经 entrypoints:refresh 附带上报。
+   */
+  diagnostics?: import("./runtime-diagnostics.js").IRuntimeDiagnostics;
+  /**
+   * 批次 C（P1.4）：pending interrupt 集合每次落盘变更后的通知（含惰性
+   * 清除）——daemon-core 据此推 interrupts:state。回调拿到的是原始记录
+   * （含 resumeToken），出站摘要由 daemon-core 脱敏生成。
+   */
+  onInterruptsChange?: (records: import("./agent-runtime-interrupt-store.js").PendingRuntimeInterrupt[]) => void;
   /** D4：按 agent 绑定进度条发/改/删（测试可不传 = 不写频道进度） */
   createProgressPoster?: (agentName: string) => import("./agent-progress.js").ProgressPoster;
   /** T4：顶栏「正在做什么」（不落库） */
@@ -174,6 +187,12 @@ export interface IAgentRuntime {
   __getRunId(agentName: string): string | null;
   /** B1：headless 观察帧总线（daemon-core 的 terminal:watch 用它渲染 headless 围观画面） */
   __getObservationBus(): ObservationBus;
+  /** 批次 B：与 dispatch/profile 解析共享的 manifest mtime loader——daemon-core
+   *  的 entrypoint watcher 复用同一实例（审计只写一份，probe 变更即失效旧会话） */
+  __getManifestLoader(): () => import("./agent-runtime-manifest.js").RuntimeManifestSnapshot;
+  /** 批次 C（P1.4）：pending interrupt store——daemon-core 在 WS 重连时补发
+   *  interrupts:state 全量快照用（onChange 只推增量事件） */
+  __getInterruptStore(): import("./agent-runtime-interrupt-store.js").IRuntimeInterruptStore;
 }
 
 export const createAgentRuntime = (
@@ -471,7 +490,14 @@ export const createAgentRuntime = (
     ...(cfg.experimentalBridgeRuntimes ? [createJsonlBridgeRuntimeDriver({ manifestLoader })] : []),
   ]);
   // Phase 2：待恢复 interrupt 持久化（§11.4；bridge 专属，claude 不产生）。
-  const interruptStore = options.interruptStore ?? createRuntimeInterruptStore(defaultInterruptStorePath());
+  // 批次 C（P1.4）：onChange 转发给 options.onInterruptsChange（daemon-core
+  // 推 interrupts:state）；测试注入自带 store 时通知由该 store 自行触发。
+  const interruptStore =
+    options.interruptStore ??
+    createRuntimeInterruptStore(defaultInterruptStorePath(), { onChange: options.onInterruptsChange });
+  // 批次 C（P1.5）：entrypoint 运行诊断——dispatch 失败/恢复打点，
+  // 摘要经 entrypoints:refresh 的 diagnostics 字段上报。
+  const diagnostics = options.diagnostics ?? createRuntimeDiagnostics(defaultDiagnosticsPath());
   // Phase 5：跨消息 crash-loop 熔断器（§15）——agent 级累计 worker 启动/
   // 生命周期失败，阈值后冷却期内 fail-closed，identity 变化自动复位。
   const crashGuard = options.crashGuard ?? createWorkerCrashGuard();
@@ -548,6 +574,7 @@ export const createAgentRuntime = (
     agentSessionStore: options.agentSessionStore,
     interruptStore,
     crashGuard,
+    diagnostics,
     onDeliveryQueued: options.onDeliveryQueued,
     onDeliveryDeadLetter: options.onDeliveryDeadLetter,
     observationBus,
@@ -774,6 +801,14 @@ export const createAgentRuntime = (
 
     __getObservationBus(): ObservationBus {
       return observationBus;
+    },
+
+    __getManifestLoader() {
+      return manifestLoader;
+    },
+
+    __getInterruptStore() {
+      return interruptStore;
     },
   };
   return runtimeApi;

@@ -737,6 +737,20 @@ watch(
                 <p class="mt-0.5 truncate text-[11px] opacity-80">
                   {{ e.runtime || "?" }} · {{ e.id }}<template v-if="e.version"> · {{ e.version }}</template>
                 </p>
+                <!-- 批次 C（P1.5）：运行诊断——dispatch 最近错误（已脱敏）+ 最近恢复时间 -->
+                <template v-if="e.diagnostics?.lastError || e.diagnostics?.lastOkAt">
+                  <p
+                    v-if="e.diagnostics.lastError"
+                    class="mt-1 break-words text-[11px] text-red-600 dark:text-red-400"
+                    :title="e.diagnostics.lastError.message"
+                  >
+                    {{ e.diagnostics.lastError.code || "error" }} · {{ e.diagnostics.lastError.message }} ·
+                    {{ fmtTime(e.diagnostics.lastError.at) }}
+                  </p>
+                  <p v-if="e.diagnostics.lastOkAt" class="mt-0.5 text-[11px] opacity-80">
+                    最近成功 {{ fmtTime(e.diagnostics.lastOkAt) }}
+                  </p>
+                </template>
               </div>
             </div>
           </template>

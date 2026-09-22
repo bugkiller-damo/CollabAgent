@@ -17,6 +17,12 @@ export type EntrypointStatus =
   | "misconfigured"
   | "protocol_incompatible";
 
+/** 批次 C（P1.5）：entrypoint 运行诊断——daemon 上报的安全摘要（脱敏 stderr 尾，无路径/命令/secret） */
+export interface EntrypointDiagnostics {
+  lastError?: { code?: string; message: string; at: string };
+  lastOkAt?: string;
+}
+
 /** Phase 4：manifest entrypoint 探测摘要（daemon ready → server → 本行） */
 export interface ComputerEntrypoint {
   id: string;
@@ -30,6 +36,7 @@ export interface ComputerEntrypoint {
   capabilities?: Record<string, unknown>;
   errorCode?: string;
   errorMessage?: string;
+  diagnostics?: EntrypointDiagnostics;
 }
 
 /**

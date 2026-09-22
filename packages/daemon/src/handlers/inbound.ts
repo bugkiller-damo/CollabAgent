@@ -182,6 +182,12 @@ export const parseWsToDaemonMessage = (raw: unknown): WsToDaemonMessage | null =
         agentName: asString(raw.agentName) ?? "",
         path: asString(raw.path),
       };
+    case "interrupt:dismiss":
+      return {
+        type: "interrupt:dismiss",
+        agentId: asString(raw.agentId) ?? "",
+        conversationId: asString(raw.conversationId) ?? "",
+      };
     default:
       return null;
   }

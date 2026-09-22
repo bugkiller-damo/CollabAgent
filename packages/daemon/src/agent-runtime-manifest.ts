@@ -17,6 +17,18 @@ export interface RuntimeManifestEntry {
   cwd: string;
   env: Record<string, string>;
   secretEnv: string[];
+  /** P1.1：本机 secret store 引用——值存 `<slockDir()>/runtime-secrets.json`（0600，
+   *  逐 entrypoint），manifest 只存变量名；与 secretEnv（daemon env 注入）同语义，
+   *  只是取值源不同。 */
+  secretRefs: string[];
+  /**
+   * 批次 C（P1.6）：MCP 工具暴露面收敛——initialize.platform.mcp.allowTools
+   * 下发给 worker SDK 过滤 tools/list，同时经 MCP 子进程 env
+   * （SLOCK_MCP_TOOL_ALLOWLIST）让平台 MCP server 侧不注册名单外工具。
+   * 空数组 = 不收敛（全部工具）。注意这不是权限边界：任意 worker 可绕过
+   * SDK 直连 MCP server——真正的授权仍是 scoped token / server policy。
+   */
+  mcpToolAllowlist: string[];
   model: { mode: RuntimeModelMode; default: string; allowed: string[] };
   requireDurableThreads: boolean;
   startupTimeoutMs: number;
@@ -42,6 +54,8 @@ export interface RuntimeManifestSnapshot {
 
 const ID_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const ENV_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+/** MCP 工具名约定（send_message / dispatch_task 等 snake_case；容错允许 -） */
+const MCP_TOOL_RE = /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/;
 const SHELL_OPERATOR_RE = /[;&|`<>]/;
 const DANGEROUS_ENV = new Set(["NODE_OPTIONS", "PYTHONPATH", "LD_PRELOAD", "DYLD_INSERT_LIBRARIES"]);
 const CREDENTIAL_ENV_RE = /(^|_)(TOKEN|SECRET|PASSWORD|PASS|API_KEY|PRIVATE_KEY|ACCESS_KEY|CLIENT_SECRET)($|_)/;
@@ -82,7 +96,9 @@ interface ValidatedEntry {
   error?: string;
 }
 
-function validateEntry(raw: unknown): ValidatedEntry {
+/** 批次 B（P0.3/P1.2）：导出供 manifest manager（CRUD 写入前校验）与 schema
+ *  一致性测试复用——manifest 校验规则的唯一权威仍是本函数。 */
+export function validateEntry(raw: unknown): ValidatedEntry {
   if (!isRecord(raw)) return { error: "entry-invalid" };
   const rawId = typeof raw.id === "string" ? raw.id.trim() : "";
   const id = ID_RE.test(rawId) ? rawId : undefined;
@@ -134,18 +150,51 @@ function validateEntry(raw: unknown): ValidatedEntry {
   }
 
   const secretEnv: string[] = [];
+  const secretEnvUpper = new Set<string>();
   if (raw.secretEnv !== undefined) {
     if (!Array.isArray(raw.secretEnv)) return fail("entry-secret-env-invalid");
-    const seen = new Set<string>();
     for (const value of raw.secretEnv) {
       if (typeof value !== "string" || !ENV_RE.test(value)) return fail("entry-secret-env-invalid");
       const upper = value.toUpperCase();
-      if (upper.startsWith("SLOCK_") || DANGEROUS_ENV.has(upper) || seen.has(upper)) {
+      if (upper.startsWith("SLOCK_") || DANGEROUS_ENV.has(upper) || secretEnvUpper.has(upper)) {
         return fail("entry-secret-env-invalid");
       }
       if (Object.keys(env).some((key) => key.toUpperCase() === upper)) return fail("entry-env-overlap");
-      seen.add(upper);
+      secretEnvUpper.add(upper);
       secretEnv.push(value);
+    }
+  }
+
+  // P1.1：secretRefs 与 secretEnv 同名校验（ENV_RE / 非 SLOCK_ / 非危险注入键 /
+  // 不与 env 重叠），另加「不与 secretEnv 重叠」——同一个变量名不能同时走
+  // daemon env 与本机 store 两条取值路径（歧义即拒绝）。
+  const secretRefs: string[] = [];
+  const secretRefsUpper = new Set<string>();
+  if (raw.secretRefs !== undefined) {
+    if (!Array.isArray(raw.secretRefs)) return fail("entry-secret-refs-invalid");
+    for (const value of raw.secretRefs) {
+      if (typeof value !== "string" || !ENV_RE.test(value)) return fail("entry-secret-refs-invalid");
+      const upper = value.toUpperCase();
+      if (upper.startsWith("SLOCK_") || DANGEROUS_ENV.has(upper) || secretRefsUpper.has(upper)) {
+        return fail("entry-secret-refs-invalid");
+      }
+      if (Object.keys(env).some((key) => key.toUpperCase() === upper)) return fail("entry-env-overlap");
+      if (secretEnvUpper.has(upper)) return fail("entry-secret-overlap");
+      secretRefsUpper.add(upper);
+      secretRefs.push(value);
+    }
+  }
+
+  // P1.6：mcpToolAllowlist——工具名数组（≤64 项，去重），控制 worker 可见的
+  // 平台 MCP 工具面。非法项整体拒绝（暴露面配置错宁缺毋滥，fail-closed）。
+  const mcpToolAllowlist: string[] = [];
+  if (raw.mcpToolAllowlist !== undefined) {
+    if (!Array.isArray(raw.mcpToolAllowlist) || raw.mcpToolAllowlist.length > 64) {
+      return fail("entry-mcp-allowlist-invalid");
+    }
+    for (const value of raw.mcpToolAllowlist) {
+      if (typeof value !== "string" || !MCP_TOOL_RE.test(value)) return fail("entry-mcp-allowlist-invalid");
+      if (!mcpToolAllowlist.includes(value)) mcpToolAllowlist.push(value);
     }
   }
 
@@ -190,6 +239,8 @@ function validateEntry(raw: unknown): ValidatedEntry {
       cwd,
       env,
       secretEnv,
+      secretRefs,
+      mcpToolAllowlist,
       model: { mode, default: defaultModel, allowed: mode === "fixed" ? [] : allowed },
       requireDurableThreads: raw.requireDurableThreads === true,
       startupTimeoutMs,

@@ -10,6 +10,7 @@ import { registerMessage } from "./cli/message.js";
 import { registerPatrol } from "./cli/patrol.js";
 import { registerProfile } from "./cli/profile.js";
 import { registerReminder } from "./cli/reminder.js";
+import { registerRuntime } from "./cli/runtime.js";
 import { registerServer } from "./cli/server.js";
 import { registerSession } from "./cli/session.js";
 import { registerTask } from "./cli/task.js";
@@ -33,6 +34,7 @@ registerPatrol(program.command("patrol").description("Proactive patrol jobs (age
 registerAgent(program.command("agent").description("Agent duty / listing"));
 registerCost(program.command("cost").description("Local daemon cost accounting (D3)"));
 registerSession(program.command("session").description("Local thread↔session map (D2)"));
+registerRuntime(program.command("runtime").description("Local runtime manifest / bridge entrypoints (Batch B)"));
 
 program.parseAsync().catch((err) => {
   if (err instanceof CliExit) {

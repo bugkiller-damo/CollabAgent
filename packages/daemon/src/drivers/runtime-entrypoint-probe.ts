@@ -4,6 +4,7 @@ import { extname, isAbsolute } from "node:path";
 import type { RuntimeCapabilityProbe, RuntimeEntrypointProbe } from "@collabagent/shared";
 import { buildAgentEnv } from "../agent-env-whitelist.js";
 import type { RuntimeManifestEntry, RuntimeManifestSnapshot } from "../agent-runtime-manifest.js";
+import { createRuntimeSecretStore } from "../runtime-secret-store.js";
 import { resolveCommandOnPath } from "./probe.js";
 
 export interface RuntimeEntrypointProbeDeps {
@@ -15,6 +16,8 @@ export interface RuntimeEntrypointProbeDeps {
     args: string[],
     options: { cwd: string; env: Record<string, string>; encoding: "utf-8"; timeout: number; windowsHide: true },
   ) => string;
+  /** P1.1：secretRefs 的取值源（本机 secret store）；缺省按默认路径建 store */
+  resolveSecretRef?: (entrypoint: string, name: string) => string | undefined;
 }
 
 const fixedError = (
@@ -79,6 +82,14 @@ export function probeRuntimeEntrypoints(
   const resolveCommand = deps.resolveCommand ?? defaultResolveCommand;
   const cwdExists = deps.cwdExists ?? defaultCwdExists;
   const execute = deps.execute ?? defaultExecute;
+  // P1.1：缺省取值源是本机 secret store（每次调用建一次 store 实例——内部
+  // 每次 get 重读文件，天然拿到 CRUD 后最新值）。
+  const resolveSecretRef =
+    deps.resolveSecretRef ??
+    (() => {
+      const store = createRuntimeSecretStore();
+      return (entrypoint: string, name: string) => store.get(entrypoint, name);
+    })();
   const probes: RuntimeEntrypointProbe[] = [];
 
   for (const entry of snapshot.entries.values()) {
@@ -91,6 +102,17 @@ export function probeRuntimeEntrypoints(
     if (entry.secretEnv.some((name) => !sourceEnv[name])) {
       probes.push(
         fixedError(entry, "misconfigured", "secret-env-missing", "Runtime entrypoint is missing a required secret"),
+      );
+      continue;
+    }
+    if (entry.secretRefs.some((name) => !resolveSecretRef(entry.id, name))) {
+      probes.push(
+        fixedError(
+          entry,
+          "misconfigured",
+          "secret-ref-missing",
+          "Runtime entrypoint is missing a required secret from the local secret store",
+        ),
       );
       continue;
     }
@@ -120,6 +142,11 @@ export function probeRuntimeEntrypoints(
       const secrets: Record<string, string> = {};
       for (const name of entry.secretEnv) {
         const v = sourceEnv[name];
+        if (v !== undefined) secrets[name] = v;
+      }
+      // secretRefs：本机 store 取值按名注入（同 secretEnv 纪律——值不外发）。
+      for (const name of entry.secretRefs) {
+        const v = resolveSecretRef(entry.id, name);
         if (v !== undefined) secrets[name] = v;
       }
       stdout = execute(command, [...entry.args, "--slock-probe"], {

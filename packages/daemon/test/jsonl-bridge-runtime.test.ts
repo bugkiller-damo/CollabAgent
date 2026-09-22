@@ -20,6 +20,7 @@ const entry = (over: Record<string, unknown> = {}) => ({
   cwd: "/srv/work",
   env: { PYTHONUNBUFFERED: "1" },
   secretEnv: ["OPENAI_API_KEY"],
+  secretRefs: [],
   model: { mode: "fixed" as const, default: "gpt-4o", allowed: [] },
   requireDurableThreads: true,
   startupTimeoutMs: 12_000,
@@ -180,5 +181,61 @@ describe("createJsonlBridgeRuntimeDriver", () => {
       expect((e as DispatchError).code).toBe("secret-env-missing");
       expect((e as DispatchError).message).toContain("OPENAI_API_KEY");
     }
+  });
+
+  it("P1.6：mcp 描述符（含 allowTools）原样透传到 worker 会话选项", () => {
+    const { driver, captured } = makeDriver(snapshot([entry()]));
+    driver.openSession(
+      openOpts({
+        mcp: {
+          transport: "stdio",
+          command: "node",
+          args: ["mcp.cjs"],
+          env: { SLOCK_MCP_TOOL_ALLOWLIST: "send_message" },
+          allowTools: ["send_message"],
+        },
+      }),
+    );
+    expect(captured[0]!.mcp?.allowTools).toEqual(["send_message"]);
+    expect(captured[0]!.mcp?.env?.SLOCK_MCP_TOOL_ALLOWLIST).toBe("send_message");
+  });
+
+  it("P1.1 secretRefs：store 缺值 → secret-ref-missing（非 retriable，不 spawn）", () => {
+    const mustNotSpawn = () => {
+      throw new Error("must not spawn");
+    };
+    const driver = createJsonlBridgeRuntimeDriver({
+      manifestLoader: () => snapshot([entry({ secretRefs: ["STORED_KEY"] })]),
+      env: { OPENAI_API_KEY: "x" },
+      cwdExists: () => true,
+      resolveCommand: (c) => `/bin/${c}`,
+      resolveSecretRef: () => undefined,
+      spawnSession: mustNotSpawn,
+    });
+    try {
+      driver.openSession(openOpts());
+      expect.unreachable();
+    } catch (e) {
+      expect((e as DispatchError).code).toBe("secret-ref-missing");
+      expect((e as DispatchError).retriable).toBe(false);
+    }
+  });
+
+  it("P1.1 secretRefs：store 有值 → 注入 spawnSpec.env（secretEnv 同层）", () => {
+    const captured: JsonlWorkerSessionOptions[] = [];
+    const driver = createJsonlBridgeRuntimeDriver({
+      manifestLoader: () => snapshot([entry({ secretRefs: ["STORED_KEY"] })]),
+      env: { OPENAI_API_KEY: "x" },
+      cwdExists: () => true,
+      resolveCommand: (c) => `/bin/${c}`,
+      resolveSecretRef: (_ep, name) => (name === "STORED_KEY" ? "stored-value" : undefined),
+      spawnSession: (opts) => {
+        captured.push(opts);
+        return { alive: true, send: () => Promise.resolve(), stop: () => {} };
+      },
+    });
+    driver.openSession(openOpts());
+    expect(captured[0]!.spawnSpec.env.STORED_KEY).toBe("stored-value");
+    expect(captured[0]!.spawnSpec.env.OPENAI_API_KEY).toBe("x");
   });
 });

@@ -19,6 +19,11 @@ import { mkdirPrivateSync, slockDir } from "./private-dir.js";
 
 export interface PendingRuntimeInterrupt {
   agentId: string;
+  /** 批次 C（P1.4）：审批面展示/匹配用——agentName/channel/threadId 在 put
+   *  时由 dispatch 上下文带入；旧记录缺省兼容。 */
+  agentName?: string;
+  channel?: string;
+  threadId?: string;
   runtime: string;
   entrypoint?: string;
   /** Phase 5 §11.2：manifest 条目 revision——修订变化后旧 resumeToken 作废 */
@@ -68,9 +73,18 @@ export const defaultInterruptStorePath = (): string => join(slockDir(), "daemon-
 
 export const createRuntimeInterruptStore = (
   filePath: string,
-  opts?: { now?: () => number; ttlMs?: number },
+  opts?: { now?: () => number; ttlMs?: number; onChange?: (records: PendingRuntimeInterrupt[]) => void },
 ): IRuntimeInterruptStore => {
   const now = opts?.now ?? (() => Date.now());
+  /** 批次 C（P1.4）：每次落盘的集合变更后通知（含 take 的惰性清除）——
+   *  daemon-core 据此向 server 推 interrupts:state 全量快照。 */
+  const notify = (): void => {
+    try {
+      opts?.onChange?.(readAll().records);
+    } catch {
+      /* onChange 是旁路，不得打断 store 写路径 */
+    }
+  };
   /** pending interrupt 默认 7 天过期（§11.4：token 不能无限期悬置） */
   const ttlMs = opts?.ttlMs ?? 7 * 24 * 60 * 60 * 1000;
 
@@ -105,6 +119,7 @@ export const createRuntimeInterruptStore = (
       if (idx >= 0) data.records[idx] = next;
       else data.records.push(next);
       writeAll(data);
+      notify();
     },
 
     take(agentId, conversationId, runtime, entrypoint, revision) {
@@ -120,6 +135,7 @@ export const createRuntimeInterruptStore = (
       if (!compatible || rec.expiresAt <= now()) {
         data.records.splice(idx, 1);
         writeAll(data);
+        notify();
         return null;
       }
       return rec;
@@ -136,6 +152,7 @@ export const createRuntimeInterruptStore = (
       );
       if (next.length === data.records.length) return 0;
       writeAll({ records: next });
+      notify();
       return data.records.length - next.length;
     },
 
@@ -146,6 +163,7 @@ export const createRuntimeInterruptStore = (
       if (idx < 0) return false;
       data.records.splice(idx, 1);
       writeAll(data);
+      notify();
       return true;
     },
 
@@ -155,6 +173,7 @@ export const createRuntimeInterruptStore = (
       const next = data.records.filter((r) => r.agentId !== agentId);
       if (next.length === before) return 0;
       writeAll({ records: next });
+      notify();
       return before - next.length;
     },
 

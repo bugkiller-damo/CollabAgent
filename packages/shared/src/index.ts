@@ -468,6 +468,9 @@ export type WsToDaemonMessage =
   | { type: "terminal:history"; agentName: string }
   | { type: "terminal:resize"; agentName: string; cols?: number; rows?: number }
   | { type: "workspace:read"; requestId: string; agentName: string; path?: string }
+  // 批次 C（P1.4）：web 审批面驳回一个 pending interrupt——daemon 按
+  // (agentId, conversationId) 清除本地 pending 记录（resumeToken 作废）。
+  | { type: "interrupt:dismiss"; agentId: string; conversationId: string }
   | { type: "ping" };
 
 // ---------- daemon → server ----------
@@ -498,6 +501,16 @@ export interface RuntimeCapabilityProbe {
   maxConcurrency?: number;
 }
 
+/**
+ * 批次 C（P1.5）：entrypoint 运行诊断摘要——最近 dispatch 错误（含脱敏
+ * stderr 尾）与最近成功时间。由 daemon 随 ready/entrypoints:refresh 附在
+ * probe 条目上；只有安全元数据，无命令/路径/secret。
+ */
+export interface EntrypointDiagnostics {
+  lastError?: { code?: string; message: string; at: string };
+  lastOkAt?: string;
+}
+
 export interface RuntimeEntrypointProbe {
   id: string;
   /** manifest 校验失败的条目可能连 runtime 都不可信——此时缺省，由 status/errorCode 表达 */
@@ -511,6 +524,26 @@ export interface RuntimeEntrypointProbe {
   capabilities?: RuntimeCapabilityProbe;
   errorCode?: string;
   errorMessage?: string;
+  diagnostics?: EntrypointDiagnostics;
+}
+
+/**
+ * 批次 C（P1.4）：待审批 interrupt 的安全摘要。daemon 上报 / server 中继 /
+ * web 展示共用同一形状——不含 resumeToken（一次性恢复凭证，永不离开 daemon）。
+ */
+export interface PendingInterruptSummary {
+  agentId: string;
+  agentName?: string;
+  conversationId: string;
+  interruptId: string;
+  /** worker 的审批请求文本（daemon 已截断 + 脱敏） */
+  prompt: string;
+  runtime?: string;
+  /** 会话归属（频道名 / dm:<peer> / 线程 id）——web 按它挂到对应会话的审批门 */
+  channel?: string;
+  threadId?: string;
+  createdAt: number;
+  expiresAt: number;
 }
 
 export const RUNTIME_CATALOG_IDS = ["claude", "codex", "gemini", "opencode"] as const;
@@ -541,6 +574,12 @@ export type WsFromDaemonMessage =
       serverName?: string;
     }
   | { type: "agent:status"; agentId: string; agentName: string; status: string; detail: string }
+  // 批次 B（P1.2）：manifest CRUD 后 daemon 重跑 probe 的增量上报——不随 ready
+  // 全量重发，只更新本连接对应 computer 行的 entrypoints 摘要（server meta + DB）。
+  | { type: "entrypoints:refresh"; entrypoints?: RuntimeEntrypointProbe[] }
+  // 批次 C（P1.4）：pending interrupt 全量快照（store 每次变更即推）——
+  // 安全摘要，resumeToken 从不出 daemon。
+  | { type: "interrupts:state"; interrupts: PendingInterruptSummary[] }
   | { type: "agent:delivery-queued"; agentName: string; channelName: string }
   | { type: "agent:delivery-dead-letter"; agentName: string; channelName: string; error: string }
   | {
@@ -641,7 +680,10 @@ export type WsToBrowserMessage =
       content?: string;
       bytes?: number;
       error?: string;
-    };
+    }
+  // 批次 C（P1.4）：daemon 的 pending interrupt 快照中继给属主浏览器
+  // （channel/thread 详情位据此渲染审批门；machineUuid 标识来源机器）
+  | { type: "agent:interrupts"; machineUuid: string | null; interrupts: PendingInterruptSummary[] };
 
 // ---------- browser → server ----------
 
@@ -650,6 +692,9 @@ export type WsFromBrowserMessage =
   | { type: "terminal:unwatch"; agentName: string }
   | { type: "terminal:history"; agentName: string }
   | { type: "terminal:resize"; agentName: string; cols?: number; rows?: number }
+  // 批次 C（P1.4）：审批面驳回 pending interrupt——server 校验属主后路由到
+  // 托管 daemon（agentId+conversationId 定位 daemon 侧 pending 记录）
+  | { type: "interrupt:dismiss"; agentId: string; conversationId: string }
   | { type: "pong" };
 
 export interface AgentWorkspaceFile {

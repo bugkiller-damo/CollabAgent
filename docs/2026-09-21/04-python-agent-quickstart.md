@@ -126,10 +126,47 @@ manifest `command` 写 `/opt/slock-agent-venv/bin/python`。将来包进入内�
 | server | `SLOCK_BRIDGE_RUNTIMES=1` | 新建 bridge agent 报 `runtime not wired` |
 | daemon | `SLOCK_EXPERIMENTAL_BRIDGE_RUNTIMES=1` | 不上报 entrypoints、不注册 bridge driver；新建先被 `entrypoint_unavailable` 拦，已有 agent 派发报 `runtime-unsupported` |
 
-**secret 配置**：manifest `secretEnv` 只声明**变量名**（如
-`["OPENAI_API_KEY"]`）；值取自 **daemon 启动环境**本机注入 worker 进程，
-不经过 server，也不进任何协议帧。普通 `env` 字段禁止写凭据形态的名字
-（`*_KEY`/`*_SECRET`/`*_TOKEN` 等会被 `entry-env-invalid` 拒）。
+**secret 三种形态**（可混用；同一变量名不能在多处声明——`entry-secret-overlap`）：
+
+| 形态 | manifest 字段 | 值存哪 | 适用 |
+|------|--------------|--------|------|
+| daemon env 注入 | `secretEnv: ["OPENAI_API_KEY"]` | **daemon 启动环境**（如 `packages/daemon/.env`） | 机器主人统一供给；probe 期 `secret-env-missing` fail-fast |
+| 本机 secret store | `secretRefs: ["OPENAI_API_KEY"]` | `<slockDir()>/runtime-secrets.json`（0600、逐 entrypoint 桶） | 逐 entrypoint 隔离/轮换，`slock runtime secret set <id> <NAME> <value>` 管理，改 key 不用重启 daemon |
+| worker 自管 | **不声明** | worker 自己的配置文件（如 worker 目录 `.env`） | daemon 对 provider 凭据**零感知**——与 `claude login` 自管凭证同构 |
+
+前两种形态下 daemon 只做「按名取值 → spawn 时注入 worker 进程 env」的
+运送：值不经过 server、不进任何协议帧、不落 manifest/probe 摘要。
+普通 `env` 字段禁止写凭据形态的名字（`*_KEY`/`*_SECRET`/`*_TOKEN` 等
+会被 `entry-env-invalid` 拒）。
+
+**worker 自管形态**适合「daemon 只与 agent 软件打交道、模型 API 关系
+完全归 worker」的部署：manifest 不留任何 secret 字段，daemon probe/
+spawn/协议层全程不接触凭据。worker 在握手前自读配置即可：
+
+```python
+def _load_worker_env() -> None:
+    """加载 worker 本地 .env（不覆盖已存在的进程 env 键）。"""
+    import os
+    from pathlib import Path
+
+    env_file = Path(__file__).resolve().parent / ".env"
+    if not env_file.is_file():
+        return
+    for line in env_file.read_text(encoding="utf-8-sig").splitlines():  # utf-8-sig 防 BOM
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        os.environ.setdefault(key.strip(), value.strip())
+```
+
+代价：probe 阶段不再对 key 做 fail-fast——缺 key 的失败推迟到回合内
+provider 报错（`slock runtime doctor <id>` 的 `diagnostics.lastError`
+可查）；轮换=编辑 worker 自己的配置文件。
+
+无论哪种形态，daemon 都不直连 provider——`initialize.runtime.model`
+下发的是不透明选择标识（等价于给 `claude` CLI 传 `--model`），
+`provider:model` → provider client 的映射完全由 worker 解释。
 
 ## 自动 probe
 
@@ -147,7 +184,9 @@ manifest `command` 写 `/opt/slock-agent-venv/bin/python`。将来包进入内�
 | `runtime not wired` | server `SLOCK_BRIDGE_RUNTIMES` 未开 | server 环境变量置 1 后重启 |
 | `entrypoint_unavailable` | daemon flag 未开 / manifest 无可用条目 / probe 失败 | 查 daemon flag、manifest 路径与 probe 输出 |
 | `runtime-unsupported` | 已有 bridge agent 派发时 daemon driver 未注册 | daemon `SLOCK_EXPERIMENTAL_BRIDGE_RUNTIMES=1` |
-| `entry-*-invalid` | manifest 条目字段非法（14 个精确错误码） | 按错误码定位字段：id/runtime/label/command/args/cwd/env/secretEnv/model/timeout/durable |
+| `entry-*-invalid` | manifest 条目字段非法（精确错误码按字段区分） | 按错误码定位字段：id/runtime/label/command/args/cwd/env/secretEnv/secretRefs/model/timeout/durable |
+| `secret-ref-missing` | `secretRefs` 声明的名字不在本机 secret store | `slock runtime secret set <id> <NAME> <value>` 补登记 |
+| 回合内 provider `Missing credentials`/401 | worker 侧 key 缺失或无效（自管形态下 probe 不预检） | `slock runtime doctor <id>` 看 `diagnostics.lastError`；确认 worker 配置文件可读、`.env` 无 BOM |
 | `entry-id-duplicate` | manifest 内 id 重复 | 改唯一 id |
 | probe 超时（15s） | worker 启动慢 / stdout 有非协议输出 / 卡在 import | `command --slock-probe` 手动跑，确认单行帧 + exit 0；stdout 禁日志 |
 | `RUNTIME_ID_MISMATCH` | initialize.runtime.id ≠ worker `runtime_id` | manifest `runtime` 与 `serve_*` 的 `runtime_id` 对齐 |

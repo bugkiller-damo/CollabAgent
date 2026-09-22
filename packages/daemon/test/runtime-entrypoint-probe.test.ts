@@ -16,6 +16,7 @@ const entry = (over: Partial<RuntimeManifestEntry> = {}): RuntimeManifestEntry =
   cwd: "/tmp/work",
   env: { PLAIN_FLAG: "1" },
   secretEnv: ["OPENAI_API_KEY"],
+  secretRefs: [],
   model: { mode: "select", default: "a", allowed: ["a", "b"] },
   requireDurableThreads: false,
   startupTimeoutMs: 15_000,
@@ -192,6 +193,31 @@ describe("probeRuntimeEntrypoints", () => {
     const [p] = probeRuntimeEntrypoints(manifest([entry()]), deps());
     expect(JSON.stringify(p)).not.toContain("sk-live"); // 但 probe 结果不外发
     expect(JSON.stringify(p)).not.toContain("PLAIN_FLAG");
+  });
+
+  it("P1.1 secretRefs：本机 store 缺值 → misconfigured/secret-ref-missing（不执行子进程）", () => {
+    const execute = vi.fn();
+    const [p] = probeRuntimeEntrypoints(
+      manifest([entry({ secretRefs: ["STORED_KEY"] })]),
+      deps({ resolveSecretRef: () => undefined, execute }),
+    );
+    expect(p?.status).toBe("misconfigured");
+    expect(p?.errorCode).toBe("secret-ref-missing");
+    expect(JSON.stringify(p)).not.toContain("STORED_KEY"); // 连变量名也不外发
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("P1.1 secretRefs：store 有值 → 按名注入子进程 env，probe 结果不外发", () => {
+    const execute = vi.fn(() => goodFrame);
+    const [p] = probeRuntimeEntrypoints(
+      manifest([entry({ secretRefs: ["STORED_KEY"] })]),
+      deps({ resolveSecretRef: (_ep, name) => (name === "STORED_KEY" ? "stored-value" : undefined), execute }),
+    );
+    expect(p?.status).toBe("installed_unsupported");
+    const childEnv = execute.mock.calls[0]?.[2]?.env as Record<string, string>;
+    expect(childEnv.STORED_KEY).toBe("stored-value");
+    expect(JSON.stringify(p)).not.toContain("stored-value");
+    expect(JSON.stringify(p)).not.toContain("STORED_KEY");
   });
 
   it("execute 调用形态：args 追加 --slock-probe、cwd 用 manifest 值、超时封顶 15s", () => {
