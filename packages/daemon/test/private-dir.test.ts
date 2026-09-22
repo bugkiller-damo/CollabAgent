@@ -1,4 +1,5 @@
-import { isAbsolute, join } from "node:path";
+import { tmpdir } from "node:os";
+import { isAbsolute, join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { slockDir } from "../src/private-dir.js";
 
@@ -15,8 +16,11 @@ describe("slockDir", () => {
   });
 
   it("SLOCK_STATE_DIR 覆盖整棵状态树", () => {
-    process.env.SLOCK_STATE_DIR = "D:\\slock-state-test";
-    expect(slockDir()).toBe("D:\\slock-state-test");
+    // 用本机真实绝对路径——硬编码 "D:\..." 在 POSIX 上是相对路径，
+    // resolve 会把它拼到 cwd 后面（CI Linux leg 挂过）。
+    const abs = resolve(join(tmpdir(), "slock-state-test"));
+    process.env.SLOCK_STATE_DIR = abs;
+    expect(slockDir()).toBe(abs);
   });
 
   it("相对路径的 SLOCK_STATE_DIR resolve 成绝对路径；空白值回落默认", () => {
