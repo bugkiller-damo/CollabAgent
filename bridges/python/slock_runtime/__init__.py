@@ -5,10 +5,11 @@
 握手、帧编解码、序号纪律、回合状态机、幂等与 interrupt/resume——用户只需
 把一个 LangChain chain / LangGraph CompiledStateGraph 交给 serve_* 入口。
 
-最小用法：
+最小用法（WP8 起推荐统一入口 `serve_agent`——按对象类型自动分派
+CompiledStateGraph / LangChain Runnable / 工厂）：
 
-    from slock_runtime import serve_langgraph
-    raise SystemExit(serve_langgraph(graph_or_factory))
+    from slock_runtime import serve_agent
+    raise SystemExit(serve_agent(agent_or_factory))
 
 或裸协议层（非 LangChain/LangGraph runtime 自定义接入）：
 
@@ -19,7 +20,8 @@
 纪律：stdout 只属于协议帧；worker 日志一律 stderr。
 
 公开 API 分层（发布承诺见 README「API 稳定性」）：
-- stable（语义化版本内保持向后兼容）：serve_langchain、serve_langgraph、
+- stable（语义化版本内保持向后兼容）：serve_agent、SlockStructuredTool、
+  serve_langchain、serve_langgraph（两者为 serve_agent 的强制路径别名）、
   SARP_PROTOCOL、SARP_VERSION、__version__；
 - advanced（自建 runtime 可用，签名仍可能演进）：serve、WorkerRuntime、
   TurnOutcome、TurnEmit、TurnJournal、InterruptRecord、SarpTransport、
@@ -80,6 +82,7 @@ __all__ = [
     "SarpTurnMessage",
     "SarpTurnStart",
     "SarpTurnSource",
+    "SlockStructuredTool",
     "InterruptRecord",
     "TurnEmit",
     "TurnJournal",
@@ -89,6 +92,7 @@ __all__ = [
     "map_provider_error",
     "new_resume_token",
     "serve",
+    "serve_agent",
     "serve_langchain",
     "serve_langgraph",
     "__version__",
@@ -117,4 +121,16 @@ def __getattr__(name: str):
         from .langchain import serve_langchain
 
         return serve_langchain
+    if name == "serve_agent":
+        from .agent import serve_agent
+
+        return serve_agent
+    if name == "SlockStructuredTool":
+        from .agent import _tool_class
+        from .errors import SarpError
+
+        try:
+            return _tool_class()
+        except SarpError as e:  # 无 langchain-core 的裸协议环境
+            raise ImportError("SlockStructuredTool requires langchain-core") from e
     raise AttributeError(name)

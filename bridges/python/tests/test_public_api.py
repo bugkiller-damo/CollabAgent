@@ -9,7 +9,14 @@ import pytest
 import slock_runtime
 from slock_runtime._version import BRIDGE_VERSION, __version__
 
-STABLE = {"serve_langchain", "serve_langgraph", "SARP_PROTOCOL", "SARP_VERSION"}
+STABLE = {
+    "serve_agent",  # WP8：统一入口（按对象类型分派）
+    "SlockStructuredTool",  # WP8 §8.2：统一工具类型
+    "serve_langchain",  # stable 别名 → serve_agent(force_path="runnable")
+    "serve_langgraph",  # stable 别名 → serve_agent(force_path="graph")
+    "SARP_PROTOCOL",
+    "SARP_VERSION",
+}
 
 ADVANCED = {
     "serve",
@@ -71,5 +78,16 @@ def test_stable_entries_resolve():
     """stable 面可访问且不引入框架依赖（惰性加载生效）。"""
     assert slock_runtime.SARP_PROTOCOL == "slock.agent-runtime"
     assert slock_runtime.SARP_VERSION == 1
+    assert callable(slock_runtime.serve_agent)
     assert callable(slock_runtime.serve_langchain)
     assert callable(slock_runtime.serve_langgraph)
+
+
+def test_slock_structured_tool_resolves():
+    """SlockStructuredTool = StructuredTool 子类（需 langchain-core——缺依赖
+    环境跳过；`import slock_runtime` 本身始终不拉框架）。"""
+    pytest.importorskip("langchain_core", reason="langchain-core 未安装")
+    from langchain_core.tools import StructuredTool
+
+    cls = slock_runtime.SlockStructuredTool
+    assert isinstance(cls, type) and issubclass(cls, StructuredTool)

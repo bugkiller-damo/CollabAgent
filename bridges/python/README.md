@@ -13,6 +13,7 @@ interrupt/resume 与 usage/错误映射——你只需要给出一个 LangChain 
 ```bash
 pip install "slock-runtime[langgraph]"   # LangGraph worker（含 checkpoint-sqlite）
 pip install "slock-runtime[langchain]"   # LangChain worker
+pip install "slock-runtime[langgraph,langchain]"  # serve_agent 自动分派两种对象
 pip install slock-runtime                # 仅裸协议层（自定义 runtime）
 ```
 
@@ -42,13 +43,16 @@ pip install "slock_runtime-0.1.0-py3-none-any.whl[langgraph]"   # 本地 wheel
 ## 用法
 
 ```python
-# LangGraph（durable threads + interrupt/resume）
-from slock_runtime import serve_langgraph
-raise SystemExit(serve_langgraph(graph_or_factory))
+# 推荐：统一入口 serve_agent——按对象类型自动分派
+# （CompiledStateGraph / create_agent 产物 → 图路径；
+#   LangChain Runnable → 无状态 Runnable 路径）
+from slock_runtime import serve_agent
+raise SystemExit(serve_agent(agent_or_factory))
 
-# LangChain
-from slock_runtime import serve_langchain
-raise SystemExit(serve_langchain(agent_or_factory))
+# stable 别名（语义不变，内部走同一内核）：
+# serve_langgraph(obj)  强制图路径（含鸭子类型图兼容）
+# serve_langchain(obj)  强制 Runnable 路径
+from slock_runtime import serve_langchain, serve_langgraph
 
 # 裸协议（自定义 runtime）
 from slock_runtime import WorkerRuntime, TurnOutcome
@@ -56,9 +60,28 @@ rt = WorkerRuntime(runtime_id="my-runtime")
 sys.exit(rt.serve(run_turn, on_initialize))
 ```
 
-`graph_or_factory` 可以是编译好的图，或 `factory(init, mcp_tools) -> graph`——
-推荐 factory 形态：SDK 保证 `initialize` → MCP 连接 → 建图 → `runtime.ready`
-的顺序，systemPrompt/model override 都能在建图时生效。
+`serve_agent` 分派规则（在 `initialize` 后、工厂解析后判定一次）：
+
+1. callable 且非图/非 Runnable → `factory(init, tools)` 工厂（`async def`
+   工厂在常驻事件循环上执行——`AsyncSqliteSaver`/`aiosqlite` 等绑 loop
+   资源应在 async 工厂里创建）；
+2. `isinstance(obj, langgraph.pregel.Pregel)` → 图路径（先判图——编译图
+   同时也是 Runnable）；
+3. 具备 `astream_events`/`ainvoke`/`invoke` → Runnable 路径；
+4. 其它 → 握手期 `runtime.error(GRAPH_INPUT_INVALID)`。
+
+`graph_or_factory`/`agent_or_factory` 推荐 factory 形态：SDK 保证
+`initialize` → MCP 连接 → 建图 → `runtime.ready` 的顺序，systemPrompt/
+model override 都能在建图时生效。两条路径的工厂拿到的都是
+`list[SlockStructuredTool]`（`StructuredTool` 子类：`invoke(dict)` 兼容面
++ MCP `input_schema` 原样 dict + `metadata.operation` 标注）。
+
+`execution="auto"`（默认）按 checkpointer 类名 `Async*` 前缀或 async-only
+节点自动选异步执行（跑在 worker 生命周期的单个常驻事件循环上，绝不每回合
+`asyncio.run`——`AsyncSqliteSaver` 可跨回合复用）；`"sync"`/`"async"` 可
+强制。`system_prompt_mode="prepend"|"none"`、`resume_mapper`（缺省
+`turn.resume.value` 原样进 `Command(resume=)`）等参数见 `serve_agent`
+docstring。
 
 `workspace_cwd=True`（两个 `serve_*` 同名参数，默认 `False`）会在
 initialize 握手期把进程 cwd 切到 `init.workspace_path`——daemon 为 worker
@@ -89,8 +112,10 @@ initialize 握手期把进程 cwd 切到 `init.workspace_path`——daemon 为 w
 
 ## API 稳定性
 
-- **stable**（语义化版本内保持向后兼容）：`serve_langchain`、`serve_langgraph`、
-  `SARP_PROTOCOL`、`SARP_VERSION`、`__version__`。
+- **stable**（语义化版本内保持向后兼容）：`serve_agent`（推荐统一入口）、
+  `SlockStructuredTool`、`serve_langchain`、`serve_langgraph`（两者为
+  `serve_agent` 的强制路径 stable 别名）、`SARP_PROTOCOL`、`SARP_VERSION`、
+  `__version__`。
 - **advanced**（自建 runtime 可用，签名仍可能演进）：`serve`、`WorkerRuntime`、
   `TurnOutcome`、`TurnEmit`、`TurnJournal`、`InterruptRecord`、`SarpTransport`、
   协议 dataclass 与错误类型。

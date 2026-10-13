@@ -1,44 +1,57 @@
-"""LangGraph adapter：把 CompiledStateGraph 桥进 SARP/1 worker 生命周期。
+"""LangGraph 图路径执行循环（§12.3）；入口/握手内核在 agent.py（WP8 §8.1）。
+
+`serve_langgraph` 是 `serve_agent` 的 stable 别名（强制图路径）——签名、
+语义不变：CompiledStateGraph 实例或 `factory(init, tools)` 工厂均可，
+握手/runtime.id 比对/workspace_cwd/工具构建由共享内核承担，本模块只留
+图路径的判定与执行循环。
 
 职责（§12.3）：
 - conversationId → configurable.thread_id（§11.2），slock_turn_id 进
   configurable 做幂等审计，不替代 thread ID；
 - input_mapper 把 Slock turn 转为 graph 输入；默认 {"messages":[HumanMessage]}，
   init.system_prompt 存在且 thread 为空（get_state().values 为空）时前置
-  SystemMessage（§12.5）；
+  SystemMessage（§12.5；system_prompt_mode="none" 时完全不注入）；
 - stream_mode=["messages","updates","custom"] 三路事件：
   messages → assistant.delta（仅 ai 类 chunk；ToolMessage 不进文本流）；
   updates → tool.start/tool.end（AIMessage.tool_calls / ToolMessage）与
   __interrupt__ 检测；custom → 仅 custom_event_mapper 显式放行的
   progress（§12.3.4，不把私有事件透出）；Slock MCP 工具标为
-  provider=slock、operation=工具名，其余 provider=langgraph；
+  provider=slock、operation=metadata.operation（metadata 缺席按名兜底），
+  其余 provider=langgraph；
 - interrupt() → InterruptRecord + TurnOutcome(interrupted)；resume token
-  签发/单次消费由 runtime journal 兜底（§11.4），adapter 不碰；
-- turn.resume → Command(resume=value) 走原 checkpoint 恢复；
+  签发/单次消耗由 runtime journal 兜底（§11.4），adapter 不碰；
+- turn.resume → Command(resume=resume_mapper(init, turn, interrupt_value)
+  ——resume_mapper 缺省 None 时 turn.resume.value 原样透传（WP8；WP9
+  补默认归约）；
 - graph.checkpointer 决定 durableThreads：InMemorySaver/MemorySaver/None
-  → false，其余（SqliteSaver/Postgres…）→ true（§11.3）。
+  → false，其余（SqliteSaver/Postgres…）→ true（§11.3）；
+- §8.3 执行模式：auto 按 checkpointer 类名 Async* / async-only 节点判定；
+  sync 走 graph.stream/invoke（SqliteSaver 不支持异步），async 经内核
+  常驻事件循环跑 astream/ainvoke + aget_state/aupdate_state；
+- §8.4：默认 input mapper 时握手期校验图输入 schema 含 "messages" 键
+  （check_default_input_schema），取不到 schema 则跳过。
 
 纪律：
 - 模块零框架依赖——所有 langgraph/langchain 导入都在函数体内惰性进行，
-  `import slock_runtime` 在未装框架时也必须可用；
+  `import slock_runtime.langgraph` 在未装框架时也必须可用；
 - 不完整 graph state / checkpoint blob / secret 永远不进协议帧；
   tool output 截断 ~4000 字符；stdout 只写协议帧。
 """
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import json
-import os
 import secrets
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from .errors import CWD_NOT_FOUND, GRAPH_INPUT_INVALID, INTERRUPT_NOT_FOUND, RUNTIME_ID_MISMATCH, SarpError
-from .mcp import SlockMcpClient
-from .protocol import SarpInitialize, SarpTurnStart, normalize_runtime_id
-from .runtime import InterruptRecord, TurnEmit, TurnOutcome, WorkerRuntime, new_resume_token
+from .errors import GRAPH_INPUT_INVALID, INTERRUPT_NOT_FOUND, SarpError
+from .protocol import SarpInitialize, SarpTurnStart
+from .runtime import InterruptRecord, RunTurn, TurnEmit, TurnOutcome, new_resume_token
 from .tool_events import tool_provider_fields
 
 TOOL_OUTPUT_MAX_CHARS = 4000  # §20.5：超大 tool output 截断
@@ -49,11 +62,11 @@ _VOLATILE_CHECKPOINTERS = ("InMemorySaver", "MemorySaver")
 
 @dataclass(frozen=True)
 class SlockTool:
-    """Slock MCP 工具的运行时视图（§12.4）。
+    """Slock MCP 工具的旧式运行时视图（§12.4）——兼容保留。
 
-    graph 工厂拿到的是「可调用的工具描述」而非裸 McpToolInfo——invoke()
-    经 worker 内唯一 SlockMcpClient 发出 tools/call；input_schema 为
-    MCP JSON Schema，可直接喂给 StructuredTool.from_function(args_schema=)。
+    WP8 起工厂拿到的是 `slock_runtime.SlockStructuredTool`（StructuredTool
+    子类）：`.name`/`.description`/`.input_schema`/`.invoke(dict)` 兼容面
+    一致，另有 `call(args)`、`metadata={"slock": True, "operation": name}`。
     """
 
     name: str
@@ -113,12 +126,15 @@ def checkpoint_thread_id(init: SarpInitialize, conversation_id: str) -> str:
     return ":".join(cleaned)
 
 
-def _default_input_mapper(init: SarpInitialize, turn: SarpTurnStart, fresh: bool) -> dict:
-    """§12.3.2：HumanMessage(turn.prompt)；thread 全新且有平台 prompt 时前置 SystemMessage。"""
+def _default_input_mapper(
+    init: SarpInitialize, turn: SarpTurnStart, fresh: bool, system_prompt_mode: str = "prepend"
+) -> dict:
+    """§12.3.2：HumanMessage(turn.prompt)；thread 全新且有平台 prompt 时前置
+    SystemMessage（§12.5）。system_prompt_mode="none" 完全不注入（§8.5）。"""
     from langchain_core.messages import HumanMessage, SystemMessage  # 惰性导入
 
     msgs: list = []
-    if init.system_prompt and fresh:
+    if system_prompt_mode == "prepend" and init.system_prompt and fresh:
         msgs.append(SystemMessage(content=init.system_prompt))
     msgs.append(HumanMessage(content=turn.prompt))
     return {"messages": msgs}
@@ -170,11 +186,11 @@ def _jsonable(v: Any) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# adapter
+# 内核面向的判定 / 上报（agent.py 握手期调用）
 # ---------------------------------------------------------------------------
 
 
-def _detect_langgraph_version() -> str | None:
+def detect_version() -> str | None:
     try:
         import importlib.metadata
 
@@ -183,20 +199,161 @@ def _detect_langgraph_version() -> str | None:
         return None
 
 
-def _thread_fresh(graph: Any, config: dict) -> bool:
-    """thread 是否无 checkpoint 历史。get_state 不可用/失败按 fresh 处理。"""
+def probe_capabilities(streaming: bool) -> dict:
+    """probe 期静态能力面——握手期 on_initialize overrides 仍是权威。"""
+    return {
+        "streamingText": bool(streaming),
+        "toolEvents": True,
+        "durableThreads": True,
+        "interrupts": True,
+        "mcp": True,
+        "usage": "tokens",
+    }
+
+
+def handshake_fields(init: SarpInitialize, graph: Any, *, streaming: bool, has_mcp: bool) -> dict:
+    """握手 ready 的 capabilities/model overrides——语义与旧 on_initialize 一致。"""
+    # durableThreads：持久 checkpointer 才算（§11.3）
+    cp = getattr(graph, "checkpointer", None)
+    durable = cp is not None and type(cp).__name__ not in _VOLATILE_CHECKPOINTERS
+
+    model_field: dict = {"overrides": bool(init.model)}
+    if init.model:
+        model_field["selected"] = init.model
+    return {
+        "capabilities": {
+            "persistentProcess": True,
+            "maxConcurrency": 1,
+            "streamingText": bool(streaming),
+            "toolEvents": True,
+            "interrupts": True,
+            "durableThreads": durable,
+            "mcp": has_mcp,
+            "usage": "tokens",
+        },
+        "model": model_field,
+    }
+
+
+def check_default_input_schema(graph: Any) -> None:
+    """§8.4：默认 input mapper 产出 {"messages":[...]}——图输入 schema 必须含
+    "messages" 键（graph.get_input_jsonschema()["properties"]）。
+
+    schema 取不到（非 Pregel / 版本不支持 / 抛错）→ 跳过检查；
+    取到且缺 "messages" → GRAPH_INPUT_INVALID，握手失败（替代 D2b 运行期
+    WORKER_ERROR 'question'）。
+    """
+    get_schema = getattr(graph, "get_input_jsonschema", None)
+    if get_schema is None:
+        return
+    try:
+        schema = get_schema()
+    except Exception:
+        return
+    props = schema.get("properties") if isinstance(schema, dict) else None
+    if not isinstance(props, dict):
+        return
+    if "messages" not in props:
+        raise SarpError(
+            GRAPH_INPUT_INVALID,
+            "graph state has no 'messages' key; pass input_mapper/output_mapper",
+            retryable=False,
+        )
+
+
+def _has_async_node(graph: Any, _depth: int = 0) -> bool:
+    """best-effort 检测 async-only 节点（§8.3）。
+
+    PregelNode.bound 是 RunnableCallable：sync 节点 func 必填（afunc 由
+    func 包出），async 节点只有 afunc。嵌套子图递归一层层看；鸭子类型
+    图无 .nodes → False（保持 sync）。
+    """
+    if _depth > 4:
+        return False
+    nodes = getattr(graph, "nodes", None)
+    if not isinstance(nodes, dict):
+        return False
+    for node in nodes.values():
+        bound = getattr(node, "bound", node)
+        if bound is None:
+            continue
+        if getattr(bound, "afunc", None) is not None and getattr(bound, "func", None) is None:
+            return True
+        if getattr(bound, "afunc", None) is None and inspect.iscoroutinefunction(bound):
+            return True
+        inner = getattr(bound, "nodes", None)
+        if isinstance(inner, dict) and _has_async_node(bound, _depth + 1):
+            return True
+    return False
+
+
+def resolve_execution(graph: Any, execution: str) -> str:
+    """§8.3：sync/async 强制模式直返；auto → checkpointer 类名 Async* 开头
+    或检测到 async-only 节点 → async，否则 sync（SqliteSaver 保持可用）。"""
+    if execution in ("sync", "async"):
+        return execution
+    cp = getattr(graph, "checkpointer", None)
+    if cp is not None and type(cp).__name__.startswith("Async"):
+        return "async"
+    if _has_async_node(graph):
+        return "async"
+    return "sync"
+
+
+# ---------------------------------------------------------------------------
+# graph state 访问（sync / async 两族——async 版挂在常驻事件循环上）
+# ---------------------------------------------------------------------------
+
+
+def _get_state_safe(graph: Any, config: dict):
+    """get_state 缺失/失败 → None（调用方按「无历史」兜底）。"""
     get_state = getattr(graph, "get_state", None)
     if get_state is None:
-        return True
+        return None
     try:
-        snap = get_state(config)
+        return get_state(config)
     except Exception:
+        return None
+
+
+async def _aget_state_safe(graph: Any, config: dict):
+    aget_state = getattr(graph, "aget_state", None)
+    if aget_state is None:
+        return None
+    try:
+        return await aget_state(config)
+    except Exception:
+        return None
+
+
+def _thread_fresh(graph: Any, config: dict) -> bool:
+    """thread 是否无 checkpoint 历史。get_state 不可用/失败按 fresh 处理。"""
+    snap = _get_state_safe(graph, config)
+    if snap is None:
         return True
     return not getattr(snap, "values", None)
 
 
-def _repair_dangling_tool_calls(graph: Any, config: dict) -> int:
-    """回合中途死亡（崩溃/error/杀进程）会把『带 tool_calls 的 AI 消息』落进
+async def _athread_fresh(graph: Any, config: dict) -> bool:
+    snap = await _aget_state_safe(graph, config)
+    if snap is None:
+        return True
+    return not getattr(snap, "values", None)
+
+
+def _first_interrupt_value(snap: Any) -> Any:
+    """当前 thread 首个 pending interrupt 的 value——resume_mapper 第 3 参
+    （§9.2 前瞻）；取不到 → None。"""
+    for task in getattr(snap, "tasks", None) or ():
+        for intr in getattr(task, "interrupts", None) or ():
+            return getattr(intr, "value", intr)
+    return None
+
+
+def _dangling_repair_ops(messages: list) -> list:
+    """悬空 tool_call / 孤儿 ToolMessage 的修补 ops——纯函数，sync/async 共用。
+
+    回合中途死亡（崩溃/error/杀进程）会把『带 tool_calls 的 AI 消息』落进
     checkpoint 而对应 ToolMessage 未写——下个回合 provider 400 拒收整个
     messages（assistant tool_calls must be followed by tool messages）。
 
@@ -205,20 +362,7 @@ def _repair_dangling_tool_calls(graph: Any, config: dict) -> int:
     孤儿）。修法：add_messages 按 id upsert，把悬空 AI 原位替换为只保留
     『已被紧邻 tool 块应答』的 tool_calls 的同 id 副本；游离 ToolMessage
     （无紧邻上游 AI tool_calls 认领，含旧版尾部补丁残留）一并 RemoveMessage。
-    返回改动消息数。"""
-    get_state = getattr(graph, "get_state", None)
-    update_state = getattr(graph, "update_state", None)
-    if get_state is None or update_state is None:
-        return 0
-    try:
-        snap = get_state(config)
-    except Exception:
-        return 0
-    values = getattr(snap, "values", None)
-    messages = list(values.get("messages") or []) if isinstance(values, dict) else []
-    if not messages:
-        return 0
-
+    """
     def _tid(tc: Any) -> str | None:
         t = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
         return str(t) if t else None
@@ -266,25 +410,58 @@ def _repair_dangling_tool_calls(graph: Any, config: dict) -> int:
             i += 1
 
     if not patches:
-        return 0
+        return []
     from langchain_core.messages import RemoveMessage  # 惰性导入
 
-    ops = [RemoveMessage(id=p[1]) if isinstance(p, tuple) and p[1] else p for p in patches]
+    return [RemoveMessage(id=p[1]) if isinstance(p, tuple) and p[1] else p for p in patches]
+
+
+def _snap_messages(snap: Any) -> list:
+    values = getattr(snap, "values", None)
+    return list(values.get("messages") or []) if isinstance(values, dict) else []
+
+
+def _repair_dangling_tool_calls(graph: Any, config: dict) -> int:
+    """返回改动消息数；细节见 _dangling_repair_ops。"""
+    update_state = getattr(graph, "update_state", None)
+    snap = _get_state_safe(graph, config)
+    if update_state is None or snap is None:
+        return 0
+    messages = _snap_messages(snap)
+    if not messages:
+        return 0
+    ops = _dangling_repair_ops(messages)
     if not ops:
         return 0
     update_state(config, {"messages": ops})
     return len(ops)
 
 
+async def _arepair_dangling_tool_calls(graph: Any, config: dict) -> int:
+    aupdate_state = getattr(graph, "aupdate_state", None)
+    snap = await _aget_state_safe(graph, config)
+    if aupdate_state is None or snap is None:
+        return 0
+    messages = _snap_messages(snap)
+    if not messages:
+        return 0
+    ops = _dangling_repair_ops(messages)
+    if not ops:
+        return 0
+    await aupdate_state(config, {"messages": ops})
+    return len(ops)
+
+
 def _final_values(graph: Any, config: dict, fallback: dict) -> dict:
-    try:
-        snap = graph.get_state(config)
-        values = getattr(snap, "values", None)
-        if isinstance(values, dict):
-            return values
-    except Exception:
-        pass
-    return fallback
+    snap = _get_state_safe(graph, config)
+    values = getattr(snap, "values", None) if snap is not None else None
+    return values if isinstance(values, dict) else fallback
+
+
+async def _afinal_values(graph: Any, config: dict, fallback: dict) -> dict:
+    snap = await _aget_state_safe(graph, config)
+    values = getattr(snap, "values", None) if snap is not None else None
+    return values if isinstance(values, dict) else fallback
 
 
 def _iter_update_messages(update: Any):
@@ -299,122 +476,31 @@ def _iter_update_messages(update: Any):
         yield update
 
 
-def serve_langgraph(
-    graph_or_factory: Any,
+# ---------------------------------------------------------------------------
+# 图路径 run_turn 组装（agent.py 握手期调用一次）
+# ---------------------------------------------------------------------------
+
+
+def make_run_turn(
+    state: dict,
     *,
     input_mapper: Callable[[SarpInitialize, SarpTurnStart, bool], Any] | None = None,
     output_mapper: Callable[[dict], str] | None = None,
     interrupt_mapper: Callable[[Any], str] | None = None,
+    resume_mapper: Callable[[SarpInitialize, SarpTurnStart, Any], Any] | None = None,
     custom_event_mapper: Callable[[Any], str | None] | None = None,
     cost_calculator: Callable[[dict], float | None] | None = None,
+    system_prompt_mode: str = "prepend",
+    exec_mode: str = "sync",
     streaming: bool = True,
-    workspace_cwd: bool = False,
-    runtime_id: str = "bridge",
-    framework_version: str | None = None,
-    transport: Any = None,
-    journal: Any = None,
-) -> int:
-    """LangGraph worker 入口。返回进程退出码（0 正常关停，2 协议/初始化失败）。
+    ensure_loop: Callable | None = None,
+) -> RunTurn:
+    """组装图路径回合函数 run_turn(init, turn, emit, cancelled) -> TurnOutcome。
 
-    graph_or_factory：CompiledStateGraph 实例，或 `factory(init, tools) ->
-    graph` 工厂（§12.4：graph 不能在 import 时就 compile——Slock MCP tools
-    要等 initialize 下发后才有；tools 是 list[SlockTool]）。
-
-    workspace_cwd=True 时，initialize 握手期间把进程 cwd 切到
-    init.workspace_path（daemon 为该 worker 建好的专属持久工作区）——工厂
-    函数与图节点里的相对路径即以工作区为基准。默认 False：cwd 保持
-    manifest 里声明的目录（通常是用户代码目录）。工作区不可进入
-    （chdir 失败）→ runtime.error(CWD_NOT_FOUND)，握手失败。
-
-    runtime_id：worker 对外上报的 runtime.id，默认 "bridge"；握手按归一值
-    比对——initialize.runtime.id 为 "bridge"/"langchain"/"langgraph"
-    （大小写不敏感）均接受，其余 → RUNTIME_ID_MISMATCH。
-
-    mapper 签名：
-    - input_mapper(init, turn, fresh) -> graph input；fresh = thread 无
-      checkpoint 历史。默认规则见 _default_input_mapper。
-    - output_mapper(state_values) -> str：终态 get_state().values → finalText。
-    - interrupt_mapper(interrupt.value) -> str：审批提示文本。
-    - custom_event_mapper(custom_data) -> str|None：返回 str 才发 progress。
-    - cost_calculator(usage_dict) -> float|None：仅提供时才产出 costUsd。
+    state 是内核共享 dict（keys：graph / mcp_client / slock_tool_ops）。
+    exec_mode 在握手期经 resolve_execution 判定；ensure_loop 给常驻
+    _AsyncLoop（exec_mode="async" 才用）。
     """
-
-    state: dict[str, Any] = {"graph": None, "tools": [], "mcp_client": None, "slock_tool_names": frozenset()}
-
-    # ---------------- 握手（§12.4 启动顺序） ----------------
-
-    def on_initialize(init: SarpInitialize, emit: TurnEmit) -> dict:
-        # WP6：initialize.runtime.id 是 manifest 声明原值——归一后比对，
-        # "bridge"/"langchain"/"langgraph"（大小写不敏感）均接受
-        if normalize_runtime_id(init.runtime_id) != normalize_runtime_id(runtime_id):
-            raise SarpError(
-                RUNTIME_ID_MISMATCH,
-                f"initialize.runtime.id={init.runtime_id!r} does not match worker "
-                f"runtime_id={runtime_id!r} (normalized comparison; "
-                "'langchain'/'langgraph' are legacy aliases of 'bridge')",
-                retryable=False,
-            )
-        if workspace_cwd:
-            try:
-                os.chdir(init.workspace_path)
-            except OSError as e:
-                raise SarpError(
-                    CWD_NOT_FOUND,
-                    f"workspace_cwd: cannot chdir to {init.workspace_path!r}: {e}",
-                    retryable=False,
-                ) from e
-        client: SlockMcpClient | None = None
-        tools: list[SlockTool] = []
-        if init.mcp is not None:
-            # 1) MCP client 先行：子进程随 worker 退出由 finally close() 兜底
-            client = SlockMcpClient(init.mcp)
-            client.start()
-            mcp_client = client
-            for t in client.list_tools():
-
-                def _call(args: dict, _n: str = t.name, _c: SlockMcpClient = mcp_client) -> str:
-                    return _c.call_tool(_n, args)
-
-                tools.append(
-                    SlockTool(
-                        name=t.name,
-                        description=t.description,
-                        input_schema=t.input_schema,
-                        call=_call,
-                    )
-                )
-        state["mcp_client"] = client
-        state["tools"] = tools
-        # Slock MCP 工具名集合——tool.start/tool.end 标注 provider=slock
-        # + operation=工具名（daemon 据此豁免 send_message 的空文本终态）
-        state["slock_tool_names"] = frozenset(t.name for t in tools)
-
-        # 2) graph：工厂模式把 init + slock tools 交给用户构建
-        graph = graph_or_factory(init, tools) if callable(graph_or_factory) else graph_or_factory
-        state["graph"] = graph
-
-        # 3) durableThreads：持久 checkpointer 才算（§11.3）
-        cp = getattr(graph, "checkpointer", None)
-        durable = cp is not None and type(cp).__name__ not in _VOLATILE_CHECKPOINTERS
-
-        model_field: dict = {"overrides": bool(init.model)}
-        if init.model:
-            model_field["selected"] = init.model
-        return {
-            "capabilities": {
-                "persistentProcess": True,
-                "maxConcurrency": 1,
-                "streamingText": bool(streaming),
-                "toolEvents": True,
-                "interrupts": True,
-                "durableThreads": durable,
-                "mcp": client is not None,
-                "usage": "tokens",
-            },
-            "model": model_field,
-        }
-
-    # ---------------- 回合 ----------------
 
     def _usage_out(seen: set, totals: dict, duration_ms: int) -> dict | None:
         usage: dict[str, Any] = {}
@@ -465,7 +551,7 @@ def serve_langgraph(
                         str(call_id),
                         ok,
                         name=getattr(msg, "name", None),
-                        **tool_provider_fields(getattr(msg, "name", None), state["slock_tool_names"], "langgraph"),
+                        **tool_provider_fields(getattr(msg, "name", None), state["slock_tool_ops"], "langgraph"),
                         output=text,
                         error=None if ok else text,
                     )
@@ -476,10 +562,209 @@ def serve_langgraph(
                         emit.tool_start(
                             str(tc.get("id") or ""),
                             str(tc.get("name") or ""),
-                            **tool_provider_fields(tc.get("name"), state["slock_tool_names"], "langgraph"),
+                            **tool_provider_fields(tc.get("name"), state["slock_tool_ops"], "langgraph"),
                             input=tc.get("args"),
                         )
         return found
+
+    # ---- 输入侧（sync/async 共用） ----
+
+    def _map_input(init: SarpInitialize, turn: SarpTurnStart, fresh: bool) -> Any:
+        if input_mapper is None:
+            return _default_input_mapper(init, turn, fresh, system_prompt_mode)
+        try:
+            return input_mapper(init, turn, fresh)
+        except SarpError:
+            raise
+        except KeyError as e:
+            raise SarpError(
+                GRAPH_INPUT_INVALID,
+                f"input_mapper failed: missing key {e}; "
+                "graph state has no 'messages' key? pass input_mapper/output_mapper",
+                retryable=False,
+            ) from e
+        except Exception as e:
+            raise SarpError(GRAPH_INPUT_INVALID, f"input_mapper failed: {e}", retryable=False) from e
+
+    def _resume_value(init: SarpInitialize, turn: SarpTurnStart, snap: Any) -> Any:
+        """resume_mapper(init, turn, interrupt_value)；缺省 → turn.resume.value
+        原样（WP8 现状保持；WP9 补默认归约）。"""
+        if resume_mapper is None:
+            return turn.resume.value
+        try:
+            return resume_mapper(init, turn, _first_interrupt_value(snap))
+        except SarpError:
+            raise
+        except Exception as e:
+            raise SarpError(GRAPH_INPUT_INVALID, f"resume_mapper failed: {e}", retryable=False) from e
+
+    def _has_pending(snap: Any) -> bool:
+        return bool(getattr(snap, "next", None)) if snap is not None else False
+
+    def _resume_input(init: SarpInitialize, turn: SarpTurnStart, snap: Any) -> Any:
+        """孤儿 resume 防护（实机踩坑）：journal 层已验 token 单次有效，
+        但 thread 侧可能根本没有 pending interrupt——命名空间漂移
+        （entrypoint/revision/model 任一变化即换 thread）、旧 5 段
+        格式 thread、checkpoint 丢失都会命中。此时 Command(resume)
+        会让 agent 节点拿到空 messages → provider 报 "Empty input
+        messages"。显式失败让 daemon 清掉 pending 记录（自愈）。"""
+        from langgraph.types import Command  # 惰性导入：无 resume 不碰 langgraph
+
+        if not _has_pending(snap):
+            raise SarpError(
+                INTERRUPT_NOT_FOUND,
+                f"resume for turn {turn.turn_id}: thread has no pending interrupt",
+                retryable=False,
+            )
+        return Command(resume=_resume_value(init, turn, snap))
+
+    # ---- 回合体（sync / async 两版——流事件处理共用 _stream_item） ----
+
+    def _stream_item(ctx: dict, mode: Any, data: Any, emit: TurnEmit) -> Any | None:
+        """单个 (mode, data) 事件的归类处理；返回新捕获的 interrupts 或 None。"""
+        if mode == "messages":
+            if isinstance(data, (tuple, list)) and len(data) == 2:
+                chunk, _meta = data
+            else:
+                chunk, _meta = data, {}
+            if _is_ai_kind(_msg_kind(chunk)):
+                text = _flatten_content(getattr(chunk, "content", None))
+                if text:
+                    emit.delta(text)
+            um = getattr(chunk, "usage_metadata", None)
+            if isinstance(um, dict):
+                for k in ctx["totals"]:
+                    v = um.get(k)
+                    if isinstance(v, (int, float)):
+                        ctx["totals"][k] += int(v)
+                        ctx["seen"].add(k)
+        elif mode == "updates":
+            if isinstance(data, dict):
+                for node, upd in data.items():
+                    if node != "__interrupt__" and isinstance(upd, dict):
+                        ctx["last_updates"].update(upd)
+            return _handle_update(data, emit)
+        elif mode == "custom":
+            mapped = custom_event_mapper(data) if custom_event_mapper else None
+            if isinstance(mapped, str):
+                emit.progress(mapped)
+        return None
+
+    def _tail(ctx: dict, graph: Any, config: dict) -> TurnOutcome:
+        values = _final_values(graph, config, ctx["last_updates"])
+        out_map = output_mapper or _default_output_mapper
+        final_text = out_map(values)
+        if final_text is not None and not isinstance(final_text, str):
+            final_text = str(final_text)
+        return TurnOutcome(
+            status="success",
+            final_text=final_text,
+            usage=_usage_out(ctx["seen"], ctx["totals"], ctx["elapsed"]()),
+        )
+
+    def _new_ctx(started: float) -> dict:
+        return {
+            "seen": set(),
+            "totals": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            "last_updates": {},
+            "elapsed": lambda: int((time.monotonic() - started) * 1000),
+        }
+
+    def _stream_tail(ctx: dict, graph: Any, graph_input: Any, config: dict, emit: TurnEmit, cancelled) -> TurnOutcome:
+        interrupts = None
+        if streaming:
+            for mode, data in graph.stream(graph_input, config, stream_mode=_STREAM_MODES):
+                if cancelled.is_set():
+                    return TurnOutcome(status="cancelled")
+                interrupts = _stream_item(ctx, mode, data, emit) or interrupts
+                if interrupts:
+                    return TurnOutcome(
+                        status="interrupted",
+                        interrupt=_interrupt_record(interrupts),
+                        usage=_usage_out(ctx["seen"], ctx["totals"], ctx["elapsed"]()),
+                    )
+        else:
+            result = graph.invoke(graph_input, config)
+            if cancelled.is_set():
+                return TurnOutcome(status="cancelled")
+            if isinstance(result, dict):
+                ctx["last_updates"].update(result)
+                intr = result.get("__interrupt__")
+                if intr:
+                    return TurnOutcome(
+                        status="interrupted",
+                        interrupt=_interrupt_record(intr),
+                        usage=_usage_out(ctx["seen"], ctx["totals"], ctx["elapsed"]()),
+                    )
+        return _tail(ctx, graph, config)
+
+    async def _astream_tail(
+        ctx: dict, graph: Any, graph_input: Any, config: dict, emit: TurnEmit, cancelled
+    ) -> TurnOutcome:
+        interrupts = None
+        if streaming:
+            async for mode, data in graph.astream(graph_input, config, stream_mode=_STREAM_MODES):
+                if cancelled.is_set():
+                    return TurnOutcome(status="cancelled")
+                interrupts = _stream_item(ctx, mode, data, emit) or interrupts
+                if interrupts:
+                    return TurnOutcome(
+                        status="interrupted",
+                        interrupt=_interrupt_record(interrupts),
+                        usage=_usage_out(ctx["seen"], ctx["totals"], ctx["elapsed"]()),
+                    )
+        else:
+            result = await graph.ainvoke(graph_input, config)
+            if cancelled.is_set():
+                return TurnOutcome(status="cancelled")
+            if isinstance(result, dict):
+                ctx["last_updates"].update(result)
+                intr = result.get("__interrupt__")
+                if intr:
+                    return TurnOutcome(
+                        status="interrupted",
+                        interrupt=_interrupt_record(intr),
+                        usage=_usage_out(ctx["seen"], ctx["totals"], ctx["elapsed"]()),
+                    )
+        values = await _afinal_values(graph, config, ctx["last_updates"])
+        out_map = output_mapper or _default_output_mapper
+        final_text = out_map(values)
+        if final_text is not None and not isinstance(final_text, str):
+            final_text = str(final_text)
+        return TurnOutcome(
+            status="success",
+            final_text=final_text,
+            usage=_usage_out(ctx["seen"], ctx["totals"], ctx["elapsed"]()),
+        )
+
+    def _turn_sync(init, turn, emit, cancelled, graph, config, started) -> TurnOutcome:
+        ctx = _new_ctx(started)
+        graph_input: Any
+        if turn.resume is not None:
+            snap = _get_state_safe(graph, config)
+            graph_input = _resume_input(init, turn, snap)
+        else:
+            fresh = _thread_fresh(graph, config)
+            if not fresh:
+                # 上个回合可能死在 tool_call 与 ToolMessage 之间——先补悬空
+                # tool_call 的 error ToolMessage，否则 provider 400 拒收整个
+                # messages（实机：idempotencyKey 400 崩回合后 thread 永久毒化）。
+                _repair_dangling_tool_calls(graph, config)
+            graph_input = _map_input(init, turn, fresh)
+        return _stream_tail(ctx, graph, graph_input, config, emit, cancelled)
+
+    async def _turn_async(init, turn, emit, cancelled, graph, config, started) -> TurnOutcome:
+        ctx = _new_ctx(started)
+        graph_input: Any
+        if turn.resume is not None:
+            snap = await _aget_state_safe(graph, config)
+            graph_input = _resume_input(init, turn, snap)
+        else:
+            fresh = await _athread_fresh(graph, config)
+            if not fresh:
+                await _arepair_dangling_tool_calls(graph, config)
+            graph_input = _map_input(init, turn, fresh)
+        return await _astream_tail(ctx, graph, graph_input, config, emit, cancelled)
 
     def run_turn(init: SarpInitialize, turn: SarpTurnStart, emit: TurnEmit, cancelled) -> TurnOutcome:
         graph = state["graph"]
@@ -496,136 +781,85 @@ def serve_langgraph(
                 "slock_turn_id": turn.turn_id,
             }
         }
-
-        graph_input: Any
-        if turn.resume is not None:
-            from langgraph.types import Command  # 惰性导入：无 resume 不碰 langgraph
-
-            # 孤儿 resume 防护（实机踩坑）：journal 层已验 token 单次有效，
-            # 但 thread 侧可能根本没有 pending interrupt——命名空间漂移
-            # （entrypoint/revision/model 任一变化即换 thread）、旧 5 段
-            # 格式 thread、checkpoint 丢失都会命中。此时 Command(resume)
-            # 会让 agent 节点拿到空 messages → provider 报 "Empty input
-            # messages"。显式失败让 daemon 清掉 pending 记录（自愈）。
-            has_pending = False
-            get_state = getattr(graph, "get_state", None)
-            if get_state is not None:
-                try:
-                    snap = get_state(config)
-                    has_pending = bool(getattr(snap, "next", None))
-                except Exception:
-                    has_pending = False
-            if not has_pending:
-                raise SarpError(
-                    INTERRUPT_NOT_FOUND,
-                    f"resume for turn {turn.turn_id}: thread has no pending interrupt",
-                    retryable=False,
-                )
-            graph_input = Command(resume=turn.resume.value)
-        else:
-            fresh = _thread_fresh(graph, config)
-            if not fresh:
-                # 上个回合可能死在 tool_call 与 ToolMessage 之间——先补悬空
-                # tool_call 的 error ToolMessage，否则 provider 400 拒收整个
-                # messages（实机：idempotencyKey 400 崩回合后 thread 永久毒化）。
-                _repair_dangling_tool_calls(graph, config)
-            mapper = input_mapper or _default_input_mapper
+        if exec_mode == "async":
+            # §8.3：async 图全程跑在 worker 常驻事件循环上——协程内 emit 的
+            # 帧写入有 transport 写锁，跨线程安全；turn.cancel 时
+            # future.cancel() 桥成 task.cancel()。
+            loop = ensure_loop()
             try:
-                graph_input = mapper(init, turn, fresh)
-            except SarpError:
-                raise
-            except Exception as e:
-                raise SarpError(GRAPH_INPUT_INVALID, f"input_mapper failed: {e}", retryable=False) from e
-
-        seen_tokens: set = set()
-        totals = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
-        last_updates: dict = {}
-        interrupts = None
-
-        def _elapsed() -> int:
-            return int((time.monotonic() - started) * 1000)
-
-        if streaming:
-            for mode, data in graph.stream(graph_input, config, stream_mode=_STREAM_MODES):
-                if cancelled.is_set():
-                    return TurnOutcome(status="cancelled")
-                if mode == "messages":
-                    if isinstance(data, (tuple, list)) and len(data) == 2:
-                        chunk, _meta = data
-                    else:
-                        chunk, _meta = data, {}
-                    if _is_ai_kind(_msg_kind(chunk)):
-                        text = _flatten_content(getattr(chunk, "content", None))
-                        if text:
-                            emit.delta(text)
-                    um = getattr(chunk, "usage_metadata", None)
-                    if isinstance(um, dict):
-                        for k in totals:
-                            v = um.get(k)
-                            if isinstance(v, (int, float)):
-                                totals[k] += int(v)
-                                seen_tokens.add(k)
-                elif mode == "updates":
-                    if isinstance(data, dict):
-                        for node, upd in data.items():
-                            if node != "__interrupt__" and isinstance(upd, dict):
-                                last_updates.update(upd)
-                    interrupts = _handle_update(data, emit) or interrupts
-                elif mode == "custom":
-                    mapped = custom_event_mapper(data) if custom_event_mapper else None
-                    if isinstance(mapped, str):
-                        emit.progress(mapped)
-                if interrupts:
-                    return TurnOutcome(
-                        status="interrupted",
-                        interrupt=_interrupt_record(interrupts),
-                        usage=_usage_out(seen_tokens, totals, _elapsed()),
-                    )
-        else:
-            result = graph.invoke(graph_input, config)
-            if cancelled.is_set():
+                return loop.run(_turn_async(init, turn, emit, cancelled, graph, config, started), cancelled)
+            except asyncio.CancelledError:
                 return TurnOutcome(status="cancelled")
-            if isinstance(result, dict):
-                last_updates.update(result)
-                intr = result.get("__interrupt__")
-                if intr:
-                    return TurnOutcome(
-                        status="interrupted",
-                        interrupt=_interrupt_record(intr),
-                        usage=_usage_out(seen_tokens, totals, _elapsed()),
-                    )
+        return _turn_sync(init, turn, emit, cancelled, graph, config, started)
 
-        values = _final_values(graph, config, last_updates)
-        out_map = output_mapper or _default_output_mapper
-        final_text = out_map(values)
-        if final_text is not None and not isinstance(final_text, str):
-            final_text = str(final_text)
-        return TurnOutcome(
-            status="success",
-            final_text=final_text,
-            usage=_usage_out(seen_tokens, totals, _elapsed()),
-        )
+    return run_turn
 
-    rt = WorkerRuntime(
+
+# ---------------------------------------------------------------------------
+# 旧入口（stable 别名）——共享内核在 agent.py，force_path 锁定图路径
+# ---------------------------------------------------------------------------
+
+
+def serve_langgraph(
+    graph_or_factory: Any,
+    *,
+    input_mapper: Callable[[SarpInitialize, SarpTurnStart, bool], Any] | None = None,
+    output_mapper: Callable[[dict], str] | None = None,
+    interrupt_mapper: Callable[[Any], str] | None = None,
+    custom_event_mapper: Callable[[Any], str | None] | None = None,
+    cost_calculator: Callable[[dict], float | None] | None = None,
+    streaming: bool = True,
+    workspace_cwd: bool = False,
+    runtime_id: str = "bridge",
+    framework_version: str | None = None,
+    transport: Any = None,
+    journal: Any = None,
+) -> int:
+    """LangGraph worker 入口。返回进程退出码（0 正常关停，2 协议/初始化失败）。
+
+    `serve_agent(..., force_path="graph")` 的 stable 别名（WP8）——签名与
+    语义不变：graph_or_factory 可为 CompiledStateGraph 实例、鸭子类型图
+    （stream/get_state），或 `factory(init, tools) -> graph` 工厂（§12.4：
+    graph 不能在 import 时就 compile——Slock MCP tools 要等 initialize
+    下发后才有；tools 是 list[SlockStructuredTool]）。新代码推荐
+    `serve_agent`——按对象类型自动分派。
+
+    workspace_cwd=True 时，initialize 握手期间把进程 cwd 切到
+    init.workspace_path（daemon 为该 worker 建好的专属持久工作区）——工厂
+    函数与图节点里的相对路径即以工作区为基准。默认 False：cwd 保持
+    manifest 里声明的目录（通常是用户代码目录）。工作区不可进入
+    （chdir 失败）→ runtime.error(CWD_NOT_FOUND)，握手失败。
+
+    runtime_id：worker 对外上报的 runtime.id，默认 "bridge"；握手按归一值
+    比对——initialize.runtime.id 为 "bridge"/"langchain"/"langgraph"
+    （大小写不敏感）均接受，其余 → RUNTIME_ID_MISMATCH。
+
+    mapper 签名：
+    - input_mapper(init, turn, fresh) -> graph input；fresh = thread 无
+      checkpoint 历史。默认规则见 _default_input_mapper。缺省 mapper 时
+      握手期校验图输入 schema 含 "messages" 键（§8.4）。
+    - output_mapper(state_values) -> str：终态 get_state().values → finalText。
+    - interrupt_mapper(interrupt.value) -> str：审批提示文本。
+    - custom_event_mapper(custom_data) -> str|None：返回 str 才发 progress。
+    - cost_calculator(usage_dict) -> float|None：仅提供时才产出 costUsd。
+
+    execution 固定走 auto 判定（SqliteSaver/同步图 → sync；Async*/async 节
+    点 → 常驻事件循环 async）；强制模式请用 serve_agent(execution=...)。
+    """
+    from .agent import _serve_impl  # 惰性——避免 import 环
+
+    return _serve_impl(
+        graph_or_factory,
+        force_path="graph",
+        input_mapper=input_mapper,
+        output_mapper=output_mapper,
+        interrupt_mapper=interrupt_mapper,
+        custom_event_mapper=custom_event_mapper,
+        cost_calculator=cost_calculator,
+        streaming=streaming,
+        workspace_cwd=workspace_cwd,
         runtime_id=runtime_id,
-        framework_version=framework_version or _detect_langgraph_version(),
-        capabilities={
-            # probe 期无 initialize——静态报本 adapter 的固有能力面；
-            # durableThreads 实际值握手期按 checkpointer 覆盖（§11.3）
-            "streamingText": bool(streaming),
-            "toolEvents": True,
-            "durableThreads": True,
-            "interrupts": True,
-            "mcp": True,
-            "usage": "tokens",
-        },
-        probe_model={"overrides": True},
+        framework_version=framework_version,
         transport=transport,
         journal=journal,
     )
-    try:
-        return rt.serve(run_turn, on_initialize)
-    finally:
-        client = state["mcp_client"]
-        if client is not None:
-            client.close()

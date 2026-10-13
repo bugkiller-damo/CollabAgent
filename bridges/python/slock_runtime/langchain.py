@@ -1,39 +1,42 @@
-"""LangChain adapter：把一个 LangChain Runnable / agent 挂上 SARP/1 worker runtime。
+"""LangChain Runnable 路径执行循环（§12.2）；入口/握手内核在 agent.py（WP8 §8.1）。
+
+`serve_langchain` 是 `serve_agent` 的 stable 别名（强制 Runnable 路径）——
+签名、语义不变：握手/runtime.id 比对/workspace_cwd/工具构建由共享内核
+承担，本模块只留 Runnable 路径（无状态）的回合执行。
 
 职责（§12.2）：
-1. initialize 握手：先起 Slock MCP client 并把 tools 转成 StructuredTool，
-   再调用户工厂 build(init, tools)（§12.4 顺序：tools 必须先于 graph 构建）。
-2. turn.prompt → HumanMessage；platform system prompt 按 system_prompt_mode
+1. turn.prompt → HumanMessage；platform system prompt 按 system_prompt_mode
    注入为最高优先级 SystemMessage（"prepend"）或完全不注入（"none"）。
-3. 用 astream_events(v2) 稳定流接口取事件：
+   Runnable 路径无 checkpoint——每回合都前置（§8.5：等价上下文出现一次）。
+2. 用 astream_events(v2) 稳定流接口取事件：
    on_chat_model_stream → assistant.delta；on_tool_start/end/error →
    tool.start / tool.end（Slock MCP 工具标为 provider=slock、
-   operation=工具名，其余 provider=langchain）。
-4. finalText 取自最终结果的最后一条 message；usage 取自最终 AIMessage 的
+   operation=metadata.operation——metadata 缺席按名兜底；
+   其余 provider=langchain）。
+3. finalText 取自最终结果的最后一条 message；usage 取自最终 AIMessage 的
    usage_metadata（snake→camel）；costUsd 只由 cost_calculator 给出。
-5. resume 不支持（普通 Runnable 无 checkpoint）→ PROTOCOL_VIOLATION 终态；
+4. resume 不支持（普通 Runnable 无 checkpoint）→ PROTOCOL_VIOLATION 终态；
    durableThreads/interrupts 不虚报（§12.2 末段）。
 
+WP8 增量：异步消费全部迁到 worker 常驻事件循环（agent.py _AsyncLoop）——
+不再每回合 asyncio.run；turn.cancel 时 future.cancel() 桥成
+task.cancel()，逐事件 cancelled.is_set() 检查保留。
+
 纪律：
-- langchain / langchain_core 一律函数内惰性 import——`import slock_runtime`
-  在零框架依赖环境下必须可用。
-- 回合在 daemon 线程里跑，asyncio.run 自带私有 loop；cancel 经
-  threading.Event 协作传递，每个事件查一次。
+- langchain / langchain_core 一律函数内惰性 import——`import
+  slock_runtime.langchain` 在零框架依赖环境下必须可用。
 - 秘密（token/env）不进任何帧；stdout 只走协议帧。
 """
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import os
 from collections.abc import Callable
 from typing import Any
 
-from .errors import CWD_NOT_FOUND, GRAPH_INPUT_INVALID, PROTOCOL_VIOLATION, RUNTIME_ID_MISMATCH, SarpError
-from .mcp import SlockMcpClient
-from .protocol import SarpInitialize, SarpTurnStart, normalize_runtime_id
-from .runtime import TurnEmit, TurnOutcome, WorkerRuntime
+from .errors import GRAPH_INPUT_INVALID, PROTOCOL_VIOLATION, SarpError
+from .protocol import SarpInitialize, SarpTurnStart
+from .runtime import RunTurn, TurnEmit, TurnOutcome
 from .tool_events import tool_provider_fields
 
 # tool.end output / error 截断上限（§8.5 输出字段控制帧尺寸；§17.1 大帧纪律）
@@ -46,8 +49,60 @@ UsageExtractor = Callable[[Any], dict | None]
 CostCalculator = Callable[[dict], float | None]
 
 
-def serve_langchain(
-    agent_or_factory: Any,
+# ---------------------------------------------------------------------------
+# 内核面向的判定 / 上报（agent.py 握手期调用）
+# ---------------------------------------------------------------------------
+
+
+def detect_version() -> str | None:
+    """惰性探测 langchain-core 版本——走 importlib.metadata，不 import 框架
+    （probe 环境可能没有框架依赖）；缺依赖时返回 None，不进帧。"""
+    import importlib.metadata
+
+    try:
+        return f"langchain-core {importlib.metadata.version('langchain-core')}"
+    except Exception:
+        return None
+
+
+def probe_capabilities(streaming: bool, load_mcp_tools: bool = True) -> dict:
+    """probe 期静态能力面——握手期 on_initialize overrides 仍是权威。"""
+    return {
+        "streamingText": streaming,
+        "toolEvents": True,
+        "durableThreads": False,
+        "interrupts": False,
+        "mcp": bool(load_mcp_tools),
+        "usage": "tokens",
+    }
+
+
+def handshake_fields(init: SarpInitialize, *, streaming: bool, has_mcp: bool) -> dict:
+    """握手 ready 的 capabilities/model overrides——语义与旧 on_initialize 一致。
+
+    Runnable 路径无状态：interrupts/durableThreads 恒 false（§8.5）。"""
+    return {
+        "capabilities": {
+            "persistentProcess": True,
+            "maxConcurrency": 1,
+            "streamingText": streaming,
+            "toolEvents": True,
+            "interrupts": False,
+            "durableThreads": False,
+            "mcp": has_mcp,
+            "usage": "tokens",
+        },
+        "model": {"selected": init.model} if init.model else {},
+    }
+
+
+# ---------------------------------------------------------------------------
+# Runnable 路径 run_turn 组装
+# ---------------------------------------------------------------------------
+
+
+def make_run_turn(
+    state: dict,
     *,
     input_mapper: InputMapper | None = None,
     output_mapper: OutputMapper | None = None,
@@ -55,88 +110,21 @@ def serve_langchain(
     cost_calculator: CostCalculator | None = None,
     system_prompt_mode: str = "prepend",
     streaming: bool = True,
-    workspace_cwd: bool = False,
-    runtime_id: str = "bridge",
-    framework_version: str | None = None,
-    transport: Any = None,
-    journal: Any = None,
-    load_mcp_tools: bool = True,
-) -> int:
-    """LangChain runtime 入口。阻塞至 shutdown，返回进程退出码。
+    ensure_loop: Callable | None = None,
+) -> RunTurn:
+    """组装 Runnable 路径回合函数 run_turn(init, turn, emit, cancelled)。
 
-    agent_or_factory：现成的 Runnable，或工厂 ``fn(init, tools) -> Runnable``
-    ——工厂在 initialize 之后、Slock MCP tools 就绪之后调用（§12.4）。
-
-    workspace_cwd=True 时，initialize 握手期间把进程 cwd 切到
-    init.workspace_path（daemon 建好的专属持久工作区）——工厂函数与
-    Runnable 里的相对路径即以工作区为基准。默认 False：cwd 保持
-    manifest 里声明的目录。工作区不可进入（chdir 失败）→
-    runtime.error(CWD_NOT_FOUND)，握手失败。
-
-    runtime_id：worker 对外上报的 runtime.id，默认 "bridge"；握手按归一值
-    比对——initialize.runtime.id 为 "bridge"/"langchain"/"langgraph"
-    （大小写不敏感）均接受，其余 → RUNTIME_ID_MISMATCH。
+    state 是内核共享 dict（keys：agent / mcp_client / slock_tool_ops）。
+    ensure_loop 给常驻 _AsyncLoop——只在需要异步消费时调用（invoke-only
+    的 sync Runnable 不付线程）。
     """
-    if system_prompt_mode not in ("prepend", "none"):
-        raise ValueError(f"system_prompt_mode must be 'prepend' or 'none', got {system_prompt_mode!r}")
-    if framework_version is None:
-        framework_version = _detect_framework_version()
 
-    # on_initialize 在 runtime.serve 内部跑；client/agent 经 holder 带出，
-    # serve 返回后在 finally 里关 MCP 子进程（§12.4：退出时关闭 client）。
-    holder: dict[str, Any] = {"mcp_client": None, "agent": None, "slock_tool_names": frozenset()}
-
-    def _on_initialize(init: SarpInitialize, emit: TurnEmit) -> dict:
-        # WP6：initialize.runtime.id 是 manifest 声明原值——归一后比对，
-        # "bridge"/"langchain"/"langgraph"（大小写不敏感）均接受
-        if normalize_runtime_id(init.runtime_id) != normalize_runtime_id(runtime_id):
-            raise SarpError(
-                RUNTIME_ID_MISMATCH,
-                f"initialize.runtime.id={init.runtime_id!r} does not match worker "
-                f"runtime_id={runtime_id!r} (normalized comparison; "
-                "'langchain'/'langgraph' are legacy aliases of 'bridge')",
-                retryable=False,
-            )
-        if workspace_cwd:
-            try:
-                os.chdir(init.workspace_path)
-            except OSError as e:
-                raise SarpError(
-                    CWD_NOT_FOUND,
-                    f"workspace_cwd: cannot chdir to {init.workspace_path!r}: {e}",
-                    retryable=False,
-                ) from e
-        tools: list = []
-        if init.mcp is not None and load_mcp_tools:
-            client = SlockMcpClient(init.mcp)
-            client.start()  # 失败抛 SarpError(MCP_START_FAILED) → runtime.error
-            holder["mcp_client"] = client
-            tools = _load_langchain_tools(client)
-            # Slock MCP 工具名集合——tool.start/tool.end 标 provider=slock
-            # + operation=工具名（load_mcp_tools=False / 无 mcp 时保持空集）
-            holder["slock_tool_names"] = frozenset(t.name for t in tools)
-        agent = agent_or_factory(init, tools) if callable(agent_or_factory) else agent_or_factory
-        holder["agent"] = agent
-        return {
-            "capabilities": {
-                "persistentProcess": True,
-                "maxConcurrency": 1,
-                "streamingText": streaming,
-                "toolEvents": True,
-                "interrupts": False,
-                "durableThreads": False,
-                "mcp": bool(init.mcp),
-                "usage": "tokens",
-            },
-            "model": {"selected": init.model} if init.model else {},
-        }
-
-    def _run_turn(init: SarpInitialize, turn: SarpTurnStart, emit: TurnEmit, cancelled) -> TurnOutcome:
-        client = holder["mcp_client"]
+    def run_turn(init: SarpInitialize, turn: SarpTurnStart, emit: TurnEmit, cancelled) -> TurnOutcome:
+        client = state["mcp_client"]
         if client is not None:
             client.set_active_turn(turn.turn_id)  # §15.4：写工具幂等键锚定 turnId
         return _run_one_turn(
-            holder["agent"],
+            state["agent"],
             init,
             turn,
             emit,
@@ -147,33 +135,11 @@ def serve_langchain(
             cost_calculator=cost_calculator,
             system_prompt_mode=system_prompt_mode,
             streaming=streaming,
-            slock_tool_names=holder["slock_tool_names"],
+            slock_tool_ops=state["slock_tool_ops"],
+            ensure_loop=ensure_loop,
         )
 
-    runtime = WorkerRuntime(
-        runtime_id=runtime_id,
-        framework_version=framework_version,
-        capabilities={
-            # probe 期无 initialize——静态报本 adapter 的固有面；
-            # 握手期 on_initialize overrides 仍是权威（§12.2）
-            "streamingText": streaming,
-            "toolEvents": True,
-            "durableThreads": False,
-            "interrupts": False,
-            "mcp": bool(load_mcp_tools),
-            "usage": "tokens",
-        },
-        probe_model={"overrides": True},
-        transport=transport,
-        journal=journal,
-    )
-    try:
-        return runtime.serve(_run_turn, _on_initialize)
-    finally:
-        client = holder["mcp_client"]
-        if client is not None:
-            with contextlib.suppress(Exception):
-                client.close()
+    return run_turn
 
 
 # ---------------------------------------------------------------------------
@@ -194,9 +160,10 @@ def _run_one_turn(
     cost_calculator: CostCalculator | None,
     system_prompt_mode: str,
     streaming: bool,
-    slock_tool_names: frozenset[str] = frozenset(),
+    slock_tool_ops: dict[str, str] | frozenset[str],
+    ensure_loop: Callable | None,
 ) -> TurnOutcome:
-    # langchain runtime 无 checkpoint，resume 一律拒绝（runtime 落成 error turn.end）
+    # Runnable 路径无 checkpoint，resume 一律拒绝（runtime 落成 error turn.end）
     if turn.resume is not None:
         raise SarpError(PROTOCOL_VIOLATION, "resume unsupported on langchain runtime", retryable=False)
     if agent is None:
@@ -208,18 +175,26 @@ def _run_one_turn(
     result: Any = None
     stream_usage_meta: Any = None
 
-    if streaming and hasattr(agent, "astream_events"):
-        result, stream_usage_meta = _stream_events(agent, input_value, emit, cancelled, streamed, slock_tool_names)
-    elif hasattr(agent, "ainvoke"):
-        result = asyncio.run(agent.ainvoke(input_value))
-    elif hasattr(agent, "invoke"):
-        result = agent.invoke(input_value)
-    else:
-        raise SarpError(
-            PROTOCOL_VIOLATION,
-            "agent is not runnable: needs astream_events/ainvoke/invoke",
-            retryable=False,
-        )
+    try:
+        if streaming and hasattr(agent, "astream_events"):
+            # 常驻 loop（§8.3）：协程消费 astream_events；cancel → task.cancel()
+            result, stream_usage_meta = ensure_loop().run(
+                _consume_events(agent, input_value, emit, cancelled, streamed, slock_tool_ops),
+                cancelled,
+            )
+        elif hasattr(agent, "ainvoke"):
+            result = ensure_loop().run(agent.ainvoke(input_value), cancelled)
+        elif hasattr(agent, "invoke"):
+            result = agent.invoke(input_value)
+        else:
+            raise SarpError(
+                PROTOCOL_VIOLATION,
+                "agent is not runnable: needs astream_events/ainvoke/invoke",
+                retryable=False,
+            )
+    except asyncio.CancelledError:
+        # turn.cancel 把协程 task.cancel() 了——收 cancelled 终态
+        return TurnOutcome(status="cancelled")
     if cancelled.is_set():
         return TurnOutcome(status="cancelled")
 
@@ -241,69 +216,65 @@ def _run_one_turn(
     return TurnOutcome(status="success", final_text=final_text, usage=usage)
 
 
-def _stream_events(
-    agent: Any, input_value: Any, emit: TurnEmit, cancelled, streamed: list, slock_tool_names: frozenset[str]
+async def _consume_events(
+    agent: Any, input_value: Any, emit: TurnEmit, cancelled, streamed: list, slock_tool_ops
 ):
-    """asyncio.run 在 handler 线程里跑私有 loop；逐事件查 cancel。"""
-
-    async def _consume():
-        result: Any = None
-        usage_meta: Any = None
-        async for event in agent.astream_events(input_value, version="v2"):
-            if cancelled.is_set():
-                return result, usage_meta
-            if not isinstance(event, dict):
-                continue
-            etype = event.get("event") or ""
-            data = event.get("data")
-            if not isinstance(data, dict):
-                data = {}
-            if etype == "on_chat_model_stream":
-                chunk = data.get("chunk")
-                text = _content_to_text(getattr(chunk, "content", chunk))
-                if text:
-                    emit.delta(text)
-                    streamed.append(text)
-                um = getattr(chunk, "usage_metadata", None)
-                if um:
-                    usage_meta = um
-            elif etype == "on_tool_start":
-                name = str(event.get("name") or "tool")
-                emit.tool_start(
-                    call_id=str(event.get("run_id", "")),
-                    name=name,
-                    **tool_provider_fields(name, slock_tool_names, "langchain"),
-                    input=data.get("input"),
-                )
-            elif etype == "on_tool_end":
-                out = data.get("output")
-                name = str(event.get("name") or "tool")
-                emit.tool_end(
-                    call_id=str(event.get("run_id", "")),
-                    ok=True,
-                    name=name,
-                    **tool_provider_fields(name, slock_tool_names, "langchain"),
-                    output=_truncate(_content_to_text(getattr(out, "content", out)), _TOOL_OUTPUT_MAX),
-                )
-            elif etype == "on_tool_error":
-                name = str(event.get("name") or "tool")
-                emit.tool_end(
-                    call_id=str(event.get("run_id", "")),
-                    ok=False,
-                    name=name,
-                    **tool_provider_fields(name, slock_tool_names, "langchain"),
-                    error=_truncate(str(data.get("error")), _TOOL_ERROR_MAX),
-                )
-            elif etype == "on_chat_model_end":
-                um = getattr(data.get("output"), "usage_metadata", None)
-                if um:
-                    usage_meta = um
-            # 最后一个带 output 的 *_end 即最外层 runnable 的终值
-            if etype.endswith("_end") and "output" in data:
-                result = data.get("output")
-        return result, usage_meta
-
-    return asyncio.run(_consume())
+    """常驻 loop 上消费 agent.astream_events(v2)；逐事件查 cancel。"""
+    result: Any = None
+    usage_meta: Any = None
+    async for event in agent.astream_events(input_value, version="v2"):
+        if cancelled.is_set():
+            return result, usage_meta
+        if not isinstance(event, dict):
+            continue
+        etype = event.get("event") or ""
+        data = event.get("data")
+        if not isinstance(data, dict):
+            data = {}
+        if etype == "on_chat_model_stream":
+            chunk = data.get("chunk")
+            text = _content_to_text(getattr(chunk, "content", chunk))
+            if text:
+                emit.delta(text)
+                streamed.append(text)
+            um = getattr(chunk, "usage_metadata", None)
+            if um:
+                usage_meta = um
+        elif etype == "on_tool_start":
+            name = str(event.get("name") or "tool")
+            emit.tool_start(
+                call_id=str(event.get("run_id", "")),
+                name=name,
+                **tool_provider_fields(name, slock_tool_ops, "langchain"),
+                input=data.get("input"),
+            )
+        elif etype == "on_tool_end":
+            out = data.get("output")
+            name = str(event.get("name") or "tool")
+            emit.tool_end(
+                call_id=str(event.get("run_id", "")),
+                ok=True,
+                name=name,
+                **tool_provider_fields(name, slock_tool_ops, "langchain"),
+                output=_truncate(_content_to_text(getattr(out, "content", out)), _TOOL_OUTPUT_MAX),
+            )
+        elif etype == "on_tool_error":
+            name = str(event.get("name") or "tool")
+            emit.tool_end(
+                call_id=str(event.get("run_id", "")),
+                ok=False,
+                name=name,
+                **tool_provider_fields(name, slock_tool_ops, "langchain"),
+                error=_truncate(str(data.get("error")), _TOOL_ERROR_MAX),
+            )
+        elif etype == "on_chat_model_end":
+            um = getattr(data.get("output"), "usage_metadata", None)
+            if um:
+                usage_meta = um
+        # 最后一个带 output 的 *_end 即最外层 runnable 的终值
+        if etype.endswith("_end") and "output" in data:
+            result = data.get("output")
+    return result, usage_meta
 
 
 # ---------------------------------------------------------------------------
@@ -422,40 +393,59 @@ def _truncate(text: str, limit: int) -> str:
 
 
 # ---------------------------------------------------------------------------
-# MCP tools → LangChain tools
+# 旧入口（stable 别名）——共享内核在 agent.py，force_path 锁定 Runnable 路径
 # ---------------------------------------------------------------------------
 
 
-def _load_langchain_tools(client: SlockMcpClient) -> list:
-    """McpToolInfo → StructuredTool；所有 tool 复用同一个 client（§12.4）。"""
-    from langchain_core.tools import StructuredTool
+def serve_langchain(
+    agent_or_factory: Any,
+    *,
+    input_mapper: InputMapper | None = None,
+    output_mapper: OutputMapper | None = None,
+    usage_extractor: UsageExtractor | None = None,
+    cost_calculator: CostCalculator | None = None,
+    system_prompt_mode: str = "prepend",
+    streaming: bool = True,
+    workspace_cwd: bool = False,
+    runtime_id: str = "bridge",
+    framework_version: str | None = None,
+    transport: Any = None,
+    journal: Any = None,
+    load_mcp_tools: bool = True,
+) -> int:
+    """LangChain runtime 入口。阻塞至 shutdown，返回进程退出码。
 
-    tools = []
-    for info in client.list_tools():
+    `serve_agent(..., force_path="runnable")` 的 stable 别名（WP8）——签名
+    与语义不变：agent_or_factory 可为现成 Runnable 或工厂
+    ``fn(init, tools) -> Runnable``——工厂在 initialize 之后、Slock MCP
+    tools 就绪之后调用（§12.4；tools 是 list[SlockStructuredTool]）。
+    新代码推荐 `serve_agent`——按对象类型自动分派。
 
-        def _bind(name: str):  # 闭包固化 tool 名，避免 late-binding
-            def _call(**kwargs):
-                return client.call_tool(name, kwargs)
+    workspace_cwd=True 时，initialize 握手期间把进程 cwd 切到
+    init.workspace_path（daemon 建好的专属持久工作区）——工厂函数与
+    Runnable 里的相对路径即以工作区为基准。默认 False：cwd 保持
+    manifest 里声明的目录。工作区不可进入（chdir 失败）→
+    runtime.error(CWD_NOT_FOUND)，握手失败。
 
-            return _call
+    runtime_id：worker 对外上报的 runtime.id，默认 "bridge"；握手按归一值
+    比对——initialize.runtime.id 为 "bridge"/"langchain"/"langgraph"
+    （大小写不敏感）均接受，其余 → RUNTIME_ID_MISMATCH。
+    """
+    from .agent import _serve_impl  # 惰性——避免 import 环
 
-        tools.append(
-            StructuredTool(
-                name=info.name,
-                description=info.description or info.name,
-                args_schema=info.input_schema or {"type": "object", "properties": {}},
-                func=_bind(info.name),
-            )
-        )
-    return tools
-
-
-def _detect_framework_version() -> str | None:
-    """惰性探测 langchain-core 版本——走 importlib.metadata，不 import 框架
-    （probe 环境可能没有框架依赖）；缺依赖时返回 None，不进帧。"""
-    import importlib.metadata
-
-    try:
-        return f"langchain-core {importlib.metadata.version('langchain-core')}"
-    except Exception:
-        return None
+    return _serve_impl(
+        agent_or_factory,
+        force_path="runnable",
+        input_mapper=input_mapper,
+        output_mapper=output_mapper,
+        usage_extractor=usage_extractor,
+        cost_calculator=cost_calculator,
+        system_prompt_mode=system_prompt_mode,
+        streaming=streaming,
+        workspace_cwd=workspace_cwd,
+        runtime_id=runtime_id,
+        framework_version=framework_version,
+        transport=transport,
+        journal=journal,
+        load_mcp_tools=load_mcp_tools,
+    )
