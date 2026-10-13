@@ -597,7 +597,7 @@ class TestRealLangChain:
         assert ready["capabilities"]["mcp"] is True
 
         tools = captured["tools"]
-        assert [t.name for t in tools] == ["slock_echo"]
+        assert [t.name for t in tools] == ["slock_echo", "send_message"]
         out = tools[0].invoke({"text": "ping"})
         assert '"text": "ping"' in str(out)
 
@@ -605,6 +605,48 @@ class TestRealLangChain:
         assert h.wait_end("t1")["finalText"] == "mcp ok"
         h.send("shutdown")
         assert h.finish() == 0
+
+    def test_slock_mcp_tool_events_marked(self, tmp_path, lc):
+        """Slock MCP 工具事件标 provider=slock/operation=工具名；其余保持
+        provider=langchain（daemon 的 send_message 空文本豁免依赖这组字段）。"""
+        from langchain_core.messages import AIMessage
+        from langchain_core.runnables import RunnableLambda
+        from langchain_core.tools import tool
+
+        def factory(init, tools):
+            by_name = {t.name: t for t in tools}
+
+            @tool
+            def local_search(q: str) -> str:
+                """Local search tool (not a Slock MCP tool)."""
+                return f"results:{q}"
+
+            def run(_value):
+                out = by_name["send_message"].invoke({"target": "#general", "content": "hi"})
+                local_search.invoke({"q": "x"})
+                return {"messages": [AIMessage(content=str(out))]}
+
+            return RunnableLambda(run)
+
+        h = Harness(tmp_path)
+        h.start(factory)
+        init = init_fields(mcp={"command": sys.executable, "args": ["-u", str(FAKE_MCP)]})
+        h.send("initialize", **init)
+        assert h.ready()["capabilities"]["mcp"] is True
+        h.send("turn.start", **turn_fields("t1"))
+        end = h.wait_end("t1")
+        h.send("shutdown")
+        h.finish()
+
+        assert end["status"] == "success"
+        starts = {f["tool"]["name"]: f["tool"] for f in h.frames() if f["type"] == "tool.start"}
+        ends = {f["tool"]["name"]: f["tool"] for f in h.frames() if f["type"] == "tool.end"}
+        assert starts["send_message"]["provider"] == "slock"
+        assert starts["send_message"]["operation"] == "send_message"
+        assert ends["send_message"]["provider"] == "slock"
+        assert ends["send_message"]["operation"] == "send_message"
+        assert starts["local_search"]["provider"] == "langchain"
+        assert "operation" not in starts["local_search"]
 
     @pytest.mark.parametrize(
         ("example", "runtime_id", "durable", "interrupts"),

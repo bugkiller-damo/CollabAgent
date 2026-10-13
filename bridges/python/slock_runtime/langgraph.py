@@ -10,7 +10,8 @@
   messages → assistant.delta（仅 ai 类 chunk；ToolMessage 不进文本流）；
   updates → tool.start/tool.end（AIMessage.tool_calls / ToolMessage）与
   __interrupt__ 检测；custom → 仅 custom_event_mapper 显式放行的
-  progress（§12.3.4，不把私有事件透出）；
+  progress（§12.3.4，不把私有事件透出）；Slock MCP 工具标为
+  provider=slock、operation=工具名，其余 provider=langgraph；
 - interrupt() → InterruptRecord + TurnOutcome(interrupted)；resume token
   签发/单次消费由 runtime journal 兜底（§11.4），adapter 不碰；
 - turn.resume → Command(resume=value) 走原 checkpoint 恢复；
@@ -37,6 +38,7 @@ from .errors import GRAPH_INPUT_INVALID, INTERRUPT_NOT_FOUND, RUNTIME_ID_MISMATC
 from .mcp import SlockMcpClient
 from .protocol import SarpInitialize, SarpTurnStart
 from .runtime import InterruptRecord, TurnEmit, TurnOutcome, WorkerRuntime, new_resume_token
+from .tool_events import tool_provider_fields
 
 TOOL_OUTPUT_MAX_CHARS = 4000  # §20.5：超大 tool output 截断
 _STREAM_MODES = ["messages", "updates", "custom"]
@@ -324,7 +326,7 @@ def serve_langgraph(
     - cost_calculator(usage_dict) -> float|None：仅提供时才产出 costUsd。
     """
 
-    state: dict[str, Any] = {"graph": None, "tools": [], "mcp_client": None}
+    state: dict[str, Any] = {"graph": None, "tools": [], "mcp_client": None, "slock_tool_names": frozenset()}
 
     # ---------------- 握手（§12.4 启动顺序） ----------------
 
@@ -357,6 +359,9 @@ def serve_langgraph(
                 )
         state["mcp_client"] = client
         state["tools"] = tools
+        # Slock MCP 工具名集合——tool.start/tool.end 标注 provider=slock
+        # + operation=工具名（daemon 据此豁免 send_message 的空文本终态）
+        state["slock_tool_names"] = frozenset(t.name for t in tools)
 
         # 2) graph：工厂模式把 init + slock tools 交给用户构建
         graph = graph_or_factory(init, tools) if callable(graph_or_factory) else graph_or_factory
@@ -434,7 +439,7 @@ def serve_langgraph(
                         str(call_id),
                         ok,
                         name=getattr(msg, "name", None),
-                        provider="langgraph",
+                        **tool_provider_fields(getattr(msg, "name", None), state["slock_tool_names"], "langgraph"),
                         output=text,
                         error=None if ok else text,
                     )
@@ -445,7 +450,7 @@ def serve_langgraph(
                         emit.tool_start(
                             str(tc.get("id") or ""),
                             str(tc.get("name") or ""),
-                            provider="langgraph",
+                            **tool_provider_fields(tc.get("name"), state["slock_tool_names"], "langgraph"),
                             input=tc.get("args"),
                         )
         return found

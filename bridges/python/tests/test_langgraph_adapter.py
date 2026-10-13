@@ -19,6 +19,7 @@ import io
 import json
 import queue
 import sqlite3
+import sys
 import threading
 import time
 from pathlib import Path
@@ -30,6 +31,7 @@ from slock_runtime.langgraph import serve_langgraph
 from slock_runtime.transport import SarpTransport
 
 TS = "2026-09-20T00:00:00.000Z"
+FAKE_MCP = Path(__file__).resolve().parent / "fixtures" / "fake_mcp_server.py"
 
 
 # ---------------------------------------------------------------------------
@@ -727,3 +729,69 @@ class TestEndToEnd:
         assert _ends(frames)[0]["status"] == "success"
         # 无 mcp descriptor → mcp capability false
         assert frames[0]["capabilities"]["mcp"] is False
+
+    def test_slock_mcp_tool_events_marked(self, tmp_path):
+        """Slock MCP 工具 → provider=slock+operation=工具名；本地工具保持
+        provider=langgraph 且无 operation（daemon 的 send_message 空文本豁免）。"""
+        _lg()
+        from typing import Annotated
+
+        from langchain_core.messages import AIMessage, ToolMessage
+        from langgraph.checkpoint.memory import InMemorySaver
+        from langgraph.graph import END, START, StateGraph
+        from langgraph.graph.message import add_messages
+        from typing_extensions import TypedDict
+
+        S = TypedDict("S", {"messages": Annotated[list, add_messages]})  # noqa: UP013
+
+        def agent(state):
+            calls = [
+                {"id": "c1", "name": "send_message", "args": {"target": "#general", "content": "hi"}},
+                {"id": "c2", "name": "search", "args": {"q": "x"}},
+            ]
+            return {"messages": [AIMessage(content="", tool_calls=calls)]}
+
+        def tool(state):
+            return {
+                "messages": [
+                    ToolMessage(content="sent", tool_call_id="c1", name="send_message"),
+                    ToolMessage(content="results", tool_call_id="c2", name="search"),
+                ]
+            }
+
+        def final(state):
+            return {"messages": [AIMessage("")]}
+
+        g = StateGraph(S)
+        g.add_node("agent", agent).add_node("tool", tool).add_node("final", final)
+        g.add_edge(START, "agent").add_edge("agent", "tool").add_edge("tool", "final").add_edge("final", END)
+        graph = g.compile(checkpointer=InMemorySaver())
+
+        s = Session(lambda init, tools: graph)
+        s.feed(
+            _init_frame(
+                tmp_path,
+                platform={
+                    "systemPrompt": "sys-prompt",
+                    "mcp": {"command": sys.executable, "args": ["-u", str(FAKE_MCP)]},
+                },
+            )
+        )
+        ready = s.wait_type("runtime.ready")
+        assert ready["capabilities"]["mcp"] is True
+        s.feed(_turn(2, "t1", "conv-1", "hi"))
+        end = s.wait_turn_end("t1")
+        s.feed(_dframe("shutdown", 3))
+        s._th.join(timeout=15)
+
+        assert end["status"] == "success"
+        starts = {f["tool"]["name"]: f["tool"] for f in _frames(s.stdout) if f["type"] == "tool.start"}
+        ends = {f["tool"]["name"]: f["tool"] for f in _frames(s.stdout) if f["type"] == "tool.end"}
+        assert starts["send_message"]["provider"] == "slock"
+        assert starts["send_message"]["operation"] == "send_message"
+        assert ends["send_message"]["provider"] == "slock"
+        assert ends["send_message"]["operation"] == "send_message"
+        assert starts["search"]["provider"] == "langgraph"
+        assert "operation" not in starts["search"]
+        assert ends["search"]["provider"] == "langgraph"
+        assert "operation" not in ends["search"]

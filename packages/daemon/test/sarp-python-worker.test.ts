@@ -19,6 +19,7 @@ import {
 const PY_FIXTURE = join(__dirname, "fixtures", "sarp_worker.py");
 const SDK_DIR = join(__dirname, "../../../bridges/python");
 const VENV_PY = join(SDK_DIR, ".venv", "Scripts", "python.exe");
+const FAKE_MCP = join(SDK_DIR, "tests", "fixtures", "fake_mcp_server.py");
 
 const findPython = (): string | null => {
   const candidates = [process.env.SLOCK_TEST_PYTHON, "python", VENV_PY].filter(Boolean) as string[];
@@ -31,6 +32,10 @@ const findPython = (): string | null => {
 
 const PYTHON = findPython();
 const maybe = PYTHON ? describe : describe.skip;
+// send_message 豁免用例走 serve_langgraph——Python 侧需装 langgraph
+const HAS_LANGGRAPH =
+  PYTHON !== null && spawnSync(PYTHON, ["-c", "import langgraph, langchain_core"], { stdio: "pipe" }).status === 0;
+const itIfLangGraph = HAS_LANGGRAPH ? it : it.skip;
 
 const openPyWorker = (
   workspace: string,
@@ -124,5 +129,22 @@ maybe("Python slock_runtime worker ↔ session 端到端", () => {
         e instanceof Error &&
         ["protocol-violation", "worker-exited", "runtime-start-timeout"].includes((e as { code?: string }).code ?? ""),
     );
+  });
+
+  itIfLangGraph("slock send_message 成功 + 空 finalText → success（empty-success 豁免，§8.7.8）", async () => {
+    const ws = mkdtempSync(join(tmpdir(), "slock-py-"));
+    const { session, events } = openPyWorker(
+      ws,
+      { SLOCK_PY_SLOCK_SEND: "1" },
+      {
+        mcp: { command: PYTHON!, args: ["-u", FAKE_MCP] },
+      },
+    );
+    const result = (await session.send(req("t-send", "ping"))) as AgentRuntimeTurnResult;
+    expect(result.status).toBe("success");
+    expect(result.finalText ?? "").toBe("");
+    expect(events.map((e) => e.type)).toContain("tool.end");
+    await session.stop();
+    expect(session.alive).toBe(false);
   });
 });

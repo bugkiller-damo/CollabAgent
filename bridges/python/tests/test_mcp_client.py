@@ -61,7 +61,7 @@ class TestLifecycle:
 class TestTools:
     def test_list_tools(self, client):
         tools = client.list_tools()
-        assert len(tools) == 1
+        assert len(tools) == 2
         t = tools[0]
         assert t.name == "slock_echo"
         assert "Echo" in t.description
@@ -94,7 +94,7 @@ class TestTools:
 class TestAllowlist:
     """批次 C（P1.6）：initialize.platform.mcp.allowTools 的 SDK 侧收敛。
 
-    fixture server 只暴露 slock_echo——用名单含/不含它来验证两个方向。
+    fixture server 暴露 slock_echo + send_message——用名单含/不含来验证两个方向。
     SDK 过滤不是权限边界（worker 可直连 MCP server）；平台 server 侧
     经 SLOCK_MCP_TOOL_ALLOWLIST 不注册名单外工具才是收敛兜底。
     """
@@ -109,7 +109,7 @@ class TestAllowlist:
     def test_allowlisted_tool_listed_and_callable(self):
         c = self._client(("slock_echo", "send_message"))
         try:
-            assert [t.name for t in c.list_tools()] == ["slock_echo"]
+            assert [t.name for t in c.list_tools()] == ["slock_echo", "send_message"]
             out = c.call_tool("slock_echo", {"text": "hi"})
             assert '"text": "hi"' in out
         finally:
@@ -118,7 +118,7 @@ class TestAllowlist:
     def test_unlisted_tool_filtered_from_list(self):
         c = self._client(("send_message",))  # slock_echo 不在名单
         try:
-            assert c.list_tools() == []
+            assert [t.name for t in c.list_tools()] == ["send_message"]
         finally:
             c.close()
 
@@ -139,7 +139,7 @@ class TestAllowlist:
         for allow in ((), None):
             c = self._client(allow)
             try:
-                assert [t.name for t in c.list_tools()] == ["slock_echo"]
+                assert [t.name for t in c.list_tools()] == ["slock_echo", "send_message"]
                 assert '"text": "x"' in c.call_tool("slock_echo", {"text": "x"})
             finally:
                 c.close()

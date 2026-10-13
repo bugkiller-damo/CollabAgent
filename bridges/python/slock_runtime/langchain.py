@@ -7,7 +7,8 @@
    注入为最高优先级 SystemMessage（"prepend"）或完全不注入（"none"）。
 3. 用 astream_events(v2) 稳定流接口取事件：
    on_chat_model_stream → assistant.delta；on_tool_start/end/error →
-   tool.start / tool.end（provider="langchain"）。
+   tool.start / tool.end（Slock MCP 工具标为 provider=slock、
+   operation=工具名，其余 provider=langchain）。
 4. finalText 取自最终结果的最后一条 message；usage 取自最终 AIMessage 的
    usage_metadata（snake→camel）；costUsd 只由 cost_calculator 给出。
 5. resume 不支持（普通 Runnable 无 checkpoint）→ PROTOCOL_VIOLATION 终态；
@@ -32,6 +33,7 @@ from .errors import GRAPH_INPUT_INVALID, PROTOCOL_VIOLATION, SarpError
 from .mcp import SlockMcpClient
 from .protocol import SarpInitialize, SarpTurnStart
 from .runtime import TurnEmit, TurnOutcome, WorkerRuntime
+from .tool_events import tool_provider_fields
 
 # tool.end output / error 截断上限（§8.5 输出字段控制帧尺寸；§17.1 大帧纪律）
 _TOOL_OUTPUT_MAX = 4000
@@ -70,7 +72,7 @@ def serve_langchain(
 
     # on_initialize 在 runtime.serve 内部跑；client/agent 经 holder 带出，
     # serve 返回后在 finally 里关 MCP 子进程（§12.4：退出时关闭 client）。
-    holder: dict[str, Any] = {"mcp_client": None, "agent": None}
+    holder: dict[str, Any] = {"mcp_client": None, "agent": None, "slock_tool_names": frozenset()}
 
     def _on_initialize(init: SarpInitialize, emit: TurnEmit) -> dict:
         tools: list = []
@@ -79,6 +81,9 @@ def serve_langchain(
             client.start()  # 失败抛 SarpError(MCP_START_FAILED) → runtime.error
             holder["mcp_client"] = client
             tools = _load_langchain_tools(client)
+            # Slock MCP 工具名集合——tool.start/tool.end 标 provider=slock
+            # + operation=工具名（load_mcp_tools=False / 无 mcp 时保持空集）
+            holder["slock_tool_names"] = frozenset(t.name for t in tools)
         agent = agent_or_factory(init, tools) if callable(agent_or_factory) else agent_or_factory
         holder["agent"] = agent
         return {
@@ -111,6 +116,7 @@ def serve_langchain(
             cost_calculator=cost_calculator,
             system_prompt_mode=system_prompt_mode,
             streaming=streaming,
+            slock_tool_names=holder["slock_tool_names"],
         )
 
     runtime = WorkerRuntime(
@@ -157,6 +163,7 @@ def _run_one_turn(
     cost_calculator: CostCalculator | None,
     system_prompt_mode: str,
     streaming: bool,
+    slock_tool_names: frozenset[str] = frozenset(),
 ) -> TurnOutcome:
     # langchain runtime 无 checkpoint，resume 一律拒绝（runtime 落成 error turn.end）
     if turn.resume is not None:
@@ -171,7 +178,7 @@ def _run_one_turn(
     stream_usage_meta: Any = None
 
     if streaming and hasattr(agent, "astream_events"):
-        result, stream_usage_meta = _stream_events(agent, input_value, emit, cancelled, streamed)
+        result, stream_usage_meta = _stream_events(agent, input_value, emit, cancelled, streamed, slock_tool_names)
     elif hasattr(agent, "ainvoke"):
         result = asyncio.run(agent.ainvoke(input_value))
     elif hasattr(agent, "invoke"):
@@ -203,7 +210,9 @@ def _run_one_turn(
     return TurnOutcome(status="success", final_text=final_text, usage=usage)
 
 
-def _stream_events(agent: Any, input_value: Any, emit: TurnEmit, cancelled, streamed: list):
+def _stream_events(
+    agent: Any, input_value: Any, emit: TurnEmit, cancelled, streamed: list, slock_tool_names: frozenset[str]
+):
     """asyncio.run 在 handler 线程里跑私有 loop；逐事件查 cancel。"""
 
     async def _consume():
@@ -228,27 +237,30 @@ def _stream_events(agent: Any, input_value: Any, emit: TurnEmit, cancelled, stre
                 if um:
                     usage_meta = um
             elif etype == "on_tool_start":
+                name = str(event.get("name") or "tool")
                 emit.tool_start(
                     call_id=str(event.get("run_id", "")),
-                    name=str(event.get("name") or "tool"),
-                    provider="langchain",
+                    name=name,
+                    **tool_provider_fields(name, slock_tool_names, "langchain"),
                     input=data.get("input"),
                 )
             elif etype == "on_tool_end":
                 out = data.get("output")
+                name = str(event.get("name") or "tool")
                 emit.tool_end(
                     call_id=str(event.get("run_id", "")),
                     ok=True,
-                    name=str(event.get("name") or "tool"),
-                    provider="langchain",
+                    name=name,
+                    **tool_provider_fields(name, slock_tool_names, "langchain"),
                     output=_truncate(_content_to_text(getattr(out, "content", out)), _TOOL_OUTPUT_MAX),
                 )
             elif etype == "on_tool_error":
+                name = str(event.get("name") or "tool")
                 emit.tool_end(
                     call_id=str(event.get("run_id", "")),
                     ok=False,
-                    name=str(event.get("name") or "tool"),
-                    provider="langchain",
+                    name=name,
+                    **tool_provider_fields(name, slock_tool_names, "langchain"),
                     error=_truncate(str(data.get("error")), _TOOL_ERROR_MAX),
                 )
             elif etype == "on_chat_model_end":

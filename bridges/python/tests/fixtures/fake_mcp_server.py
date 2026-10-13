@@ -4,7 +4,7 @@
 - initialize → result（回显 protocolVersion + capabilities + serverInfo）
 - notifications/initialized → 无响应；顺带发一条 notifications/message
   （验证 client 正确忽略 server→client notification——无 id 帧不入 pending）
-- tools/list → 固定一个 "slock_echo" tool
+- tools/list → 固定 "slock_echo" + "send_message" 两个 tool
 - tools/call → arguments echo 成 text content；arguments 含
   {"fail": true} → result.isError=true
 - 其他带 id 请求 → JSON-RPC method-not-found error
@@ -27,6 +27,21 @@ ECHO_TOOL = {
         "type": "object",
         "properties": {"text": {"type": "string"}},
         "required": ["text"],
+    },
+}
+
+# 平台写工具形状：SDK 会给它自动注入 idempotencyKey（§15.4），
+# echo arguments 以便测试断言注入键。
+SEND_MESSAGE_TOOL = {
+    "name": "send_message",
+    "description": "Send a message to a channel/thread/dm (fake)",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "target": {"type": "string"},
+            "content": {"type": "string"},
+        },
+        "required": ["target", "content"],
     },
 }
 
@@ -59,7 +74,7 @@ def _handle(msg: dict) -> None:
         _send({"jsonrpc": "2.0", "method": "notifications/message", "params": {"level": "info", "data": "fake ready"}})
         return
     if method == "tools/list":
-        _send({"jsonrpc": "2.0", "id": rid, "result": {"tools": [ECHO_TOOL]}})
+        _send({"jsonrpc": "2.0", "id": rid, "result": {"tools": [ECHO_TOOL, SEND_MESSAGE_TOOL]}})
         return
     if method == "tools/call":
         args = params.get("arguments") or {}
