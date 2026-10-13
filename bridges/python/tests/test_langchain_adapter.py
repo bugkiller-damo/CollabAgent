@@ -226,7 +226,7 @@ class TestHandshake:
         h = Harness(tmp_path)
         ready = _started(h, FakeAgent())
         assert ready["requestId"] == "req-1"
-        assert ready["runtime"]["id"] == "langchain"
+        assert ready["runtime"]["id"] == "bridge"
         caps = ready["capabilities"]
         assert caps["persistentProcess"] is True
         assert caps["maxConcurrency"] == 1
@@ -266,6 +266,31 @@ class TestHandshake:
         ready = _started(h, FakeAgent(), framework_version="9.9.9-test")
         assert ready["runtime"]["frameworkVersion"] == "9.9.9-test"
         h.finish()
+
+    @pytest.mark.parametrize("alias", ["bridge", "langchain", "langgraph", "LangChain"])
+    def test_legacy_runtime_id_aliases_accepted(self, tmp_path, alias):
+        """manifest 声明原值逐字下发：规范值与旧别名（大小写不敏感）均通过
+        握手，ready 恒报规范值 "bridge"。"""
+        h = Harness(tmp_path)
+        h.start(FakeAgent())
+        fields = init_fields()
+        fields["runtime"] = {"id": alias, "entrypoint": "e1"}
+        h.send("initialize", **fields)
+        assert h.ready()["runtime"]["id"] == "bridge"
+        h.send("shutdown")
+        assert h.finish() == 0
+
+    def test_runtime_id_mismatch_rejected(self, tmp_path):
+        """WP6 回归：langchain adapter 此前从不校验 runtime.id——非别名一律拒。"""
+        h = Harness(tmp_path)
+        h.start(FakeAgent())
+        fields = init_fields()
+        fields["runtime"] = {"id": "crewai", "entrypoint": "e1"}
+        h.send("initialize", **fields)
+        err = h.wait_frame(lambda f: f["type"] == "runtime.error")
+        assert err["error"]["code"] == "RUNTIME_ID_MISMATCH"
+        assert "crewai" in err["error"]["message"]
+        assert h.finish() == 2
 
 
 class TestWorkspaceCwd:
@@ -711,8 +736,8 @@ class TestRealLangChain:
     @pytest.mark.parametrize(
         ("example", "runtime_id", "durable", "interrupts"),
         [
-            ("langchain-agent", "langchain", False, False),
-            ("langgraph-agent", "langgraph", True, True),
+            ("langchain-agent", "bridge", False, False),
+            ("langgraph-agent", "bridge", True, True),
         ],
     )
     def test_example_probe_frame(self, example, runtime_id, durable, interrupts):

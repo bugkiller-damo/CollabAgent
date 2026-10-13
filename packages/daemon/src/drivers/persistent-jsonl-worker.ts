@@ -19,6 +19,7 @@
  */
 
 import { type ChildProcess, spawn as nodeSpawn } from "node:child_process";
+import { normalizeRuntimeId } from "@collabagent/shared";
 import { applyAgentEnv } from "../agent-env-whitelist.js";
 import type { AgentRuntimeSession, AgentRuntimeTurnResult, AgentTurnRequest } from "../agent-runtime-driver.js";
 import type { AgentRuntimeEvent, AgentRuntimeUsage } from "../agent-runtime-events.js";
@@ -47,7 +48,8 @@ export interface JsonlWorkerTimeouts {
 export interface JsonlWorkerSessionOptions {
   agentName: string;
   agent?: { id: string; name: string; displayName?: string; description?: string };
-  runtime: string; // "langchain" | "langgraph"
+  /** initialize.runtime.id 的逐字下发值（manifest declaredRuntime：bridge 或旧别名） */
+  runtime: string;
   entrypoint: string; // manifest entrypoint id
   /** Phase 5 §11.2：manifest 条目 revision——checkpoint 命名空间的一部分 */
   revision?: string;
@@ -446,7 +448,9 @@ export class PersistentJsonlWorkerSession implements AgentRuntimeSession {
         `runtime.ready requestId "${msg.requestId ?? ""}" != initialize.requestId "${this.initRequestId}"`,
       );
     }
-    if (msg.runtime.id !== this.opts.runtime) {
+    // WP6：runtime id 比较两侧归一——worker 可能回显规范 id "bridge" 而其
+    // initialize 收到的 declared 值是旧别名（langchain/langgraph），等价即通过。
+    if (normalizeRuntimeId(msg.runtime.id) !== normalizeRuntimeId(this.opts.runtime)) {
       return new DispatchError(
         "runtime-id-mismatch",
         `worker runtime "${msg.runtime.id}" != expected "${this.opts.runtime}"`,

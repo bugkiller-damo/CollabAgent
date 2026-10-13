@@ -17,6 +17,20 @@ import {
 import { CliExit } from "../src/output.js";
 import { createRuntimeDiagnostics, defaultDiagnosticsPath } from "../src/runtime-diagnostics.js";
 import { writeRuntimeProbeSnapshot } from "../src/runtime-probe-snapshot.js";
+import type { ConformanceOptions } from "../src/sarp-conformance.js";
+
+/** WP6：包裹 runSarpConformance 记录入参（行为不变）——断言 check 下发 declaredRuntime 原值 */
+const conformanceCalls: ConformanceOptions[] = [];
+vi.mock("../src/sarp-conformance.js", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("../src/sarp-conformance.js")>();
+  return {
+    ...mod,
+    runSarpConformance: (opts: ConformanceOptions) => {
+      conformanceCalls.push(opts);
+      return mod.runSarpConformance(opts);
+    },
+  };
+});
 
 /**
  * 批次 B（P0.4/P1.x）：`slock runtime` ops 面——list/validate/probe/check +
@@ -41,6 +55,7 @@ const seed = (dir: string, entries: unknown[]) => {
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "sarp-worker.mjs");
 const validEntry = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
   id: "ep-1",
+  // WP6：有意声明旧别名——走 legacy declared → 归一 bridge + declaredRuntime="langgraph" 兼容路径
   runtime: "langgraph",
   label: "Fixture Graph",
   command: process.execPath,
@@ -199,6 +214,22 @@ describe("runtimeCheck", () => {
     seed(dir, [validEntry()]);
     await expect(runtimeCheck("ghost", { manifest: manifestAt(dir) })).rejects.toBeInstanceOf(CliExit);
   });
+
+  it("WP6：legacy manifest（runtime=langgraph）→ check 给 conformance 传 declaredRuntime 原值", async () => {
+    const dir = tmp();
+    seed(dir, [validEntry({ runtime: "langgraph" })]);
+    const r = await runtimeCheck("ep-1", { manifest: manifestAt(dir), timeoutMs: 6000 });
+    expect(r.ok).toBe(true);
+    expect(conformanceCalls.at(-1)?.runtimeId).toBe("langgraph");
+  }, 30000);
+
+  it("WP6：canonical manifest（runtime=bridge）→ check 传 bridge", async () => {
+    const dir = tmp();
+    seed(dir, [validEntry({ runtime: "bridge" })]);
+    const r = await runtimeCheck("ep-1", { manifest: manifestAt(dir), timeoutMs: 6000 });
+    expect(r.ok).toBe(true);
+    expect(conformanceCalls.at(-1)?.runtimeId).toBe("bridge");
+  }, 30000);
 
   it("secretRef 未登记 → CliExit(secret-ref-missing)", async () => {
     const dir = tmp();

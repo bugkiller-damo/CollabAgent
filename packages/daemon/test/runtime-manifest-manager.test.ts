@@ -25,7 +25,7 @@ const seed = (dir: string, entries: unknown[]) => {
 
 const validEntry = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
   id: "ep-1",
-  runtime: "langgraph",
+  runtime: "bridge",
   label: "Graph",
   command: "python",
   args: ["-m", "worker"],
@@ -52,7 +52,8 @@ describe("createRuntimeManifestManager.add", () => {
     const raw = JSON.parse(readFileSync(manifestPath(dir), "utf-8"));
     expect(raw.version).toBe(1);
     expect(raw.entries).toHaveLength(1);
-    expect(mgr.snapshot().entries.get("ep-1")?.runtime).toBe("langgraph");
+    expect(mgr.snapshot().entries.get("ep-1")?.runtime).toBe("bridge");
+    expect(mgr.snapshot().entries.get("ep-1")?.declaredRuntime).toBe("bridge");
     // 审计：missing → <sha> 迁移一行（只含安全元数据）
     const audit = readFileSync(manifestAuditPath(manifestPath(dir)), "utf-8")
       .trim()
@@ -60,9 +61,27 @@ describe("createRuntimeManifestManager.add", () => {
     const last = JSON.parse(audit[audit.length - 1]!);
     expect(last.previousRevision).toBe("missing");
     expect(last.entries).toHaveLength(1);
-    expect(last.entries[0]).toMatchObject({ id: "ep-1", runtime: "langgraph" });
+    expect(last.entries[0]).toMatchObject({ id: "ep-1", runtime: "bridge" });
     expect(last.entries[0].revision).toHaveLength(64);
     expect(JSON.stringify(last)).not.toContain("python"); // 不记 command
+  });
+
+  it("WP6：add 旧别名 runtime → 归一 bridge + declaredRuntime 保留（CRUD 路径不丢）", () => {
+    const dir = tmp();
+    const mgr = createRuntimeManifestManager(manifestPath(dir));
+    const r = mgr.add(validEntry({ runtime: "langgraph" }));
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.entry?.runtime).toBe("bridge");
+      expect(r.entry?.declaredRuntime).toBe("langgraph");
+    }
+    // raw 文件保留用户写的原值（declaredRuntime 不落盘——它是归一化产物）
+    const raw = JSON.parse(readFileSync(manifestPath(dir), "utf-8"));
+    expect(raw.entries[0].runtime).toBe("langgraph");
+    // update 路径：旧别名文件 + 补丁 → declaredRuntime 仍正确
+    const u = mgr.update("ep-1", { label: "Renamed" });
+    expect(u.ok).toBe(true);
+    expect(mgr.snapshot().entries.get("ep-1")?.declaredRuntime).toBe("langgraph");
   });
 
   it("校验失败 → 不落盘（文件保持不存在）", () => {

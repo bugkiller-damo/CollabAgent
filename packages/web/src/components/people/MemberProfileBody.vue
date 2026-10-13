@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { AgentPresence, PersonChannelMembership, PersonProfile, PersonStats } from "@collabagent/shared";
-import { BRIDGE_RUNTIME_IDS, composePresence, PRESENCE_LABEL } from "@collabagent/shared";
+import { composePresence, isBridgeRuntime, normalizeRuntimeId, PRESENCE_LABEL } from "@collabagent/shared";
 import { Crown } from "@lucide/vue";
 import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
@@ -168,8 +168,12 @@ const isSelf = computed(() => {
 
 const canEditAgent = computed(() => profile.value?.type === "agent" && !!profile.value.ownedByMe);
 
+/** WP6：归一后的 runtime id——旧别名（langchain/langgraph）一律按 bridge 处理 */
+const normalizedRuntime = computed(() => normalizeRuntimeId(profile.value?.runtime) || "claude");
+
 const runtimeLabel = computed(() => {
-  const id = profile.value?.runtime || "claude";
+  // WP6：查目录前先归一——旧别名命中合并后的 bridge 项
+  const id = normalizedRuntime.value;
   return runtimeCatalog().find((c) => c.id === id)?.label || id;
 });
 
@@ -177,9 +181,7 @@ const runtimeLabel = computed(() => {
 // 批次 C（P1.3）：放开行内编辑——选项集来自绑定机最近 probe 摘要
 // （/api/computers/:id），runtime/entrypoint/model 作为耦合三元组一起 PATCH，
 // server 侧 Phase 4 live-probe 复核兜底非法组合。
-const isBridgeProfile = computed(() =>
-  (BRIDGE_RUNTIME_IDS as readonly string[]).includes(profile.value?.runtime || ""),
-);
+const isBridgeProfile = computed(() => isBridgeRuntime(profile.value?.runtime));
 
 /** 与 ComputerView 创建流程同口径：probe 成功态才进选项 */
 const EP_USABLE = new Set(["installed", "installed_unsupported"]);
@@ -187,21 +189,24 @@ const boundEntrypoints = ref<ComputerEntrypoint[]>([]);
 const usableEntrypoints = computed(() => boundEntrypoints.value.filter((e) => EP_USABLE.has(e.status)));
 const bridgeEditable = computed(() => canEditAgent.value && usableEntrypoints.value.length > 0);
 
-/** 可选 runtime = 绑定机上至少一个可用 entrypoint 的 bridge runtime */
+/** 可选 runtime = 绑定机上至少一个可用 entrypoint 的 bridge runtime（按归一 id 聚合） */
 const bridgeRuntimeOptions = computed(() => {
   const seen = new Set<string>();
   const out: { value: string; label: string }[] = [];
   for (const e of usableEntrypoints.value) {
-    if (!e.runtime || seen.has(e.runtime)) continue;
-    seen.add(e.runtime);
-    out.push({ value: e.runtime, label: runtimeCatalog().find((c) => c.id === e.runtime)?.label || e.runtime });
+    // WP6：旧 probe 条目仍可能带 langchain/langgraph 别名——归一后合并为单一 bridge 选项
+    const rid = normalizeRuntimeId(e.runtime);
+    if (!rid || seen.has(rid)) continue;
+    seen.add(rid);
+    out.push({ value: rid, label: runtimeCatalog().find((c) => c.id === rid)?.label || rid });
   }
   return out;
 });
 
-/** 可选 entrypoint = 绑定机全部可用条目（跨 runtime——选定即同时定 runtime） */
+/** 可选 entrypoint = 绑定机全部可用条目（跨 runtime——选定即同时定 runtime）；
+ * WP6：runtime 合并为 bridge 后失去区分度，括号内展示 framework（缺省回落 runtime） */
 const bridgeEntrypointOptions = computed(() =>
-  usableEntrypoints.value.map((e) => ({ value: e.id, label: `${e.label}（${e.runtime || "?"}）` })),
+  usableEntrypoints.value.map((e) => ({ value: e.id, label: `${e.label}（${e.framework || e.runtime || "?"}）` })),
 );
 
 const currentEntrypoint = computed(
@@ -231,12 +236,12 @@ function modelForEntrypoint(ep: ComputerEntrypoint | undefined): string {
 // PATCH 载荷按「选定的 draft」组装耦合三元组（extraPatch 函数形态）——
 // 单发 {runtime}/{entrypoint} 会被 server 复核成非法组合拦下。
 const bridgeRuntimePatch = (draft: string): Record<string, string> => {
-  const ep = usableEntrypoints.value.find((e) => e.runtime === draft);
+  const ep = usableEntrypoints.value.find((e) => normalizeRuntimeId(e.runtime) === draft);
   return { entrypoint: ep?.id ?? "", model: modelForEntrypoint(ep) };
 };
 const bridgeEntrypointPatch = (draft: string): Record<string, string> => {
   const ep = usableEntrypoints.value.find((e) => e.id === draft);
-  return { runtime: ep?.runtime || profile.value?.runtime || "", model: modelForEntrypoint(ep) };
+  return { runtime: normalizeRuntimeId(ep?.runtime) || normalizedRuntime.value, model: modelForEntrypoint(ep) };
 };
 
 /** runtime/entrypoint 保存后本地同步三元组（saved 只带本字段值，其余一起写） */
@@ -245,14 +250,14 @@ function applyBridgeSaved(field: "runtime" | "entrypoint", draft: string) {
   if (!p) return;
   const next = { ...p };
   if (field === "runtime") {
-    const ep = usableEntrypoints.value.find((e) => e.runtime === draft);
+    const ep = usableEntrypoints.value.find((e) => normalizeRuntimeId(e.runtime) === draft);
     next.runtime = draft;
     next.entrypoint = ep?.id;
     next.model = modelForEntrypoint(ep);
   } else {
     const ep = usableEntrypoints.value.find((e) => e.id === draft);
     next.entrypoint = draft;
-    next.runtime = ep?.runtime || p.runtime;
+    next.runtime = normalizeRuntimeId(ep?.runtime) || p.runtime;
     next.model = modelForEntrypoint(ep);
   }
   profile.value = next;
@@ -673,7 +678,7 @@ async function expandChannels() {
               <InlineAgentField
                 :agent-id="profile.id"
                 field="runtime"
-                :value="profile.runtime || 'claude'"
+                :value="normalizedRuntime"
                 :editable="isBridgeProfile ? bridgeEditable : canEditAgent"
                 kind="select"
                 :options="isBridgeProfile ? bridgeRuntimeOptions : [{ value: 'claude', label: 'Claude' }]"
@@ -682,7 +687,7 @@ async function expandChannels() {
               >
                 <span class="min-w-0">
                   {{ runtimeLabel }}
-                  <span class="ml-1 text-xs text-muted">{{ profile.runtime || "claude" }}</span>
+                  <span class="ml-1 text-xs text-muted">{{ normalizedRuntime }}</span>
                 </span>
               </InlineAgentField>
             </dd>
@@ -727,8 +732,8 @@ async function expandChannels() {
                 "
                 :extra-patch="
                   isBridgeProfile
-                    ? { runtime: profile.runtime || '', entrypoint: profile.entrypoint || '' }
-                    : { runtime: profile.runtime || 'claude' }
+                    ? { runtime: normalizedRuntime, entrypoint: profile.entrypoint || '' }
+                    : { runtime: normalizedRuntime }
                 "
                 @saved="applyField('model', $event)"
               >

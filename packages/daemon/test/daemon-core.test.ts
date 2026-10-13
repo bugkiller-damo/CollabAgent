@@ -96,6 +96,47 @@ describe("daemon-core 消息路由", () => {
       await call({ type: "agent:start", agent: { id: AGENT_ID } });
       expect(runtime.registerAgent).not.toHaveBeenCalled();
     });
+
+    it("WP6：runtime 候选混用旧别名 langgraph + bridge → 归一同族不冲突", async () => {
+      await call({
+        type: "agent:start",
+        agent: { id: AGENT_ID, name: AGENT, runtime: "langgraph", entrypoint: "ep-1" },
+        config: { runtime_profile: { runtime: "bridge", model: "gpt-4o", entrypoint: "ep-1" } },
+      });
+      expect(runtime.registerAgent).toHaveBeenCalledWith(
+        AGENT_ID,
+        AGENT,
+        expect.objectContaining({ runtimeProfileError: null }),
+      );
+    });
+
+    it("WP6：langchain + langgraph 旧别名混写 → 同归一不冲突", async () => {
+      await call({
+        type: "agent:start",
+        agent: { id: AGENT_ID, name: AGENT, runtime: "langchain" },
+        config: { runtime_profile: { runtime: "langgraph" } },
+      });
+      expect(runtime.registerAgent).toHaveBeenCalledWith(
+        AGENT_ID,
+        AGENT,
+        expect.objectContaining({ runtimeProfileError: null }),
+      );
+    });
+
+    it("WP6：真冲突（claude vs bridge）仍报 runtime-profile-conflict", async () => {
+      await call({
+        type: "agent:start",
+        agent: { id: AGENT_ID, name: AGENT, runtime: "claude" },
+        config: { runtime_profile: { runtime: "bridge" } },
+      });
+      expect(runtime.registerAgent).toHaveBeenCalledWith(
+        AGENT_ID,
+        AGENT,
+        expect.objectContaining({
+          runtimeProfileError: { code: "runtime-profile-conflict", message: expect.any(String) },
+        }),
+      );
+    });
   });
 
   describe("agent:deliver", () => {
@@ -356,7 +397,7 @@ describe("daemon-core 消息路由", () => {
           interruptId: "i1",
           resumeToken: "SECRET-RESUME-TOKEN", // 契约外字段——绝不外发
           prompt: `批准？token=sk_agent_${"a".repeat(32)}`,
-          runtime: "langgraph",
+          runtime: "bridge",
           channel: "general",
           threadId: "th-1",
           createdAt: 1,
@@ -368,7 +409,7 @@ describe("daemon-core 消息路由", () => {
           interruptId: "i2",
           resumeToken: "x",
           prompt: "expired",
-          runtime: "langgraph",
+          runtime: "bridge",
           createdAt: 1,
           expiresAt: 1, // 已过期——快照里滤掉
         },
@@ -384,7 +425,7 @@ describe("daemon-core 消息路由", () => {
         interruptId: "i1",
         channel: "general",
         threadId: "th-1",
-        runtime: "langgraph",
+        runtime: "bridge",
       });
       expect(JSON.stringify(msg)).not.toContain("SECRET-RESUME-TOKEN");
       expect(JSON.stringify(msg)).not.toContain("resumeToken");
@@ -399,7 +440,7 @@ describe("daemon-core 消息路由", () => {
           interruptId: "i1",
           resumeToken: "x",
           prompt: "长".repeat(800),
-          runtime: "langgraph",
+          runtime: "bridge",
           createdAt: 1,
           expiresAt: Date.now() + 60_000,
         },

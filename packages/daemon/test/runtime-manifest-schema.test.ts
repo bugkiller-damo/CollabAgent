@@ -36,7 +36,7 @@ afterEach(() => {
 
 const conformantEntry = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
   id: "ep-1",
-  runtime: "langgraph",
+  runtime: "bridge",
   label: "Graph",
   command: "python",
   args: ["-m", "worker"],
@@ -80,7 +80,8 @@ describe("runtime-manifest.schema.json", () => {
     const v = validateEntry(conformantEntry());
     const entryProps = Object.keys(entrySchema?.properties ?? {});
     for (const key of Object.keys(v.entry ?? {})) {
-      if (key === "revision") continue; // revision 是 loader 计算值，manifest 文件不含
+      // revision 是 loader 计算值、declaredRuntime 是归一化产物（manifest 文件只有 runtime 原值）
+      if (key === "revision" || key === "declaredRuntime") continue;
       expect(entryProps, `schema missing property "${key}"`).toContain(key);
     }
   });
@@ -90,6 +91,17 @@ describe("runtime-manifest.schema.json", () => {
     expect(prop?.enum).toEqual(["neutral", "agentic", "none"]);
     expect(validateEntry(conformantEntry({ promptProfile: "verbose" })).error).toBe("entry-prompt-profile-invalid");
     expect(validateEntry(conformantEntry({ promptProfile: "none" })).error).toBeUndefined();
+  });
+
+  it("schema runtime 枚举含 bridge + 两个旧别名；validator 归一旧别名为 bridge", () => {
+    const prop = entrySchema?.properties?.runtime as { enum?: string[] } | undefined;
+    expect(prop?.enum).toEqual(["bridge", "langchain", "langgraph"]);
+    for (const runtime of prop?.enum ?? []) {
+      const v = validateEntry(conformantEntry({ runtime }));
+      expect(v.error, `runtime=${runtime} should validate`).toBeUndefined();
+      expect(v.entry?.runtime).toBe("bridge");
+      expect(v.entry?.declaredRuntime).toBe(runtime);
+    }
   });
 
   it("schema 声明的 id pattern 与 validator 一致（坏 id 两边都拒）", () => {

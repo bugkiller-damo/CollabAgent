@@ -1,4 +1,4 @@
-import { agentListFields } from "@collabagent/shared";
+import { agentListFields, normalizeRuntimeId } from "@collabagent/shared";
 import type { FastifyInstance } from "fastify";
 import { canAccessChannel } from "../lib/access.js";
 import { computerOnlineFor } from "../lib/agent-duty.js";
@@ -288,7 +288,8 @@ export async function peopleRoutes(app: FastifyInstance) {
       avatarUrl = row.avatar_url;
       createdAt = iso(row.created_at) || "";
       const rp = parseRuntimeProfile(row.runtime_profile);
-      runtime = rp.runtime || "claude";
+      // WP6：迁移前的存量行可能仍写旧别名（langchain/langgraph）——读取归一兜底
+      runtime = normalizeRuntimeId(rp.runtime) || "claude";
       model = rp.model || "sonnet";
       entrypoint = rp.entrypoint;
 

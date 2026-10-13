@@ -67,14 +67,16 @@ maybe("manifest → probe → driver → 模板 worker 端到端", () => {
         expect(snapshot.invalidEntries.size).toBe(0);
         expect(snapshot.entries.size).toBe(1);
         const entry = snapshot.entries.get(`${runtime}-template`);
-        expect(entry?.runtime).toBe(runtime);
+        // WP6：模板 manifest 仍声明旧别名——entry.runtime 归一为 bridge，declaredRuntime 留原值
+        expect(entry?.runtime).toBe("bridge");
+        expect(entry?.declaredRuntime).toBe(runtime);
 
         // 真 probe：spawn `${PYTHON} <template>/agent.py --slock-probe`
         const probes = probeRuntimeEntrypoints(snapshot, { env: process.env });
         expect(probes.length).toBe(1);
         const probe = probes[0]!;
         expect(probe.id).toBe(`${runtime}-template`);
-        expect(probe.runtime).toBe(runtime);
+        expect(probe.runtime).toBe("bridge"); // probe runtime 同为归一值（worker 回声旧别名也归一）
         expect(probe.status).toBe("installed_unsupported");
         expect(probe.capabilities?.maxConcurrency).toBe(1);
         expect(probe.errorCode).toBeUndefined();

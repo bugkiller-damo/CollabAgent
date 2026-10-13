@@ -44,7 +44,7 @@ class TestDaemonToWorker:
         init = decode_daemon_frame(_lines("daemon-to-worker.jsonl")[0])
         assert isinstance(init, SarpInitialize)
         assert init.request_id == "req-fixture-1"
-        assert init.runtime_id == "langgraph" and init.model == "gpt-4o-mini"
+        assert init.runtime_id == "bridge" and init.model == "gpt-4o-mini"
         assert init.mcp is not None and init.mcp.args == ("mcp-server.js", "--flag")
         assert init.mcp.env == {"SLOCK_TOKEN_FILE": "/tmp/slock-ws/.slock/token"}
         assert init.shutdown_timeout_ms == 5000

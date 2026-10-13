@@ -330,7 +330,7 @@ class TestDurableThreads:
         assert ready["capabilities"]["durableThreads"] is False
         assert ready["capabilities"]["interrupts"] is True
         assert ready["capabilities"]["maxConcurrency"] == 1
-        assert ready["runtime"]["id"] == "langgraph"
+        assert ready["runtime"]["id"] == "bridge"
 
     def test_system_prompt_only_prepended_on_fresh_thread(self, tmp_path):
         """systemPrompt 只在 thread 全新时进 messages（§12.5）。"""
@@ -346,8 +346,8 @@ class TestDurableThreads:
         from langchain_core.messages import SystemMessage
 
         graph = _echo_graph(tmp_path)
-        # §11.2：thread_id 按 runtime 身份命名空间（langgraph:e1:-:-:前缀）
-        snap = graph.get_state({"configurable": {"thread_id": "langgraph:e1:-:-:conv-1"}})
+        # §11.2：thread_id 按 worker 身份命名空间（DEC-10 起 4 段：e1:-:-:前缀）
+        snap = graph.get_state({"configurable": {"thread_id": "e1:-:-:conv-1"}})
         sys_msgs = [m for m in snap.values["messages"] if isinstance(m, SystemMessage)]
         assert len(sys_msgs) == 1 and sys_msgs[0].content == "sys-prompt"
 
@@ -369,7 +369,7 @@ class TestDurableThreads:
         s.wait_turn_end("t1")
 
         # 模拟毒化：直接向 checkpoint 尾部写一条带悬空 tool_call 的 AI 消息
-        config = {"configurable": {"thread_id": "langgraph:e1:-:-:conv-1"}}
+        config = {"configurable": {"thread_id": "e1:-:-:conv-1"}}
         graph.update_state(
             config,
             {
@@ -474,7 +474,7 @@ class TestInterruptResume:
         # 模拟 checkpoint 丢失：清空该 thread 的 checkpoints/writes
         ck = sqlite3.connect(str(Path(tmp_path) / "ck.sqlite"))
         for tbl in ("checkpoints", "writes"):
-            ck.execute(f"DELETE FROM {tbl} WHERE thread_id = ?", ("langgraph:e1:-:-:conv-1",))
+            ck.execute(f"DELETE FROM {tbl} WHERE thread_id = ?", ("e1:-:-:conv-1",))
         ck.commit()
         ck.close()
 
@@ -538,11 +538,22 @@ class TestErrors:
         assert end["status"] == "error" and end["error"]["code"] == "GRAPH_INPUT_INVALID"
         assert end["error"]["retryable"] is False
 
+    @pytest.mark.parametrize("alias", ["bridge", "langchain", "langgraph", "LangGraph"])
+    def test_legacy_runtime_id_aliases_accepted(self, tmp_path, alias):
+        """manifest 声明原值逐字下发：规范值与旧别名（大小写不敏感）均通过
+        握手，ready 恒报规范值 "bridge"。"""
+        init = _init_frame(tmp_path, runtime={"id": alias, "entrypoint": "e1"})
+        code, frames = run_worker(_FakeGraph([], {"messages": []}), [init])
+        assert code == 0 and frames[0]["type"] == "runtime.ready"
+        assert frames[0]["runtime"]["id"] == "bridge"
+
     def test_runtime_id_mismatch_rejected(self, tmp_path):
-        init = _init_frame(tmp_path, runtime={"id": "langchain", "entrypoint": "e1"})
-        code, frames = run_worker(_echo_graph(tmp_path), [init])
+        """非 bridge 族的 runtime.id（如 crewai）仍拒绝。"""
+        init = _init_frame(tmp_path, runtime={"id": "crewai", "entrypoint": "e1"})
+        code, frames = run_worker(_FakeGraph([], {"messages": []}), [init])
         assert code == 2 and frames[0]["type"] == "runtime.error"
         assert frames[0]["error"]["code"] == "RUNTIME_ID_MISMATCH"
+        assert "crewai" in frames[0]["error"]["message"]
 
 
 class TestWorkspaceCwd:
@@ -707,9 +718,9 @@ class TestDuckTypedAdapter:
         assert end["usage"]["outputTokens"] == 4
         assert end["usage"]["totalTokens"] == 6
 
-        # §11.2 config 形状：thread_id = runtime:entrypoint:revision:model:conv
+        # §11.2 config 形状：thread_id = entrypoint:revision:model:conv（DEC-10）
         cfg = graph.stream_calls[0]["config"]
-        assert cfg["configurable"]["thread_id"] == "langgraph:e1:-:-:conv-1"
+        assert cfg["configurable"]["thread_id"] == "e1:-:-:conv-1"
         assert cfg["configurable"]["slock_turn_id"] == "t1"
         assert graph.stream_calls[0]["stream_mode"] == ["messages", "updates", "custom"]
 

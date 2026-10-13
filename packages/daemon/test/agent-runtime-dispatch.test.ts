@@ -801,9 +801,9 @@ describe("agent-runtime-dispatch (headless)", () => {
       expect(harness.onDeliveryDeadLetter).not.toHaveBeenCalled();
     });
 
-    it("langgraph 无 entrypoint → entrypoint-required 首次失败即死信（不 spawn）", async () => {
+    it("bridge 无 entrypoint → entrypoint-required 首次失败即死信（不 spawn）", async () => {
       harness = makeHarness({
-        resolveRuntimeProfile: () => profileError("langgraph", "entrypoint-required"),
+        resolveRuntimeProfile: () => profileError("bridge", "entrypoint-required"),
       });
       await harness.dispatch.dispatchToAgent(AGENT, "general", "hi");
       await flush();
@@ -815,14 +815,22 @@ describe("agent-runtime-dispatch (headless)", () => {
       expect(FakePersistentClaude.instances).toHaveLength(0);
     });
 
-    it("默认解析器读 agentInfo：langgraph 缺 entrypoint → entrypoint-required", async () => {
+    it("默认解析器读 agentInfo：bridge 缺 entrypoint → entrypoint-required（旧别名 langgraph 归一同码）", async () => {
       harness = makeHarness();
-      harness.deps.agentInfo.set(AGENT, { runtime: "langgraph" });
+      harness.deps.agentInfo.set(AGENT, { runtime: "bridge" });
       await harness.dispatch.dispatchToAgent(AGENT, "general", "hi");
       await flush();
       const err = harness.onDeliveryDeadLetter.mock.calls[0][2] as DispatchError;
       expect(err.code).toBe("entrypoint-required");
       expect(FakePersistentClaude.instances).toHaveLength(0);
+    });
+
+    it("WP6：agentInfo 给旧别名 langgraph → 归一 bridge → 缺 entrypoint 同码死信", async () => {
+      harness = makeHarness();
+      harness.deps.agentInfo.set(AGENT, { runtime: "langgraph" });
+      await harness.dispatch.dispatchToAgent(AGENT, "general", "hi");
+      await flush();
+      expect((harness.onDeliveryDeadLetter.mock.calls[0][2] as DispatchError).code).toBe("entrypoint-required");
     });
 
     it("claude + entrypoint → entrypoint-not-allowed 死信", async () => {
@@ -855,7 +863,7 @@ describe("agent-runtime-dispatch (headless)", () => {
     it("usePty + 非 claude runtime → pty-runtime-unsupported（冻结层不接新 runtime）", async () => {
       harness = makeHarness({
         usePty: true,
-        resolveRuntimeProfile: () => profileOf({ runtime: "langgraph", identity: "id-lg", entrypoint: "ep-1" }),
+        resolveRuntimeProfile: () => profileOf({ runtime: "bridge", identity: "id-lg", entrypoint: "ep-1" }),
       });
       await harness.dispatch.dispatchToAgent(AGENT, "general", "hi");
       await flush();
@@ -920,7 +928,7 @@ describe("agent-runtime-dispatch (headless)", () => {
       const sessions: FakeBridgeSession[] = [];
       const driver: AgentRuntimeDriver = {
         driverId: "fake-bridge",
-        runtimeIds: ["langgraph", "langchain"],
+        runtimeIds: ["bridge"],
         openSession: (o) => {
           const s = new FakeBridgeSession(o);
           sessions.push(s);
@@ -935,7 +943,7 @@ describe("agent-runtime-dispatch (headless)", () => {
     };
 
     const bridgeProfile: ResolvedAgentRuntimeProfile = {
-      runtime: "langgraph",
+      runtime: "bridge",
       model: "gpt-test",
       entrypoint: "ep-graph",
       identity: "id-bridge",
@@ -1071,7 +1079,7 @@ describe("agent-runtime-dispatch (headless)", () => {
     }
 
     const bridgeProfile: ResolvedAgentRuntimeProfile = {
-      runtime: "langgraph",
+      runtime: "bridge",
       model: "gpt-test",
       entrypoint: "ep-graph",
       identity: "id-bridge",
@@ -1081,7 +1089,7 @@ describe("agent-runtime-dispatch (headless)", () => {
       const sessions: FakeBridgeSession[] = [];
       const driver: AgentRuntimeDriver = {
         driverId: "fake-bridge",
-        runtimeIds: ["langgraph", "langchain"],
+        runtimeIds: ["bridge"],
         openSession: (o) => {
           const s = new FakeBridgeSession(o);
           sessions.push(s);

@@ -37,7 +37,7 @@ describe("buildReadyPayload", () => {
     const withEps = buildReadyPayload([], undefined, [
       {
         id: "ep-1",
-        runtime: "langgraph",
+        runtime: "bridge",
         label: "Graph",
         status: "installed_unsupported",
         modelMode: "fixed",

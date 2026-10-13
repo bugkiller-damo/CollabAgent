@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { type AgentPresence, composePresence, PRESENCE_LABEL } from "@collabagent/shared";
+import { type AgentPresence, composePresence, normalizeRuntimeId, PRESENCE_LABEL } from "@collabagent/shared";
 import { Check, Monitor } from "@lucide/vue";
 import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
@@ -38,6 +38,8 @@ interface AgentRow {
   presence?: AgentPresence;
   runtime?: string;
   model?: string;
+  /** 解析后的 runtime_profile（server 已归一 runtime）；entrypoint 供 framework 反查 */
+  runtime_profile?: { runtime?: string; model?: string; entrypoint?: string };
   avatar_url?: string;
   user_id?: string;
   /** server 端解析出的宿主机（绑定机优先，存量 agent 回落属主同 server 任一机） */
@@ -139,18 +141,25 @@ const creatableEntrypoints = computed(() =>
 );
 const creatableRuntimes = computed(() => {
   const out = runtimes.value.filter((r) => r.status === "installed" && WIRED_RUNTIMES.has(r.id));
-  // bridge runtime 按「该机上至少一个可用 entrypoint」聚合出 runtime 级选项
+  // bridge runtime 按「该机上至少一个可用 entrypoint」聚合出 runtime 级选项。
+  // WP6：按归一 id 聚合——旧 probe 条目仍带 langchain/langgraph 别名，
+  // 不归一会裂变出第二个 runtime 选项。
   const seen = new Set(out.map((r) => r.id));
   for (const e of creatableEntrypoints.value) {
-    if (e.runtime && !seen.has(e.runtime)) {
-      seen.add(e.runtime);
-      out.push({ id: e.runtime, status: "installed" });
+    const rid = normalizeRuntimeId(e.runtime);
+    if (rid && !seen.has(rid)) {
+      seen.add(rid);
+      out.push({ id: rid, status: "installed" });
     }
   }
   return out;
 });
-const newRuntimeIsBridge = computed(() => creatableEntrypoints.value.some((e) => e.runtime === newRuntime.value));
-const entrypointOptions = computed(() => creatableEntrypoints.value.filter((e) => e.runtime === newRuntime.value));
+const newRuntimeIsBridge = computed(() =>
+  creatableEntrypoints.value.some((e) => normalizeRuntimeId(e.runtime) === newRuntime.value),
+);
+const entrypointOptions = computed(() =>
+  creatableEntrypoints.value.filter((e) => normalizeRuntimeId(e.runtime) === newRuntime.value),
+);
 const selectedEntrypoint = computed(
   () => entrypointOptions.value.find((e) => e.id === newEntrypoint.value) ?? entrypointOptions.value[0],
 );
@@ -190,7 +199,9 @@ function syncCreateRuntimeDefaults() {
 watch([newRuntime, entrypointOptions], syncCreateRuntimeDefaults);
 
 function labelFor(id: string): string {
-  return catalog.find((c) => c.id === id)?.label || id;
+  // WP6：查目录前归一——旧别名（langchain/langgraph）命中合并后的 bridge 项
+  const nid = normalizeRuntimeId(id) ?? id;
+  return catalog.find((c) => c.id === nid)?.label || id;
 }
 
 function chipClass(status: string): string {
@@ -211,6 +222,13 @@ function entrypointHint(e: ComputerEntrypoint): string {
   if (EP_USABLE.has(e.status)) return "可用";
   if (e.errorCode) return `${e.status}：${e.errorCode}`;
   return e.status;
+}
+
+/** WP6：runtime chip 显示 framework——agent 绑定 entrypoint 的 worker 框架版本；查不到回落归一 runtime */
+function agentRuntimeChip(a: AgentRow): string {
+  const epId = a.runtime_profile?.entrypoint;
+  const fw = epId ? entrypoints.value.find((e) => e.id === epId)?.framework : undefined;
+  return fw ?? normalizeRuntimeId(a.runtime) ?? "claude";
 }
 
 function fmtTime(v: string | number | null | undefined): string {
@@ -735,7 +753,7 @@ watch(
                   <span class="text-[10px]">{{ entrypointHint(e) }}</span>
                 </div>
                 <p class="mt-0.5 truncate text-[11px] opacity-80">
-                  {{ e.runtime || "?" }} · {{ e.id }}<template v-if="e.version"> · {{ e.version }}</template>
+                  {{ e.framework || e.runtime || "?" }} · {{ e.id }}<template v-if="e.version"> · {{ e.version }}</template>
                 </p>
                 <!-- 批次 C（P1.5）：运行诊断——dispatch 最近错误（已脱敏）+ 最近恢复时间 -->
                 <template v-if="e.diagnostics?.lastError || e.diagnostics?.lastOkAt">
@@ -809,7 +827,7 @@ watch(
               <Avatar :name="a.display_name || a.name" :src="a.avatar_url" size="sm" />
               <div class="min-w-0 flex-1">
                 <p class="truncate text-sm font-medium text-ink">{{ a.display_name || a.name }}</p>
-                <p class="truncate text-xs text-muted">{{ a.runtime || "claude" }} · {{ agentLive(a) }}</p>
+                <p class="truncate text-xs text-muted">{{ agentRuntimeChip(a) }} · {{ agentLive(a) }}</p>
               </div>
             </button>
             <template v-if="isMine">
@@ -913,7 +931,7 @@ watch(
             v-model="newEntrypoint"
             class="min-w-0 flex-1 rounded-md border border-gray-300 bg-gray-100 p-2 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
           >
-            <option v-for="e in entrypointOptions" :key="e.id" :value="e.id">{{ e.label }}</option>
+            <option v-for="e in entrypointOptions" :key="e.id" :value="e.id">{{ e.framework ? `${e.label} · ${e.framework}` : e.label }}</option>
           </select>
           <select
             v-model="newModel"

@@ -129,9 +129,11 @@ export const createJsonlBridgeRuntimeDriver = (deps: JsonlBridgeDriverDeps): Age
       return spawnSession({
         agentName: options.agentName,
         ...(options.agent !== undefined ? { agent: options.agent } : {}),
-        // 握手校验的期望 runtime 以 manifest 条目为准——profile resolve 已保证
-        // entry.runtime === profile.runtime（entrypoint-runtime-mismatch）。
-        runtime: entry.runtime,
+        // WP6：下发 worker 的 initialize.runtime.id 用 manifest 原始声明值——旧
+        // SDK worker 严格比对 init.runtime_id（langgraph.py RUNTIME_ID_MISMATCH），
+        // manifest 写旧别名时仍下发旧值保证兼容；握手期望比较走 normalizeRuntimeId
+        // （persistent-jsonl-worker validateReady），两侧归一后等价即通过。
+        runtime: entry.declaredRuntime,
         entrypoint: entry.id,
         // Phase 5 §11.2：entry revision 进 initialize——worker 据此隔离
         // checkpoint 命名空间，manifest 修订后不复用旧 thread。

@@ -49,14 +49,14 @@ describe("AgentRuntimeRegistry", () => {
     const registry = new AgentRuntimeRegistry([stubDriver("claude-stream", ["claude"])]);
 
     try {
-      registry.resolve("langchain");
+      registry.resolve("not-a-runtime");
       expect.unreachable();
     } catch (err) {
       expect(err).toBeInstanceOf(DispatchError);
       const de = err as DispatchError;
       expect(de.code).toBe("runtime-unsupported");
       expect(de.retriable).toBe(false);
-      expect(de.message).toContain("langchain");
+      expect(de.message).toContain("not-a-runtime");
     }
   });
 });

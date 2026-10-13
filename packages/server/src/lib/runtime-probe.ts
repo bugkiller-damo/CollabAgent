@@ -4,6 +4,7 @@ import type {
   RuntimeProbe,
   RuntimeProbeStatus,
 } from "@collabagent/shared";
+import { normalizeRuntimeId } from "@collabagent/shared";
 
 const STATUSES = new Set<RuntimeProbeStatus>(["installed", "not_installed", "installed_unsupported"]);
 
@@ -65,8 +66,14 @@ export function normalizeEntrypoints(raw: unknown): RuntimeEntrypointProbe[] {
       ? rec.models.filter((m): m is string => typeof m === "string" && m.trim().length > 0)
       : undefined;
     const ep: RuntimeEntrypointProbe = { id, label, status, modelMode };
-    const runtime = optStr(rec.runtime);
+    // WP6：runtime 归一——旧 daemon 上报的 langchain/langgraph 在此归入 "bridge"
+    const runtime = normalizeRuntimeId(optStr(rec.runtime));
     if (runtime) ep.runtime = runtime as RuntimeEntrypointProbe["runtime"];
+    // WP6：framework/bridgeVersion 是 worker 握手上报的展示用安全元数据（与 version 同级）
+    const framework = optStr(rec.framework);
+    if (framework) ep.framework = framework;
+    const bridgeVersion = optStr(rec.bridgeVersion);
+    if (bridgeVersion) ep.bridgeVersion = bridgeVersion;
     const version = optStr(rec.version);
     if (version) ep.version = version;
     if (models) ep.models = models;

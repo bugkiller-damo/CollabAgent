@@ -77,7 +77,7 @@ daemon 读本机 `<daemon 进程 cwd>/.slock/runtimes.json`（`slockDir()` 默�
   "entries": [
     {
       "id": "my-langgraph-agent",
-      "runtime": "langgraph",
+      "runtime": "bridge",
       "label": "My LangGraph Agent",
       "command": "/absolute/path/to/.venv/bin/python",
       "args": ["agent.py"],
@@ -95,6 +95,8 @@ daemon 读本机 `<daemon 进程 cwd>/.slock/runtimes.json`（`slockDir()` 默�
 }
 ```
 
+- `runtime`：规范值 `"bridge"`；旧别名 `"langchain"`/`"langgraph"` 仍被
+  接受（握手按归一值比对），新配置一律写 `"bridge"`。
 - `command` 必须是解释器绝对路径（或 PATH 可解析名）；禁 shell 元字符。
 - `cwd` 必须绝对路径；`args` 相对 `cwd` 解析。
 - `model.mode`：`fixed`（锁定 `default`）或 `select`（`allowed` 列表内可选，
@@ -200,7 +202,7 @@ provider 报错（`slock runtime doctor <id>` 的 `diagnostics.lastError`
 | 回合内 provider `Missing credentials`/401 | worker 侧 key 缺失或无效（自管形态下 probe 不预检） | `slock runtime doctor <id>` 看 `diagnostics.lastError`；确认 worker 配置文件可读、`.env` 无 BOM |
 | `entry-id-duplicate` | manifest 内 id 重复 | 改唯一 id |
 | probe 超时（15s） | worker 启动慢 / stdout 有非协议输出 / 卡在 import | `command --slock-probe` 手动跑，确认单行帧 + exit 0；stdout 禁日志 |
-| `RUNTIME_ID_MISMATCH` | initialize.runtime.id ≠ worker `runtime_id` | manifest `runtime` 与 `serve_*` 的 `runtime_id` 对齐 |
+| `RUNTIME_ID_MISMATCH` | initialize.runtime.id 归一后 ≠ worker `runtime_id`（非 `bridge`/`langchain`/`langgraph` 族） | manifest `runtime` 写 `"bridge"`（或旧别名），与 `serve_*` 的 `runtime_id` 对齐 |
 | turn.end error `MCP_START_FAILED` | Slock MCP 子进程没起来 | 查 worker stderr；probe 阶段不启 MCP，先排除环境问题 |
 | `durableThreads` 拒绝 | `requireDurableThreads=true` 但握手报 false | LangGraph compile 挂持久 checkpointer（SqliteSaver 等） |
 

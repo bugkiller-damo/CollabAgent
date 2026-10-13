@@ -30,9 +30,9 @@ import os
 from collections.abc import Callable
 from typing import Any
 
-from .errors import CWD_NOT_FOUND, GRAPH_INPUT_INVALID, PROTOCOL_VIOLATION, SarpError
+from .errors import CWD_NOT_FOUND, GRAPH_INPUT_INVALID, PROTOCOL_VIOLATION, RUNTIME_ID_MISMATCH, SarpError
 from .mcp import SlockMcpClient
-from .protocol import SarpInitialize, SarpTurnStart
+from .protocol import SarpInitialize, SarpTurnStart, normalize_runtime_id
 from .runtime import TurnEmit, TurnOutcome, WorkerRuntime
 from .tool_events import tool_provider_fields
 
@@ -56,7 +56,7 @@ def serve_langchain(
     system_prompt_mode: str = "prepend",
     streaming: bool = True,
     workspace_cwd: bool = False,
-    runtime_id: str = "langchain",
+    runtime_id: str = "bridge",
     framework_version: str | None = None,
     transport: Any = None,
     journal: Any = None,
@@ -72,6 +72,10 @@ def serve_langchain(
     Runnable 里的相对路径即以工作区为基准。默认 False：cwd 保持
     manifest 里声明的目录。工作区不可进入（chdir 失败）→
     runtime.error(CWD_NOT_FOUND)，握手失败。
+
+    runtime_id：worker 对外上报的 runtime.id，默认 "bridge"；握手按归一值
+    比对——initialize.runtime.id 为 "bridge"/"langchain"/"langgraph"
+    （大小写不敏感）均接受，其余 → RUNTIME_ID_MISMATCH。
     """
     if system_prompt_mode not in ("prepend", "none"):
         raise ValueError(f"system_prompt_mode must be 'prepend' or 'none', got {system_prompt_mode!r}")
@@ -83,6 +87,16 @@ def serve_langchain(
     holder: dict[str, Any] = {"mcp_client": None, "agent": None, "slock_tool_names": frozenset()}
 
     def _on_initialize(init: SarpInitialize, emit: TurnEmit) -> dict:
+        # WP6：initialize.runtime.id 是 manifest 声明原值——归一后比对，
+        # "bridge"/"langchain"/"langgraph"（大小写不敏感）均接受
+        if normalize_runtime_id(init.runtime_id) != normalize_runtime_id(runtime_id):
+            raise SarpError(
+                RUNTIME_ID_MISMATCH,
+                f"initialize.runtime.id={init.runtime_id!r} does not match worker "
+                f"runtime_id={runtime_id!r} (normalized comparison; "
+                "'langchain'/'langgraph' are legacy aliases of 'bridge')",
+                retryable=False,
+            )
         if workspace_cwd:
             try:
                 os.chdir(init.workspace_path)

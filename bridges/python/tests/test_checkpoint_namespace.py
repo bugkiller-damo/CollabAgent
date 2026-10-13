@@ -1,6 +1,7 @@
-"""Phase 5 §11.2：checkpoint thread_id 命名空间隔离。
+"""Phase 5 §11.2 + WP6/DEC-10：checkpoint thread_id 命名空间隔离。
 
-runtime/entrypoint/revision/model 任一分量变化 → 不同 thread_id；
+entrypoint/revision/model 任一分量变化 → 不同 thread_id；runtime.id 不再是
+命名空间分量（entrypoint 已唯一标识 worker——旧 5 段格式一次性废弃）。
 身份不变时同一 conversation_id 保持稳定（会话连续性）。
 """
 
@@ -13,7 +14,7 @@ def _init(**over) -> SarpInitialize:
         seq=1,
         request_id="r",
         agent=SarpAgentInfo(id="ag", name="bot"),
-        runtime_id="langgraph",
+        runtime_id="bridge",
         entrypoint="e1",
         model=None,
         revision=None,
@@ -34,9 +35,10 @@ def test_namespace_stable_when_identity_unchanged():
     assert checkpoint_thread_id(_init(), "conv-1") == checkpoint_thread_id(_init(), "conv-1")
 
 
-def test_runtime_change_isolates():
-    assert checkpoint_thread_id(_init(runtime_id="langgraph"), "c") != checkpoint_thread_id(
-        _init(runtime_id="langchain"), "c"
+def test_runtime_id_not_part_of_namespace():
+    """DEC-10：runtime.id（含旧别名差异）不再切分 thread 命名空间。"""
+    assert checkpoint_thread_id(_init(runtime_id="bridge"), "c") == checkpoint_thread_id(
+        _init(runtime_id="langgraph"), "c"
     )
 
 
@@ -56,7 +58,13 @@ def test_conversation_id_still_distinguishes():
     assert checkpoint_thread_id(_init(), "c1") != checkpoint_thread_id(_init(), "c2")
 
 
+def test_four_component_format():
+    """新格式：entrypoint:revision:model:conversation_id（无 runtime 前缀）。"""
+    tid = checkpoint_thread_id(_init(entrypoint="e1", revision="r1", model="m1"), "c")
+    assert tid == "e1:r1:m1:c"
+
+
 def test_separator_chars_sanitized():
     tid = checkpoint_thread_id(_init(entrypoint="ep:weird", revision="r:v"), "conv:1")
-    assert tid.count(":") == 4  # 恰好 4 个命名空间分隔符
+    assert tid.count(":") == 3  # 恰好 3 个命名空间分隔符（4 分量）
     assert tid.endswith(":conv_1")

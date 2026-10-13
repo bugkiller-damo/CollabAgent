@@ -21,9 +21,10 @@ import pytest
 TEMPLATES = Path(__file__).resolve().parents[2] / "templates"
 
 # template 目录名 → (runtime_id, 单回合所需框架包, probe 期望能力)
+# runtime_id 统一 "bridge"（WP6）；framework_pkg 是依赖名，不是 runtime id
 CASES = {
-    "langchain-agent": ("langchain", "langchain_core", {"durableThreads": False, "interrupts": False}),
-    "langgraph-agent": ("langgraph", "langgraph", {"durableThreads": True, "interrupts": True}),
+    "langchain-agent": ("bridge", "langchain_core", {"durableThreads": False, "interrupts": False}),
+    "langgraph-agent": ("bridge", "langgraph", {"durableThreads": True, "interrupts": True}),
 }
 
 

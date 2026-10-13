@@ -32,7 +32,7 @@ const writeManifest = (dir: string, body: unknown): string => {
 
 const validEntry = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
   id: "ep-1",
-  runtime: "langgraph",
+  runtime: "bridge",
   label: "Test Graph",
   command: "python",
   args: ["-m", "worker"],
@@ -60,7 +60,8 @@ describe("loadRuntimeManifest", () => {
     const a = loadRuntimeManifest(p);
     const b = loadRuntimeManifest(p);
     expect(a.fatalError).toBeUndefined();
-    expect(a.entries.get("ep-1")?.runtime).toBe("langgraph");
+    expect(a.entries.get("ep-1")?.runtime).toBe("bridge");
+    expect(a.entries.get("ep-1")?.declaredRuntime).toBe("bridge");
     expect(a.entries.get("ep-1")?.revision).toHaveLength(64);
     expect(a.revision).toBe(b.revision);
     expect(a.entries.get("ep-1")?.revision).toBe(b.entries.get("ep-1")?.revision);
@@ -174,7 +175,7 @@ describe("loadRuntimeManifest", () => {
     });
     const meta = loadRuntimeManifest(p).invalidEntries.get("ep-1");
     expect(meta?.code).toBe("entry-command-invalid");
-    expect(meta?.runtime).toBe("langgraph");
+    expect(meta?.runtime).toBe("bridge");
     expect(meta?.label).toBe("Test Graph");
     expect(JSON.stringify(meta)).not.toContain("python");
     expect(JSON.stringify(meta)).not.toContain("work");
@@ -233,7 +234,7 @@ describe("createRuntimeManifestLoader", () => {
     const rec = JSON.parse(lines[0]!);
     expect(rec.previousRevision).toBe(first.revision);
     expect(rec.revision).toBe(second.revision);
-    expect(rec.entries).toEqual([{ id: "ep-1", runtime: "langgraph", revision: expect.any(String) }]);
+    expect(rec.entries).toEqual([{ id: "ep-1", runtime: "bridge", revision: expect.any(String) }]);
     // 审计纪律：不含命令/路径/env 值等敏感配置
     expect(lines[0]).not.toContain("python");
     expect(lines[0]).not.toContain("work");
@@ -252,6 +253,63 @@ describe("createRuntimeManifestLoader", () => {
     const lines = readFileSync(manifestAuditPath(p), "utf-8").trim().split("\n");
     expect(lines).toHaveLength(1);
     expect(JSON.parse(lines[0]!).revision).toBe("missing");
+  });
+});
+
+describe("WP6 runtime 标识统一（langchain/langgraph → bridge）", () => {
+  it.each(["bridge", "langchain", "langgraph"])("runtime=%s → 归一化 bridge + declaredRuntime 保留原值", (runtime) => {
+    const p = writeManifest(tmp(), { version: 1, entries: [validEntry({ runtime })] });
+    const entry = loadRuntimeManifest(p).entries.get("ep-1");
+    expect(entry?.runtime).toBe("bridge");
+    expect(entry?.declaredRuntime).toBe(runtime);
+  });
+
+  it("runtime 大小写/空白不敏感 → 归一 bridge，declaredRuntime 存 trim+lowercase 值", () => {
+    const p = writeManifest(tmp(), { version: 1, entries: [validEntry({ runtime: " LangGraph " })] });
+    const entry = loadRuntimeManifest(p).entries.get("ep-1");
+    expect(entry?.runtime).toBe("bridge");
+    expect(entry?.declaredRuntime).toBe("langgraph");
+  });
+
+  it("非法 runtime → entry-runtime-invalid（invalidEntries.runtime 缺省——非 bridge 族）", () => {
+    const p = writeManifest(tmp(), { version: 1, entries: [validEntry({ runtime: "codex" })] });
+    const snap = loadRuntimeManifest(p);
+    expect(snap.invalidEntries.get("ep-1")?.code).toBe("entry-runtime-invalid");
+    expect(snap.invalidEntries.get("ep-1")?.runtime).toBeUndefined();
+  });
+
+  it("declaredRuntime 进 revision：同 entrypoint 写 langgraph vs bridge → 身份不同", () => {
+    const dir = tmp();
+    const p = writeManifest(dir, { version: 1, entries: [validEntry({ runtime: "langgraph" })] });
+    const a = loadRuntimeManifest(p).entries.get("ep-1")!.revision;
+    writeFileSync(p, JSON.stringify({ version: 1, entries: [validEntry({ runtime: "bridge" })] }), "utf-8");
+    const b = loadRuntimeManifest(p).entries.get("ep-1")!.revision;
+    expect(b).not.toBe(a);
+  });
+
+  it("审计：旧别名条目标 deprecatedRuntime；规范 bridge 不标", () => {
+    const dir = tmp();
+    const p = writeManifest(dir, {
+      version: 1,
+      entries: [validEntry({ runtime: "langgraph" }), validEntry({ id: "ep-2", runtime: "bridge" })],
+    });
+    const loader = createRuntimeManifestLoader(p, process.env);
+    loader(); // 基线
+    writeFileSync(
+      p,
+      JSON.stringify({
+        version: 1,
+        entries: [validEntry({ runtime: "langgraph", label: "v2" }), validEntry({ id: "ep-2", runtime: "bridge" })],
+      }),
+      "utf-8",
+    );
+    loader();
+    const rec = JSON.parse(readFileSync(manifestAuditPath(p), "utf-8").trim().split("\n").at(-1)!);
+    const ep1 = rec.entries.find((e: { id: string }) => e.id === "ep-1");
+    const ep2 = rec.entries.find((e: { id: string }) => e.id === "ep-2");
+    expect(ep1).toMatchObject({ id: "ep-1", runtime: "bridge", deprecatedRuntime: "langgraph" });
+    expect(ep2).toMatchObject({ id: "ep-2", runtime: "bridge" });
+    expect(ep2.deprecatedRuntime).toBeUndefined();
   });
 });
 

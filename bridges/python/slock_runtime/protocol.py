@@ -23,6 +23,19 @@ SARP_MAX_FRAME_BYTES = 1024 * 1024
 
 PROTOCOL_VERSION = SARP_VERSION  # 兼容别名
 
+# runtime.id 规范值与旧别名（DEC-1/WP6）：daemon 下发的是 manifest 声明原值
+#（兼容老 SDK），worker 侧一切身份比对先归一；输出（probe.result /
+# runtime.ready 的 runtime.id）一律用规范值 "bridge"。
+BRIDGE_RUNTIME_ID = "bridge"
+LEGACY_BRIDGE_RUNTIME_IDS = ("langchain", "langgraph")
+
+
+def normalize_runtime_id(value: str | None) -> str:
+    """runtime.id 归一：trim + 小写；旧别名（langchain/langgraph）映射为
+    "bridge"，其余原样返回。"""
+    v = (value or "").strip().lower()
+    return BRIDGE_RUNTIME_ID if v in LEGACY_BRIDGE_RUNTIME_IDS else v
+
 
 # ---------------------------------------------------------------------------
 # daemon → worker（解码）

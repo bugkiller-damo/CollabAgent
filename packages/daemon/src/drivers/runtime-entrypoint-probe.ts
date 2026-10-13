@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
 import { extname, isAbsolute } from "node:path";
-import type { RuntimeCapabilityProbe, RuntimeEntrypointProbe } from "@collabagent/shared";
+import { normalizeRuntimeId, type RuntimeCapabilityProbe, type RuntimeEntrypointProbe } from "@collabagent/shared";
 import { buildAgentEnv } from "../agent-env-whitelist.js";
 import type { RuntimeManifestEntry, RuntimeManifestSnapshot } from "../agent-runtime-manifest.js";
 import { createRuntimeSecretStore } from "../runtime-secret-store.js";
@@ -204,7 +204,9 @@ export function probeRuntimeEntrypoints(
       record.protocol !== "slock.agent-runtime" ||
       record.version !== 1 ||
       record.type !== "probe.result" ||
-      runtime?.id !== entry.runtime ||
+      // WP6：probe 上报的 runtime.id 归一比较——旧 SDK worker 报 langchain/
+      // langgraph 与条目的规范值 "bridge" 等价。
+      normalizeRuntimeId(typeof runtime?.id === "string" ? runtime.id : undefined) !== entry.runtime ||
       !capabilities
     ) {
       probes.push(
@@ -218,14 +220,21 @@ export function probeRuntimeEntrypoints(
       continue;
     }
 
-    const bridgeVersion = typeof runtime.bridgeVersion === "string" ? runtime.bridgeVersion.trim() : "";
-    const frameworkVersion = typeof runtime.frameworkVersion === "string" ? runtime.frameworkVersion.trim() : "";
+    // 走到这里 runtime.id 已归一匹配 entry.runtime（"bridge"）——runtime 必非空。
+    const runtimeRecord = runtime ?? {};
+    const bridgeVersion = typeof runtimeRecord.bridgeVersion === "string" ? runtimeRecord.bridgeVersion.trim() : "";
+    const frameworkVersion =
+      typeof runtimeRecord.frameworkVersion === "string" ? runtimeRecord.frameworkVersion.trim() : "";
     probes.push({
       id: entry.id,
       runtime: entry.runtime,
       label: entry.label,
       status: "installed_unsupported",
+      // version 保留兼容；WP6 起框架归属走 framework，SDK 版本走 bridgeVersion
+      // （runtime 双标签已合并为单一 "bridge"）。
       ...(bridgeVersion || frameworkVersion ? { version: bridgeVersion || frameworkVersion } : {}),
+      ...(frameworkVersion ? { framework: frameworkVersion } : {}),
+      ...(bridgeVersion ? { bridgeVersion } : {}),
       models: entry.model.mode === "fixed" ? [entry.model.default] : [...entry.model.allowed],
       defaultModel: entry.model.default,
       modelMode: entry.model.mode,

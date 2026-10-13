@@ -5,7 +5,7 @@
  * - daemon→worker.jsonl：由本文件的 encodeSarpFrame 生成（权威编码器）；
  *   Python 侧 test_contract_fixtures.py 用 decode_daemon_frame 逐行解码校验。
  * - worker→daemon.jsonl：Python encode_worker_frame 应能产生等价帧；
- *   本文件用 decodeSarpWorkerFrame 逐行解码校验（daemon 侧契约保证）。
+ *   本文件用 SarpInbound 逐行解码校验（daemon 侧契约保证）。
  *
  * 重新生成：SARP_WRITE_FIXTURES=1 pnpm vitest run sarp-contract-fixtures
  */
@@ -14,7 +14,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { decodeSarpWorkerFrame, encodeSarpFrame, type SarpDaemonFrame, SarpInbound } from "../src/sarp-protocol.js";
+import { encodeSarpFrame, type SarpDaemonFrame, SarpInbound } from "../src/sarp-protocol.js";
 
 const FIXTURE_DIR = join(dirname(fileURLToPath(import.meta.url)), "../../../bridges/fixtures");
 const TS = "2026-09-20T00:00:00.000Z";
@@ -27,7 +27,7 @@ const DAEMON_FRAMES: SarpDaemonFrame[] = [
     fields: {
       requestId: "req-fixture-1",
       agent: { id: "ag_1", name: "bot", displayName: "Bot", description: "fixture agent" },
-      runtime: { id: "langgraph", entrypoint: "lg-agent", model: "gpt-4o-mini" },
+      runtime: { id: "bridge", entrypoint: "lg-agent", model: "gpt-4o-mini" },
       workspace: { path: "/tmp/slock-ws" },
       platform: {
         systemPrompt: "You are a fixture.",
@@ -48,7 +48,7 @@ const DAEMON_FRAMES: SarpDaemonFrame[] = [
     fields: {
       requestId: "req-fixture-2",
       agent: { id: "ag_2", name: "min" },
-      runtime: { id: "langchain", entrypoint: "lc-agent" },
+      runtime: { id: "bridge", entrypoint: "lc-agent" },
       workspace: { path: "C:\\ws\\win path" },
       platform: {},
       limits: { maxFrameBytes: 1048576, silenceTimeoutMs: 60000 },
@@ -96,7 +96,7 @@ const WORKER_LINES: Record<string, unknown>[] = [
   {
     type: "runtime.ready",
     requestId: "req-fixture-1",
-    runtime: { id: "langgraph", frameworkVersion: "langgraph 0.2.x", bridgeVersion: "slock-runtime/0.1" },
+    runtime: { id: "bridge", frameworkVersion: "langgraph 0.2.x", bridgeVersion: "slock-runtime/0.1" },
     capabilities: {
       persistentProcess: true,
       streamingText: true,

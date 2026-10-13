@@ -11,7 +11,8 @@
  *      stdout 只承载协议帧（`{"literal"}` 指令除外——用于坏帧测试）；日志走 stderr。
  *
  * 环境变量控制面（全部 SLOCK_FX_ 前缀）：
- *   SLOCK_FX_RUNTIME_ID           ready/probe 的 runtime.id（默认 "langgraph"）
+ *   SLOCK_FX_RUNTIME_ID           ready/probe 的 runtime.id（默认 "bridge"；旧 SDK
+ *                                 兼容测试显式设为 "langchain"/"langgraph"）
  *   SLOCK_FX_CAPABILITIES         JSON，深合并覆盖默认 capabilities
  *   SLOCK_FX_MODEL_SELECTED       ready/probe 的 model.selected（默认 "fx-model"）
  *   SLOCK_FX_MODEL_OVERRIDE       "false" → model.overrides=false（默认 true）
@@ -62,7 +63,7 @@ import * as readline from "node:readline";
 
 const env = process.env;
 
-const RUNTIME_ID = env.SLOCK_FX_RUNTIME_ID || "langgraph";
+const RUNTIME_ID = env.SLOCK_FX_RUNTIME_ID || "bridge";
 const MODEL_SELECTED = env.SLOCK_FX_MODEL_SELECTED || "fx-model";
 const MODEL_OVERRIDE = env.SLOCK_FX_MODEL_OVERRIDE !== "false";
 const SEQ_RESET = env.SLOCK_FX_SEQ_RESET === "1";

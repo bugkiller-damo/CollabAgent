@@ -29,8 +29,8 @@
           "description": "Stable entrypoint identifier; unique within the manifest."
         },
         "runtime": {
-          "enum": ["langchain", "langgraph"],
-          "description": "Bridge runtime family. Claude is the built-in default and is NOT declared here."
+          "enum": ["bridge", "langchain", "langgraph"],
+          "description": "Bridge runtime family — the single canonical id is \"bridge\". \"langchain\" and \"langgraph\" are DEPRECATED input aliases (accepted for backward compatibility with old SDK workers, normalized to \"bridge\" internally and passed verbatim to the worker as initialize.runtime.id). Claude is the built-in default and is NOT declared here."
         },
         "label": {
           "type": "string",

@@ -518,6 +518,10 @@ export interface RuntimeEntrypointProbe {
   label: string;
   status: RuntimeProbeStatus;
   version?: string;
+  /** WP6：worker 握手上报的框架版本（langgraph 1.x 等），替代已合并的 runtime 双标签作展示 */
+  framework?: string;
+  /** WP6：worker 握手上报的 bridge SDK 版本（slock-runtime/x.y） */
+  bridgeVersion?: string;
   models?: string[];
   defaultModel?: string;
   modelMode: "fixed" | "select";
@@ -552,9 +556,24 @@ export type RuntimeCatalogId = (typeof RUNTIME_CATALOG_IDS)[number];
 /** P0 已接线、创建 picker 可收的 runtime */
 export const WIRED_RUNTIME_IDS = ["claude"] as const;
 
-/** Phase 1：manifest entrypoint 驱动的 bridge runtime（daemon 侧 JSONL worker 协议） */
-export const BRIDGE_RUNTIME_IDS = ["langchain", "langgraph"] as const;
-export type BridgeRuntimeId = (typeof BRIDGE_RUNTIME_IDS)[number];
+/** Phase 1：manifest entrypoint 驱动的 bridge runtime（daemon 侧 JSONL worker 协议）。
+ *  WP6：runtime 标识统一为单一值 "bridge"——daemon 对框架零感知，行为分流由
+ *  worker 握手 capabilities 决定；框架归属展示用 ready.frameworkVersion。 */
+export const BRIDGE_RUNTIME_ID = "bridge" as const;
+/** 旧标识：只作输入别名（manifest/server API/SDK initialize），入口处归一为
+ *  BRIDGE_RUNTIME_ID，不得以别名形式进入身份比较或持久化。 */
+export const LEGACY_BRIDGE_RUNTIME_IDS = ["langchain", "langgraph"] as const;
+export const BRIDGE_RUNTIME_IDS = [BRIDGE_RUNTIME_ID] as const;
+export type BridgeRuntimeId = typeof BRIDGE_RUNTIME_ID;
+
+/** runtime 标识归一：空值 → undefined；旧 bridge 别名（大小写/空白不敏感）→ "bridge"；其余原样返回。 */
+export function normalizeRuntimeId(id: string | null | undefined): string | undefined {
+  const v = id?.trim().toLowerCase();
+  if (!v) return undefined;
+  return (LEGACY_BRIDGE_RUNTIME_IDS as readonly string[]).includes(v) ? BRIDGE_RUNTIME_ID : v;
+}
+
+export const isBridgeRuntime = (id: string | null | undefined): boolean => normalizeRuntimeId(id) === BRIDGE_RUNTIME_ID;
 
 export type WsFromDaemonMessage =
   | {

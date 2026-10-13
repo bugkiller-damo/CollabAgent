@@ -1,5 +1,5 @@
 import type { RuntimeEntrypointProbe } from "@collabagent/shared";
-import { BRIDGE_RUNTIME_IDS, parseAgentDuty, WIRED_RUNTIME_IDS } from "@collabagent/shared";
+import { isBridgeRuntime, normalizeRuntimeId, parseAgentDuty, WIRED_RUNTIME_IDS } from "@collabagent/shared";
 import type { FastifyInstance } from "fastify";
 import { sql } from "../db/connection.js";
 import { computerOnlineFor, decorateAgentPresence, setAgentDuty } from "../lib/agent-duty.js";
@@ -19,17 +19,23 @@ import {
 
 /**
  * runtime_profile 可能是正确的 jsonb 对象，也可能是历史遗留的「双重编码字符串」，统一解析。
+ * WP6：解析即归一 runtime——迁移前的存量行可能仍写旧别名（langchain/langgraph），
+ * 下游分支/回显只见 "bridge"。
  */
 function parseRuntimeProfile(v: unknown): { runtime?: string; model?: string; entrypoint?: string } {
-  if (!v) return {};
-  if (typeof v === "string") {
-    try {
-      return JSON.parse(v);
-    } catch {
-      return {};
+  const rp = (() => {
+    if (!v) return {};
+    if (typeof v === "string") {
+      try {
+        return JSON.parse(v);
+      } catch {
+        return {};
+      }
     }
-  }
-  return v as { runtime?: string; model?: string; entrypoint?: string };
+    return v;
+  })() as { runtime?: string; model?: string; entrypoint?: string };
+  if (typeof rp.runtime === "string") rp.runtime = normalizeRuntimeId(rp.runtime);
+  return rp;
 }
 
 export async function agentPublicRoutes(app: FastifyInstance) {
@@ -140,8 +146,10 @@ export async function agentPublicRoutes(app: FastifyInstance) {
       return reply.status(403).send({ error: "only org owner can add agents" });
     const orgId = String(serverId);
 
-    const runtimeId = String(runtime || "claude");
-    const isBridge = (BRIDGE_RUNTIME_IDS as readonly string[]).includes(runtimeId);
+    // WP6：入口先归一——旧别名（langchain/langgraph）一律按 bridge 处理，
+    // 后续 flag 门禁、entrypoint 匹配、持久化只见归一值。
+    const runtimeId = normalizeRuntimeId(String(runtime || "claude")) ?? "claude";
+    const isBridge = isBridgeRuntime(runtimeId);
     // Phase 4：bridge runtime 由 SLOCK_BRIDGE_RUNTIMES rollout 开关门禁
     // （daemon entrypoint probe 全链路 E2E 后才开）；二进制 runtime 仍走 WIRED。
     if (isBridge ? !bridgeRuntimesEnabled() : !(WIRED_RUNTIME_IDS as readonly string[]).includes(runtimeId)) {
@@ -201,7 +209,11 @@ export async function agentPublicRoutes(app: FastifyInstance) {
     // meta 缺失（离线/旧 daemon）→ fail closed。
     let bridgeEntrypoint: RuntimeEntrypointProbe | undefined;
     if (isBridge) {
-      bridgeEntrypoint = meta?.entrypoints?.find((e) => e.id === entrypointId && e.runtime === runtimeId);
+      // WP6：probe 归一比较——旧 daemon 上报的 entrypoint.runtime 仍是旧别名，
+      // 须与归一后的 runtimeId 比（旧 probe "langgraph" 可满足 "bridge" 请求）。
+      bridgeEntrypoint = meta?.entrypoints?.find(
+        (e) => e.id === entrypointId && normalizeRuntimeId(e.runtime) === runtimeId,
+      );
       if (!bridgeEntrypoint) {
         return reply.status(400).send({
           error: "entrypoint not available on this computer",
@@ -379,16 +391,19 @@ export async function agentPublicRoutes(app: FastifyInstance) {
           : typeof entrypoint === "string" && entrypoint.trim()
             ? entrypoint.trim()
             : undefined;
-      const nextRuntime = runtime || prevRp.runtime || "claude";
+      // WP6：请求值与存量值同归一（prevRp.runtime 经 parseRuntimeProfile 已归一）——
+      // PATCH 只改 model 也不会把迁移前的旧别名原样写回。
+      const nextRuntime =
+        (typeof runtime === "string" ? normalizeRuntimeId(runtime) : undefined) ?? prevRp.runtime ?? "claude";
       const nextModel = model || prevRp.model || "sonnet";
       // 与 POST 同一规则：claude 等无 bridge entrypoint 的 runtime 不得携带/残留该键
-      if (nextEntrypoint && !(BRIDGE_RUNTIME_IDS as readonly string[]).includes(nextRuntime)) {
+      if (nextEntrypoint && !isBridgeRuntime(nextRuntime)) {
         return reply.status(400).send({ error: "entrypoint not allowed for runtime", runtime: nextRuntime });
       }
       // Phase 4：PATCH 与 POST 同一门禁——把既有 agent 改成 bridge runtime（或在
       // bridge runtime 上换 entrypoint/model）同样按绑定机 live probe 复核。
       let bridgeEp: RuntimeEntrypointProbe | undefined;
-      if ((BRIDGE_RUNTIME_IDS as readonly string[]).includes(nextRuntime)) {
+      if (isBridgeRuntime(nextRuntime)) {
         if (!bridgeRuntimesEnabled()) {
           return reply.status(400).send({ error: "runtime not wired", runtime: nextRuntime });
         }
@@ -410,7 +425,9 @@ export async function agentPublicRoutes(app: FastifyInstance) {
                 return m && (!m.serverId || m.serverId === String(crow.server_id)) ? m : undefined;
               })()
             : undefined;
-        const ep = meta?.entrypoints?.find((e) => e.id === nextEntrypoint && e.runtime === nextRuntime);
+        const ep = meta?.entrypoints?.find(
+          (e) => e.id === nextEntrypoint && normalizeRuntimeId(e.runtime) === nextRuntime,
+        );
         bridgeEp = ep;
         if (!ep) {
           return reply.status(400).send({

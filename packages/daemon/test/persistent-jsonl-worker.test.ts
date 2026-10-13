@@ -77,7 +77,7 @@ const makeSession = (overrides: Partial<JsonlWorkerSessionOptions> = {}): Harnes
       type: "runtime.ready",
       // §8.3：回显 initialize.requestId（session 校验一致性）
       requestId: (JSON.parse(lines[0]!) as { requestId?: string }).requestId,
-      runtime: { id: "langgraph", frameworkVersion: "0.6.7", bridgeVersion: "1.0.0" },
+      runtime: { id: "bridge", frameworkVersion: "0.6.7", bridgeVersion: "1.0.0" },
       capabilities: { persistentProcess: true, durableThreads: true, maxConcurrency: 1 },
       ...overrides,
     });
@@ -85,7 +85,7 @@ const makeSession = (overrides: Partial<JsonlWorkerSessionOptions> = {}): Harnes
   const base: JsonlWorkerSessionOptions = {
     agentName: "alice",
     agent: { id: "a1", name: "alice", displayName: "Alice" },
-    runtime: "langgraph",
+    runtime: "bridge",
     entrypoint: "ep-1",
     platformPrompt: "PLAT-PROMPT",
     serverUrl: "http://127.0.0.1:3000",
@@ -151,7 +151,7 @@ describe("PersistentJsonlWorkerSession", () => {
       seq: 1,
       requestId: expect.any(String),
       agent: { id: "a1", name: "alice", displayName: "Alice" },
-      runtime: { id: "langgraph", entrypoint: "ep-1" },
+      runtime: { id: "bridge", entrypoint: "ep-1" },
       workspace: { path: "D:\\ws\\alice" },
       platform: {
         systemPrompt: "PLAT-PROMPT",
@@ -185,11 +185,27 @@ describe("PersistentJsonlWorkerSession", () => {
 
   it("runtime id 不匹配 → ready reject runtime-id-mismatch + 杀进程", async () => {
     const h = makeSession();
-    h.emitReady({ runtime: { id: "langchain" } });
+    // 真正不同的 runtime id——langchain/langgraph 归一后与 bridge 等价，不再构成 mismatch
+    h.emitReady({ runtime: { id: "not-a-runtime" } });
     await expect(h.session.ready).rejects.toMatchObject({ code: "runtime-id-mismatch" });
     expect(h.child.kill).toHaveBeenCalled();
     expect(h.session.alive).toBe(false);
     await expect(h.session.send(makeReq())).rejects.toMatchObject({ code: "runtime-id-mismatch" });
+  });
+
+  it.each([
+    ["langgraph", "langgraph"], // 旧 SDK：declared 别名逐字回显
+    ["langgraph", "bridge"], // 旧 manifest + 新 SDK：下发别名，worker 回规范值
+    ["bridge", "langgraph"], // 新 manifest + 旧 SDK：worker 回显它收到的 declared 值
+    ["langchain", "bridge"],
+  ])("WP6 握手归一：期望 %s、worker 回 %s → 通过（归一等价）", async (expected, echoed) => {
+    const h = makeSession({ runtime: expected });
+    h.emitReady({ runtime: { id: echoed } });
+    await expect(h.session.ready).resolves.toBeUndefined();
+    // initialize.runtime.id 逐字下发 session 期望的 declared 值
+    const init = h.frames()[0]!;
+    expect((init.runtime as { id: string }).id).toBe(expected);
+    h.session.stop();
   });
 
   it("requireDurableThreads 但 worker 不支持 → durable-threads-required", async () => {

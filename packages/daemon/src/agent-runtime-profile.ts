@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { AgentRuntimeProfile } from "@collabagent/shared";
+import { type AgentRuntimeProfile, isBridgeRuntime, normalizeRuntimeId } from "@collabagent/shared";
 import type { RuntimeManifestSnapshot } from "./agent-runtime-manifest.js";
 import { DispatchError, type DispatchErrorCode } from "./errors.js";
 
@@ -79,7 +79,8 @@ export function resolveAgentRuntimeProfile(
   info: Pick<AgentRegistrationInfo, "runtime" | "model" | "entrypoint" | "runtimeProfileError">,
   snapshot: RuntimeManifestSnapshot,
 ): ResolvedAgentRuntimeProfile {
-  const runtime = clean(info.runtime)?.toLowerCase() ?? "claude";
+  // WP6：入口即归一——langchain/langgraph 旧别名收敛为 "bridge"，不进入下游比较。
+  const runtime = normalizeRuntimeId(info.runtime) ?? "claude";
   const requestedModel = clean(info.model);
   const entrypoint = clean(info.entrypoint);
 
@@ -108,7 +109,7 @@ export function resolveAgentRuntimeProfile(
     return { runtime, model: requestedModel, identity: identity(runtime, requestedModel) };
   }
 
-  if (runtime !== "langchain" && runtime !== "langgraph") {
+  if (!isBridgeRuntime(runtime)) {
     return {
       runtime,
       model: requestedModel,

@@ -9,14 +9,16 @@ import { DispatchError, isRetriableError } from "../src/errors.js";
 
 /**
  * Phase 1：agent runtime profile 的解析契约。
- * runtime = 显式值 ?? "claude"；claude 拒收 entrypoint；langchain/langgraph
- * 必须有 manifest 内匹配的 entrypoint；model 受 manifest fixed/allowlist 约束。
+ * runtime = 显式值归一 ?? "claude"（WP6：langchain/langgraph 是 bridge 的输入别名，
+ * 入口归一后参与全部比较）；claude 拒收 entrypoint；bridge 必须有 manifest 内
+ * 匹配的 entrypoint；model 受 manifest fixed/allowlist 约束。
  * identity 随 runtime/model/entrypoint/manifest 修订变化——dispatch 据此失效会话。
  */
 
 const entry = (over: Partial<RuntimeManifestEntry> = {}): RuntimeManifestEntry => ({
   id: "ep-1",
-  runtime: "langgraph",
+  runtime: "bridge",
+  declaredRuntime: "bridge",
   label: "Graph",
   command: "python",
   args: [],
@@ -89,47 +91,57 @@ describe("resolveAgentRuntimeProfile", () => {
     );
   });
 
-  it("langgraph 无 entrypoint → entrypoint-required", () => {
+  it("bridge 无 entrypoint → entrypoint-required；旧别名归一后同码", () => {
+    expectError({ runtime: "bridge" }, manifest(), "entrypoint-required");
+    // WP6 别名兼容：langgraph/langchain 输入归一为 bridge，走同一条校验路径
     expectError({ runtime: "langgraph" }, manifest(), "entrypoint-required");
   });
 
   it("entrypoint 不在 manifest → entrypoint-not-found", () => {
-    expectError({ runtime: "langgraph", entrypoint: "ghost" }, manifest(entry()), "entrypoint-not-found");
+    expectError({ runtime: "bridge", entrypoint: "ghost" }, manifest(entry()), "entrypoint-not-found");
   });
 
-  it("entrypoint 的 runtime 与所选不符 → entrypoint-runtime-mismatch", () => {
-    expectError(
-      { runtime: "langchain", entrypoint: "ep-1" },
-      manifest(entry({ runtime: "langgraph" })),
-      "entrypoint-runtime-mismatch",
-    );
+  it("WP6：旧别名与 bridge 归一为同一 runtime —— 混用不触发 entrypoint-runtime-mismatch", () => {
+    for (const runtime of ["langchain", "langgraph", "bridge", " LangGraph "]) {
+      const p = resolveAgentRuntimeProfile({ runtime, entrypoint: "ep-1" }, manifest(entry()));
+      expect(p.error, `runtime=${runtime}`).toBeUndefined();
+      expect(p.runtime).toBe("bridge");
+    }
+  });
+
+  it("entrypoint 的 runtime 与所选不符 → entrypoint-runtime-mismatch（防御分支）", () => {
+    // 正规路径已不可达——manifest 归一后 entry.runtime 恒为 "bridge"；防御分支
+    // 仍守「反序列化出来的非 bridge 条目」（如手绕 validateEntry 的测试产物）。
+    const odd = entry() as RuntimeManifestEntry;
+    (odd as { runtime: string }).runtime = "not-a-runtime";
+    expectError({ runtime: "bridge", entrypoint: "ep-1" }, manifest(odd), "entrypoint-runtime-mismatch");
   });
 
   it("manifest fatal → manifest-invalid；invalidEntries 命中同码", () => {
-    expectError({ runtime: "langgraph", entrypoint: "ep-1" }, INVALID_MANIFEST, "manifest-invalid");
+    expectError({ runtime: "bridge", entrypoint: "ep-1" }, INVALID_MANIFEST, "manifest-invalid");
     const snap = manifest();
     (snap.invalidEntries as Map<string, { code: string }>).set("ep-1", { code: "entry-command-invalid" });
-    expectError({ runtime: "langgraph", entrypoint: "ep-1" }, snap, "manifest-invalid");
+    expectError({ runtime: "bridge", entrypoint: "ep-1" }, snap, "manifest-invalid");
   });
 
   it("model mode=fixed：请求 ≠ default → model-not-allowed；相等 → 通过", () => {
     const snap = manifest(entry());
-    expectError({ runtime: "langgraph", entrypoint: "ep-1", model: "other" }, snap, "model-not-allowed");
-    const ok = resolveAgentRuntimeProfile({ runtime: "langgraph", entrypoint: "ep-1", model: "gpt-4o" }, snap);
+    expectError({ runtime: "bridge", entrypoint: "ep-1", model: "other" }, snap, "model-not-allowed");
+    const ok = resolveAgentRuntimeProfile({ runtime: "bridge", entrypoint: "ep-1", model: "gpt-4o" }, snap);
     expect(ok.error).toBeUndefined();
     expect(ok.model).toBe("gpt-4o");
   });
 
   it("model mode=select：缺省取 default；非 allowlist → model-not-allowed", () => {
     const snap = manifest(entry({ model: { mode: "select", default: "a", allowed: ["a", "b"] } }));
-    expect(resolveAgentRuntimeProfile({ runtime: "langgraph", entrypoint: "ep-1" }, snap).model).toBe("a");
-    expect(resolveAgentRuntimeProfile({ runtime: "langgraph", entrypoint: "ep-1", model: "b" }, snap).model).toBe("b");
-    expectError({ runtime: "langgraph", entrypoint: "ep-1", model: "c" }, snap, "model-not-allowed");
+    expect(resolveAgentRuntimeProfile({ runtime: "bridge", entrypoint: "ep-1" }, snap).model).toBe("a");
+    expect(resolveAgentRuntimeProfile({ runtime: "bridge", entrypoint: "ep-1", model: "b" }, snap).model).toBe("b");
+    expectError({ runtime: "bridge", entrypoint: "ep-1", model: "c" }, snap, "model-not-allowed");
   });
 
   it("server 不能绕过 fixed model 约束（manifest 是本机唯一权威）", () => {
     expectError(
-      { runtime: "langgraph", entrypoint: "ep-1", model: "attacker-model" },
+      { runtime: "bridge", entrypoint: "ep-1", model: "attacker-model" },
       manifest(entry()),
       "model-not-allowed",
     );
@@ -142,40 +154,41 @@ describe("resolveAgentRuntimeProfile", () => {
   });
 
   it("promptProfile：manifest 缺省 → neutral；显式值透传", () => {
-    const def = resolveAgentRuntimeProfile({ runtime: "langgraph", entrypoint: "ep-1" }, manifest(entry()));
+    const def = resolveAgentRuntimeProfile({ runtime: "bridge", entrypoint: "ep-1" }, manifest(entry()));
     expect(def.promptProfile).toBe("neutral");
     const explicit = resolveAgentRuntimeProfile(
-      { runtime: "langgraph", entrypoint: "ep-1" },
+      { runtime: "bridge", entrypoint: "ep-1" },
       manifest(entry({ promptProfile: "none" })),
     );
     expect(explicit.promptProfile).toBe("none");
     const agentic = resolveAgentRuntimeProfile(
-      { runtime: "langgraph", entrypoint: "ep-1" },
+      { runtime: "bridge", entrypoint: "ep-1" },
       manifest(entry({ promptProfile: "agentic" })),
     );
     expect(agentic.promptProfile).toBe("agentic");
   });
 
   it("identity 随 runtime/model/entrypoint/manifest 修订变化", () => {
-    const base = resolveAgentRuntimeProfile({ runtime: "langgraph", entrypoint: "ep-1" }, manifest(entry()));
+    const base = resolveAgentRuntimeProfile({ runtime: "bridge", entrypoint: "ep-1" }, manifest(entry()));
     const byModel = resolveAgentRuntimeProfile(
-      { runtime: "langgraph", entrypoint: "ep-1", model: "gpt-4o" },
+      { runtime: "bridge", entrypoint: "ep-1", model: "gpt-4o" },
       manifest(entry()),
     );
     // fixed 模式 requestedModel===default → 解析后 model 相同 → identity 相同
     expect(byModel.identity).toBe(base.identity);
+    // WP6：旧别名与 bridge 归一为同一 runtime → identity 相同（不无谓重启）
+    const byAlias = resolveAgentRuntimeProfile({ runtime: "langgraph", entrypoint: "ep-1" }, manifest(entry()));
+    expect(byAlias.identity).toBe(base.identity);
     const byRevision = resolveAgentRuntimeProfile(
-      { runtime: "langgraph", entrypoint: "ep-1" },
+      { runtime: "bridge", entrypoint: "ep-1" },
       manifest(entry({ revision: "rev-b" })),
     );
     expect(byRevision.identity).not.toBe(base.identity); // manifest 修订 → 换身份
-    const byRuntime = resolveAgentRuntimeProfile(
-      { runtime: "langchain", entrypoint: "ep-1" },
-      manifest(entry({ runtime: "langchain" })),
-    );
+    // 非 bridge 的不同 runtime（如 codex）→ 不同身份（旧别名已不能表达差异）
+    const byRuntime = resolveAgentRuntimeProfile({ runtime: "codex", entrypoint: "ep-1" }, manifest(entry()));
     expect(byRuntime.identity).not.toBe(base.identity);
     const byEntrypoint = resolveAgentRuntimeProfile(
-      { runtime: "langgraph", entrypoint: "ep-2" },
+      { runtime: "bridge", entrypoint: "ep-2" },
       manifest(entry({ id: "ep-2" })),
     );
     expect(byEntrypoint.identity).not.toBe(base.identity);

@@ -37,7 +37,7 @@ from typing import Any
 
 from .errors import CWD_NOT_FOUND, GRAPH_INPUT_INVALID, INTERRUPT_NOT_FOUND, RUNTIME_ID_MISMATCH, SarpError
 from .mcp import SlockMcpClient
-from .protocol import SarpInitialize, SarpTurnStart
+from .protocol import SarpInitialize, SarpTurnStart, normalize_runtime_id
 from .runtime import InterruptRecord, TurnEmit, TurnOutcome, WorkerRuntime, new_resume_token
 from .tool_events import tool_provider_fields
 
@@ -95,14 +95,15 @@ def _flatten_content(content: Any) -> str:
 
 
 def checkpoint_thread_id(init: SarpInitialize, conversation_id: str) -> str:
-    """Phase 5 §11.2：thread_id 按 runtime 身份命名空间隔离。
+    """Phase 5 §11.2：thread_id 按 worker 身份命名空间隔离。
 
-    runtime/entrypoint/model/manifest revision 任一分量变化 → 新命名空间 →
-    不复用旧 checkpoint thread。身份不变时 conversation_id 保住会话连续性。
-    前缀分量做分隔符清洗，保证结果仍是合法 thread_id 且不会跨命名空间碰撞。
+    entrypoint/model/manifest revision 任一分量变化 → 新命名空间 →
+    不复用旧 checkpoint thread；entrypoint 已唯一标识 worker——DEC-10 起
+    不再含 runtime.id 分量（旧 5 段 thread 一次性废弃）。身份不变时
+    conversation_id 保住会话连续性。前缀分量做分隔符清洗，保证结果仍是
+    合法 thread_id 且不会跨命名空间碰撞。
     """
     parts = [
-        init.runtime_id,
         init.entrypoint,
         init.revision or "-",
         init.model or "-",
@@ -308,7 +309,7 @@ def serve_langgraph(
     cost_calculator: Callable[[dict], float | None] | None = None,
     streaming: bool = True,
     workspace_cwd: bool = False,
-    runtime_id: str = "langgraph",
+    runtime_id: str = "bridge",
     framework_version: str | None = None,
     transport: Any = None,
     journal: Any = None,
@@ -325,6 +326,10 @@ def serve_langgraph(
     manifest 里声明的目录（通常是用户代码目录）。工作区不可进入
     （chdir 失败）→ runtime.error(CWD_NOT_FOUND)，握手失败。
 
+    runtime_id：worker 对外上报的 runtime.id，默认 "bridge"；握手按归一值
+    比对——initialize.runtime.id 为 "bridge"/"langchain"/"langgraph"
+    （大小写不敏感）均接受，其余 → RUNTIME_ID_MISMATCH。
+
     mapper 签名：
     - input_mapper(init, turn, fresh) -> graph input；fresh = thread 无
       checkpoint 历史。默认规则见 _default_input_mapper。
@@ -339,10 +344,14 @@ def serve_langgraph(
     # ---------------- 握手（§12.4 启动顺序） ----------------
 
     def on_initialize(init: SarpInitialize, emit: TurnEmit) -> dict:
-        if init.runtime_id != runtime_id:
+        # WP6：initialize.runtime.id 是 manifest 声明原值——归一后比对，
+        # "bridge"/"langchain"/"langgraph"（大小写不敏感）均接受
+        if normalize_runtime_id(init.runtime_id) != normalize_runtime_id(runtime_id):
             raise SarpError(
                 RUNTIME_ID_MISMATCH,
-                f"initialize.runtime.id={init.runtime_id!r} != worker runtime_id={runtime_id!r}",
+                f"initialize.runtime.id={init.runtime_id!r} does not match worker "
+                f"runtime_id={runtime_id!r} (normalized comparison; "
+                "'langchain'/'langgraph' are legacy aliases of 'bridge')",
                 retryable=False,
             )
         if workspace_cwd:
@@ -478,9 +487,9 @@ def serve_langgraph(
         if client is not None:
             client.set_active_turn(turn.turn_id)  # §15.4：写工具幂等键锚定 turnId
         started = time.monotonic()
-        # §11.2：thread_id 按 runtime 身份命名空间控 checkpoint 连续性
-        # （runtime/entrypoint/revision/model 变化不复用旧 thread）；
-        # slock_turn_id 供幂等审计。
+        # §11.2：thread_id 按 worker 身份命名空间控 checkpoint 连续性
+        # （entrypoint/revision/model 变化不复用旧 thread——DEC-10 起
+        # runtime.id 不再是分量）；slock_turn_id 供幂等审计。
         config = {
             "configurable": {
                 "thread_id": checkpoint_thread_id(init, turn.conversation_id),
@@ -494,8 +503,8 @@ def serve_langgraph(
 
             # 孤儿 resume 防护（实机踩坑）：journal 层已验 token 单次有效，
             # 但 thread 侧可能根本没有 pending interrupt——命名空间漂移
-            # （runtime/entrypoint/revision/model 任一变化即换 thread）、
-            # 旧格式 thread、checkpoint 丢失都会命中。此时 Command(resume)
+            # （entrypoint/revision/model 任一变化即换 thread）、旧 5 段
+            # 格式 thread、checkpoint 丢失都会命中。此时 Command(resume)
             # 会让 agent 节点拿到空 messages → provider 报 "Empty input
             # messages"。显式失败让 daemon 清掉 pending 记录（自愈）。
             has_pending = False

@@ -3,7 +3,7 @@
   "entries": [
     {
       "id": "my-langgraph-agent",
-      "runtime": "langgraph",
+      "runtime": "bridge",
       "label": "My LangGraph Agent",
       "command": "/absolute/path/to/venv/bin/python",
       "args": ["agent.py"],

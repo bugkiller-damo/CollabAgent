@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { appendFileSync, chmodSync, existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import type { BridgeRuntimeId } from "@collabagent/shared";
+import { BRIDGE_RUNTIME_ID, type BridgeRuntimeId, normalizeRuntimeId } from "@collabagent/shared";
 import { loadDaemonEnv } from "./config.js";
 import { mkdirPrivateSync, slockDir } from "./private-dir.js";
 
@@ -13,6 +13,14 @@ export type RuntimePromptProfile = "neutral" | "agentic" | "none";
 export interface RuntimeManifestEntry {
   id: string;
   runtime: BridgeRuntimeId;
+  /**
+   * WP6：manifest 里 runtime 的原始声明值（trim+lowercase，∈ {"bridge","langchain","langgraph"}）。
+   * 归一化 runtime 一律是 "bridge"（langchain/langgraph 只是输入别名）；本字段逐字
+   * 下发 worker 的 initialize.runtime.id——旧 SDK worker 严格比对该值（langgraph.py
+   * RUNTIME_ID_MISMATCH），manifest 写旧别名时仍下发旧值保证兼容。它参与 revision
+   * 全字段 hash：declaredRuntime 不同 → 下发 identity 不同 → 条目身份不同。
+   */
+  declaredRuntime: string;
   label: string;
   command: string;
   args: string[];
@@ -110,7 +118,10 @@ export function validateEntry(raw: unknown): ValidatedEntry {
   if (!isRecord(raw)) return { error: "entry-invalid" };
   const rawId = typeof raw.id === "string" ? raw.id.trim() : "";
   const id = ID_RE.test(rawId) ? rawId : undefined;
-  const runtime = raw.runtime === "langchain" || raw.runtime === "langgraph" ? raw.runtime : undefined;
+  // WP6：langchain/langgraph 只是输入别名——入口归一为 "bridge"，永不以别名
+  // 形式进条目；declaredRuntime 保留原值（逐字下发 worker 的 initialize.runtime.id）。
+  const declaredRuntime = typeof raw.runtime === "string" ? raw.runtime.trim().toLowerCase() : "";
+  const runtime = normalizeRuntimeId(declaredRuntime) === BRIDGE_RUNTIME_ID ? BRIDGE_RUNTIME_ID : undefined;
   const rawLabel = typeof raw.label === "string" ? raw.label.trim() : "";
   const label = rawLabel && rawLabel.length <= 80 ? rawLabel : undefined;
   if (!id) return { runtime, label, error: "entry-id-invalid" };
@@ -250,6 +261,7 @@ export function validateEntry(raw: unknown): ValidatedEntry {
     entry: {
       id,
       runtime,
+      declaredRuntime,
       label,
       command,
       args,
@@ -338,7 +350,14 @@ const appendManifestAudit = (prev: RuntimeManifestSnapshot | null, next: Runtime
     previousRevision: prev?.revision ?? null,
     revision: next.revision,
     fatalError: next.fatalError,
-    entries: [...next.entries.values()].map((e) => ({ id: e.id, runtime: e.runtime, revision: e.revision })),
+    entries: [...next.entries.values()].map((e) => ({
+      id: e.id,
+      runtime: e.runtime,
+      // WP6 弃用告警通道：manifest 写旧别名（langchain/langgraph）时在审计行
+      // 标记原始声明值——规范 runtime 永远是 "bridge"，看审计可发现该迁移的存量。
+      ...(e.declaredRuntime !== e.runtime ? { deprecatedRuntime: e.declaredRuntime } : {}),
+      revision: e.revision,
+    })),
     invalidEntries: [...next.invalidEntries.entries()].map(([id, e]) => ({ id, code: e.code, runtime: e.runtime })),
   };
   try {

@@ -43,6 +43,7 @@ from .protocol import (
     SarpShutdown,
     SarpTurnCancel,
     SarpTurnStart,
+    normalize_runtime_id,
 )
 from .transport import SarpTransport
 
@@ -205,7 +206,9 @@ class WorkerRuntime:
         transport: SarpTransport | None = None,
         journal: TurnJournal | None = None,
     ):
-        self.runtime_id = runtime_id
+        # 输出侧规范值（WP6）：probe.result / runtime.ready 的 runtime.id
+        # 恒为归一结果——构造时传旧别名（langchain/langgraph）也报 "bridge"
+        self.runtime_id = normalize_runtime_id(runtime_id)
         self.framework_version = framework_version
         self.bridge_version = bridge_version or BRIDGE_VERSION
         self.capabilities = capabilities or {}

@@ -30,6 +30,10 @@ export interface ComputerEntrypoint {
   label: string;
   status: EntrypointStatus;
   version?: string;
+  /** WP6：worker 握手上报的框架版本（langgraph 1.x 等）——合并单标签后作展示区分 */
+  framework?: string;
+  /** WP6：worker 握手上报的 bridge SDK 版本（slock-runtime/x.y） */
+  bridgeVersion?: string;
   models?: string[];
   defaultModel?: string;
   modelMode: "fixed" | "select";
@@ -72,9 +76,9 @@ const CATALOG: { id: string; label: string; kind: "binary" | "bridge" }[] = [
   { id: "codex", label: "Codex CLI", kind: "binary" },
   { id: "gemini", label: "Gemini CLI", kind: "binary" },
   { id: "opencode", label: "OpenCode", kind: "binary" },
-  // Phase 4：bridge runtime——安装状态不看 PATH 二进制，看 manifest entrypoint probe
-  { id: "langchain", label: "LangChain", kind: "bridge" },
-  { id: "langgraph", label: "LangGraph", kind: "bridge" },
+  // Phase 4 → WP6：bridge runtime 合并为单一「自建 Agent」——安装状态不看 PATH 二进制，
+  // 看 manifest entrypoint probe；框架归属（langchain/langgraph）由 probe 的 framework 字段展示
+  { id: "bridge", label: "自建 Agent", kind: "bridge" },
 ];
 
 export function runtimeCatalog() {

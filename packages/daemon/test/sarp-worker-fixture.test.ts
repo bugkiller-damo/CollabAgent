@@ -159,7 +159,7 @@ afterEach(async () => {
 const initFrame = () => ({
   type: "initialize",
   agent: { id: "agent-1", name: "tester" },
-  runtime: { id: "langgraph", entrypoint: "fx-graph" },
+  runtime: { id: "bridge", entrypoint: "fx-graph" },
   platform: { workspace: "D:\\code\\slock\\.slock\\workspaces\\tester" },
   limits: { maxFrameBytes: 1048576, silenceTimeoutMs: 300000 },
 });
@@ -193,7 +193,7 @@ describe("sarp-worker fixture — probe mode", () => {
     expect(probe.protocol).toBe("slock.agent-runtime");
     expect(probe.version).toBe(1);
     expect(probe.probe).toBe(true);
-    expect(probe.runtime.id).toBe("langgraph");
+    expect(probe.runtime.id).toBe("bridge"); // WP6：fixture 默认 runtime.id 归一为 bridge
     expect(probe.capabilities.persistentProcess).toBe(true);
     expect(probe.model.overrides).toBe(true);
   });
@@ -214,7 +214,7 @@ describe("sarp-worker fixture — initialize", () => {
       version: 1,
       type: "runtime.ready",
       seq: 1,
-      runtime: { id: "langgraph" },
+      runtime: { id: "bridge" },
       capabilities: {
         persistentProcess: true,
         streamingText: true,

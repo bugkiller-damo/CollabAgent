@@ -55,6 +55,7 @@ const openWorker = (
   const events: AgentRuntimeEvent[] = [];
   const session = new PersistentJsonlWorkerSession({
     agentName: "lg-agent",
+    // WP6：declaredRuntime 旧值原样下发——真 langgraph SDK worker 严格比对 runtime.id
     runtime: "langgraph",
     entrypoint: "lg-e2e",
     workspace,

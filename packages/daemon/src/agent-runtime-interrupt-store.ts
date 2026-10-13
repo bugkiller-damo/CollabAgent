@@ -15,6 +15,7 @@
 
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { normalizeRuntimeId } from "@collabagent/shared";
 import { mkdirPrivateSync, slockDir } from "./private-dir.js";
 
 export interface PendingRuntimeInterrupt {
@@ -128,8 +129,11 @@ export const createRuntimeInterruptStore = (
       const idx = data.records.findIndex((r) => keyOf(r.agentId, r.conversationId) === k);
       if (idx < 0) return null;
       const rec = data.records[idx];
+      // WP6：runtime 两侧归一比较——旧记录可能存别名（langchain/langgraph），
+      // 与规范值 "bridge" 等价不该误判不兼容；但 WP6 一次性身份变化
+      // （entrypoint/revision 变）仍会正确清除（DEC-10）。
       const compatible =
-        rec.runtime === runtime &&
+        normalizeRuntimeId(rec.runtime) === normalizeRuntimeId(runtime) &&
         (rec.entrypoint ?? undefined) === (entrypoint ?? undefined) &&
         (rec.revision ?? undefined) === (revision ?? undefined);
       if (!compatible || rec.expiresAt <= now()) {
@@ -146,7 +150,7 @@ export const createRuntimeInterruptStore = (
       const next = data.records.filter(
         (r) =>
           r.agentId !== agentId ||
-          (r.runtime === runtime &&
+          (normalizeRuntimeId(r.runtime) === normalizeRuntimeId(runtime) &&
             (r.entrypoint ?? undefined) === (entrypoint ?? undefined) &&
             (r.revision ?? undefined) === (revision ?? undefined)),
       );

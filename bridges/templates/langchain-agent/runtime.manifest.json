@@ -3,7 +3,7 @@
   "entries": [
     {
       "id": "my-langchain-agent",
-      "runtime": "langchain",
+      "runtime": "bridge",
       "label": "My LangChain Agent",
       "command": "/absolute/path/to/venv/bin/python",
       "args": ["agent.py"],

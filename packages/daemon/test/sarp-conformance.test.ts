@@ -30,7 +30,7 @@ describe("sarp-conformance — healthy fixture", () => {
   it("全部检查通过（TURN_DELAY 让 cancel 确定在途中落地；replay skip）", async () => {
     const report = await runSarpConformance({
       spawnSpec: spec({ SLOCK_FX_TURN_DELAY_MS: "300" }),
-      runtimeId: "langgraph",
+      runtimeId: "bridge",
       entrypoint: "fx-graph",
       stepTimeoutMs: 6000,
     });
@@ -55,7 +55,7 @@ describe("sarp-conformance — healthy fixture", () => {
         SLOCK_FX_CAPABILITIES: JSON.stringify({ interrupts: false }),
         SLOCK_FX_TURN_DELAY_MS: "300",
       }),
-      runtimeId: "langgraph",
+      runtimeId: "bridge",
       stepTimeoutMs: 6000,
     });
     expect(report.ok).toBe(true);
@@ -67,7 +67,7 @@ describe("sarp-conformance — healthy fixture", () => {
   it("无 turn 延迟：turn 先于 cancel 落地 → cancel skip（未验证，不假 pass）", async () => {
     const report = await runSarpConformance({
       spawnSpec: spec(),
-      runtimeId: "langgraph",
+      runtimeId: "bridge",
       stepTimeoutMs: 6000,
     });
     expect(report.ok).toBe(true);
@@ -81,7 +81,7 @@ describe("sarp-conformance — 双会话与关停纪律", () => {
   it("SLOCK_FX_MALFORMED_ERROR_EXIT=1 → malformed pass（runtime.error + exit 2），session A shutdown 真验证", async () => {
     const report = await runSarpConformance({
       spawnSpec: spec({ SLOCK_FX_MALFORMED_ERROR_EXIT: "1" }),
-      runtimeId: "langgraph",
+      runtimeId: "bridge",
       stepTimeoutMs: 6000,
     });
     expect(report.ok).toBe(true);
@@ -96,7 +96,7 @@ describe("sarp-conformance — 双会话与关停纪律", () => {
   it("SLOCK_FX_SHUTDOWN_NO_STOP=1 → 未发 stopped 就退 → shutdown fail / exit 0 → shutdown-exit pass", async () => {
     const report = await runSarpConformance({
       spawnSpec: spec({ SLOCK_FX_SHUTDOWN_NO_STOP: "1" }),
-      runtimeId: "langgraph",
+      runtimeId: "bridge",
       stepTimeoutMs: 6000,
     });
     expect(report.ok).toBe(false);
@@ -109,7 +109,7 @@ describe("sarp-conformance — 双会话与关停纪律", () => {
   it("SLOCK_FX_SHUTDOWN_IGNORE=1 → shutdown/shutdown-exit fail；坏行被忽略但 shutdown 不可达 → malformed fail", async () => {
     const report = await runSarpConformance({
       spawnSpec: spec({ SLOCK_FX_SHUTDOWN_IGNORE: "1" }),
-      runtimeId: "langgraph",
+      runtimeId: "bridge",
       stepTimeoutMs: 1500,
     });
     expect(report.ok).toBe(false);
@@ -121,7 +121,7 @@ describe("sarp-conformance — 双会话与关停纪律", () => {
   it("skipTurns=true → 回合面全 skip，handshake/shutdown/shutdown-exit/malformed-stdin pass", async () => {
     const report = await runSarpConformance({
       spawnSpec: spec(),
-      runtimeId: "langgraph",
+      runtimeId: "bridge",
       skipTurns: true,
       stepTimeoutMs: 6000,
     });
@@ -145,7 +145,7 @@ describe("sarp-conformance — journal replay（§15.4）", () => {
   it("SLOCK_FX_JOURNAL=1 + expectJournal → replay pass（只回放单帧终态）", async () => {
     const report = await runSarpConformance({
       spawnSpec: spec({ SLOCK_FX_JOURNAL: "1" }),
-      runtimeId: "langgraph",
+      runtimeId: "bridge",
       expectJournal: true,
       stepTimeoutMs: 6000,
     });
@@ -156,7 +156,7 @@ describe("sarp-conformance — journal replay（§15.4）", () => {
   it("expectJournal 但 worker 无 journal → replay fail（重跑被逮）", async () => {
     const report = await runSarpConformance({
       spawnSpec: spec(),
-      runtimeId: "langgraph",
+      runtimeId: "bridge",
       expectJournal: true,
       stepTimeoutMs: 6000,
     });
@@ -171,7 +171,7 @@ describe("sarp-conformance — failure modes", () => {
   it("SLOCK_FX_NO_READY=1 → handshake fail", async () => {
     const report = await runSarpConformance({
       spawnSpec: spec({ SLOCK_FX_NO_READY: "1" }),
-      runtimeId: "langgraph",
+      runtimeId: "bridge",
       stepTimeoutMs: 1200,
     });
     expect(report.ok).toBe(false);
@@ -180,18 +180,43 @@ describe("sarp-conformance — failure modes", () => {
 
   it("runtimeId 不匹配 → handshake fail", async () => {
     const report = await runSarpConformance({
-      spawnSpec: spec({ SLOCK_FX_RUNTIME_ID: "langchain" }),
-      runtimeId: "langgraph",
+      // 真正不同的 runtime id——langchain/langgraph 归一后与 bridge 等价，不再构成 mismatch
+      spawnSpec: spec({ SLOCK_FX_RUNTIME_ID: "not-a-runtime" }),
+      runtimeId: "bridge",
       stepTimeoutMs: 6000,
     });
     expect(report.ok).toBe(false);
     expect(checkOf(report, "handshake")?.status).toBe("fail");
   }, 20000);
 
+  it("WP6：期望 bridge、worker 回显旧别名 langgraph → handshake 归一通过", async () => {
+    // 旧 SDK worker 收到 declared 别名后逐字回显（init.runtime_id 严格比对实现）；
+    // 归一比较放行——旧 worker 与新 daemon 组合不该误报 handshake fail。
+    const report = await runSarpConformance({
+      spawnSpec: spec({ SLOCK_FX_RUNTIME_ID: "langgraph" }),
+      runtimeId: "bridge",
+      skipTurns: true,
+      stepTimeoutMs: 6000,
+    });
+    expect(report.ok).toBe(true);
+    expect(checkOf(report, "handshake")?.status).toBe("pass");
+  }, 20000);
+
+  it("WP6：期望 declared 别名 langgraph（check 对旧 manifest）、worker 回显 langgraph → handshake 通过", async () => {
+    const report = await runSarpConformance({
+      spawnSpec: spec({ SLOCK_FX_RUNTIME_ID: "langgraph" }),
+      runtimeId: "langgraph",
+      skipTurns: true,
+      stepTimeoutMs: 6000,
+    });
+    expect(report.ok).toBe(true);
+    expect(checkOf(report, "handshake")?.status).toBe("pass");
+  }, 20000);
+
   it("SLOCK_FX_NO_TURN_END=1 → turn-lifecycle fail", async () => {
     const report = await runSarpConformance({
       spawnSpec: spec({ SLOCK_FX_NO_TURN_END: "1" }),
-      runtimeId: "langgraph",
+      runtimeId: "bridge",
       stepTimeoutMs: 1500,
     });
     expect(report.ok).toBe(false);
@@ -201,7 +226,7 @@ describe("sarp-conformance — failure modes", () => {
   it("SLOCK_FX_SEQ_RESET=1 → seq-monotonic fail（越序被逮住）", async () => {
     const report = await runSarpConformance({
       spawnSpec: spec({ SLOCK_FX_SEQ_RESET: "1" }),
-      runtimeId: "langgraph",
+      runtimeId: "bridge",
       stepTimeoutMs: 6000,
     });
     expect(report.ok).toBe(false);
@@ -211,7 +236,7 @@ describe("sarp-conformance — failure modes", () => {
   it("SLOCK_FX_STARTUP_CRASH=1 → handshake fail", async () => {
     const report = await runSarpConformance({
       spawnSpec: spec({ SLOCK_FX_STARTUP_CRASH: "1" }),
-      runtimeId: "langgraph",
+      runtimeId: "bridge",
       stepTimeoutMs: 2000,
     });
     expect(report.ok).toBe(false);

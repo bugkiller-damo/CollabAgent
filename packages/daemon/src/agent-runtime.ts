@@ -484,7 +484,8 @@ export const createAgentRuntime = (
   // 旧会话自然失效（design §Phase 1 验收：manifest 变更不复用旧 Worker）。
   const manifestLoader = createRuntimeManifestLoader();
   // Phase 2：SARP/1 bridge driver 只在实验开关下注册——未开 flag 时
-  // langchain/langgraph 仍走 runtime-unsupported fail-closed（与 Phase 1 一致）。
+  // bridge（含归一后的旧别名 langchain/langgraph）仍走 runtime-unsupported
+  // fail-closed（与 Phase 1 一致）。
   const runtimeRegistry = new AgentRuntimeRegistry([
     createClaudeRuntimeDriver(),
     ...(cfg.experimentalBridgeRuntimes ? [createJsonlBridgeRuntimeDriver({ manifestLoader })] : []),
@@ -632,7 +633,7 @@ export const createAgentRuntime = (
       // Phase 1：runtime/entrypoint 同理合并；但当次推送显式带了 profile 字段
       // （runtimeProfileError !== undefined，含 null=无冲突）时 profile 视为
       // 权威整体——避免「改 runtime 不带 entrypoint」残留旧 entrypoint 造成
-      // langgraph→claude 切换后 entrypoint-not-allowed 假阳性。
+      // bridge→claude 切换后 entrypoint-not-allowed 假阳性。
       const prev = agentInfo.get(name);
       const profileAuthoritative = info.runtimeProfileError !== undefined;
       agentInfo.set(name, {

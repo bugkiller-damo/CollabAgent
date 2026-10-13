@@ -3,7 +3,9 @@ import { WebSocket } from "ws";
 import { api, BASE, cleanupTestData, closeSql, ensureTestComputer, registerUser, sql, uniqHandle } from "./helpers.js";
 
 /**
- * Phase 4：bridge runtime（langchain/langgraph）创建/编辑门禁的端到端矩阵。
+ * Phase 4：bridge runtime 创建/编辑门禁的端到端矩阵。
+ * WP6：runtime 标识统一为 "bridge"——entrypoint 夹具刻意保留旧别名
+ * （langchain/langgraph），模拟旧 daemon 的 probe 上报；server 全链归一。
  *
  * 测试形态：fake daemon 用 machine-token 建 WS 并发 ready（带 entrypoints），
  * server 侧 meta 即「该机 live probe」。POST/PATCH /agents 按该 probe 复核。
@@ -16,11 +18,14 @@ import { api, BASE, cleanupTestData, closeSql, ensureTestComputer, registerUser,
 const WS_BASE = BASE.replace(/^http/, "ws") + "/ws";
 const tick = (ms = 200) => new Promise((r) => setTimeout(r, ms));
 
-// select 模式 entrypoint（allowlist 单模型）
+// select 模式 entrypoint（allowlist 单模型）；runtime/framework/bridgeVersion
+// 是旧 daemon 的上报形态——server 归一后 runtime="bridge"、framework 透传
 const EP_SELECT = {
   id: "ep-sel",
   label: "LangGraph Select",
   runtime: "langgraph",
+  framework: "langgraph 1.x",
+  bridgeVersion: "slock-runtime/0.1.0",
   status: "installed_unsupported",
   version: "0.1.0",
   modelMode: "select",
@@ -148,6 +153,12 @@ describe("Phase 4: bridge runtime 创建门禁", () => {
     const computers = await api(`/api/computers?serverId=${comp.serverId}`, { cookie: u.cookie });
     const row = (computers.data.computers as any[]).find((c) => c.id === comp.id);
     expect(row?.entrypoints?.map((e: any) => e.id).sort()).toEqual(["ep-bad", "ep-fixed", "ep-sel"]);
+    // WP6：旧 daemon 上报的 runtime 别名已归一为 bridge；framework/bridgeVersion 透传
+    expect(row?.entrypoints?.every((e: any) => e.runtime === "bridge")).toBe(true);
+    expect(row?.entrypoints?.find((e: any) => e.id === "ep-sel")).toMatchObject({
+      framework: "langgraph 1.x",
+      bridgeVersion: "slock-runtime/0.1.0",
+    });
     // 敏感面不外泄：probe 摘要不带 command/cwd/env
     expect(JSON.stringify(row.entrypoints)).not.toMatch(/command|secretEnv|cwd/);
 
@@ -164,15 +175,26 @@ describe("Phase 4: bridge runtime 创建门禁", () => {
     expect(ghost.status).toBe(400);
     expect(ghost.data.code).toBe("entrypoint_unavailable");
 
-    // runtime 不匹配（ep-sel 属 langgraph，按 langchain 创建）→ 同 400
-    const wrongRt = await post({
+    // WP6：entrypoint 匹配按归一 runtime——请求带新值 "bridge" 可命中
+    // 旧 probe（runtime=langgraph）的 ep-sel；持久化仍为归一值
+    const bridgeRt = await post({
+      name: "br_" + uniqHandle(),
+      serverId: comp.serverId,
+      runtime: "bridge",
+      entrypoint: "ep-sel",
+    });
+    expect(bridgeRt.status).toBe(200);
+    expect(await readProfile(bridgeRt.data.agent.id)).toMatchObject({ runtime: "bridge", entrypoint: "ep-sel" });
+
+    // WP6：请求带另一旧别名 langchain 同样归一为 bridge，ep-sel 照旧命中
+    const aliasRt = await post({
       name: "br_" + uniqHandle(),
       serverId: comp.serverId,
       runtime: "langchain",
       entrypoint: "ep-sel",
     });
-    expect(wrongRt.status).toBe(400);
-    expect(wrongRt.data.code).toBe("entrypoint_unavailable");
+    expect(aliasRt.status).toBe(200);
+    expect(await readProfile(aliasRt.data.agent.id)).toMatchObject({ runtime: "bridge", entrypoint: "ep-sel" });
 
     // probe 失败态（misconfigured）→ not_ready
     const bad = await post({
@@ -207,7 +229,8 @@ describe("Phase 4: bridge runtime 创建门禁", () => {
     expect(fixedOverride.status).toBe(400);
     expect(fixedOverride.data.code).toBe("model_fixed");
 
-    // 合法创建：select + 缺省模型 → 落库 defaultModel + entrypoint
+    // 合法创建：select + 缺省模型 → 落库 defaultModel + entrypoint；
+    // WP6：请求带旧别名 langgraph，持久化为归一值 "bridge"
     const ok = await post({
       name: "br_" + uniqHandle(),
       serverId: comp.serverId,
@@ -217,7 +240,7 @@ describe("Phase 4: bridge runtime 创建门禁", () => {
     expect(ok.status).toBe(200);
     const agentId = ok.data.agent.id as string;
     expect(await readProfile(agentId)).toMatchObject({
-      runtime: "langgraph",
+      runtime: "bridge",
       model: "openai:gpt-5-mini",
       entrypoint: "ep-sel",
     });
@@ -260,7 +283,8 @@ describe("Phase 4: bridge runtime 创建门禁", () => {
     expect(await readProfile(agentId)).toMatchObject({ runtime: "claude" });
     expect((await readProfile(agentId))?.entrypoint).toBeUndefined();
 
-    // 反向：claude agent PATCH 回 bridge runtime + entrypoint → 同门禁放行
+    // 反向：claude agent PATCH 回 bridge runtime + entrypoint → 同门禁放行；
+    // WP6：PATCH 请求写旧别名，落库仍是归一值 "bridge"
     const back = await api(`/api/agents/${agentId}`, {
       method: "PATCH",
       cookie: u.cookie,
@@ -268,7 +292,7 @@ describe("Phase 4: bridge runtime 创建门禁", () => {
       body: { runtime: "langgraph", entrypoint: "ep-sel" },
     });
     expect(back.status).toBe(200);
-    expect(await readProfile(agentId)).toMatchObject({ runtime: "langgraph", entrypoint: "ep-sel" });
+    expect(await readProfile(agentId)).toMatchObject({ runtime: "bridge", entrypoint: "ep-sel" });
 
     ws.close();
   });

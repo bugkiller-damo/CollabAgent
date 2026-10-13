@@ -504,7 +504,8 @@ describe("批次 C：bridge MCP allowlist / 诊断打点 / interrupt 上下文�
 
   const bridgeEntry = (over: Record<string, unknown> = {}): RuntimeManifestEntry => ({
     id: "ep-1",
-    runtime: "langgraph",
+    runtime: "bridge",
+    declaredRuntime: "bridge",
     label: "Graph",
     command: "python",
     args: ["-m", "worker"],
@@ -535,13 +536,13 @@ describe("批次 C：bridge MCP allowlist / 诊断打点 / interrupt 上下文�
     const openSession = vi.fn(() => session as unknown as AgentRuntimeSession);
     return {
       openSession,
-      driver: { runtimeIds: ["langgraph"], openSession } as unknown as DispatchHeadlessTurnOpts["runtimeDriver"],
+      driver: { runtimeIds: ["bridge"], openSession } as unknown as DispatchHeadlessTurnOpts["runtimeDriver"],
     };
   };
 
   const bridgeOpts = (entry: RuntimeManifestEntry, over: Partial<DispatchHeadlessTurnOpts> = {}) =>
     makeOpts({
-      runtimeProfile: resolveAgentRuntimeProfile({ runtime: "langgraph", entrypoint: entry.id }, bridgeManifest(entry)),
+      runtimeProfile: resolveAgentRuntimeProfile({ runtime: "bridge", entrypoint: entry.id }, bridgeManifest(entry)),
       ...over,
     });
 
@@ -617,7 +618,7 @@ describe("批次 C：bridge MCP allowlist / 诊断打点 / interrupt 上下文�
         agentName: "alice",
         channel: "general",
         threadId: "th-9",
-        runtime: "langgraph",
+        runtime: "bridge",
         entrypoint: "ep-1",
         revision: "rev-1",
         resumeToken: "rt-1",

@@ -45,6 +45,7 @@ const openPyWorker = (
   const events: AgentRuntimeEvent[] = [];
   const session = new PersistentJsonlWorkerSession({
     agentName: "py-agent",
+    // WP6：declaredRuntime 旧值原样下发——真 SDK worker 严格比对 runtime.id
     runtime: "langgraph",
     entrypoint: "py-fixture",
     workspace,
@@ -114,9 +115,9 @@ maybe("Python slock_runtime worker ↔ session 端到端", () => {
     await session.stop();
   });
 
-  it("runtime.id 不符 → runtime-id-mismatch", async () => {
+  it("runtime.id 不符 → runtime-id-mismatch（WP6：langchain/langgraph 归一同族，须用真异 id）", async () => {
     const ws = mkdtempSync(join(tmpdir(), "slock-py-"));
-    const { session } = openPyWorker(ws, { SLOCK_PY_RUNTIME_ID: "langchain" });
+    const { session } = openPyWorker(ws, { SLOCK_PY_RUNTIME_ID: "not-a-runtime" });
     await expect(session.send(req("t-x"))).rejects.toMatchObject({ code: "runtime-id-mismatch" });
     expect(session.alive).toBe(false);
   });

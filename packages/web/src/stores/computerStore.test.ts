@@ -120,9 +120,9 @@ describe("runtime 判定 helpers", () => {
     ).toBe(true);
   });
 
-  it("runtimeCatalog：四个 binary + 两个 bridge runtime", () => {
+  it("runtimeCatalog：四个 binary + 一个合并的 bridge runtime（WP6：langchain/langgraph 并入自建 Agent）", () => {
     const cat = runtimeCatalog();
-    expect(cat.map((r) => r.id)).toEqual(["claude", "codex", "gemini", "opencode", "langchain", "langgraph"]);
-    expect(cat.filter((r) => r.kind === "bridge").map((r) => r.id)).toEqual(["langchain", "langgraph"]);
+    expect(cat.map((r) => r.id)).toEqual(["claude", "codex", "gemini", "opencode", "bridge"]);
+    expect(cat.filter((r) => r.kind === "bridge").map((r) => r.id)).toEqual(["bridge"]);
   });
 });

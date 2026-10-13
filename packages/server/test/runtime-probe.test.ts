@@ -50,7 +50,7 @@ describe("normalizeEntrypoints", () => {
     expect(normalizeEntrypoints([null, "str", 42, [], { noId: true }])).toEqual([]);
   });
 
-  it("全字段保留：id/label/runtime/status/models/mode/capabilities/error", () => {
+  it("全字段保留：id/label/runtime/status/models/mode/capabilities/error（WP6：runtime 归一为 bridge）", () => {
     expect(
       normalizeEntrypoints([
         {
@@ -69,7 +69,7 @@ describe("normalizeEntrypoints", () => {
       {
         id: "lg-1",
         label: "LangGraph Agent",
-        runtime: "langgraph",
+        runtime: "bridge",
         status: "installed_unsupported",
         version: "0.1.0",
         modelMode: "select",
@@ -78,6 +78,33 @@ describe("normalizeEntrypoints", () => {
         capabilities: { durableThreads: true, interrupts: true },
       },
     ]);
+  });
+
+  // WP6：旧 daemon 上报的 langchain/langgraph 归一为 bridge；
+  // framework/bridgeVersion 是展示用安全元数据，白名单透传
+  it("WP6：runtime 归一为 bridge（新值幂等）；framework/bridgeVersion 透传", () => {
+    const [e] = normalizeEntrypoints([
+      {
+        id: "ep-1",
+        label: "G",
+        runtime: "langgraph",
+        status: "installed",
+        modelMode: "fixed",
+        framework: "langgraph 1.x",
+        bridgeVersion: "slock-runtime/0.2.0",
+      },
+    ]);
+    expect(e.runtime).toBe("bridge");
+    expect(e.framework).toBe("langgraph 1.x");
+    expect(e.bridgeVersion).toBe("slock-runtime/0.2.0");
+
+    const [e2] = normalizeEntrypoints([{ id: "ep-2", status: "installed", runtime: "bridge" }]);
+    expect(e2.runtime).toBe("bridge");
+    const [e3] = normalizeEntrypoints([{ id: "ep-3", status: "installed", runtime: " LangChain " }]);
+    expect(e3.runtime).toBe("bridge"); // 大小写/空白不敏感
+    // 非 bridge 值原样透传（不归一也不丢弃）
+    const [e4] = normalizeEntrypoints([{ id: "ep-4", status: "installed", runtime: "custom-x" }]);
+    expect(e4.runtime).toBe("custom-x");
   });
 
   it("五个 entrypoint 状态全收（含 misconfigured / protocol_incompatible）", () => {

@@ -24,7 +24,7 @@ afterEach(() => {
 
 const rec = (over: Partial<PendingRuntimeInterrupt> = {}): PendingRuntimeInterrupt => ({
   agentId: "a1",
-  runtime: "langgraph",
+  runtime: "bridge",
   entrypoint: "ep-1",
   conversationId: "slock:v1:a1:thread:t1",
   interruptId: "i9",
@@ -42,10 +42,10 @@ describe("createRuntimeInterruptStore", () => {
     store.put(rec());
     // 新实例读同一文件 → 跨重启可见
     const store2 = createRuntimeInterruptStore(path, { now: () => 2000 });
-    const got = store2.take("a1", "slock:v1:a1:thread:t1", "langgraph", "ep-1");
+    const got = store2.take("a1", "slock:v1:a1:thread:t1", "bridge", "ep-1");
     expect(got).toMatchObject({ interruptId: "i9", resumeToken: "r7", expiresAt: 2000 + 7 * 24 * 60 * 60 * 1000 });
     expect(store2.delete("a1", "slock:v1:a1:thread:t1")).toBe(true);
-    expect(store2.take("a1", "slock:v1:a1:thread:t1", "langgraph", "ep-1")).toBeNull();
+    expect(store2.take("a1", "slock:v1:a1:thread:t1", "bridge", "ep-1")).toBeNull();
   });
 
   it("同 (agentId, conversationId) put 覆盖旧记录", () => {
@@ -59,11 +59,23 @@ describe("createRuntimeInterruptStore", () => {
   it("runtime/entrypoint 不兼容 → take 清除并返回 null", () => {
     const store = createRuntimeInterruptStore(tmpFile());
     store.put(rec());
-    expect(store.take("a1", "slock:v1:a1:thread:t1", "langchain", "ep-1")).toBeNull();
+    // 真正不同的 runtime id（langchain/langgraph 归一后与 bridge 等价，不算不兼容）
+    expect(store.take("a1", "slock:v1:a1:thread:t1", "not-a-runtime", "ep-1")).toBeNull();
     expect(store.list()).toHaveLength(0);
     store.put(rec({ entrypoint: undefined }));
-    expect(store.take("a1", "slock:v1:a1:thread:t1", "langgraph", "ep-1")).toBeNull();
+    expect(store.take("a1", "slock:v1:a1:thread:t1", "bridge", "ep-1")).toBeNull();
     expect(store.list()).toHaveLength(0);
+  });
+
+  it("WP6：记录/查询两侧归一——旧别名记录与 bridge 身份等价兼容", () => {
+    const store = createRuntimeInterruptStore(tmpFile());
+    // 旧 daemon 写下的 pending 记录 runtime=langgraph；新 profile runtime=bridge
+    // → 归一相等，不误判不兼容（DEC-10 的一次性清除由 entrypoint/revision 变化承担）。
+    store.put(rec({ runtime: "langgraph" }));
+    expect(store.take("a1", "slock:v1:a1:thread:t1", "bridge", "ep-1")?.resumeToken).toBe("r7");
+    // 反向亦然：记录 bridge、调用方给旧别名（如旧持久层调用点）
+    store.put(rec({ runtime: "bridge" }));
+    expect(store.take("a1", "slock:v1:a1:thread:t1", "langchain", "ep-1")?.resumeToken).toBe("r7");
   });
 
   it("过期 → take 清除并返回 null", () => {
@@ -71,7 +83,7 @@ describe("createRuntimeInterruptStore", () => {
     const store = createRuntimeInterruptStore(tmpFile(), { now: () => now, ttlMs: 100 });
     store.put(rec());
     now = 2000;
-    expect(store.take("a1", "slock:v1:a1:thread:t1", "langgraph", "ep-1")).toBeNull();
+    expect(store.take("a1", "slock:v1:a1:thread:t1", "bridge", "ep-1")).toBeNull();
     expect(store.list()).toHaveLength(0);
   });
 
@@ -79,22 +91,22 @@ describe("createRuntimeInterruptStore", () => {
     const store = createRuntimeInterruptStore(tmpFile());
     store.put(rec({ revision: "rev-a" }));
     // 同 runtime/entrypoint 但 revision 不同（manifest 被改）→ 不兼容
-    expect(store.take("a1", "slock:v1:a1:thread:t1", "langgraph", "ep-1", "rev-b")).toBeNull();
+    expect(store.take("a1", "slock:v1:a1:thread:t1", "bridge", "ep-1", "rev-b")).toBeNull();
     expect(store.list()).toHaveLength(0);
     // revision 一致 → 兼容返回
     store.put(rec({ revision: "rev-a" }));
-    expect(store.take("a1", "slock:v1:a1:thread:t1", "langgraph", "ep-1", "rev-a")?.resumeToken).toBe("r7");
+    expect(store.take("a1", "slock:v1:a1:thread:t1", "bridge", "ep-1", "rev-a")?.resumeToken).toBe("r7");
   });
 
   it("Phase 5：clearIncompatible 只清不兼容记录，兼容的保留", () => {
     const store = createRuntimeInterruptStore(tmpFile());
     store.put(rec({ revision: "rev-a" }));
     store.put(rec({ agentId: "a1", conversationId: "slock:v1:a1:channel:c2", revision: "rev-a" }));
-    store.put(rec({ agentId: "a1", conversationId: "slock:v1:a1:channel:c3", runtime: "langchain" }));
+    store.put(rec({ agentId: "a1", conversationId: "slock:v1:a1:channel:c3", runtime: "not-a-runtime" }));
     store.put(rec({ agentId: "a2", conversationId: "slock:v1:a2:channel:c4", revision: "rev-b" }));
-    // 当前身份变成 langgraph/ep-1/rev-b：a1 三条全不兼容（rev-a×2 + langchain×1），
+    // 当前身份变成 bridge/ep-1/rev-b：a1 三条全不兼容（rev-a×2 + not-a-runtime×1），
     // a2 的记录不受波及（只管本 agent）。
-    expect(store.clearIncompatible("a1", "langgraph", "ep-1", "rev-b")).toBe(3);
+    expect(store.clearIncompatible("a1", "bridge", "ep-1", "rev-b")).toBe(3);
     const rest = store.list();
     expect(rest).toHaveLength(1);
     expect(rest[0]!.agentId).toBe("a2");
@@ -104,7 +116,7 @@ describe("createRuntimeInterruptStore", () => {
     const store = createRuntimeInterruptStore(tmpFile());
     store.put(rec({ revision: "rev-a" }));
     store.put(rec({ agentId: "a1", conversationId: "slock:v1:a1:channel:c2", revision: "rev-a" }));
-    expect(store.clearIncompatible("a1", "langgraph", "ep-1", "rev-a")).toBe(0);
+    expect(store.clearIncompatible("a1", "bridge", "ep-1", "rev-a")).toBe(0);
     expect(store.list()).toHaveLength(2);
   });
 
@@ -134,7 +146,7 @@ describe("createRuntimeInterruptStore", () => {
 
     // delete 不存在的键 / 兼容 take（不清除）= 集合未变，不通知
     expect(store.delete("a1", "missing-conv")).toBe(false);
-    store.take("a1", "slock:v1:a1:thread:t1", "langgraph", "ep-1");
+    store.take("a1", "slock:v1:a1:thread:t1", "bridge", "ep-1");
     expect(calls).toHaveLength(1);
 
     // take 惰性清过期 → 通知空表（另一实例读同一文件，now 已越过 expiresAt）
@@ -144,7 +156,7 @@ describe("createRuntimeInterruptStore", () => {
       ttlMs: 100,
       onChange: (r) => calls2.push([...r]),
     });
-    expect(store2.take("a1", "slock:v1:a1:thread:t1", "langgraph", "ep-1")).toBeNull();
+    expect(store2.take("a1", "slock:v1:a1:thread:t1", "bridge", "ep-1")).toBeNull();
     expect(calls2).toHaveLength(1);
     expect(calls2[0]).toHaveLength(0);
   });
@@ -179,7 +191,8 @@ describe("createRuntimeInterruptStore", () => {
       "utf-8",
     );
     const store2 = createRuntimeInterruptStore(path);
-    const old = store2.take("a1", "c-old", "langgraph", "ep-1");
+    // 旧磁盘记录 runtime=langgraph（WP6 前 daemon 写入）——归一后与 bridge 身份等价兼容
+    const old = store2.take("a1", "c-old", "bridge", "ep-1");
     expect(old?.resumeToken).toBe("r0");
     expect(old?.agentName).toBeUndefined();
   });

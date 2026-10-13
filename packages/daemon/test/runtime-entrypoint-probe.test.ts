@@ -9,7 +9,8 @@ import { probeRuntimeEntrypoints } from "../src/drivers/runtime-entrypoint-probe
 
 const entry = (over: Partial<RuntimeManifestEntry> = {}): RuntimeManifestEntry => ({
   id: "ep-1",
-  runtime: "langgraph",
+  runtime: "bridge",
+  declaredRuntime: "bridge",
   label: "Test Graph",
   command: "python",
   args: ["-m", "worker"],
@@ -28,7 +29,7 @@ const entry = (over: Partial<RuntimeManifestEntry> = {}): RuntimeManifestEntry =
 
 const manifest = (
   entries: RuntimeManifestEntry[] = [],
-  invalidEntries: [string, { code: string; runtime?: "langchain" | "langgraph"; label?: string }][] = [],
+  invalidEntries: [string, { code: string; runtime?: "bridge"; label?: string }][] = [],
   fatalError?: string,
 ): RuntimeManifestSnapshot => ({
   path: "<test>",
@@ -42,7 +43,7 @@ const goodFrame = JSON.stringify({
   protocol: "slock.agent-runtime",
   version: 1,
   type: "probe.result",
-  runtime: { id: "langgraph", bridgeVersion: "0.1.0", frameworkVersion: "0.2.0" },
+  runtime: { id: "bridge", bridgeVersion: "0.1.0", frameworkVersion: "0.2.0" },
   capabilities: { maxConcurrency: 1, persistentProcess: true, streamingText: true, usage: "tokens", bogus: "dropped" },
 });
 
@@ -64,8 +65,11 @@ describe("probeRuntimeEntrypoints", () => {
   it("probe 成功 → installed_unsupported + 版本 + 白名单 capabilities（多余键被剥）", () => {
     const [p] = probeRuntimeEntrypoints(manifest([entry()]), deps());
     expect(p?.status).toBe("installed_unsupported");
-    expect(p?.runtime).toBe("langgraph");
-    expect(p?.version).toBe("0.1.0");
+    expect(p?.runtime).toBe("bridge");
+    expect(p?.version).toBe("0.1.0"); // 兼容字段：bridgeVersion 优先
+    // WP6：frameworkVersion/bridgeVersion 透出为新字段 framework/bridgeVersion
+    expect(p?.framework).toBe("0.2.0");
+    expect(p?.bridgeVersion).toBe("0.1.0");
     expect(p?.models).toEqual(["a", "b"]);
     expect(p?.defaultModel).toBe("a");
     expect(p?.capabilities).toEqual({
@@ -75,6 +79,19 @@ describe("probeRuntimeEntrypoints", () => {
       usage: "tokens",
     });
     expect(p?.capabilities).not.toHaveProperty("bogus");
+  });
+
+  it("WP6：probe 回报旧别名 runtime.id（langgraph）→ 归一匹配 installed_unsupported", () => {
+    const aliasFrame = JSON.stringify({
+      protocol: "slock.agent-runtime",
+      version: 1,
+      type: "probe.result",
+      runtime: { id: "langgraph" },
+      capabilities: { maxConcurrency: 1 },
+    });
+    const [p] = probeRuntimeEntrypoints(manifest([entry()]), deps({ execute: vi.fn(() => aliasFrame) }));
+    expect(p?.status).toBe("installed_unsupported");
+    expect(p?.runtime).toBe("bridge"); // 摘要 runtime 一律归一值
   });
 
   it("cwd 不存在 → misconfigured/cwd-not-found，不执行子进程", () => {
@@ -126,7 +143,7 @@ describe("probeRuntimeEntrypoints", () => {
         protocol: "x",
         version: 1,
         type: "probe.result",
-        runtime: { id: "langgraph" },
+        runtime: { id: "bridge" },
         capabilities: { maxConcurrency: 1 },
       }),
     ],
@@ -136,7 +153,7 @@ describe("probeRuntimeEntrypoints", () => {
         protocol: "slock.agent-runtime",
         version: 2,
         type: "probe.result",
-        runtime: { id: "langgraph" },
+        runtime: { id: "bridge" },
         capabilities: { maxConcurrency: 1 },
       }),
     ],
@@ -146,7 +163,8 @@ describe("probeRuntimeEntrypoints", () => {
         protocol: "slock.agent-runtime",
         version: 1,
         type: "probe.result",
-        runtime: { id: "langchain" },
+        // langchain/langgraph 归一后与 bridge 等价，不构成不符——用真正不同的 id
+        runtime: { id: "not-a-runtime" },
         capabilities: { maxConcurrency: 1 },
       }),
     ],
@@ -156,7 +174,7 @@ describe("probeRuntimeEntrypoints", () => {
         protocol: "slock.agent-runtime",
         version: 1,
         type: "probe.result",
-        runtime: { id: "langgraph" },
+        runtime: { id: "bridge" },
       }),
     ],
   ])("probe 输出异常 %s → protocol_incompatible", (_l, stdout) => {
@@ -166,13 +184,13 @@ describe("probeRuntimeEntrypoints", () => {
 
   it("manifest 校验失败条目 → misconfigured 摘要（id/label/runtime/errorCode，不含命令/路径/secret）", () => {
     const probes = probeRuntimeEntrypoints(
-      manifest([], [["bad-ep", { code: "entry-command-invalid", runtime: "langgraph", label: "Broken" }]]),
+      manifest([], [["bad-ep", { code: "entry-command-invalid", runtime: "bridge", label: "Broken" }]]),
       deps(),
     );
     expect(probes).toHaveLength(1);
     expect(probes[0]).toMatchObject({
       id: "bad-ep",
-      runtime: "langgraph",
+      runtime: "bridge",
       label: "Broken",
       status: "misconfigured",
       errorCode: "entry-command-invalid",

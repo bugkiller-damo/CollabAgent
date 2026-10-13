@@ -27,7 +27,7 @@ try:
 except ImportError:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "python"))
 
-RUNTIME_ID = "langchain"
+RUNTIME_ID = "bridge"
 
 
 def _resolve_model(init: SarpInitialize) -> Any:

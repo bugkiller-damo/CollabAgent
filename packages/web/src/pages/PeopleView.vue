@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { type AgentPresence, composePresence, PRESENCE_LABEL } from "@collabagent/shared";
+import { type AgentPresence, composePresence, normalizeRuntimeId, PRESENCE_LABEL } from "@collabagent/shared";
 import { Check, Crown, UserPlus, X } from "@lucide/vue";
 import { computed, onMounted, ref, watch } from "vue";
 import { useRoute } from "vue-router";
@@ -276,7 +276,8 @@ function statusFor(a: Agent): { text: string; cls: string; dot: string } {
 }
 
 function runtimeLine(a: Agent): string {
-  const rid = a.runtime || "claude";
+  // WP6：迁移前的存量行可能仍带旧别名（langchain/langgraph）——显示归一兜底
+  const rid = normalizeRuntimeId(a.runtime) || "claude";
   const label = runtimeCatalog().find((c) => c.id === rid)?.label || rid;
   return `${label} · ${a.model || "sonnet"}`;
 }

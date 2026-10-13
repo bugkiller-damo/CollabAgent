@@ -3,7 +3,7 @@
   "entries": [
     {
       "id": "langchain-agent",
-      "runtime": "langchain",
+      "runtime": "bridge",
       "label": "LangChain Example Agent",
       "command": "python",
       "args": ["agent.py"],

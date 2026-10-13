@@ -4,6 +4,10 @@
 
     python smoke_one_turn.py <agent.py 路径> <runtime_id>
 
+runtime_id 是 initialize 下发的 manifest 声明值——可为规范值 "bridge" 或
+旧别名（langchain/langgraph，SDK 归一后接受）；期望 ready.runtime.id
+恒为归一后的规范值 "bridge"。
+
 流程：spawn worker → initialize → runtime.ready（校验 runtime.id）→
 turn.start("hi") → turn.end（success 且 finalText == "Echo: hi"）→
 shutdown → runtime.stopped → 进程 exit 0。任一环节超时/不符即非零退出。
@@ -92,7 +96,9 @@ def main() -> int:
                 limits={"maxFrameBytes": 1048576, "silenceTimeoutMs": 300000},
             )
             ready = wait(lambda f: f["type"] == "runtime.ready")
-            assert ready["runtime"]["id"] == runtime_id, ready
+            # WP6：init 可带旧别名，ready 恒报归一后的规范值
+            expected_id = "bridge" if runtime_id in ("langchain", "langgraph") else runtime_id
+            assert ready["runtime"]["id"] == expected_id, ready
 
             send(
                 "turn.start",

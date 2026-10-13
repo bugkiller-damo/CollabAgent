@@ -19,7 +19,8 @@ START → agent → (有 tool_calls? → tools → agent) → review → END
   daemon 把审批提示发回频道；同 conversation 的下一条用户消息作为
   `resume.value` 进来——`reject*` 撤回回复，其余放行。
 - **checkpoint**：`SqliteSaver` 落 `<workspace>/.slock/langgraph-checkpoints.sqlite`，
-  `configurable.thread_id = conversationId`（§11.2）——worker 重启不丢 thread。
+  `configurable.thread_id = entrypoint:revision:model:conversationId`
+  （§11.2，WP6 起不再含 runtime.id 分量）——worker 重启不丢 thread。
 
 ## 接入 daemon
 
@@ -45,7 +46,7 @@ uv pip install -e bridges/python langgraph langgraph-checkpoint-sqlite langchain
 ```bash
 cd bridges/examples/langgraph-agent
 python agent.py <<'EOF'
-{"protocol":"slock.agent-runtime","version":1,"type":"initialize","seq":1,"timestamp":"2026-09-20T00:00:00Z","requestId":"r1","agent":{"id":"a1","name":"demo"},"runtime":{"id":"langgraph","entrypoint":"langgraph-example"},"workspace":{"path":"<abs workspace dir>"},"platform":{},"limits":{"maxFrameBytes":1048576,"silenceTimeoutMs":300000}}
+{"protocol":"slock.agent-runtime","version":1,"type":"initialize","seq":1,"timestamp":"2026-09-20T00:00:00Z","requestId":"r1","agent":{"id":"a1","name":"demo"},"runtime":{"id":"bridge","entrypoint":"langgraph-example"},"workspace":{"path":"<abs workspace dir>"},"platform":{},"limits":{"maxFrameBytes":1048576,"silenceTimeoutMs":300000}}
 {"protocol":"slock.agent-runtime","version":1,"type":"turn.start","seq":2,"timestamp":"2026-09-20T00:00:01Z","turnId":"t1","conversationId":"conv-1","attempt":1,"source":{"kind":"channel","channel":"general"},"prompt":"hello"}
 {"protocol":"slock.agent-runtime","version":1,"type":"turn.start","seq":3,"timestamp":"2026-09-20T00:00:02Z","turnId":"t2","conversationId":"conv-1","attempt":1,"source":{"kind":"channel","channel":"general"},"prompt":"approve","resume":{"interruptId":"<turn.end.interrupt.interruptId>","resumeToken":"<turn.end.interrupt.resumeToken>","value":"approve"}}
 {"protocol":"slock.agent-runtime","version":1,"type":"shutdown","seq":4,"timestamp":"2026-09-20T00:00:03Z"}

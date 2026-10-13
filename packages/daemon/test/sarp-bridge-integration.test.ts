@@ -25,7 +25,7 @@ const openWorker = (
   const events: AgentRuntimeEvent[] = [];
   const session = new PersistentJsonlWorkerSession({
     agentName: "it-agent",
-    runtime: "langgraph",
+    runtime: "bridge",
     entrypoint: "fx-graph",
     workspace: process.cwd(),
     spawnSpec: {
@@ -63,12 +63,28 @@ describe("fixture worker ↔ session 端到端", () => {
   });
 
   it("initialize → ready 走真实 stdin/stdout JSONL；runtime.id 不符 → runtime-id-mismatch", async () => {
-    const bad = openWorker({ SLOCK_FX_RUNTIME_ID: "langchain" });
+    const bad = openWorker({ SLOCK_FX_RUNTIME_ID: "not-a-runtime" });
     await expect(bad.session.send(req("t-x"))).rejects.toMatchObject({
       name: "DispatchError",
       code: "runtime-id-mismatch",
     });
     expect(bad.session.alive).toBe(false);
+  });
+
+  it("WP6 别名握手：会话期望 langgraph（旧 declared 值）、worker 回 bridge → 归一通过", async () => {
+    // 旧 manifest 写 langgraph → initialize.runtime.id 逐字下发 "langgraph"；
+    // fixture 默认回 "bridge"——新 SDK 行为，握手归一比较放行。
+    const { session } = openWorker({}, { runtime: "langgraph" });
+    const result = (await session.send(req("t-alias"))) as AgentRuntimeTurnResult;
+    expect(result.status).toBe("success");
+    session.stop();
+  });
+
+  it("WP6 别名握手：会话期望 bridge、worker 回显 langgraph（旧 SDK 逐字回显）→ 归一通过", async () => {
+    const { session } = openWorker({ SLOCK_FX_RUNTIME_ID: "langgraph" }, { runtime: "langgraph" });
+    const result = (await session.send(req("t-alias2"))) as AgentRuntimeTurnResult;
+    expect(result.status).toBe("success");
+    session.stop();
   });
 
   it("脚本驱动：tool.start(slock send_message)+tool.end → tool 事件 + empty-success 豁免", async () => {

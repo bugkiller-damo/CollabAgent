@@ -64,6 +64,8 @@ export function runtimeList(opts?: { manifest?: string }): RuntimeListResult {
   const entries = [...snapshot.entries.values()].map((e) => ({
     id: e.id,
     runtime: e.runtime,
+    // WP6：归一 runtime 恒 "bridge"；declaredRuntime 暴露逐字下发 worker 的值
+    declaredRuntime: e.declaredRuntime,
     label: e.label,
     command: e.command,
     args: e.args,
@@ -253,7 +255,9 @@ export async function runtimeCheck(id: string, opts: RuntimeCheckOptions = {}): 
         cwd: entry!.cwd,
         env: { ...entry!.env, ...secrets },
       },
-      runtimeId: entry!.runtime,
+      // WP6：initialize.runtime.id 与 daemon 实际下发一致——manifest 原始声明值
+      // （旧别名 manifest 的 check 同样向 worker 下发旧值，与线上行为一致）。
+      runtimeId: entry!.declaredRuntime,
       entrypoint: entry!.id,
       ...(opts.model !== undefined ? { expectModel: opts.model } : {}),
       expectJournal: opts.journal !== false,
@@ -323,6 +327,8 @@ export function runtimeDoctor(id: string, opts?: { manifest?: string }): Runtime
     ? {
         id: entry.id,
         runtime: entry.runtime,
+        // WP6：归一 runtime 恒 "bridge"；declaredRuntime 才是逐字下发 worker 的值
+        declaredRuntime: entry.declaredRuntime,
         label: entry.label,
         command: entry.command,
         args: entry.args,
@@ -441,7 +447,13 @@ const addEntryFlags = (cmd: Command, forEdit: boolean): Command => {
   const opt = (flags: string, desc: string): Command =>
     forEdit ? cmd.option(flags, desc) : cmd.requiredOption(flags, desc);
   opt("--id <id>", "entrypoint id (a-z0-9._-, <=64)");
-  opt("--runtime <runtime>", "langchain | langgraph");
+  // WP6：runtime 规范值 "bridge"（旧别名仍接受）。default 只能给 add——edit 是
+  // 补丁语义，带默认值会把所有未显式传 --runtime 的 edit 都改成 bridge。
+  if (forEdit) {
+    cmd.option("--runtime <runtime>", "bridge (legacy: langchain|langgraph)");
+  } else {
+    cmd.option("--runtime <runtime>", "bridge (legacy: langchain|langgraph)", "bridge");
+  }
   opt("--label <label>", "display label");
   opt("--command <command>", "executable command");
   opt("--cwd <dir>", "absolute working directory");

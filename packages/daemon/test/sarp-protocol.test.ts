@@ -70,7 +70,7 @@ describe("decodeSarpWorkerFrame — 信封", () => {
       frame({
         type: "runtime.ready",
         requestId: "init_1",
-        runtime: { id: "langgraph", frameworkVersion: "0.6", bridgeVersion: "1" },
+        runtime: { id: "bridge", frameworkVersion: "0.6", bridgeVersion: "1" },
         capabilities: { durableThreads: true, maxConcurrency: 1, usage: "cost" },
         model: { selected: "gpt-x", overrides: true },
       }),
@@ -78,7 +78,7 @@ describe("decodeSarpWorkerFrame — 信封", () => {
     expect(msg).toMatchObject({
       type: "runtime.ready",
       requestId: "init_1",
-      runtime: { id: "langgraph" },
+      runtime: { id: "bridge" },
       capabilities: { durableThreads: true, maxConcurrency: 1 },
       model: { overrides: true },
     });

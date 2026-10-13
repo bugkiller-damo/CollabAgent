@@ -7,7 +7,7 @@
  * 用法：
  *   const report = await runSarpConformance({
  *     spawnSpec: { command: "python", args: ["agent.py"], cwd: "...", env: {...} },
- *     runtimeId: "langgraph", entrypoint: "my-ep",
+ *     runtimeId: "bridge", entrypoint: "my-ep",
  *   });
  *   report.ok === false → 哪条 check 挂了看 report.checks。
  *
@@ -46,6 +46,7 @@
  */
 
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import { normalizeRuntimeId } from "@collabagent/shared";
 
 export interface ConformanceSpawnSpec {
   command: string;
@@ -380,8 +381,11 @@ export const runSarpConformance = async (opts: ConformanceOptions): Promise<Conf
       fail("handshake", `requestId echo mismatch: got ${ready.requestId}`);
       return { ok: false, checks, stderrTail: workerA.stderrTail() };
     }
-    if (ready.runtime?.id !== opts.runtimeId) {
-      fail("handshake", `runtime.id=${ready.runtime?.id} != expected ${opts.runtimeId}`);
+    // WP6：runtime.id 归一比较——旧 SDK worker 收到 declared 别名后回显该别名
+    // （init.runtime_id 严格比对实现），与期望的规范/别名值归一后等价即通过。
+    const readyRuntimeId = ready.runtime?.id;
+    if (normalizeRuntimeId(readyRuntimeId) !== normalizeRuntimeId(opts.runtimeId)) {
+      fail("handshake", `runtime.id=${readyRuntimeId} != expected ${opts.runtimeId}`);
       return { ok: false, checks, stderrTail: workerA.stderrTail() };
     }
     if (ready.seq !== 1) {
@@ -396,7 +400,7 @@ export const runSarpConformance = async (opts: ConformanceOptions): Promise<Conf
       fail("handshake", `model.selected=${(ready.model as { selected?: string }).selected} != ${opts.expectModel}`);
       return { ok: false, checks, stderrTail: workerA.stderrTail() };
     }
-    pass("handshake", `runtime.id=${ready.runtime.id}, requestId echoed`);
+    pass("handshake", `runtime.id=${readyRuntimeId}, requestId echoed`);
 
     /* ---------------- 工具函数 ---------------- */
     let lastSeq = ready.seq ?? 1;

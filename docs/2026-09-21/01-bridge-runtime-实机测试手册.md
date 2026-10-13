@@ -11,7 +11,7 @@
 
 | 变量 | 值 | 作用 |
 |------|-----|------|
-| `SLOCK_BRIDGE_RUNTIMES` | `1` | **创建门禁总开关**。不设则 `POST /api/agents` 对 langchain/langgraph 一律 400 `runtime not wired` |
+| `SLOCK_BRIDGE_RUNTIMES` | `1` | **创建门禁总开关**。不设则 `POST /api/agents` 对 bridge 系 runtime（规范值 `bridge`；langchain/langgraph 为旧别名，归一识别）一律 400 `runtime not wired` |
 
 ### daemon（`packages/daemon`）
 
@@ -47,7 +47,7 @@ pnpm exec tsx src/index.ts \
   "entries": [
     {
       "id": "langgraph-deepseek",
-      "runtime": "langgraph",
+      "runtime": "bridge",
       "label": "LangGraph Approval-Gate Agent (deepseek)",
       "command": "D:\\code\\slock\\bridges\\python\\.venv\\Scripts\\python.exe",
       "args": ["agent.py"],
@@ -115,7 +115,7 @@ Invoke-RestMethod -Headers $H "http://localhost:3001/api/computers?serverId=<ser
 # ② 创建 agent（三要素：runtime + entrypoint + model）
 Invoke-RestMethod -Method Post -Headers ($H + @{'Content-Type'='application/json'}) `
   -Body (@{ name='lg-deepseek'; displayName='LG'; serverId='<serverId>';
-            computerId='<computerId>'; runtime='langgraph';
+            computerId='<computerId>'; runtime='bridge';
             entrypoint='langgraph-deepseek'; model='openai:deepseek-chat' } | ConvertTo-Json) `
   "http://localhost:3001/api/agents"
 

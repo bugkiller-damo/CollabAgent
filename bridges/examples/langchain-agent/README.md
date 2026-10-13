@@ -38,6 +38,7 @@ pip install langchain langchain-core # 框架依赖由 worker 自己声明（SDK
 
 ## 能力声明
 
-`runtime.id = "langchain"`，`requireDurableThreads = false`：普通
+`runtime.id = "bridge"`（langchain/langgraph 为旧别名，归一接受），
+`requireDurableThreads = false`：普通
 Runnable 无 checkpoint，adapter 不虚报 `durableThreads`/`interrupts`，
 `resume` 一律 PROTOCOL_VIOLATION（§12.2）。

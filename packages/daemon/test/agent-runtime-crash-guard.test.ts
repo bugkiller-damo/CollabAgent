@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { crashGuardCounts, createWorkerCrashGuard } from "../src/agent-runtime-crash-guard.js";
 
-const ID = "langgraph@ep1:rev1";
+const ID = "bridge@ep1:rev1";
 
 describe("worker crash guard", () => {
   it("spawn/生命周期类失败码计入熔断，provider/回合类不计", () => {
@@ -66,7 +66,7 @@ describe("worker crash guard", () => {
     g.recordFailure("a", ID, "worker-exited");
     expect(g.check("a", ID).blocked).toBe(true);
     // 新 entrypoint 修订 → 熔断对新配置不成立
-    expect(g.check("a", "langgraph@ep1:rev2").blocked).toBe(false);
+    expect(g.check("a", "bridge@ep1:rev2").blocked).toBe(false);
   });
 
   it("非熔断类失败码不累计", () => {

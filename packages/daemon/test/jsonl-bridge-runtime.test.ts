@@ -13,7 +13,8 @@ import { DispatchError } from "../src/errors.js";
 
 const entry = (over: Record<string, unknown> = {}) => ({
   id: "ep-1",
-  runtime: "langgraph" as const,
+  runtime: "bridge" as const,
+  declaredRuntime: "bridge",
   label: "Graph",
   command: "python",
   args: ["-m", "worker"],
@@ -73,9 +74,9 @@ const makeDriver = (snap: RuntimeManifestSnapshot, env: NodeJS.ProcessEnv = {}) 
 };
 
 describe("createJsonlBridgeRuntimeDriver", () => {
-  it("runtimeIds 覆盖 langchain + langgraph", () => {
+  it("runtimeIds 归一为单一 bridge（WP6）", () => {
     const { driver } = makeDriver(snapshot([]));
-    expect(driver.runtimeIds).toEqual(["langchain", "langgraph"]);
+    expect(driver.runtimeIds).toEqual(["bridge"]);
   });
 
   it("openSession：manifest 条目 → spawnSpec + 会话选项完整映射", () => {
@@ -85,7 +86,7 @@ describe("createJsonlBridgeRuntimeDriver", () => {
     const o = captured[0]!;
     expect(o).toMatchObject({
       agentName: "researcher",
-      runtime: "langgraph", // 期望 runtime 以 manifest 条目为准
+      runtime: "bridge", // 下发 worker 的 runtime.id 以 manifest 条目 declaredRuntime 为准
       entrypoint: "ep-1",
       model: "gpt-4o",
       platformPrompt: "platform",
@@ -105,6 +106,14 @@ describe("createJsonlBridgeRuntimeDriver", () => {
       SLOCK_SERVER_URL: "http://s",
       SLOCK_AGENT_TOKEN_FILE: "/srv/tok",
     });
+  });
+
+  it("WP6：manifest 写旧别名 → initialize.runtime.id 逐字下发 declaredRuntime", () => {
+    // 旧 SDK worker 严格比对 init.runtime_id（RUNTIME_ID_MISMATCH）——manifest
+    // 声明 langgraph 时必须下发 langgraph 而非归一后的 bridge。
+    const { driver, captured } = makeDriver(snapshot([entry({ declaredRuntime: "langgraph" })]));
+    driver.openSession(openOpts());
+    expect(captured[0]!.runtime).toBe("langgraph");
   });
 
   it("平台变量最后胜出：manifest env 不能改投 SLOCK_SERVER_URL", () => {

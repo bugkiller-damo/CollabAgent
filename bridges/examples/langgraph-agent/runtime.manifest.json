@@ -3,7 +3,7 @@
   "entries": [
     {
       "id": "langgraph-example",
-      "runtime": "langgraph",
+      "runtime": "bridge",
       "label": "LangGraph Approval-Gate Agent (example)",
       "command": "python",
       "args": ["agent.py"],

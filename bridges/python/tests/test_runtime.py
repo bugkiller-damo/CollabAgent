@@ -78,6 +78,7 @@ class Harness:
 
     def start(self, run_turn, on_initialize=None, **rt_kwargs) -> None:
         rt = WorkerRuntime(
+            # 故意用旧别名作默认——WorkerRuntime 归一化后输出仍是 "bridge"
             runtime_id=rt_kwargs.pop("runtime_id", "langgraph"),
             transport=self.transport,
             journal=self.journal,
@@ -141,7 +142,7 @@ class TestHandshake:
         h.send("initialize", **INIT)
         ready = h.wait_frame(lambda f: f["type"] == "runtime.ready")
         assert ready["requestId"] == "req-1" and ready["seq"] == 1
-        assert ready["runtime"]["id"] == "langgraph"
+        assert ready["runtime"]["id"] == "bridge"
         assert ready["capabilities"]["persistentProcess"] is True
         assert ready["capabilities"]["maxConcurrency"] == 1
         h.send("shutdown")
@@ -378,7 +379,7 @@ class TestProbe:
         assert f["protocol"] == "slock.agent-runtime" and f["version"] == 1
         assert f["type"] == "probe.result" and f["probe"] is True
         assert f["runtime"] == {
-            "id": "langgraph",
+            "id": "bridge",
             "frameworkVersion": "langgraph 1.2.3",
             "bridgeVersion": BRIDGE_VERSION,
         }
@@ -410,7 +411,7 @@ class TestProbe:
         h.start(_ok)
         h.send("initialize", **INIT)
         ready = h.wait_frame(lambda f: f["type"] == "runtime.ready")
-        assert ready["runtime"]["id"] == "langgraph"
+        assert ready["runtime"]["id"] == "bridge"
         h.send("shutdown")
         assert h.finish() == 0
 

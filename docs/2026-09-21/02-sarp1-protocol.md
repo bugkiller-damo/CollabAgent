@@ -61,7 +61,8 @@ worker exit 0
   "requestId": "...",                // worker 须在 ready/error 回显
   "agent": { "id": "...", "name": "..." },
   "runtime": {
-    "id": "langgraph",               // runtime catalog id
+    "id": "bridge",                  // runtime catalog id（规范值 "bridge"；
+                                     // langchain/langgraph 为旧别名，按归一值比对）
     "entrypoint": "my-ep",           // manifest 条目 id
     "model": "openai:deepseek-chat", // 可选，server 选择的模型
     "revision": "sha256:..."          // 可选，manifest 条目 revision（checkpoint 命名空间用）
@@ -82,7 +83,7 @@ worker exit 0
 {
   "type": "runtime.ready",
   "requestId": "<echo>",
-  "runtime": { "id": "langgraph", "frameworkVersion": "0.4.x", "bridgeVersion": "1" },
+  "runtime": { "id": "bridge", "frameworkVersion": "0.4.x", "bridgeVersion": "1" },
   "capabilities": {
     "persistentProcess": true,   // 进程常驻多回合
     "streamingText": true,       // 会发 assistant.delta
@@ -167,11 +168,13 @@ worker exit 0
 `durableThreads` runtime（如 LangGraph）的内部会话键必须命名空间化：
 
 ```text
-thread_id = f"{runtime.id}:{entrypoint}:{revision}:{model}:{conversation_id}"
+thread_id = f"{entrypoint}:{revision}:{model}:{conversation_id}"
 ```
 
 任一 identity 分量变化（换 entrypoint、manifest 修改、换模型）即不与旧
-checkpoint 碰撞。`runtime.revision` 来自 manifest 条目 sha256。
+checkpoint 碰撞。`runtime.revision` 来自 manifest 条目 sha256。runtime.id
+不是分量——entrypoint 已唯一标识 worker（runtime 标识统一为 `bridge`
+后，旧 5 段格式一次性废弃，checkpoint thread 重新开始）。
 
 ## 8. probe 模式
 
@@ -195,7 +198,7 @@ import { runSarpConformance } from "./sarp-conformance.js";
 
 const report = await runSarpConformance({
   spawnSpec: { command: "python", args: ["agent.py"], cwd: "...", env: {...} },
-  runtimeId: "langgraph",        // 期望的 ready.runtime.id
+  runtimeId: "bridge",           // 期望的 ready.runtime.id（归一比较：旧别名按规范值判定）
   entrypoint: "my-ep",
   expectJournal: true,           // slock_runtime SDK worker → true
 });

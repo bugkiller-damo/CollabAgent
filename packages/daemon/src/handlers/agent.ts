@@ -1,4 +1,4 @@
-import type { WsAgentStartConfig, WsToDaemonMessage } from "@collabagent/shared";
+import { normalizeRuntimeId, type WsAgentStartConfig, type WsToDaemonMessage } from "@collabagent/shared";
 import type { AgentRegistrationInfo, RuntimeProfileIssue } from "../agent-runtime-profile.js";
 import type { HandlerContext } from "./types.js";
 
@@ -29,7 +29,11 @@ export function handleAgentStart(ctx: HandlerContext, msg: StartMsg): void {
   const entrypoint = entrypointCandidates[0]?.trim();
   const model =
     agent?.model || config.model || config.runtime_profile?.model || agent?.runtime_profile?.model || undefined;
-  const runtimeValues = new Set(runtimeCandidates.map((value) => value.trim().toLowerCase()));
+  // WP6：冲突判定先归一——"langgraph" 与 "bridge" 是同一 runtime 的别名，
+  // 混用（旧 server 数据 + 新 profile）不该误报 runtime-profile-conflict。
+  const runtimeValues = new Set(
+    runtimeCandidates.map((value) => normalizeRuntimeId(value)).filter((v): v is string => v !== undefined),
+  );
   const entrypointValues = new Set(entrypointCandidates.map((value) => value.trim()));
   let runtimeProfileError: RuntimeProfileIssue | null = null;
   if (runtimeValues.size > 1) {
