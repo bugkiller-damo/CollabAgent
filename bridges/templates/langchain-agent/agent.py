@@ -8,7 +8,7 @@
   由 daemon 下发（provider key 配置进 manifest secretEnv）。
 """
 
-from slock_runtime import serve_langchain
+from slock_runtime import serve_agent
 
 
 def build_agent(_init, _tools):
@@ -25,4 +25,6 @@ def build_agent(_init, _tools):
 
 
 if __name__ == "__main__":
-    raise SystemExit(serve_langchain(build_agent))
+    # serve_agent 按工厂返回值类型自动分派：Runnable → 无状态 Runnable 路径，
+    # CompiledStateGraph → 图路径——换成图工厂时本入口不变
+    raise SystemExit(serve_agent(build_agent))

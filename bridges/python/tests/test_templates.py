@@ -22,8 +22,11 @@ TEMPLATES = Path(__file__).resolve().parents[2] / "templates"
 
 # template 目录名 → (runtime_id, 单回合所需框架包, probe 期望能力)
 # runtime_id 统一 "bridge"（WP6）；framework_pkg 是依赖名，不是 runtime id
+# WP12 起两模板都走 serve_agent + 工厂：probe 期工厂不可静态分派，报图路径
+# 能力超集（握手 on_initialize overrides 才是权威——单回合用例仍断言
+# langchain 模板 ready 的 durableThreads=False）。
 CASES = {
-    "langchain-agent": ("bridge", "langchain_core", {"durableThreads": False, "interrupts": False, "cancel": True}),
+    "langchain-agent": ("bridge", "langchain_core", {"durableThreads": True, "interrupts": True, "cancel": True}),
     "langgraph-agent": ("bridge", "langgraph", {"durableThreads": True, "interrupts": True, "cancel": True}),
 }
 

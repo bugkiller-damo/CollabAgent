@@ -9,7 +9,7 @@
   由 daemon 下发（provider key 配置进 manifest secretEnv）。
 """
 
-from slock_runtime import serve_langgraph
+from slock_runtime import serve_agent
 
 
 def build_graph(_init, _tools):
@@ -31,4 +31,6 @@ def build_graph(_init, _tools):
 
 
 if __name__ == "__main__":
-    raise SystemExit(serve_langgraph(build_graph))
+    # serve_agent 按工厂返回值类型自动分派：CompiledStateGraph → 图路径，
+    # 普通 LangChain Runnable → 无状态 Runnable 路径——工厂签名不变
+    raise SystemExit(serve_agent(build_graph))

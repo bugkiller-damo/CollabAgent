@@ -41,17 +41,24 @@ messages between them.
   `SLOCK_CHANNEL_PROGRESS=0` 关频道进度。
 - **Agent 回话通道**：`mcp/slock-mcp-server.ts`（agent 经 MCP 工具调 server API 发消息/
   派单/读历史），`mcp-bundle.ts` 随运行时注入。
-- **多 runtime / SARP/1 bridge（2026-09-21 Phase 0~5 全落地）**：daemon 派发层 provider 中立；
-  Claude 只是默认 driver。bridge runtime 走本机 manifest（`.slock/runtimes.json`：
-  command/args/cwd/secretEnv/model 策略）spawn 用户自有 worker 进程，stdin/stdout 跑
+- **多 runtime / SARP/1 bridge（2026-09-21 Phase 0~5 + 2026-10-13 WP1~WP12 全落地）**：
+  daemon 派发层 provider 中立；Claude 只是默认 driver。**runtime 身份规范值为
+  `bridge`**（manifest `runtime`、agent profile、worker `runtime_id` 都写它；
+  `langchain`/`langgraph` 仅是输入别名，握手按归一值比对）。bridge runtime 走本机
+  manifest（`.slock/runtimes.json`：command/args/cwd/secretEnv/secretRefs/model/
+  promptProfile 策略）spawn 用户自有 worker 进程，stdin/stdout 跑
   `slock.agent-runtime` v1 JSONL 协议（initialize/runtime.ready/turn.\*/assistant.\*/
   tool.\*/usage/turn.interrupt/turn.end/turn.cancel/shutdown/runtime.stopped）。
-  Python SDK 在 `bridges/python/slock_runtime/`（LangChain/LangGraph adapter + MCP client +
-  journal 幂等 + resume token 单次消耗）。实验开关：server `SLOCK_BRIDGE_RUNTIMES=1` +
+  Python SDK 在 `bridges/python/slock_runtime/`——**推荐统一入口 `serve_agent`**
+  （按对象类型自动分派 CompiledStateGraph / LangChain Runnable / 工厂；
+  `serve_langchain`/`serve_langgraph` 为强制路径 stable 别名）+ MCP client +
+  journal 幂等 + resume token 单次消耗 + `interrupt.options` 结构化审批 +
+  `turn.cancel` 协作取消。实验开关：server `SLOCK_BRIDGE_RUNTIMES=1` +
   daemon `SLOCK_EXPERIMENTAL_BRIDGE_RUNTIMES=1`；实测手册与协议规范见设计文档索引。
   Phase 5 硬化：写工具幂等键 `<turnId>:<tool>:<seq>` + server 去重、token-only 记
   unmetered 不伪造 USD 0、crash-loop 熔断（`agent-runtime-crash-guard.ts`）、runtime
-  身份含 manifest revision（LangGraph thread 命名空间隔离）、manifest 审计日志、
+  身份含 manifest revision（LangGraph thread 命名空间
+  `entrypoint:revision:model:conversationId`）、manifest 审计日志、
   进程树终止（`process-tree.ts`：POSIX pgid / Windows taskkill /T）、
   `sarp-conformance.ts` 合规 runner。
 
@@ -63,7 +70,7 @@ messages between them.
 | 协议类型 | `claude-stream.ts`（stream-json 联合） / `errors.ts`（`errMessage` + P1.14 `DispatchError` 可重试分类） |
 | 运行时编排 | `agent-runtime.ts`（核心）+ `agent-runtime-dispatch.ts`（工厂）+ `agent-runtime-dispatch-{pty,headless,stream}.ts` + `-spawn/-exit/-state/-credentials/-turn-tracker/-terms-dialog.ts` |
 | 驱动 | `drivers/persistent-claude.ts`（默认）/ `claude-print.ts`（one-shot）/ `drivers/probe.ts` |
-| bridge runtime（SARP/1） | `drivers/jsonl-bridge-runtime.ts`（driver 工厂）/ `drivers/persistent-jsonl-worker.ts`（worker 会话）/ `agent-runtime-manifest.ts`（本机 manifest+probe+审计）/ `agent-runtime-interrupt-store.ts`（pending interrupt+resume token）/ `agent-runtime-crash-guard.ts`（熔断）/ `process-tree.ts`（进程树杀）/ `sarp-conformance.ts`（合规 runner）/ `sarp-protocol.ts`（帧类型） |
+| bridge runtime（SARP/1） | `agent-runtime-driver.ts`（driver/session 契约，`cancelTurn`）/ `agent-runtime-events.ts`（规范化事件）/ `drivers/jsonl-bridge-runtime.ts`（driver 工厂）/ `drivers/persistent-jsonl-worker.ts`（worker 会话）/ `agent-runtime-manifest.ts` + `runtime-manifest-manager.ts`（本机 manifest+probe+审计+CRUD）/ `agent-runtime-profile.ts`（profile 解析+promptProfile）/ `bridge-turn-prompt.ts`（平台/回合 prompt）/ `agent-runtime-interrupt-store.ts`（pending interrupt+resume token+options）/ `runtime-secret-store.ts`（secretRefs 取值）/ `runtime-probe-snapshot.ts` + `runtime-entrypoint-refresh.ts` + `runtime-diagnostics.ts`（probe 快照/刷新/诊断）/ `agent-conversation-id.ts`（稳定 conversationId）/ `agent-runtime-crash-guard.ts`（熔断）/ `process-tree.ts`（进程树杀）/ `sarp-conformance.ts`（合规 runner）/ `sarp-protocol.ts`（帧类型） |
 | 队列与生命周期 | `agent-dispatch-queue.ts` / `live-run-registry.ts` / `agent-run-store.ts` / `agent-cost-tracker.ts`（D3） / `agent-context-builder.ts`（D1） / `agent-thread-sessions.ts`（D2） / `agent-progress.ts`（D4 进度条） / `idle-reclaimer.ts` / `supervisor.ts` |
 | 安全 | `agent-token-file.ts` / `agent-env-whitelist.ts` / `command-presets.ts` / `command-resolver.ts` / `auth.ts` / `redact.ts`（P1.15：`sk_agent_/sk_machine_` 出口脱敏） / `private-dir.ts`（P1.15：`.slock` 0700；H6：`slockDir()` 状态树根，可用 `SLOCK_STATE_DIR` 覆盖） |
 | 启动与提示 | `agent-startup.ts` / `system-prompt.ts` / `setup-slock-wrapper.ts` / `restart-summary.ts` / `agent-mcp-config.ts` / `agent-workspace.ts` / `mcp-bundle.ts` + `mcp/`（slock-mcp-server / message-split / upload-payload） |
@@ -102,7 +109,7 @@ pnpm vitest run          # packages/daemon 测试（47 文件 / 497 用例）
 
 | 文档 | 用途 |
 |------|------|
-| `docs/2026-10-13/01-bridge-runtime统一与自建agent改造方案.md` | **bridge runtime 统一（langchain/langgraph → `bridge`）+ 自建 agent 适配缺口修复（WP1~WP12，待实施）** |
+| `docs/2026-10-13/01-bridge-runtime统一与自建agent改造方案.md` | **bridge runtime 统一（langchain/langgraph → `bridge`）+ 自建 agent 适配缺口修复（WP1~WP12，已落地）** |
 | `docs/2026-09-20/01-daemon-claude-decoupling-audit.md` | Claude 耦合度审计（Phase 0 依据） |
 | `docs/2026-09-20/02-daemon-langchain-langgraph-runtime-design.md` | **多 runtime 设计全书（Phase 0~5 已全部落地）** |
 | `docs/2026-09-21/01-bridge-runtime-实机测试手册.md` | bridge runtime 实机测试操作手册（flag/manifest/验证路径/失败速查） |

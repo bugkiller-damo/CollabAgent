@@ -4,6 +4,11 @@
 - 状态：评估结论 / 实施提案
 - 范围：用户自有 Python Worker，LangChain/LangGraph，经本机 daemon 的 SARP/1 接入
 
+> **2026-10-13 备注**：本文是当时的评估与实施提案存档；后续 bridge
+> runtime 统一（runtime 规范值 `bridge`、`serve_agent` 统一入口、
+> turn.start 增量字段、结构化审批等）以
+> `docs/2026-10-13/01-bridge-runtime统一与自建agent改造方案.md` 为当前版本。
+
 ## 1. 执行摘要
 
 SARP/1 协议 + `slock-runtime` Python SDK + daemon bridge driver + server/web 门禁与创建链路已经形成**真实的端到端闭环**：manifest 注册的 Python 进程可以被 daemon 拉起、握手、跑多回合、发流式事件、经平台 MCP 回话、interrupt/resume、被熔断与关停，并在 web 上完成创建。这不是概念验证。

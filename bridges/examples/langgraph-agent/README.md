@@ -2,7 +2,9 @@
 
 设计文档 `docs/2026-09-20/02-daemon-langchain-langgraph-runtime-design.md` Phase 3
 的可运行示例：真实 `CompiledStateGraph` + `SqliteSaver` durable checkpoint +
-`interrupt()` 审批门 + Slock MCP tools 加载。
+`interrupt()` 审批门 + Slock MCP tools 加载。入口是统一入口
+`slock_runtime.serve_agent`——按工厂返回对象类型自动分派到图路径
+（`serve_langgraph` 为等价的强制路径别名）。
 
 ## 图结构
 

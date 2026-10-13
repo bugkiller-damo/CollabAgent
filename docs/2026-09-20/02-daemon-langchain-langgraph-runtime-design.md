@@ -107,6 +107,8 @@ Phase 0 已建立长期 runtime 边界；后续阶段应在该边界上贯穿 ru
 
 ### 4.1 runtime ID 与 transport driver 分离
 
+> **2026-10-13 修订**：见 `docs/2026-10-13/01-bridge-runtime统一与自建agent改造方案.md`——`langchain`/`langgraph` 两个 runtime ID 已统一为规范值 `bridge`（旧值仅作输入别名，握手归一比对）。
+
 `runtime` 表示产品与框架身份，driver 表示 daemon 使用的执行协议。
 
 | runtime ID | driver | 执行对象 |
@@ -135,6 +137,8 @@ Phase 0 已建立长期 runtime 边界；后续阶段应在该边界上贯穿 ru
 第一版固定 `maxConcurrency = 1`，与当前 A1 每 agent 串行派发语义一致。
 
 ### 4.3 server 只保存 entrypoint ID
+
+> **2026-10-13 修订**：见 `docs/2026-10-13/01-bridge-runtime统一与自建agent改造方案.md`——catalog 中 `langchain`/`langgraph` 归一为 `bridge`，server 存 `declaredRuntime` 原值、比对走归一。
 
 server 允许保存：
 
@@ -256,6 +260,8 @@ AgentRuntimeRegistry
 ---
 
 ## 6. daemon 内部 runtime contract
+
+> **2026-10-13 修订**：见 `docs/2026-10-13/01-bridge-runtime统一与自建agent改造方案.md`——`RuntimeId` 规范值为 `bridge`（`langchain`/`langgraph` 归一接受）；`AgentRuntimeSession` 增可选 `cancelTurn()`（WP11）。
 
 建议新增 `packages/daemon/src/agent-runtime-driver.ts`：
 
@@ -486,6 +492,8 @@ export interface SarpEnvelope {
 
 ### 8.2 daemon → Worker：`initialize`
 
+> **2026-10-13 修订**：见 `docs/2026-10-13/01-bridge-runtime统一与自建agent改造方案.md`——`runtime.id` 下发 manifest 声明原值，worker 按归一值比对（`bridge`/`langchain`/`langgraph` 同族）。
+
 每次进程启动只发送一次：
 
 ```json
@@ -524,6 +532,8 @@ Worker 在 ready 前发现初始化失败时发送 `runtime.error`，随后退�
 `runtime.error` 在 ready 后只用于没有 active turn 的 fatal runtime 故障；存在 active turn 时必须先用 `turn.end.status="error"` 结束该 turn。daemon 收到 fatal `runtime.error` 后不复用当前 Worker，并通过显式 wire-code 映射生成内部 `DispatchError`。
 
 ### 8.4 daemon → Worker：`turn.start`
+
+> **2026-10-13 修订**：见 `docs/2026-10-13/01-bridge-runtime统一与自建agent改造方案.md`——v1 新增可选字段 `message`（人类消息原文）、`contextText`（平台历史）、`resume.decision`（结构化审批决定），缺省即缺省（R-UF）。
 
 ```json
 {"protocol":"slock.agent-runtime","version":1,"type":"turn.start","seq":2,"timestamp":"2026-09-20T08:01:00.000Z","turnId":"turn_01J7Y6V8","conversationId":"slock:v1:agent_123:thread:thread_456","attempt":1,"prompt":"Alice 在 #research 的问题：请汇总这份报告。","source":{"kind":"message","channel":"research","threadId":"thread_456","sender":"alice"}}
@@ -585,6 +595,8 @@ usage：
 - bridge SDK 应在默认 50ms 窗口内批量合并 token delta，避免事件风暴。
 
 ### 8.6 Worker → daemon：`turn.interrupt`
+
+> **2026-10-13 修订**：见 `docs/2026-10-13/01-bridge-runtime统一与自建agent改造方案.md`——`interrupt` 增 `options`（`decisions`/`actions` 预览），web 按它渲染结构化审批按钮（WP9/WP10）。
 
 ```json
 {"protocol":"slock.agent-runtime","version":1,"type":"turn.interrupt","seq":7,"timestamp":"2026-09-20T08:01:04.000Z","turnId":"turn_01J7Y6V8","eventSeq":6,"interruptId":"interrupt_9","resumeToken":"resume_7Yq4","prompt":"是否批准向外部系统提交报告？","payload":{"action":"submit_report","risk":"external_side_effect"}}
@@ -677,6 +689,8 @@ Worker 应在 shutdown timeout 内发送：
 目录继续使用 `mkdirPrivateSync()` 收紧为 0700；文件使用 0600 best-effort。
 
 ### 9.2 Schema
+
+> **2026-10-13 修订**：见 `docs/2026-10-13/01-bridge-runtime统一与自建agent改造方案.md`——`runtime` 规范值 `"bridge"`（旧别名仍接受）；新增可选 `promptProfile`（`neutral`/`agentic`/`none`）。
 
 ```json
 {
@@ -852,6 +866,8 @@ DM:
 
 ### 11.2 LangGraph 映射
 
+> **2026-10-13 修订**：见 `docs/2026-10-13/01-bridge-runtime统一与自建agent改造方案.md`——thread 命名空间改为 `entrypoint:revision:model:conversationId`（WP6，不再含 runtime.id 分量）。
+
 Python bridge 调用 graph 时使用：
 
 ```python
@@ -875,6 +891,8 @@ Worker 握手报告：
 manifest 可声明 `requireDurableThreads=true`。声明后 Worker 未报告该能力，daemon 拒绝启动该 entrypoint。
 
 ### 11.4 interrupt 持久化
+
+> **2026-10-13 修订**：见 `docs/2026-10-13/01-bridge-runtime统一与自建agent改造方案.md`——pending interrupt 增 `options` 持久化；web 结构化审批经 `interrupt:resolve` 通路转成 `resume.decision`（WP10）。
 
 新增 `<slockDir()>/daemon-runtime-interrupts.json`，记录：
 
@@ -944,6 +962,8 @@ serve_langgraph(
 
 ### 12.2 LangChain adapter
 
+> **2026-10-13 修订**：见 `docs/2026-10-13/01-bridge-runtime统一与自建agent改造方案.md`——推荐入口为统一 `serve_agent`（按对象类型分派），`serve_langchain` 是强制 Runnable 路径的 stable 别名（WP8）。
+
 责任：
 
 1. 接收 `initialize` 并验证 model override。
@@ -960,6 +980,8 @@ serve_langgraph(
 LangChain agent 如果内部已经基于 LangGraph 实现，可以报告 durableThreads 和 interrupts；普通 Runnable 不应虚报这些能力。
 
 ### 12.3 LangGraph adapter
+
+> **2026-10-13 修订**：见 `docs/2026-10-13/01-bridge-runtime统一与自建agent改造方案.md`——推荐入口为统一 `serve_agent`（按对象类型分派），`serve_langgraph` 是强制图路径的 stable 别名；resume 默认归约支持结构化 `decision` 与文本批准词表（WP8/WP9）。
 
 责任：
 
@@ -1010,6 +1032,8 @@ workspace 中新增规范文件 `SLOCK.md`。Claude driver 可继续生成兼容
 ---
 
 ## 13. Probe、ready payload 与 UI
+
+> **2026-10-13 修订**：见 `docs/2026-10-13/01-bridge-runtime统一与自建agent改造方案.md`——runtime 统一 `bridge` 后 probe 摘要、创建校验与 web 选项按单一 bridge runtime 呈现；capabilities 增 `cancel`（WP11）。
 
 ### 13.1 Probe 状态
 

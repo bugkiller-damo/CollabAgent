@@ -4,9 +4,9 @@
 
 最小可跑的 LangChain runtime entrypoint：daemon 经 stdin/stdout 逐行
 SARP/1 帧驱动本进程；本进程把 turn 转给 `build_agent()` 产出的
-LangChain agent（`langchain.agents.create_agent`），事件流经
-`slock_runtime.serve_langchain` 落成 `assistant.delta` / `tool.*` /
-`turn.end` 帧。
+LangChain agent（`langchain.agents.create_agent`），事件流经统一入口
+`slock_runtime.serve_agent`（按对象类型自动分派 Runnable 路径）落成
+`assistant.delta` / `tool.*` / `turn.end` 帧。
 
 ## 文件
 

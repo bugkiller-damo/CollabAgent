@@ -17,7 +17,7 @@ crash 保护由 daemon 和 `slock-runtime` SDK 协作承担，客户只实现 Ag
   # 源码 editable（仓库内开发）
   pip install -e "bridges/python[langgraph]"
   # 或本地构建的 wheel
-  pip install "slock_runtime-0.1.0-py3-none-any.whl[langgraph]"
+  pip install "slock_runtime-0.2.0-py3-none-any.whl[langgraph]"
   ```
 
 - CI（`.github/workflows/python-sdk.yml`）已配置但**远端尚未实际跑过**；
@@ -109,11 +109,11 @@ daemon 读本机 `<daemon 进程 cwd>/.slock/runtimes.json`（`slockDir()` 默�
 
 worker 进程启动时的 cwd 就是 manifest 里的 `cwd`（代码目录），**不是**
 `init.workspace_path`（daemon 为 agent 建好的专属持久工作区）。文件类
-操作请用 `init.workspace_path` 绝对路径，或在 `serve_langgraph` /
-`serve_langchain` 上开 `workspace_cwd=True`——握手期把进程 cwd 切到工作区，
-之后图/Runnable 里的相对路径即以工作区为基准（目录不可进入 →
-`runtime.error(CWD_NOT_FOUND)`）。worker 自管的 `.env` 等代码旁文件请用
-`Path(__file__).parent` 定位，不要依赖 cwd。
+操作请用 `init.workspace_path` 绝对路径，或在 `serve_agent`（及强制路径
+别名 `serve_langgraph` / `serve_langchain`）上开 `workspace_cwd=True`——
+握手期把进程 cwd 切到工作区，之后图/Runnable 里的相对路径即以工作区为
+基准（目录不可进入 → `runtime.error(CWD_NOT_FOUND)`）。worker 自管的
+`.env` 等代码旁文件请用 `Path(__file__).parent` 定位，不要依赖 cwd。
 
 **CentOS Stream 9 前置**：官方 AppStream 提供 Python 3.11 与 Node.js 20。
 包尚未发布到公共 PyPI，当前受支持路径是把本地/内部 wheel 装进独立 venv：
@@ -123,12 +123,53 @@ dnf -y module install nodejs:20        # daemon 侧 Node 运行时
 dnf -y install python3.11 python3.11-pip
 python3.11 -m venv /opt/slock-agent-venv
 /opt/slock-agent-venv/bin/python -m pip install --upgrade "pip>=24,<26"
-/opt/slock-agent-venv/bin/python -m pip install "/path/to/slock_runtime-0.1.0-py3-none-any.whl[langgraph]"
+/opt/slock-agent-venv/bin/python -m pip install "/path/to/slock_runtime-0.2.0-py3-none-any.whl[langgraph]"
 ```
 
 manifest `command` 写 `/opt/slock-agent-venv/bin/python`。将来包进入内部
 私有索引或 PyPI 后，只需替换安装来源（wheel 路径换索引包名），解释器契约
 不变——`command` 始终指向装了 SDK 的那个解释器/venv 的绝对 python 路径。
+
+## worker 入口与回合数据
+
+SDK 0.2.0 起推荐统一入口 `serve_agent`（模板与示例都已用它）：
+
+```python
+from slock_runtime import serve_agent
+
+raise SystemExit(serve_agent(agent_or_factory))
+```
+
+`agent_or_factory` 可以是 `CompiledStateGraph`（含
+`langchain.agents.create_agent` 产物）、LangChain Runnable，或工厂
+`factory(init, tools) -> graph|Runnable`（推荐形态：SDK 保证
+`initialize` → Slock MCP tools 就绪 → 才调工厂的启动顺序）。SDK 按对象
+类型自动分派到图路径或无状态 Runnable 路径；`serve_langgraph` /
+`serve_langchain` 是等价的强制路径 stable 别名。注意工厂形态下 probe
+报的是图路径能力超集——握手 `runtime.ready` 的 overrides 才是权威值。
+
+`turn.start` 除 `prompt`（平台组装好的完整回合文本，默认 input mapper
+只用它）外还携带可选结构化字段（缺省即 `None`，旧 daemon 不下发）：
+
+- `turn.message.text`：触发本回合的人类消息原文，不含平台指令与历史
+  （`sender`/`messageId`/`attachments` 随同）；提醒/巡检等非人类消息
+  回合缺省。
+- `turn.context_text`：平台注入的会话历史文本（如线程追问上下文）。
+
+需要原始消息或自行拼装历史的自定义 graph 可在自定义 `input_mapper` 里
+改读这两个字段。`workspace_cwd=True` 见上节——握手期把进程 cwd 切到
+`init.workspace_path` 专属工作区。
+
+**HITL 审批**：图路径下 LangGraph `interrupt()` 自动落成
+`turn.interrupt` + `turn.end(status="interrupted")`，daemon 持久化
+interrupt 后，同 conversation 的下一条用户消息作为 resume 回到 worker。
+web 审批按钮产生结构化 `turn.resume.decision`
+（`approve`/`reject`/`respond`/`edit`）；纯文本回复走默认归类——剥首尾
+空白与标点后命中批准词（批准/同意/可以/确认/approve/yes/ok/lgtm，
+大小写不敏感）→ `approve`，**其余一律 `reject`**（`message` 为原文逐字；
+该 interrupt 不允许 reject 时退 `respond`）——歧义输入不会放行被拦截
+动作。自定义归约用 `resume_mapper`，自定义审批文案用 `interrupt_mapper`
+（示例见 `bridges/examples/langgraph-agent/`）。
 
 ## flags 与 secret
 

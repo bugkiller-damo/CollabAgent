@@ -32,7 +32,7 @@ _SDK_DIR = Path(__file__).resolve().parents[2] / "python"
 if _SDK_DIR.is_dir() and str(_SDK_DIR) not in sys.path:
     sys.path.insert(0, str(_SDK_DIR))
 
-from slock_runtime import serve_langgraph  # noqa: E402 — sys.path 兜底必须在 import 前
+from slock_runtime import serve_agent  # noqa: E402 — sys.path 兜底必须在 import 前
 from slock_runtime.langgraph import SlockTool  # noqa: E402
 
 # 进程级持有 checkpoint 连接，退出时统一关
@@ -142,10 +142,11 @@ def _custom_progress(data):
 
 
 def main() -> int:
-    # --slock-probe 由 serve_langgraph → WorkerRuntime.serve 内置处理——
-    # 跑在 import langgraph / 建模型客户端 / 开 checkpoint 之前
+    # --slock-probe 由 serve_agent → WorkerRuntime.serve 内置处理——
+    # 跑在 import langgraph / 建模型客户端 / 开 checkpoint 之前；
+    # 工厂返回 CompiledStateGraph → 自动分派到图路径
     try:
-        return serve_langgraph(
+        return serve_agent(
             build_graph,
             interrupt_mapper=_interrupt_prompt,
             custom_event_mapper=_custom_progress,

@@ -734,10 +734,12 @@ class TestRealLangChain:
         assert starts["local_search"]["provider"] == "langchain"
         assert "operation" not in starts["local_search"]
 
+    # WP12：两示例都走 serve_agent + 工厂——probe 期工厂不可静态分派，报图
+    # 路径能力超集；握手 on_initialize overrides 才是权威值。
     @pytest.mark.parametrize(
         ("example", "runtime_id", "durable", "interrupts"),
         [
-            ("langchain-agent", "bridge", False, False),
+            ("langchain-agent", "bridge", True, True),
             ("langgraph-agent", "bridge", True, True),
         ],
     )

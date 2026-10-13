@@ -76,10 +76,11 @@ def build_agent(init: SarpInitialize, tools: list) -> Any:
 
 
 def main() -> int:
-    from slock_runtime import serve_langchain
+    from slock_runtime import serve_agent
 
-    # --slock-probe 由 serve_langchain → WorkerRuntime.serve 内置处理
-    return serve_langchain(build_agent, runtime_id=RUNTIME_ID)
+    # --slock-probe 由 serve_agent → WorkerRuntime.serve 内置处理；
+    # 按工厂返回值类型自动分派：create_agent 产物 / Runnable → 对应路径
+    return serve_agent(build_agent, runtime_id=RUNTIME_ID)
 
 
 if __name__ == "__main__":

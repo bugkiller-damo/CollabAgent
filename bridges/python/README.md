@@ -21,7 +21,7 @@ pip install slock-runtime                # 仅裸协议层（自定义 runtime�
 
 ```bash
 pip install -e "bridges/python[langgraph]"          # 仓库内 editable
-pip install "slock_runtime-0.1.0-py3-none-any.whl[langgraph]"   # 本地 wheel
+pip install "slock_runtime-0.2.0-py3-none-any.whl[langgraph]"   # 本地 wheel
 ```
 
 从零开始的完整接入（manifest、daemon/server flag、secret 配置、故障速查）
