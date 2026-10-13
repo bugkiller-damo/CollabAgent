@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createObservationBus, createSeqAllocator, type ObservationFrame } from "../src/agent-observation.js";
 import type { ProgressPoster, ProgressTurn } from "../src/agent-progress.js";
 import {
@@ -420,5 +420,140 @@ describe("回复守卫三分支 / abort / 成本落库（A6）", () => {
       durationMs: null,
       numTurns: null,
     });
+  });
+});
+
+/**
+ * WP4：bridge（SARP/1）回合——finalText 是规范回复通道：
+ * 代发不受 SLOCK_REPLY_GUARD=0 影响；空文本不追问（会话层判 empty-success）；
+ * isNudge/error/interrupted/cancelled 语义不变。Claude 路径逐字回归。
+ */
+describe("回复守卫 bridge 分支（WP4）", () => {
+  const savedReplyGuard = process.env.SLOCK_REPLY_GUARD;
+  afterEach(() => {
+    if (savedReplyGuard === undefined) delete process.env.SLOCK_REPLY_GUARD;
+    else process.env.SLOCK_REPLY_GUARD = savedReplyGuard;
+  });
+
+  const flush = () => new Promise((r) => setTimeout(r, 20));
+  const resultEvent = (result?: string): AgentRuntimeEvent => ({
+    type: "turn.end",
+    status: "success",
+    subtype: "success",
+    ...(result !== undefined ? { result } : {}),
+    usage: { costUsd: 0, durationMs: 10, numTurns: 1 },
+  });
+  const textEvent = (text: string): AgentRuntimeEvent => ({ type: "text", turnId: "msg-t", text });
+  // WP1：bridge 的 send_message 工具事件带 provider=slock + operation=send_message
+  const slockSendEvent: AgentRuntimeEvent = {
+    type: "tool.start",
+    turnId: "msg-s",
+    toolName: "send_message",
+    toolUseId: "tu-s",
+    provider: "slock",
+    operation: "send_message",
+    input: { target: "#general", content: "hi" },
+  };
+
+  const working = (deps: ReturnType<typeof makeHandler>["deps"]): void => {
+    deps.stateMachine.transitionState("alice", "idle");
+    deps.stateMachine.transitionState("alice", "working");
+  };
+
+  const arm = (deps: ReturnType<typeof makeHandler>["deps"], opts: { kind?: string; bridge?: boolean } = {}) =>
+    armTurnGuard({
+      agentName: "alice",
+      channelName: "general",
+      userMsg: "随便一段内容",
+      kind: opts.kind,
+      bridge: opts.bridge,
+      turnGuards: deps.turnGuards,
+      progressTurns: deps.progressTurns,
+    });
+
+  it("bridge + SLOCK_REPLY_GUARD=0：success 带 result → 仍代发 finalText", async () => {
+    process.env.SLOCK_REPLY_GUARD = "0";
+    const onReplyMissing = vi.fn();
+    const { handler, deps } = makeHandler({ onReplyMissing });
+    working(deps);
+    arm(deps, { kind: "message", bridge: true });
+
+    handler("alice", resultEvent("这是最终答复"));
+    await flush();
+
+    expect(onReplyMissing).toHaveBeenCalledTimes(1);
+    expect(onReplyMissing).toHaveBeenCalledWith("alice", "general", "这是最终答复");
+    expect(deps.nudge).not.toHaveBeenCalled();
+  });
+
+  it("bridge：无文本也没发消息 → 不代发也不追问（empty-success 交给会话层判）", async () => {
+    const onReplyMissing = vi.fn();
+    const { handler, deps } = makeHandler({ onReplyMissing });
+    working(deps);
+    arm(deps, { kind: "message", bridge: true });
+
+    handler("alice", resultEvent());
+    await flush();
+
+    expect(onReplyMissing).not.toHaveBeenCalled();
+    expect(deps.nudge).not.toHaveBeenCalled();
+  });
+
+  it("bridge：本回合出现过 slock/send_message 工具调用 → 不代发", async () => {
+    const onReplyMissing = vi.fn();
+    const { handler, deps } = makeHandler({ onReplyMissing });
+    working(deps);
+    arm(deps, { kind: "message", bridge: true });
+
+    handler("alice", slockSendEvent);
+    handler("alice", resultEvent("已经自己发出去了"));
+    await flush();
+
+    expect(onReplyMissing).not.toHaveBeenCalled();
+    expect(deps.nudge).not.toHaveBeenCalled();
+  });
+
+  it("bridge + kind=triage：isNudge 语义不变 → 不代发", async () => {
+    const onReplyMissing = vi.fn();
+    const { handler, deps } = makeHandler({ onReplyMissing });
+    working(deps);
+    arm(deps, { kind: "triage", bridge: true });
+
+    handler("alice", resultEvent("分诊结论"));
+    await flush();
+
+    expect(onReplyMissing).not.toHaveBeenCalled();
+    expect(deps.nudge).not.toHaveBeenCalled();
+  });
+
+  it("Claude 回归：SLOCK_REPLY_GUARD=0 → 有文本也不代发不追问", async () => {
+    process.env.SLOCK_REPLY_GUARD = "0";
+    const onReplyMissing = vi.fn();
+    const { handler, deps } = makeHandler({ onReplyMissing });
+    working(deps);
+    arm(deps, { kind: "message" });
+
+    handler("alice", textEvent("这是答案正文"));
+    handler("alice", resultEvent());
+    await flush();
+
+    expect(onReplyMissing).not.toHaveBeenCalled();
+    expect(deps.nudge).not.toHaveBeenCalled();
+  });
+
+  it("Claude 回归：守卫开启 + 无文本 → nudge 文案仍带 mcp__slock__send_message", async () => {
+    const onReplyMissing = vi.fn();
+    const { handler, deps } = makeHandler({ onReplyMissing });
+    working(deps);
+    arm(deps, { kind: "message" });
+
+    handler("alice", resultEvent());
+    await flush();
+
+    expect(onReplyMissing).not.toHaveBeenCalled();
+    expect(deps.nudge).toHaveBeenCalledTimes(1);
+    const nMsg = deps.nudge.mock.calls[0]![2] as string;
+    expect(nMsg).toContain(REPLY_GUARD_PREFIX);
+    expect(nMsg).toContain("mcp__slock__send_message");
   });
 });

@@ -27,6 +27,9 @@ export interface TurnGuard {
   threadId?: string;
   /** D4：本回合频道内进度条 */
   progress?: ProgressTurn;
+  /** WP4：bridge（SARP/1）回合——finalText 是正式回复通道，代发不受
+   *  SLOCK_REPLY_GUARD 开关影响；空文本不追问（会话层会判 empty-success） */
+  bridge?: boolean;
 }
 
 export interface StreamTurnHandlerOpts {
@@ -87,6 +90,8 @@ export const armTurnGuard = (opts: {
   threadId?: string;
   /** A4：队列 item kind——nudge/triage 直接判 isNudge，不再只靠 prompt 前缀嗅探 */
   kind?: string;
+  /** WP4：bridge runtime 回合——代发不受 SLOCK_REPLY_GUARD 影响、空文本不追问 */
+  bridge?: boolean;
   turnGuards: Map<string, TurnGuard>;
   progressTurns: Map<string, ProgressTurn>;
   createProgressPoster?: (agentName: string) => import("./agent-progress.js").ProgressPoster;
@@ -142,6 +147,7 @@ export const armTurnGuard = (opts: {
     isNudge,
     kind,
     progress,
+    bridge: opts.bridge === true,
     userMsg: userMsg.length > 400 ? `${userMsg.slice(0, 400)}…` : userMsg,
   };
   turnGuards.set(agentName, guard);
@@ -301,7 +307,9 @@ export const createStreamTurnHandler = (
             /* ignore */
           }
         }
-        if (guard && !guardSkip && !guard.hadSend && !guard.isNudge && loadDaemonEnv().replyGuard) {
+        // WP4：bridge 的 finalText 是规范回复通道——代发不受
+        // SLOCK_REPLY_GUARD 开关影响（switch 只控 Claude 路径）。
+        if (guard && !guardSkip && !guard.hadSend && !guard.isNudge && (guard.bridge || loadDaemonEnv().replyGuard)) {
           const answer = guard.lastText?.trim();
           if (answer && rewritten) {
             console.warn(
@@ -309,14 +317,18 @@ export const createStreamTurnHandler = (
             );
           } else if (answer && onReplyMissing) {
             console.warn(
-              `[Daemon] @${agentName} reply-guard: turn ended without send_message, auto-posting final text (${answer.length} chars)`,
+              guard.bridge
+                ? `[Daemon] @${agentName} bridge finalText auto-posted (${answer.length} chars)`
+                : `[Daemon] @${agentName} reply-guard: turn ended without send_message, auto-posting final text (${answer.length} chars)`,
             );
             try {
               onReplyMissing(agentName, guard.channel, answer);
             } catch {
               /* 代发失败走 console，不再追问 */
             }
-          } else if (!answer) {
+          } else if (!answer && !guard.bridge) {
+            // bridge 空文本不追问：消息类回合没文本也没发消息时，会话层
+            // 已会按 empty-success 判死信，追问只会空转一轮。
             console.warn(
               `[Daemon] @${agentName} reply-guard: turn ended without send_message and no text, nudging once`,
             );

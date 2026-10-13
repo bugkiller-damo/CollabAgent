@@ -64,7 +64,8 @@ export type DaemonEnv = {
   usePty: boolean;
   /** `SLOCK_ONESHOT_CLAUDE=1`：headless 退到 claudePrint 一次性模式 */
   oneshotClaude: boolean;
-  /** `SLOCK_REPLY_GUARD=0` 关闭「回合结束未发消息则代发」 */
+  /** `SLOCK_REPLY_GUARD=0` 关闭「回合结束未发消息则代发」（WP4：只控
+   *  Claude 路径——bridge runtime 的 finalText 代发不受此开关影响） */
   replyGuard: boolean;
   /** `SLOCK_CHANNEL_PROGRESS=0` 关频道内 ⏳ 进度（顶栏仍在） */
   channelProgress: boolean;

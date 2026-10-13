@@ -672,4 +672,16 @@ describe("批次 C：bridge MCP allowlist / 诊断打点 / interrupt 上下文�
     expect(prompt).toContain("D:/tmp-p112");
     expect(prompt).toContain("D:/tmp-p112/MEMORY.md");
   });
+
+  it("WP4：bridge 回合的 reply-guard 标 bridge=true（Claude 路径为 false）", async () => {
+    const { driver } = fakeBridgeDriver(async () => ({ status: "success" }));
+    const opts = bridgeOpts(bridgeEntry(), { runtimeDriver: driver });
+    await dispatchHeadlessTurn(opts);
+    // handleStreamEvent 是 stub——turn.end 不清守卫，注册时写入的标记可直接读
+    expect(opts.turnGuards.get("alice")?.bridge).toBe(true);
+
+    const claudeOpts = makeOpts();
+    await dispatchHeadlessTurn(claudeOpts);
+    expect(claudeOpts.turnGuards.get("alice")?.bridge).toBe(false);
+  });
 });
