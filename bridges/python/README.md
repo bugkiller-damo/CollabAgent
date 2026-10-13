@@ -66,6 +66,18 @@ initialize 握手期把进程 cwd 切到 `init.workspace_path`——daemon 为 w
 基准。默认 `False` 时 cwd 保持 manifest `cwd`（通常是代码目录）。工作区
 不可进入 → `runtime.error(CWD_NOT_FOUND)`，握手失败。
 
+`turn.start` 还携带若干可选的结构化字段（SARP/1 v1 增量，R-UF：缺省即
+`None`，旧 daemon 不下发、新字段不影响兼容）——`turn.message` 是触发本
+回合的人类消息原文（`turn.message.text` 为纯文本，`sender`/`message_id`/
+`attachments` 为结构化附件等元数据），`turn.context_text` 是平台注入的
+会话历史文本；`prompt` 则仍是平台组装好的完整文本，默认 input mapper
+依旧只用它——需要原始消息或自定义历史拼装的自定义 graph / 自建 runtime
+可改读上述字段。resume 回合另有 `turn.resume.decision`：审批按钮产出的
+结构化决定（`type ∈ approve/reject/respond/edit` + 可选 `message`/`args`，
+前瞻 WP10 的 `interrupt:resolve` 通路）；interrupt 侧则由 adapter 经
+`InterruptRecord.options`（`decisions`/`actions`）上报候选决定与待审批
+动作预览，会一致地进入 `turn.interrupt` 与 `turn.end.interrupt` 两帧。
+
 ## 自动 probe
 
 `--slock-probe` 由 `WorkerRuntime.serve` 内置处理：进程打印**单行**

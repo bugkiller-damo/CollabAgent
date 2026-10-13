@@ -160,6 +160,8 @@ describe("daemon-core 消息路由", () => {
         "派发任务",
         "abcdef1234567890",
         "msg-1",
+        // WP7：末位结构化原文消息（text=原始 content）
+        { text: "派发任务", sender: "boss", messageId: "msg-1" },
       );
     });
 
@@ -188,7 +190,11 @@ describe("daemon-core 消息路由", () => {
         message: { content: "在吗", dm: true, dmAgentRecipients: [AGENT, "ghost"], senderHandle: "bob" },
       });
       expect(runtime.runAgentDm).toHaveBeenCalledTimes(1);
-      expect(runtime.runAgentDm).toHaveBeenCalledWith(AGENT, "dm:@bob", "bob", "在吗");
+      // WP7：第 5 个参数是结构化原文消息（m.id 缺省 → 无 messageId 键）
+      expect(runtime.runAgentDm).toHaveBeenCalledWith(AGENT, "dm:@bob", "bob", "在吗", {
+        text: "在吗",
+        sender: "bob",
+      });
     });
 
     it("mentionAgents 白名单：只 spawn 列表内且本机托管的 agent", async () => {
@@ -196,7 +202,11 @@ describe("daemon-core 消息路由", () => {
         type: "agent:deliver",
         message: { content: "hi", mentionAgents: ["ghost", AGENT], channelId: "#general", senderName: "bob", id: "m2" },
       });
-      expect(runtime.runAgent).toHaveBeenCalledWith(AGENT, "general", "#general", "bob", "hi", undefined, "m2");
+      expect(runtime.runAgent).toHaveBeenCalledWith(AGENT, "general", "#general", "bob", "hi", undefined, "m2", {
+        text: "hi",
+        sender: "bob",
+        messageId: "m2",
+      });
       // 白名单路径不走本地文本解析
       expect(runtime.findMentionedAgent).not.toHaveBeenCalled();
     });
@@ -244,6 +254,7 @@ describe("daemon-core 消息路由", () => {
         "hi",
         "tttt8888ffff",
         undefined,
+        { text: "hi", sender: "bob" }, // WP7：m.id 缺省 → 无 messageId 键
       );
     });
   });
@@ -447,6 +458,69 @@ describe("daemon-core 消息路由", () => {
       ]);
       const last = sent.filter((m) => m.type === "interrupts:state").at(-1)!;
       expect(String((last.interrupts as Array<Record<string, unknown>>)[0]!.prompt)).toHaveLength(500);
+    });
+
+    it("WP7 sendInterruptsState：options 安全摘要——decisions 透传、actions 截 10、args→argsPreview 脱敏截断", () => {
+      const rawSecret = `sk_agent_${"z".repeat(32)}`;
+      (core as unknown as { sendInterruptsState(r?: unknown[]): void }).sendInterruptsState([
+        {
+          agentId: "a1",
+          agentName: "researcher",
+          conversationId: "c1",
+          interruptId: "i1",
+          resumeToken: "SECRET-RESUME-TOKEN",
+          prompt: "批准？",
+          runtime: "bridge",
+          channel: "general",
+          createdAt: 1,
+          expiresAt: Date.now() + 60_000,
+          options: {
+            decisions: ["approve", "reject", "respond", "edit"],
+            actions: Array.from({ length: 12 }, (_, i) => ({
+              name: `action-${i}`,
+              args: { token: rawSecret, index: i, blob: "x".repeat(2000) },
+              description: `desc-${i}`,
+            })),
+          },
+        },
+      ]);
+      const msg = sent.find((m) => m.type === "interrupts:state")!;
+      const interrupts = msg.interrupts as Array<Record<string, unknown>>;
+      expect(interrupts).toHaveLength(1);
+      const options = interrupts[0]!.options as {
+        decisions?: string[];
+        actions?: Array<{ name: string; argsPreview?: string; description?: string }>;
+      };
+      expect(options.decisions).toEqual(["approve", "reject", "respond", "edit"]);
+      // 只保留前 10 条；每条 name/description 保留、args 变 argsPreview
+      expect(options.actions).toHaveLength(10);
+      for (const a of options.actions!) {
+        expect("args" in a).toBe(false); // 原始 args 不出 daemon
+        expect(typeof a.argsPreview).toBe("string");
+        expect(a.argsPreview!.length).toBeLessThanOrEqual(500);
+      }
+      expect(options.actions![0]).toMatchObject({ name: "action-0", description: "desc-0" });
+      // 脱敏先于截断：preview 里是 sk_agent_***，原始密钥绝不外泄
+      expect(options.actions![0]!.argsPreview).toContain("sk_agent_***");
+      expect(JSON.stringify(msg)).not.toContain(rawSecret);
+      expect(JSON.stringify(msg)).not.toContain("SECRET-RESUME-TOKEN");
+
+      // 空 options（无 decisions/actions）→ 不产出 options 键
+      (core as unknown as { sendInterruptsState(r?: unknown[]): void }).sendInterruptsState([
+        {
+          agentId: "a1",
+          conversationId: "c1",
+          interruptId: "i1",
+          resumeToken: "x",
+          prompt: "?",
+          runtime: "bridge",
+          createdAt: 1,
+          expiresAt: Date.now() + 60_000,
+          options: {},
+        },
+      ]);
+      const last = sent.filter((m) => m.type === "interrupts:state").at(-1)!;
+      expect((last.interrupts as Array<Record<string, unknown>>)[0]!.options).toBeUndefined();
     });
   });
 

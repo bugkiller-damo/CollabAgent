@@ -254,4 +254,69 @@ describe("normalizeInterrupts", () => {
     expect(normalizeInterrupts("x")).toEqual([]);
     expect(normalizeInterrupts({ interrupts: [] })).toEqual([]);
   });
+
+  // WP7（SARP/1 options）：worker 声明的审批选项白名单透传
+  it("WP7：options 透传——decisions/actions 全字段保留", () => {
+    const [i] = normalizeInterrupts([
+      {
+        ...base,
+        options: {
+          decisions: ["approve", "reject", "custom:任意字符串均可"],
+          actions: [
+            { name: "deploy", argsPreview: "deploy --env prod (redacted)", description: "部署到生产" },
+            { name: "restart-service" },
+          ],
+        },
+      },
+    ]);
+    expect(i.options).toEqual({
+      decisions: ["approve", "reject", "custom:任意字符串均可"],
+      actions: [
+        { name: "deploy", argsPreview: "deploy --env prod (redacted)", description: "部署到生产" },
+        { name: "restart-service" },
+      ],
+    });
+  });
+
+  it("WP7：options 内未知子字段剥离；decisions 只收字符串；缺 name 的 action 丢弃；actions ≤10", () => {
+    const [i] = normalizeInterrupts([
+      {
+        ...base,
+        options: {
+          decisions: ["approve", 42, null, { bad: true }, "reject"],
+          actions: [
+            { name: "a1", args: { secret: "RAW-ARGS" }, command: "rm -rf /" }, // 未知子字段剥掉
+            { argsPreview: "no name" }, // 缺 name → 整条丢
+            { name: 7 }, // name 错型 → 丢
+            "junk",
+            null,
+            ...Array.from({ length: 12 }, (_, k) => ({ name: `act-${k}` })),
+          ],
+          resumeToken: "SECRET-TOKEN", // options 内协议外字段也剥
+          secrets: { KEY: "v" },
+        },
+      },
+    ]);
+    expect(i.options?.decisions).toEqual(["approve", "reject"]);
+    expect(i.options?.actions).toHaveLength(10); // a1 + act-0..act-8 = 10
+    expect(i.options?.actions?.[0]).toEqual({ name: "a1" });
+    expect(i.options?.actions?.[9]).toEqual({ name: "act-8" });
+    expect(JSON.stringify(i.options)).not.toContain("SECRET-TOKEN");
+    expect(JSON.stringify(i.options)).not.toContain("RAW-ARGS");
+    expect(JSON.stringify(i.options)).not.toContain("rm -rf");
+    expect(JSON.stringify(i.options)).not.toContain("no name");
+  });
+
+  it("WP7：options 缺失/非对象/过滤后无有效内容 → 不携带该字段", () => {
+    const [a] = normalizeInterrupts([base]);
+    expect("options" in a).toBe(false);
+    const [b] = normalizeInterrupts([{ ...base, options: "broken" }]);
+    expect(b.options).toBeUndefined();
+    const [c] = normalizeInterrupts([{ ...base, options: null }]);
+    expect(c.options).toBeUndefined();
+    const [d] = normalizeInterrupts([{ ...base, options: ["approve"] }]); // 数组不算对象
+    expect(d.options).toBeUndefined();
+    const [e] = normalizeInterrupts([{ ...base, options: { decisions: [1, 2], actions: [{ noName: 1 }] } }]);
+    expect(e.options).toBeUndefined(); // 全过滤光 → 不挂空 options
+  });
 });

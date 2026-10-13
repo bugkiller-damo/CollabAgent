@@ -33,6 +33,12 @@
 
 - `seq` 必须是**每方向单调递增**的整数，从 1 开始。回归即协议违例。
 - 未识别的 `type`：可选帧（发送方标 `optional: true`）可忽略；必需帧不可忽略。
+- **R-UF（未知字段容忍）**：已知 `type` 帧中出现本规范未列出的字段时，
+  接收方 **MUST** 忽略之；发送方 **MUST NOT** 依赖这些字段被理解。
+  新增可选语义一律以可选字段的形式在**同一协议版本**内引入（不加版本号）；
+  接收方的字段级容忍度与帧级可选帧容忍度一致。畸形可选字段
+  （类型不对/枚举值非法/条目缺必填项）由接收方过滤或整体丢弃，
+  不得因此判协议违例——协议违例仅限 §1/§6 列出的必填条件破坏。
 
 ## 2. 生命周期
 
@@ -114,7 +120,7 @@ worker exit 0
 | `tool.start{callId,tool:{name,provider,operation},input?}` | 工具调用开始 |
 | `tool.end{callId,tool:{...},ok,output?,error?}` | 工具调用结束 |
 | `usage{usage:{inputTokens,outputTokens,totalTokens,durationMs,model}}` | token 用量（`costUsd` 缺省 = 未计量，不得伪造 0） |
-| `turn.interrupt{interruptId,resumeToken,prompt,payload?}` | 审批门等中断通知 |
+| `turn.interrupt{interruptId,resumeToken,prompt,payload?,options?}` | 审批门等中断通知 |
 | `turn.end{status,finalText?,sessionRef?,usage?,interrupt?,error?}` | **终态，每回合恰好一个** |
 
 `turn.end.status` ∈ `success | error | cancelled | interrupted`：
@@ -122,21 +128,76 @@ worker exit 0
 - `success`：可带 `finalText`/`sessionRef`/`usage`
 - `error`：必须带 `error{code,message,retryable,retryAfterMs?}`；
   未知 code 由 daemon 映射为永久的 `worker-error`
-- `interrupted`：必须带 `interrupt{interruptId,resumeToken,prompt?}`，
+- `interrupted`：必须带 `interrupt{interruptId,resumeToken,prompt?,options?}`，
   daemon 落 pending interrupt 等待 resume
 - `cancelled`：`turn.cancel` 生效
+
+### interrupt.options（可选，R-UF）
+
+`turn.interrupt` 与 `turn.end.interrupt` 均可携带 `options`，
+供平台审批面渲染结构化选项（无 options 时退回纯文本 prompt 审批）：
+
+```jsonc
+"options": {
+  // 本 interrupt 接受的结构化决定类型（白名单枚举；非法项由接收方丢弃）
+  "decisions": ["approve", "reject", "respond", "edit"],
+  // 待审批动作预览（≤10 条；name 必填非空，缺/空 name 的条目丢弃）
+  "actions": [
+    { "name": "send_email", "args": { "to": "a@b.c" }, "description": "发送确认邮件" }
+  ]
+}
+```
+
+- `decisions` 枚举：`"approve" | "reject" | "respond" | "edit"`。
+- `actions[].args` 是任意 JSON——daemon 出站摘要时经 `JSON.stringify` →
+  脱敏 → 截断为 `argsPreview`（≤500 字符）；**原始 args 不出 daemon**。
+- 同一 `interruptId` 的 `turn.interrupt` 预览帧与 `turn.end.interrupt`
+  规范记录之间，`options` 不要求一致——daemon 的一致性校验只覆盖
+  `interruptId/resumeToken/prompt` 三字段；规范来源以 `turn.end` 为准。
 
 ## 4. 控制帧（daemon→worker）
 
 ```jsonc
 { "type": "turn.start", "turnId": "...", "conversationId": "...",
   "attempt": 1, "source": { "kind": "message", "channel": "..." },
-  "prompt": "...", "resume": { "interruptId": "...", "resumeToken": "..." }? }
+  "prompt": "...",
+  "message": { "text": "...", "sender": "...", "messageId": "...",
+               "attachments": [ { "id": "...", "filename": "...",
+                                  "mimeType": "...", "sizeBytes": 123, "url": "..." } ] }?,
+  "contextText": "..."?,
+  "resume": { "interruptId": "...", "resumeToken": "...",
+              "value": "...", "decision": { "type": "..." }? }? }
 
 { "type": "turn.cancel", "turnId": "...", "reason": "..." }
 
 { "type": "shutdown", "reason": "...", "timeoutMs": 5000 }
 ```
+
+`turn.start` 必填：`turnId / conversationId / attempt / source / prompt`。
+`prompt` 语义不变——平台组装好的完整文本（平台指令 + 历史信封 +
+触发消息），**旧 worker 只消费 `prompt` 即可正常工作**（R-UF 兼容性）。
+
+以下为可选字段（全部 R-UF——旧 worker 忽略即可，daemon 不依赖回执）：
+
+- `message`（可选）：触发本回合的**人类消息原文**（不含平台指令与
+  历史信封）。reminder/patrol/triage/nudge 等非人类来源回合缺省。
+  - `text`：原始文本（daemon 队列合并批次按 `"\n\n"` 拼接）。
+  - `sender`：人类发送者名（与 `source.sender` 同源）。
+  - `messageId`：平台消息 id。
+  - `attachments[]`：结构化附件 `{id, filename, mimeType, sizeBytes, url?}`——
+    `url` 仅当平台已知时下发，daemon 绝不凭空构造；合并批次顺序拼接。
+    与 `prompt` 内的附件文本摘要并存，互不替代。
+- `contextText`（可选）：平台注入的会话历史信封文本（与 `prompt`
+  中内嵌的历史同源、同文）。仅 bridge runtime 下发——Claude runtime
+  的 prompt 已内嵌历史，不再重复。worker 可把它喂给框架自己的
+  history/checkpoint 通道而非拼进 user turn。
+- `resume.value`（必填于 resume 出现时）：人类对上次 interrupt 的
+  **回复原文**（`message.text` 合并值），不是组装后的 `prompt`；
+  无非人类原文批次时退回合并内容文本。
+- `resume.decision`（可选）：审批按钮产出的结构化决定——
+  `{type:"approve"} | {type:"reject",message?} | {type:"respond",message}`
+  `| {type:"edit",args}`。daemon **不从回复文本推断决定**；
+  无结构化来源（纯文本回复）时缺省，worker 退回文本语义。
 
 ## 5. 幂等与恢复（§15.4）
 

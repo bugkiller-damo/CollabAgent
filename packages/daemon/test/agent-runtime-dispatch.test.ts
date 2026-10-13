@@ -1179,4 +1179,279 @@ describe("agent-runtime-dispatch (headless)", () => {
       expect(sent).toContain("slock message send --target");
     });
   });
+
+  describe("WP7 — message/contextText/resume.value（G2）结构化透传", () => {
+    /** 可控 send 的假 bridge 会话——holdFirstSend 让首个回合悬停以构造合并批次 */
+    class FakeBridgeSession implements AgentRuntimeSession {
+      alive = true;
+      requests: AgentTurnRequest[] = [];
+      stopped = false;
+      /** 前 N 次 send 挂起（resolve 存到 pendingReleases，由测试手动放行） */
+      holdSends = 0;
+      pendingReleases: Array<() => void> = [];
+      result: AgentRuntimeTurnResult = { status: "success", finalText: "done" };
+      endEvent: AgentRuntimeEvent = {
+        type: "turn.end",
+        status: "success",
+        result: "done",
+        usage: { costUsd: null, durationMs: 12, numTurns: 1 },
+      };
+      constructor(public opts: AgentRuntimeOpenOptions) {}
+      // biome-ignore lint/suspicious/noConfusingVoidType: 与 AgentRuntimeSession 契约一致（void = 仅事件结算）
+      send(req: AgentTurnRequest): Promise<void | AgentRuntimeTurnResult> {
+        this.requests.push(req);
+        if (this.holdSends > 0) {
+          this.holdSends--;
+          return new Promise((resolve) => this.pendingReleases.push(() => resolve(this.result)));
+        }
+        this.opts.onEvent(this.endEvent);
+        return Promise.resolve(this.result);
+      }
+      stop(): void {
+        this.stopped = true;
+        this.alive = false;
+      }
+    }
+
+    const bridgeProfile: ResolvedAgentRuntimeProfile = {
+      runtime: "bridge",
+      model: "gpt-test",
+      entrypoint: "ep-graph",
+      identity: "id-bridge",
+    };
+    const CONV_CHANNEL = `slock:v1:${AGENT_ID}:channel:general`;
+
+    const makeBridge = (overrides?: { interruptStore?: DispatchDeps["interruptStore"] }) => {
+      const sessions: FakeBridgeSession[] = [];
+      /** 下次 openSession 新建会话的初始 holdSends——用于「首个回合悬停」构造合并窗口 */
+      const state = { nextHoldSends: 0 };
+      const driver: AgentRuntimeDriver = {
+        driverId: "fake-bridge",
+        runtimeIds: ["bridge"],
+        openSession: (o) => {
+          const s = new FakeBridgeSession(o);
+          s.holdSends = state.nextHoldSends;
+          state.nextHoldSends = 0;
+          sessions.push(s);
+          return s;
+        },
+        forgetAgent: vi.fn(),
+      };
+      harness = makeHarness({
+        runtimeRegistry: new AgentRuntimeRegistry([createClaudeRuntimeDriver(), driver]),
+        resolveRuntimeProfile: () => bridgeProfile,
+        interruptStore: overrides?.interruptStore,
+      });
+      return { sessions, state };
+    };
+
+    const pendingRec = (over: Record<string, unknown> = {}) => ({
+      agentId: AGENT_ID,
+      runtime: "bridge",
+      entrypoint: "ep-graph",
+      conversationId: CONV_CHANNEL,
+      interruptId: "int-9",
+      resumeToken: "tok-9",
+      prompt: "批准？",
+      createdAt: 1,
+      expiresAt: Date.now() + 60_000,
+      ...over,
+    });
+
+    it("dispatchToAgent：message 结构化透传（prompt 保持组装文本，互不相染）", async () => {
+      const { sessions } = makeBridge();
+      const message = {
+        text: "看下附件",
+        sender: "alice",
+        messageId: "m-7",
+        attachments: [{ id: "f1", filename: "a.png", mimeType: "image/png", sizeBytes: 42 }],
+      };
+      await harness.dispatch.dispatchToAgent(
+        AGENT,
+        "general",
+        "组装后的平台 prompt（含附件摘要行）",
+        undefined,
+        "message",
+        undefined,
+        "alice",
+        message,
+      );
+      await flush();
+      const req = sessions[0]!.requests[0]!;
+      expect(req.message).toEqual(message);
+      expect(req.prompt).toBe("组装后的平台 prompt（含附件摘要行）");
+      expect(req.contextText).toBeUndefined(); // context builder mock 返回 null
+      expect(req.resume).toBeUndefined();
+    });
+
+    it("G2：同 conversation 有 pending interrupt 时 resume.value = 原始人类文本而非组装 prompt", async () => {
+      const tmp = mkdtempSync(join(tmpdir(), "slock-istore-"));
+      const store = createRuntimeInterruptStore(join(tmp, "interrupts.json"));
+      store.put(pendingRec());
+      try {
+        const { sessions } = makeBridge({ interruptStore: store });
+        await harness.dispatch.dispatchToAgent(
+          AGENT,
+          "general",
+          "组装 prompt：【平台指令…】批准，继续【附件摘要…】",
+          undefined,
+          "message",
+          undefined,
+          "alice",
+          { text: "批准，继续" },
+        );
+        await flush();
+        const req = sessions[0]!.requests[0]!;
+        expect(req.resume).toEqual({ interruptId: "int-9", resumeToken: "tok-9", value: "批准，继续" });
+        expect(req.resume?.value).not.toBe(req.prompt);
+        expect(req.prompt).toContain("平台指令");
+        expect(req.resume?.decision).toBeUndefined(); // 不从纯文本推断决定
+      } finally {
+        rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+
+    it("G2 兜底：无结构化 message 时 resume.value 退回合并 prompt 文本（旧行为兼容）", async () => {
+      const tmp = mkdtempSync(join(tmpdir(), "slock-istore-"));
+      const store = createRuntimeInterruptStore(join(tmp, "interrupts.json"));
+      store.put(pendingRec());
+      try {
+        const { sessions } = makeBridge({ interruptStore: store });
+        await harness.dispatch.dispatchToAgent(AGENT, "general", "老的纯文本回复", undefined, "message");
+        await flush();
+        const req = sessions[0]!.requests[0]!;
+        expect(req.resume?.value).toBe("老的纯文本回复");
+        expect(req.message).toBeUndefined();
+      } finally {
+        rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+
+    it("contextText：bridge 回合下发历史信封，Claude 回合恒不下发", async () => {
+      vi.mocked(buildChannelContextEnvelope).mockResolvedValue({
+        block: "<history>近期三条</history>",
+        envelope: "<history>近期三条</history>",
+        chars: 20,
+        kept: 3,
+        dropped: 0,
+      });
+      // —— bridge：contextText 随 turn.start，prompt 仍内嵌同一信封（双通道） ——
+      const { sessions } = makeBridge();
+      await harness.dispatch.runAgent(AGENT, "general", "#general", "bob", "看下报错");
+      await flush();
+      let req = sessions[0]!.requests[0]!;
+      expect(req.contextText).toBe("<history>近期三条</history>");
+      expect(req.prompt).toContain("<history>近期三条</history>");
+      expect(req.prompt).toContain("看下报错");
+
+      // —— claude：同一信封只留在 prompt，request.contextText 恒 undefined ——
+      harness.dispatch.disposeQueue();
+      const claudeSessions: FakeBridgeSession[] = [];
+      const claudeDriver: AgentRuntimeDriver = {
+        driverId: "fake-claude",
+        runtimeIds: ["claude"],
+        openSession: (o) => {
+          const s = new FakeBridgeSession(o);
+          claudeSessions.push(s);
+          return s;
+        },
+        forgetAgent: vi.fn(),
+      };
+      harness = makeHarness({
+        runtimeRegistry: new AgentRuntimeRegistry([claudeDriver]),
+        resolveRuntimeProfile: () => ({ runtime: "claude", model: "haiku", identity: "id-claude" }),
+      });
+      await harness.dispatch.runAgent(AGENT, "general", "#general", "bob", "看下报错");
+      await flush();
+      req = claudeSessions[0]!.requests[0]!;
+      expect(req.contextText).toBeUndefined();
+      expect(req.prompt).toContain("<history>近期三条</history>"); // Claude 照旧只吃 prompt
+    });
+
+    it("忙碌合并：批次 message 按序合并进单个回合（text/attachments/sender/messageId）", async () => {
+      const { sessions, state } = makeBridge();
+      state.nextHoldSends = 1; // 首个回合的 send 悬停 → agent 忙 → 后续两条积压合并
+      const p1 = harness.dispatch.dispatchToAgent(AGENT, "general", "c1", undefined, "message", undefined, "u1", {
+        text: "第一条",
+      });
+      // 等首个 send 进入挂起态（真实 fs 工作区准备可能 >1 个 flush）
+      for (let i = 0; i < 100 && !(sessions[0] && sessions[0]!.requests.length === 1); i++) await flush(10);
+      const sess = sessions[0]!;
+      expect(sess.requests).toHaveLength(1);
+      // c1 在途（send 未结算）→ c2/c3 入队即 pending，同桶合并候选
+      const p2 = harness.dispatch.dispatchToAgent(AGENT, "general", "c2", undefined, "message", undefined, "u2", {
+        text: "第二条",
+        sender: "u2",
+        messageId: "m-2",
+        attachments: [{ id: "a1", filename: "f1.txt", mimeType: "text/plain", sizeBytes: 1 }],
+      });
+      const p3 = harness.dispatch.dispatchToAgent(AGENT, "general", "c3", undefined, "message", undefined, "u3", {
+        text: "第三条",
+        messageId: "m-3",
+        attachments: [{ id: "a2", filename: "f2.png", mimeType: "image/png", sizeBytes: 2 }],
+      });
+      await flush();
+      expect(sess.requests).toHaveLength(1); // 只有 c1 送达过
+      for (const release of sess.pendingReleases) release(); // 放行 c1 → drain 合并 c2+c3 一批送出
+      await Promise.all([p1, p2, p3]);
+      await flush();
+
+      expect(sess.requests).toHaveLength(2);
+      const merged = sess.requests[1]!;
+      expect(merged.message).toEqual({
+        text: "第二条\n\n第三条",
+        sender: "u2", // 第一条定义值
+        messageId: "m-3", // 最后一条定义值
+        attachments: [
+          { id: "a1", filename: "f1.txt", mimeType: "text/plain", sizeBytes: 1 },
+          { id: "a2", filename: "f2.png", mimeType: "image/png", sizeBytes: 2 },
+        ],
+      });
+    });
+
+    it("interrupted 终态：options/kind 随 pending interrupt 落盘", async () => {
+      const tmp = mkdtempSync(join(tmpdir(), "slock-istore-"));
+      const store = createRuntimeInterruptStore(join(tmp, "interrupts.json"));
+      try {
+        const { sessions } = makeBridge({ interruptStore: store });
+        // 第一回合先开起会话（send 立即 success）
+        await harness.dispatch.dispatchToAgent(AGENT, "general", "warm up");
+        const sess = sessions[0]!;
+        const options = {
+          decisions: ["approve", "reject"] as Array<"approve" | "reject">,
+          actions: [{ name: "send_email", description: "发邮件", args: { to: "a@b.c" } }],
+        };
+        sess.result = {
+          status: "interrupted",
+          interrupt: { interruptId: "int-2", resumeToken: "tok-2", prompt: "批准？", options },
+        };
+        sess.endEvent = {
+          type: "turn.end",
+          status: "interrupted",
+          usage: { costUsd: null, durationMs: 5, numTurns: 1 },
+          interrupt: { interruptId: "int-2", resumeToken: "tok-2", prompt: "批准？", options },
+        };
+        await harness.dispatch.dispatchToAgent(AGENT, "general", "trigger interrupt");
+        await flush();
+        const pending = store.list();
+        expect(pending).toHaveLength(1);
+        expect(pending[0]!.options).toEqual(options);
+        expect(pending[0]!.kind).toBe("message");
+        expect(pending[0]!.resumeToken).toBe("tok-2");
+      } finally {
+        rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+
+    it("系统来源不带 message：reminder/triage 回合恒无结构化消息", async () => {
+      const { sessions } = makeBridge();
+      await harness.dispatch.runAgentReminder(AGENT, { title: "喝水", channel: "#general", id: "rem-9" });
+      await harness.dispatch.runAgentTriage(AGENT, "general", "#general", "bob", "谁能看下");
+      await flush();
+      for (const req of sessions[0]!.requests) {
+        expect(req.message).toBeUndefined();
+        expect(req.source.kind).not.toBe("message");
+      }
+    });
+  });
 });

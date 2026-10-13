@@ -1,7 +1,12 @@
 import { buildChannelContextEnvelope, buildThreadContextEnvelope } from "./agent-context-builder.js";
 import { buildConversationId } from "./agent-conversation-id.js";
 import { type CostGateDecision, evaluateCostGate, type ICostTracker } from "./agent-cost-tracker.js";
-import { createAgentDispatchQueue, type DispatchQueueItem } from "./agent-dispatch-queue.js";
+import {
+  createAgentDispatchQueue,
+  type DispatchQueueItem,
+  mergeQueueContextText,
+  mergeQueueMessages,
+} from "./agent-dispatch-queue.js";
 import { createSeqAllocator, type ObservationBus } from "./agent-observation.js";
 import type { ProgressTurn } from "./agent-progress.js";
 import type { AgentRuntimeOptions } from "./agent-runtime.js";
@@ -36,6 +41,7 @@ import { loadDaemonEnv } from "./config.js";
 import { DispatchError, errMessage } from "./errors.js";
 import type { IIdleReclaimer } from "./idle-reclaimer.js";
 import type { PostStartInputWriter } from "./post-start-input-writer.js";
+import type { SarpTurnMessage } from "./sarp-protocol.js";
 
 /** reminder.fire 负载（T2：kind='patrol' 时带 instructions 走巡检 prompt 模板） */
 export interface ReminderFirePayload {
@@ -119,6 +125,10 @@ export interface IDispatch {
     sourceId?: string,
     /** Phase 2：人类发送者名 → SARP turn.start.source.sender */
     sender?: string,
+    /** WP7：人类消息原文与结构化附件（仅 kind="message" 生效，其余丢弃） */
+    message?: SarpTurnMessage,
+    /** WP7：本条的注入历史信封文本（bridge 回合 turn.start.contextText） */
+    contextText?: string,
   ): Promise<void>;
   runAgent(
     agentName: string,
@@ -128,8 +138,17 @@ export interface IDispatch {
     content: string,
     threadId?: string,
     messageId?: string,
+    /** WP7：deliver 透传的原始消息（text=不含附件摘要的 m.content + 结构化附件） */
+    message?: SarpTurnMessage,
   ): Promise<void>;
-  runAgentDm(agentName: string, replyTarget: string, senderName: string, content: string): Promise<void>;
+  runAgentDm(
+    agentName: string,
+    replyTarget: string,
+    senderName: string,
+    content: string,
+    /** WP7：deliver 透传的原始消息（同 runAgent） */
+    message?: SarpTurnMessage,
+  ): Promise<void>;
   runAgentReminder(agentName: string, reminder: ReminderFirePayload): Promise<void>;
   runAgentTriage(
     agentName: string,
@@ -389,8 +408,18 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
     userMsg: string,
     threadId?: string,
     kind: DispatchQueueItem["kind"] = "message",
-    /** Phase 2：队列 item 携带的回合种子（turnId 稳定 / attempt / 来源桶 / 发送者） */
-    turnSeed?: { turnId: string; attempt: number; sourceId?: string; resumeValue: string; sender?: string },
+    /** Phase 2：队列 item 携带的回合种子（turnId 稳定 / attempt / 来源桶 / 发送者 / WP7 消息与信封） */
+    turnSeed?: {
+      turnId: string;
+      attempt: number;
+      sourceId?: string;
+      resumeValue: string;
+      sender?: string;
+      /** WP7：合并批次的人类消息原文（mergeQueueMessages 产物；非人类消息批次缺省） */
+      message?: SarpTurnMessage;
+      /** WP7：合并批次的历史信封文本（仅 bridge 回合下发 turn.start.contextText） */
+      contextText?: string;
+    },
   ): Promise<void> => {
     // P0.6：执行前成本门。队列 drain 已拦过一次，这里是兜底——覆盖
     // 「drain 检查后才耗尽预算」的竞态窗口。
@@ -445,6 +474,10 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
       conversationId,
       attempt: turnSeed?.attempt ?? 1,
       sender: turnSeed?.sender,
+      // WP7：message 随种子透传（仅人类消息来源批次有值，其余 undefined）；
+      // contextText 仅 bridge 回合下发——Claude 的 prompt 已内嵌同一信封。
+      message: turnSeed?.message,
+      contextText: runtimeProfile.runtime !== "claude" ? turnSeed?.contextText : undefined,
       resume: pendingInterrupt
         ? {
             interruptId: pendingInterrupt.interruptId,
@@ -580,6 +613,10 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
       const tail = items.every((i) => i.bridge)
         ? ""
         : REMINDER_TAIL(agentName, items[0].channelName, items[0].threadId);
+      // WP7：合并本批次的原始消息与信封——text "\n\n" 拼接、attachments 顺序
+      // 拼接、messageId 取最后一条、sender 取第一条；contextText 取最后一条。
+      const mergedMessage = mergeQueueMessages(items);
+      const mergedContextText = mergeQueueContextText(items);
       await doDispatch(
         agentName,
         items[0].channelName,
@@ -588,12 +625,16 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
         items[0].kind,
         // §8.4：turnId 随首 item（retry 复用）；attempt=历史失败数+1；
         // resumeValue 用未拼 tail 的用户文本（tail 是 daemon 指令，不是用户消息）。
+        // WP7/G2：批次有人类消息原文时 resume.value 用原文合并值——不是
+        // 组装后的 prompt（含平台指令/历史信封）；无原文退回 merged 兜底。
         {
           turnId: items[0].turnId,
           attempt: Math.max(...items.map((i) => i.attempts)) + 1,
           sourceId: items[0].sourceId,
-          resumeValue: merged,
+          resumeValue: mergedMessage?.text ?? merged,
           sender: items[0].sender,
+          message: mergedMessage,
+          contextText: mergedContextText,
         },
       );
     },
@@ -635,6 +676,10 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
     kind: DispatchQueueItem["kind"] = "message",
     sourceId?: string,
     sender?: string,
+    /** WP7：人类消息原文与结构化附件（仅 kind="message" 入队保留） */
+    message?: SarpTurnMessage,
+    /** WP7：本条注入的历史信封文本（bridge 回合 turn.start.contextText 素材） */
+    contextText?: string,
   ): Promise<void> => {
     const gate = evaluateCostGate(deps.costTracker, agentName);
     if (gate.blocked) {
@@ -656,6 +701,8 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
       // WP2：bridge 标记随 item——守卫追问（nudge）等所有入队路径统一判定，
       // deliver 据此决定是否追加 REMINDER_TAIL。
       bridge: isBridgeAgent(agentName),
+      message,
+      contextText,
     });
     if (wasBusy) {
       console.log(`[Daemon] @${agentName} busy — message queued (dispatch queue)`);
@@ -689,7 +736,7 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
     messageId?: string,
     /** 无 threadId 时是否注入顶层/DM 小预算上下文（分诊/巡检等 nudge 关掉） */
     topLevel = true,
-  ): Promise<{ userMsg: string; threadId?: string }> => {
+  ): Promise<{ userMsg: string; threadId?: string; contextText?: string }> => {
     const agentId = resolveAgentId(agentName);
     if (!agentId) return { userMsg: taskPrompt, threadId };
     const record = (built: { chars: number; kept: number; dropped: number }) => {
@@ -719,7 +766,9 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
       console.log(
         `[Daemon] @${agentName} context packed thread ${threadId.slice(0, 8)} kept=${built.kept} dropped=${built.dropped} chars=${built.chars}`,
       );
-      return { userMsg: `${built.envelope}\n\n${taskPrompt}`, threadId: built.threadId };
+      // WP7：envelope 同时作 contextText 返回——bridge 回合经
+      // turn.start.contextText 单独下发（prompt 里那份保持内嵌不变）。
+      return { userMsg: `${built.envelope}\n\n${taskPrompt}`, threadId: built.threadId, contextText: built.envelope };
     }
     if (!topLevel) return { userMsg: taskPrompt };
     const built = await buildChannelContextEnvelope({
@@ -735,7 +784,7 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
     console.log(
       `[Daemon] @${agentName} context packed channel ${channelName} kept=${built.kept} dropped=${built.dropped} chars=${built.chars}`,
     );
-    return { userMsg: `${built.envelope}\n\n${taskPrompt}` };
+    return { userMsg: `${built.envelope}\n\n${taskPrompt}`, contextText: built.envelope };
   };
 
   const runAgent = async (
@@ -746,6 +795,8 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
     content: string,
     threadId?: string,
     messageId?: string,
+    /** WP7：deliver 透传的原始消息（text=不含附件摘要的 m.content + 结构化附件） */
+    message?: SarpTurnMessage,
   ): Promise<void> => {
     const inThread = Boolean(threadId) || replyTarget.includes(":");
     const where = inThread ? `#${channelName} 的一个线程里` : `#${channelName} 频道`;
@@ -760,7 +811,17 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
           `完成后用 \`send_message\` 工具（target="${replyTarget}"）在${inThread ? "该线程内" : "该频道"}发结果；没有该工具时退回 \`slock message send --target "${replyTarget}"\`（内容从 stdin 传入）。注意 target 必须严格用 "${replyTarget}"。`,
         ].join("\n");
     const packed = await attachTurnContext(agentName, channelName, taskPrompt, threadId, content, messageId);
-    await dispatchToAgent(agentName, channelName, packed.userMsg, packed.threadId, undefined, undefined, senderName);
+    await dispatchToAgent(
+      agentName,
+      channelName,
+      packed.userMsg,
+      packed.threadId,
+      undefined,
+      undefined,
+      senderName,
+      message,
+      packed.contextText,
+    );
   };
 
   const runAgentDm = async (
@@ -768,6 +829,8 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
     replyTarget: string,
     senderName: string,
     content: string,
+    /** WP7：deliver 透传的原始消息（同 runAgent） */
+    message?: SarpTurnMessage,
   ): Promise<void> => {
     // WP2：bridge worker 用 neutral 模板（与 runAgent 同一判别）。
     const userMsg = isBridgeAgent(agentName)
@@ -781,7 +844,17 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
         ].join("\n");
     // A3/§8.6：DM 注入小预算历史（channel 参数 = "dm:@x" 目标）
     const packed = await attachTurnContext(agentName, replyTarget, userMsg, undefined, content);
-    await dispatchToAgent(agentName, replyTarget, packed.userMsg, undefined, undefined, undefined, senderName);
+    await dispatchToAgent(
+      agentName,
+      replyTarget,
+      packed.userMsg,
+      undefined,
+      undefined,
+      undefined,
+      senderName,
+      message,
+      packed.contextText,
+    );
   };
 
   const runAgentReminder = async (agentName: string, reminder: ReminderFirePayload): Promise<void> => {
@@ -830,9 +903,21 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
     const taskPrompt = isBridgeAgent(agentName)
       ? buildBridgeTriagePrompt({ channelName, replyTarget, senderName, content })
       : buildTriagePrompt({ channelName, replyTarget, senderName, content });
-    // 分诊是 nudge 性质：只保留线程追问语境，不注顶层小预算上下文
+    // 分诊是 nudge 性质：只保留线程追问语境，不注顶层小预算上下文。
+    // WP7：triage 非人类消息来源——不构造 message；contextText 仅在真有
+    // 线程信封时透传（bridge 回合下发，Claude 忽略）。
     const packed = await attachTurnContext(agentName, channelName, taskPrompt, threadId, content, messageId, false);
-    await dispatchToAgent(agentName, channelName, packed.userMsg, packed.threadId, "triage", undefined, senderName);
+    await dispatchToAgent(
+      agentName,
+      channelName,
+      packed.userMsg,
+      packed.threadId,
+      "triage",
+      undefined,
+      senderName,
+      undefined,
+      packed.contextText,
+    );
   };
 
   return {

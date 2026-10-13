@@ -685,4 +685,67 @@ describe("批次 C：bridge MCP allowlist / 诊断打点 / interrupt 上下文�
     await dispatchHeadlessTurn(claudeOpts);
     expect(claudeOpts.turnGuards.get("alice")?.bridge).toBe(false);
   });
+
+  it("WP7：turn.message/contextText/resume.decision 原样进 session.send 的 AgentTurnRequest", async () => {
+    const send = vi.fn(async () => ({ status: "success" }));
+    const session = { send, stop: vi.fn() } as unknown as AgentRuntimeSession;
+    const driver = {
+      runtimeIds: ["bridge"],
+      openSession: vi.fn(() => session),
+    } as unknown as DispatchHeadlessTurnOpts["runtimeDriver"];
+    const message = {
+      text: "看下附件",
+      sender: "bob",
+      messageId: "m-1",
+      attachments: [{ id: "f1", filename: "a.pdf", mimeType: "application/pdf", sizeBytes: 10 }],
+    };
+    const resume = {
+      interruptId: "i1",
+      resumeToken: "tok-1",
+      value: "批准",
+      decision: { type: "approve" } as const,
+    };
+    await dispatchHeadlessTurn(
+      bridgeOpts(bridgeEntry(), {
+        runtimeDriver: driver,
+        turn: {
+          turnId: "turn-w7",
+          conversationId: "slock:v1:id-alice:channel:general",
+          attempt: 1,
+          sender: "bob",
+          message,
+          contextText: "<history>三条</history>",
+          resume,
+        },
+      }),
+    );
+    const req = send.mock.calls[0]![0] as Record<string, unknown>;
+    expect(req.message).toEqual(message);
+    expect(req.contextText).toBe("<history>三条</history>");
+    expect(req.resume).toEqual(resume); // decision 原样透传——daemon 不消费它只负责带
+    expect(req.prompt).toBe("hello"); // userMsg 原样——message 不替代 prompt
+  });
+
+  it("WP7：interrupted 终态 → put 携带 options 与来源 kind", async () => {
+    const store = {
+      put: vi.fn(),
+      take: vi.fn(() => null),
+      clearIncompatible: vi.fn(() => 0),
+      delete: vi.fn(() => true),
+      clearAgent: vi.fn(() => 0),
+      list: vi.fn(() => []),
+    };
+    const options = {
+      decisions: ["approve", "reject"] as Array<"approve" | "reject">,
+      actions: [{ name: "send_email", args: { to: "a@b.c" }, description: "发邮件" }],
+    };
+    const { driver } = fakeBridgeDriver(async () => ({
+      status: "interrupted",
+      interrupt: { interruptId: "i9", resumeToken: "rt-9", prompt: "批准？", options },
+    }));
+    await dispatchHeadlessTurn(
+      bridgeOpts(bridgeEntry(), { runtimeDriver: driver, interruptStore: store, kind: "message" }),
+    );
+    expect(store.put).toHaveBeenCalledWith(expect.objectContaining({ options, kind: "message", resumeToken: "rt-9" }));
+  });
 });

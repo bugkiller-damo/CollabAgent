@@ -33,6 +33,17 @@ export interface PendingRuntimeInterrupt {
   interruptId: string;
   resumeToken: string;
   prompt: string;
+  /**
+   * WP7：审批选项（decisions/actions 预览）——随 pending 持久化，
+   * interrupts:state 摘要（daemon-core 脱敏后）与 WP10 决定按钮使用。
+   * 旧记录缺省兼容。
+   */
+  options?: import("./sarp-protocol.js").SarpInterruptOptions;
+  /**
+   * WP7：来源派发 kind（message/reminder/dispatch/triage/nudge）——
+   * WP10 决定按钮回填入队 kind 用；旧记录缺省兼容。
+   */
+  kind?: import("./agent-dispatch-queue.js").DispatchKind;
   createdAt: number;
   expiresAt: number;
 }

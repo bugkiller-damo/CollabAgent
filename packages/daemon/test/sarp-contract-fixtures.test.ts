@@ -85,6 +85,50 @@ const DAEMON_FRAMES: SarpDaemonFrame[] = [
       prompt: "multi\nline\nprompt",
     },
   },
+  {
+    // WP7：人类消息原文 + 结构化附件 + 历史信封（R-UF 可选字段）
+    type: "turn.start",
+    fields: {
+      turnId: "t-4",
+      conversationId: "slock:v1:ag_1:channel:general",
+      attempt: 1,
+      source: { kind: "message", channel: "general", sender: "user-7" },
+      prompt: "你在 #general 频道被 @ 了。来自 @user-7 的消息：看下这个方案",
+      message: {
+        text: "看下这个方案",
+        sender: "user-7",
+        messageId: "msg-42",
+        attachments: [
+          {
+            id: "att-1",
+            filename: "方案.pdf",
+            mimeType: "application/pdf",
+            sizeBytes: 20480,
+            url: "/api/attachments/att-1",
+          },
+          { id: "att-2", filename: "logo.png", mimeType: "image/png", sizeBytes: 1024 },
+        ],
+      },
+      contextText: "<conversation-history>\n[2026-09-20T23:59Z] user-7: 上次聊到哪了\n</conversation-history>",
+    },
+  },
+  {
+    // WP7：resume.decision 结构化审批决定（纯文本 resume 不缺省时也兼容）
+    type: "turn.start",
+    fields: {
+      turnId: "t-5",
+      conversationId: "slock:v1:ag_1:channel:general",
+      attempt: 1,
+      source: { kind: "message", channel: "general", sender: "user-7" },
+      prompt: "resume with decision",
+      resume: {
+        interruptId: "lg-abc123",
+        resumeToken: "rt-deadbeef",
+        value: "批准",
+        decision: { type: "approve" },
+      },
+    },
+  },
   { type: "turn.cancel", fields: { turnId: "t-3", reason: "user-requested" } },
   { type: "shutdown", fields: { reason: "idle-reclaim", timeoutMs: 4000 } },
   { type: "shutdown", fields: {} },
@@ -182,6 +226,41 @@ const WORKER_LINES: Record<string, unknown>[] = [
       payload: { question: "approve?" },
     },
   },
+  {
+    // WP7：interrupt.options —— decisions 白名单 + actions ≤10 预览
+    type: "turn.interrupt",
+    turnId: "t-6",
+    eventSeq: 1,
+    interruptId: "lg-opt-1",
+    resumeToken: "rt-opt-1",
+    prompt: "审批待执行动作",
+    options: {
+      decisions: ["approve", "reject", "respond", "edit"],
+      actions: [
+        { name: "send_email", args: { to: "a@b.c", subject: "报价单" }, description: "发送报价邮件" },
+        { name: "cleanup_tmp", description: "删除临时文件" },
+      ],
+    },
+  },
+  {
+    // WP7：interrupted 终态的规范 interrupt 同样带 options（与预览一致）
+    type: "turn.end",
+    turnId: "t-6",
+    eventSeq: 2,
+    status: "interrupted",
+    interrupt: {
+      interruptId: "lg-opt-1",
+      resumeToken: "rt-opt-1",
+      prompt: "审批待执行动作",
+      options: {
+        decisions: ["approve", "reject", "respond", "edit"],
+        actions: [
+          { name: "send_email", args: { to: "a@b.c", subject: "报价单" }, description: "发送报价邮件" },
+          { name: "cleanup_tmp", description: "删除临时文件" },
+        ],
+      },
+    },
+  },
   { type: "turn.end", turnId: "t-3", eventSeq: 1, status: "cancelled" },
   {
     type: "turn.end",
@@ -216,7 +295,7 @@ describe("SARP/1 cross-language fixtures", () => {
     expect(readFileSync(path, "utf-8")).toBe(daemonJsonl);
   });
 
-  it("worker→daemon fixture decodes cleanly (all 16 frames)", () => {
+  it(`worker→daemon fixture decodes cleanly (all ${WORKER_LINES.length} frames)`, () => {
     const path = join(FIXTURE_DIR, "worker-to-daemon.jsonl");
     if (process.env.SARP_WRITE_FIXTURES) {
       mkdirSync(FIXTURE_DIR, { recursive: true });
@@ -234,5 +313,35 @@ describe("SARP/1 cross-language fixtures", () => {
     };
     expect(intr?.interrupt?.interruptId).toBe("lg-abc123");
     expect(intr?.interrupt?.resumeToken).toBe("rt-deadbeef");
+    // WP7：带 options 的 interrupt 帧解码后保留规范字段
+    const optIntr = decoded.find((m) => m!.type === "turn.interrupt" && (m as { turnId?: string }).turnId === "t-6") as
+      | { options?: { decisions?: string[]; actions?: Array<{ name: string; args?: unknown }> } }
+      | undefined;
+    expect(optIntr?.options?.decisions).toEqual(["approve", "reject", "respond", "edit"]);
+    expect(optIntr?.options?.actions?.[0]?.name).toBe("send_email");
+    // WP7：interrupted 终态的 interrupt.options 同样解码
+    const optEnd = decoded.find((m) => m!.type === "turn.end" && (m as { turnId?: string }).turnId === "t-6") as
+      | { interrupt?: { options?: { decisions?: string[] } } }
+      | undefined;
+    expect(optEnd?.interrupt?.options?.decisions).toEqual(["approve", "reject", "respond", "edit"]);
+  });
+
+  it("daemon→worker fixture carries WP7 optional turn.start fields", () => {
+    const path = join(FIXTURE_DIR, "daemon-to-worker.jsonl");
+    const lines = readFileSync(path, "utf-8").split("\n").filter(Boolean);
+    const frames = lines.map((l) => JSON.parse(l) as Record<string, unknown>);
+    const msgStart = frames.find((f) => f.type === "turn.start" && f.turnId === "t-4");
+    expect(msgStart?.message).toMatchObject({
+      text: "看下这个方案",
+      sender: "user-7",
+      messageId: "msg-42",
+      attachments: [
+        { id: "att-1", filename: "方案.pdf", mimeType: "application/pdf", sizeBytes: 20480 },
+        { id: "att-2", filename: "logo.png", mimeType: "image/png", sizeBytes: 1024 },
+      ],
+    });
+    expect(msgStart?.contextText).toContain("conversation-history");
+    const resumeStart = frames.find((f) => f.type === "turn.start" && f.turnId === "t-5");
+    expect((resumeStart?.resume as { decision?: { type: string } })?.decision).toEqual({ type: "approve" });
   });
 });

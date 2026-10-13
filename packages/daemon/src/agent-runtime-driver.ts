@@ -13,6 +13,7 @@
 import type { DispatchKind } from "./agent-dispatch-queue.js";
 import type { AgentRuntimeEvent, AgentRuntimeInterrupt, AgentRuntimeUsage } from "./agent-runtime-events.js";
 import { DispatchError } from "./errors.js";
+import type { SarpResumeDecision, SarpTurnMessage } from "./sarp-protocol.js";
 
 export type AgentRuntimeMode = "persistent" | "oneshot";
 
@@ -33,11 +34,31 @@ export interface AgentTurnRequest {
     threadId?: string;
     sender?: string;
   };
+  /**
+   * WP7：触发本回合的人类消息原文与结构化附件（队列合并批次已按
+   * "\n\n" 拼接 text、顺序拼接 attachments）。仅人类消息来源的批次
+   * 携带；reminder/triage/nudge 等缺省。Claude driver 忽略。
+   */
+  message?: SarpTurnMessage;
+  /**
+   * WP7：平台注入的会话历史信封文本（与 prompt 内嵌历史同源）。
+   * 仅 bridge 回合填充——Claude 的 prompt 已包含历史，无需重复下发。
+   */
+  contextText?: string;
   /** interrupt 恢复（§8.7.6）：同 conversation 下一条消息作为 resume.value */
   resume?: {
     interruptId: string;
     resumeToken: string;
+    /**
+     * WP7/G2：人类回复原文（message.text 合并值）——不是组装后的
+     * prompt（含平台指令/历史信封）。
+     */
     value: string;
+    /**
+     * WP7：结构化审批决定（中立形状）。无结构化来源（纯文本回复）时
+     * 缺省——daemon 不从回复文本推断决定。
+     */
+    decision?: SarpResumeDecision;
   };
 }
 

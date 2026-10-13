@@ -542,6 +542,7 @@ export class PersistentJsonlWorkerSession implements AgentRuntimeSession {
       case "turn.interrupt":
         // 预览帧（§8.6）：规范记录以 turn.end.interrupt 为准——存下三字段
         // 供终态一致性校验（双发时不一致 = protocol violation）。
+        // WP7：options 不进一致性比较——预览可省略、终态携带（R-UF 可选字段）。
         turn.previewInterrupt = {
           interruptId: msg.interruptId,
           resumeToken: msg.resumeToken,
@@ -555,6 +556,7 @@ export class PersistentJsonlWorkerSession implements AgentRuntimeSession {
             resumeToken: msg.resumeToken,
             prompt: msg.prompt,
             payload: msg.payload,
+            options: msg.options,
           },
         });
         return;
@@ -845,6 +847,9 @@ export class PersistentJsonlWorkerSession implements AgentRuntimeSession {
             sender: request.source.sender,
           },
           prompt: request.prompt,
+          // WP7：原文/信封/结构化恢复数据按存在性下发（R-UF——旧 worker 忽略）
+          ...(request.message ? { message: request.message } : {}),
+          ...(request.contextText !== undefined ? { contextText: request.contextText } : {}),
           ...(request.resume ? { resume: request.resume } : {}),
         },
       });

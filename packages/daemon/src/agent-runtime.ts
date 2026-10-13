@@ -140,8 +140,17 @@ export interface IAgentRuntime {
     content: string,
     threadId?: string,
     messageId?: string,
+    /** WP7：deliver 透传的原始消息（text=不含附件摘要的 m.content + 结构化附件） */
+    message?: import("./sarp-protocol.js").SarpTurnMessage,
   ): Promise<void>;
-  runAgentDm(agentName: string, replyTarget: string, senderName: string, content: string): Promise<void>;
+  runAgentDm(
+    agentName: string,
+    replyTarget: string,
+    senderName: string,
+    content: string,
+    /** WP7：deliver 透传的原始消息（同 runAgent） */
+    message?: import("./sarp-protocol.js").SarpTurnMessage,
+  ): Promise<void>;
   runAgentReminder(agentName: string, reminder: ReminderFirePayload): Promise<void>;
   runAgentTriage(
     agentName: string,

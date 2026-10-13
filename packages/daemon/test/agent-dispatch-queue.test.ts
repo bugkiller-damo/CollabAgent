@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { createAgentDispatchQueue, type DispatchQueueItem } from "../src/agent-dispatch-queue.js";
+import {
+  createAgentDispatchQueue,
+  type DispatchQueueItem,
+  mergeQueueContextText,
+  mergeQueueMessages,
+} from "../src/agent-dispatch-queue.js";
 import { DispatchError } from "../src/errors.js";
 
 /** 等所有微任务 + 一小段真实时间（队列退避用的小延迟） */
@@ -536,5 +541,92 @@ describe("agent-dispatch-queue", () => {
 
     for (const id of bootOneIds) expect(seen.has(id)).toBe(false);
     expect([...seen].every((id) => id.startsWith("turn-"))).toBe(true);
+  });
+});
+
+describe("WP7 — item.message/contextText 与 mergeQueueMessages", () => {
+  it("enqueue 携带 message/contextText；非 message kind 的 message 被丢弃", async () => {
+    const deliver = vi.fn().mockResolvedValue(undefined);
+    const q = createAgentDispatchQueue({ deliver });
+    q.enqueue({
+      ...makeItem(),
+      message: { text: "hi", sender: "bob" },
+      contextText: "<env/>",
+    });
+    q.enqueue({
+      ...makeItem(),
+      content: "reminder-x",
+      kind: "reminder",
+      message: { text: "should-drop" }, // 误传也丢——reminder 不携带结构化消息
+      contextText: "<env2/>",
+    });
+    await flush();
+    expect(deliver).toHaveBeenCalledTimes(2);
+    const msgBatch: DispatchQueueItem[] = deliver.mock.calls[0][1];
+    expect(msgBatch[0].message).toEqual({ text: "hi", sender: "bob" });
+    expect(msgBatch[0].contextText).toBe("<env/>");
+    const remBatch: DispatchQueueItem[] = deliver.mock.calls[1][1];
+    expect(remBatch[0].kind).toBe("reminder");
+    expect(remBatch[0].message).toBeUndefined();
+    expect(remBatch[0].contextText).toBe("<env2/>");
+    q.dispose();
+  });
+
+  const msgItem = (message?: Parameters<typeof mergeQueueMessages>[0][number]["message"]): DispatchQueueItem => ({
+    id: "dq-1",
+    agentName: "alice",
+    channelName: "general",
+    kind: "message",
+    content: "c",
+    enqueuedAt: 0,
+    attempts: 0,
+    turnId: "turn-1",
+    ...(message !== undefined ? { message } : {}),
+  });
+
+  it("合并：text 按序 \\n\\n 拼接、attachments 顺序拼接、messageId 取最后一条、sender 取第一条", () => {
+    const merged = mergeQueueMessages([
+      msgItem({
+        text: "第一条",
+        sender: "alice",
+        messageId: "m-1",
+        attachments: [{ id: "a1", filename: "f1", mimeType: "text/plain", sizeBytes: 1 }],
+      }),
+      msgItem({
+        text: "第二条",
+        messageId: "m-2",
+        attachments: [{ id: "a2", filename: "f2", mimeType: "image/png", sizeBytes: 2 }],
+      }),
+      msgItem({ text: "第三条" }), // 无 sender/messageId
+    ]);
+    expect(merged).toEqual({
+      text: "第一条\n\n第二条\n\n第三条",
+      sender: "alice", // 第一条定义值
+      messageId: "m-2", // 最后一条定义值
+      attachments: [
+        { id: "a1", filename: "f1", mimeType: "text/plain", sizeBytes: 1 },
+        { id: "a2", filename: "f2", mimeType: "image/png", sizeBytes: 2 },
+      ],
+    });
+  });
+
+  it("混合批次：无 message 的 item 跳过、不产出空 attachments/sender/messageId 键", () => {
+    const merged = mergeQueueMessages([msgItem(), msgItem({ text: "only" }), msgItem()]);
+    expect(merged).toEqual({ text: "only" });
+    expect(merged && !("sender" in merged) && !("messageId" in merged) && !("attachments" in merged)).toBe(true);
+  });
+
+  it("全批无 message → undefined（reminder/triage 批次的兜底语义）", () => {
+    expect(mergeQueueMessages([msgItem(), msgItem()])).toBeUndefined();
+  });
+
+  it("mergeQueueContextText：取最后一条定义值；全批无 → undefined", () => {
+    const items: DispatchQueueItem[] = [
+      { ...msgItem(), contextText: "old" },
+      msgItem(),
+      { ...msgItem(), contextText: "new" },
+    ];
+    expect(mergeQueueContextText(items)).toBe("new");
+    expect(mergeQueueContextText([msgItem()])).toBeUndefined();
   });
 });

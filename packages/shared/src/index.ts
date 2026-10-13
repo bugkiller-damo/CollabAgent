@@ -543,6 +543,13 @@ export interface PendingInterruptSummary {
   /** worker 的审批请求文本（daemon 已截断 + 脱敏） */
   prompt: string;
   runtime?: string;
+  /** WP7（R-UF 可选）：worker 声明的审批选项与待审批动作预览。
+   *  decisions = worker 接受的决定类型；actions[].argsPreview 由 daemon
+   *  脱敏 + 截断（≤500 字符）后填入，web 审批面据此渲染结构化按钮。 */
+  options?: {
+    decisions?: string[];
+    actions?: Array<{ name: string; argsPreview?: string; description?: string }>;
+  };
   /** 会话归属（频道名 / dm:<peer> / 线程 id）——web 按它挂到对应会话的审批门 */
   channel?: string;
   threadId?: string;

@@ -199,3 +199,129 @@ describe("handleAgentDeliver 附件透传（F6）", () => {
     expect(calls.runAgent).toHaveLength(0);
   });
 });
+
+describe("WP7 — toSarpTurnMessage 结构化透传（mention / DM / forceDeliverTo）", () => {
+  it("mention 路径：runAgent 末位参数 = 结构化 message（原文 text，不带附件摘要）", async () => {
+    const { ctx, calls } = makeCtx();
+    await handleAgentDeliver(
+      ctx,
+      deliverMsg({
+        id: "m10",
+        channelId: "#general",
+        senderId: "u-human",
+        senderName: "bob",
+        senderType: "human",
+        content: "看下这个",
+        time: "2026-09-16T00:00:00Z",
+        attachments: [ATT],
+        mentionAgents: ["alice"],
+      }),
+    );
+    expect(calls.runAgent).toHaveLength(1);
+    // runAgent(name, channel, target, sender, contentForAgent, threadId, messageId, message)
+    const msg = calls.runAgent[0][7];
+    expect(msg).toEqual({
+      text: "看下这个", // 原始 m.content——不含 [附件 1] 摘要行
+      sender: "bob",
+      messageId: "m10",
+      attachments: [
+        { id: "a1", filename: "report.pdf", mimeType: "application/pdf", sizeBytes: 2048, url: "/api/attachments/a1" },
+      ],
+    });
+    // prompt 侧仍带摘要——结构化与文本通道并存互不替代
+    expect(calls.runAgent[0][4]).toContain("[附件 1]");
+    expect(msg.text).not.toContain("[附件 1]");
+  });
+
+  it("DM 路径：runAgentDm 末位参数同样带结构化 message", async () => {
+    const { ctx, calls } = makeCtx();
+    await handleAgentDeliver(
+      ctx,
+      deliverMsg({
+        id: "m11",
+        channelId: "dm:chan-1",
+        senderId: "u-human",
+        senderName: "bob",
+        senderHandle: "bob",
+        senderType: "human",
+        content: "私信内容",
+        time: "2026-09-16T00:00:00Z",
+        dm: true,
+        dmAgentRecipients: ["alice"],
+        attachments: [ATT],
+      }),
+    );
+    expect(calls.runAgentDm).toHaveLength(1);
+    // runAgentDm(name, replyTarget, senderHandle, contentForAgent, message)
+    expect(calls.runAgentDm[0][4]).toEqual({
+      text: "私信内容",
+      sender: "bob",
+      messageId: "m11",
+      attachments: [
+        { id: "a1", filename: "report.pdf", mimeType: "application/pdf", sizeBytes: 2048, url: "/api/attachments/a1" },
+      ],
+    });
+  });
+
+  it("forceDeliverTo 路径：结构化 message 同样透传", async () => {
+    const { ctx, calls } = makeCtx();
+    await handleAgentDeliver(
+      ctx,
+      deliverMsg({
+        id: "m12",
+        channelId: "#general",
+        senderId: "u-sys",
+        senderName: "system",
+        senderType: "agent", // forceDeliverTo 绕开防自环——仍带结构化原文
+        content: "派单",
+        time: "2026-09-16T00:00:00Z",
+        forceDeliverTo: "alice",
+      }),
+    );
+    expect(calls.runAgent).toHaveLength(1);
+    expect(calls.runAgent[0][7]).toEqual({ text: "派单", sender: "system", messageId: "m12" });
+  });
+
+  it("无 url 附件：不凭空构造 url 键；附件-only 时 text 为空串", async () => {
+    const { ctx, calls } = makeCtx();
+    await handleAgentDeliver(
+      ctx,
+      deliverMsg({
+        id: "m13",
+        channelId: "#general",
+        senderId: "u-human",
+        senderName: "bob",
+        senderType: "human",
+        content: "",
+        time: "2026-09-16T00:00:00Z",
+        attachments: [{ id: "a9", filename: "no-url.bin", mimeType: "application/octet-stream", sizeBytes: 7 }],
+        mentionAgents: ["alice"],
+      }),
+    );
+    const msg = calls.runAgent[0][7];
+    expect(msg.text).toBe("");
+    expect(msg.attachments).toEqual([
+      { id: "a9", filename: "no-url.bin", mimeType: "application/octet-stream", sizeBytes: 7 },
+    ]);
+    expect("url" in msg.attachments[0]).toBe(false);
+  });
+
+  it("triage 路径不带结构化 message（runAgentTriage 签名无此参数）", async () => {
+    const { ctx, calls } = makeCtx();
+    await handleAgentDeliver(
+      ctx,
+      deliverMsg({
+        id: "m14",
+        channelId: "#general",
+        senderId: "u-human",
+        senderName: "bob",
+        senderType: "human",
+        content: "谁能看下",
+        time: "2026-09-16T00:00:00Z",
+        triageAgents: ["alice"], // mentionAgents 缺省 → 本地解析也无命中 → 落 triage
+      }),
+    );
+    expect(calls.runAgentTriage).toHaveLength(1);
+    expect(calls.runAgentTriage[0].length).toBe(7); // (name, channel, target, sender, content, threadId, messageId)
+  });
+});

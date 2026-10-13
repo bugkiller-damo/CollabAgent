@@ -13,6 +13,8 @@
  * interrupt 是预览帧，规范来源以 turn.end.interrupt 为准（§8.7.6）。
  */
 
+import type { SarpInterruptOptions } from "./sarp-protocol.js";
+
 export interface AgentRuntimeUsage {
   /** 本回合成本增量（USD）；provider 未上报 → null（不填 0 冒充已计量） */
   costUsd: number | null;
@@ -32,6 +34,12 @@ export interface AgentRuntimeInterrupt {
   resumeToken: string;
   prompt: string;
   payload?: unknown;
+  /**
+   * WP7：审批选项（decisions 可选决定枚举；actions 待审批动作预览）。
+   * 随 pending interrupt 持久化；出站摘要在 daemon-core 脱敏
+   * （actions[].args → argsPreview，原始 args 不出 daemon）。
+   */
+  options?: SarpInterruptOptions;
 }
 
 export type AgentRuntimeEvent =

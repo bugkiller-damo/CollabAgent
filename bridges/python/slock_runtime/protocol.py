@@ -82,10 +82,49 @@ class SarpInitialize:
 
 
 @dataclass(frozen=True)
+class SarpAttachment:
+    """turn.start.message.attachments 条目（WP7 增量字段）。"""
+
+    id: str
+    filename: str
+    mime_type: str  # wire: mimeType
+    size_bytes: int  # wire: sizeBytes
+    url: str | None = None
+
+
+@dataclass(frozen=True)
+class SarpTurnMessage:
+    """turn.start.message：触发本回合的人类消息原文（不含平台指令与历史）。
+
+    提醒/巡检等非人类消息回合缺省；合并批次由 daemon 按 "\\n\\n" 拼接、
+    attachments 拼接、messageId 取最后一条。
+    """
+
+    text: str
+    sender: str | None = None
+    message_id: str | None = None  # wire: messageId
+    attachments: tuple[SarpAttachment, ...] = ()
+
+
+@dataclass(frozen=True)
+class SarpResumeDecision:
+    """resume.decision：审批按钮产出的结构化决定（WP7/WP10 前瞻）。
+
+    宽容形状：type 规范值 approve/reject/respond/edit，但不收敛枚举——
+    未知 type 原样保留（R-UF 前向兼容）；message/args 按决定类型可选。
+    """
+
+    type: str
+    message: str | None = None
+    args: Any = None
+
+
+@dataclass(frozen=True)
 class SarpResume:
     interrupt_id: str
     resume_token: str
     value: str
+    decision: SarpResumeDecision | None = None
 
 
 @dataclass(frozen=True)
@@ -104,6 +143,10 @@ class SarpTurnStart:
     attempt: int
     source: SarpTurnSource
     prompt: str
+    # WP7（R-UF）：以下为 v1 增量可选字段，缺省/畸形一律 None——旧 daemon
+    # 不下发，新 daemon 下发异常形态也不得让 decode 崩（可选字段不致命）。
+    message: SarpTurnMessage | None = None
+    context_text: str | None = None  # wire: contextText
     resume: SarpResume | None = None
 
 
@@ -205,6 +248,75 @@ def _opt_bool(o: dict, key: str, t: str) -> bool | None:
     if not isinstance(v, bool):
         _fail("invalid-schema", f"{t}.{key}: boolean required", t)
     return v
+
+
+# ------------------------- WP7 可选字段容错解析 -------------------------
+# R-UF：已知帧里的增量字段对旧实现等价于「未知字段」——缺省/畸形一律按
+# 缺省处理，绝不因可选字段让 decode 抛 invalid-schema。
+
+
+def _ign_str(o: dict, key: str) -> str | None:
+    """可选字符串的容错版 _opt_str：非 str 按缺省返回 None，不抛错。"""
+    v = o.get(key)
+    return v if isinstance(v, str) else None
+
+
+def _parse_attachment(v: Any) -> SarpAttachment | None:
+    """单条附件：id/filename/mimeType/sizeBytes 缺一或型错 → 跳过该条。"""
+    if not isinstance(v, dict):
+        return None
+    a_id, filename, mime = v.get("id"), v.get("filename"), v.get("mimeType")
+    size = v.get("sizeBytes")
+    if (
+        not isinstance(a_id, str)
+        or not a_id
+        or not isinstance(filename, str)
+        or not filename
+        or not isinstance(mime, str)
+        or not mime
+        or not isinstance(size, (int, float))
+        or isinstance(size, bool)
+        or size < 0
+    ):
+        return None
+    url = v.get("url")
+    return SarpAttachment(
+        id=a_id,
+        filename=filename,
+        mime_type=mime,
+        size_bytes=int(size),
+        url=url if isinstance(url, str) else None,
+    )
+
+
+def _parse_turn_message(v: Any) -> SarpTurnMessage | None:
+    """turn.start.message：缺 text 或型错 → None；attachments 逐条过滤。"""
+    if not isinstance(v, dict):
+        return None
+    text = v.get("text")
+    if not isinstance(text, str) or text == "":
+        return None
+    raw_atts = v.get("attachments")
+    atts: tuple[SarpAttachment, ...] = ()
+    if isinstance(raw_atts, list):
+        atts = tuple(a for a in (_parse_attachment(item) for item in raw_atts) if a is not None)
+    return SarpTurnMessage(
+        text=text,
+        sender=_ign_str(v, "sender"),
+        message_id=_ign_str(v, "messageId"),
+        attachments=atts,
+    )
+
+
+def _parse_resume_decision(v: Any) -> SarpResumeDecision | None:
+    """resume.decision：type 须为非空 str（不收枚举，WP10 前向兼容），
+    message 非 str 按缺省，args 原样透传；其余形态 → None。"""
+    if not isinstance(v, dict):
+        return None
+    dtype = v.get("type")
+    if not isinstance(dtype, str) or dtype == "":
+        return None
+    return SarpResumeDecision(type=dtype, message=_ign_str(v, "message"), args=v.get("args"))
 
 
 def decode_daemon_frame(line: bytes | str) -> SarpDaemonMessage | None:
@@ -317,11 +429,14 @@ def decode_daemon_frame(line: bytes | str) -> SarpDaemonMessage | None:
                 sender=_opt_str(src, "sender", f"{t}.source"),
             ),
             prompt=_req_str(o, "prompt", t),
+            message=_parse_turn_message(o.get("message")),
+            context_text=_ign_str(o, "contextText"),
             resume=(
                 SarpResume(
                     interrupt_id=_req_str(resume, "interruptId", f"{t}.resume"),
                     resume_token=_req_str(resume, "resumeToken", f"{t}.resume"),
                     value=_req_str(resume, "value", f"{t}.resume"),
+                    decision=_parse_resume_decision(resume.get("decision")),
                 )
                 if resume
                 else None
@@ -365,6 +480,87 @@ class SarpInbound:
 # ---------------------------------------------------------------------------
 # worker → daemon（编码）
 # ---------------------------------------------------------------------------
+
+# interrupt.options.actions 条数上限——与 daemon 侧 parseInterrupt 截断口径一致
+INTERRUPT_OPTIONS_MAX_ACTIONS = 10
+# options.decisions 的规范枚举（WP7 §7.2）：集合外取值在解析时丢弃
+INTERRUPT_DECISION_KINDS = frozenset({"approve", "reject", "respond", "edit"})
+
+
+@dataclass(frozen=True)
+class SarpInterruptAction:
+    """interrupt.options.actions 条目：待审批动作预览（name + args/description）。"""
+
+    name: str
+    args: Any = None
+    description: str | None = None
+
+
+@dataclass(frozen=True)
+class SarpInterruptOptions:
+    """turn.interrupt / turn.end.interrupt 的 options（WP7 §7.2）。
+
+    decisions：供审批 UI 渲染的候选决定枚举；actions：待审批动作预览
+    （daemon 外发前自行截断 + 脱敏 argsPreview——worker 不重复脱敏）。
+    """
+
+    decisions: tuple[str, ...] = ()
+    actions: tuple[SarpInterruptAction, ...] = ()
+
+
+def parse_interrupt_options(value: Any) -> SarpInterruptOptions | None:
+    """interrupt.options 的宽容解析（R-UF：畸形条目跳过，绝不 raise）。
+
+    - 非 dict → None；
+    - decisions 只收枚举值内的非空字符串；
+    - actions 逐条过滤：缺 name/非 dict 的条目丢弃，超
+      INTERRUPT_OPTIONS_MAX_ACTIONS 截断——与 daemon 侧过滤口径一致。
+
+    用途：adapter 把框架侧 dirty dict（如 LangChain HITLRequest）归一成
+    InterruptRecord.options；tests 直验过滤口径。
+    """
+    if not isinstance(value, dict):
+        return None
+    decisions: tuple[str, ...] = ()
+    raw_d = value.get("decisions")
+    if isinstance(raw_d, list):
+        decisions = tuple(d for d in raw_d if isinstance(d, str) and d in INTERRUPT_DECISION_KINDS)
+    actions: list[SarpInterruptAction] = []
+    raw_a = value.get("actions")
+    if isinstance(raw_a, list):
+        for item in raw_a:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            actions.append(
+                SarpInterruptAction(
+                    name=name,
+                    args=item.get("args"),
+                    description=item.get("description") if isinstance(item.get("description"), str) else None,
+                )
+            )
+            if len(actions) >= INTERRUPT_OPTIONS_MAX_ACTIONS:
+                break
+    return SarpInterruptOptions(decisions=decisions, actions=tuple(actions))
+
+
+def interrupt_options_wire(options: SarpInterruptOptions) -> dict:
+    """SarpInterruptOptions → wire dict（空 decisions/actions 不写键）。"""
+    out: dict[str, Any] = {}
+    if options.decisions:
+        out["decisions"] = list(options.decisions)
+    if options.actions:
+        out["actions"] = [
+            {
+                "name": a.name,
+                **({"args": a.args} if a.args is not None else {}),
+                **({"description": a.description} if a.description is not None else {}),
+            }
+            for a in options.actions
+        ]
+    return out
 
 
 def encode_worker_frame(frame_type: str, seq: int, timestamp: str, **fields: Any) -> str:

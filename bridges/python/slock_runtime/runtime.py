@@ -39,13 +39,32 @@ from .errors import PROTOCOL_VIOLATION, WireError, map_provider_error
 from .idempotency import TurnJournal, TurnJournalEntry
 from .protocol import (
     SarpInitialize,
+    SarpInterruptOptions,
     SarpProtocolError,
     SarpShutdown,
     SarpTurnCancel,
     SarpTurnStart,
+    interrupt_options_wire,
     normalize_runtime_id,
 )
 from .transport import SarpTransport
+
+
+def _interrupt_options_field(options: Any) -> dict | None:
+    """InterruptRecord.options → wire dict（WP7 §7.2）。
+
+    - dict 原样透传（R-UF：发送侧不收敛未知字段，畸形条目由 daemon
+      parseInterrupt 负责过滤）；
+    - SarpInterruptOptions → spec 形状序列化；
+    - 其余类型（含不可识别对象）→ None——可选字段绝不 raise。
+    """
+    if options is None:
+        return None
+    if isinstance(options, SarpInterruptOptions):
+        return interrupt_options_wire(options)
+    if isinstance(options, dict):
+        return options
+    return None
 
 
 @dataclass(frozen=True)
@@ -54,6 +73,15 @@ class InterruptRecord:
     resume_token: str
     prompt: str
     payload: Any = None
+    # WP7 §7.2：候选决定 + 待审批动作预览（如 LangChain HITLRequest 映射）。
+    # 接受 dict / SarpInterruptOptions；构造时经 _interrupt_options_field
+    # 归一为 wire dict（None 或畸形 → None），保证：预览帧与
+    # turn.end.interrupt 是同一对象（§8.6 一致性）、journal __dict__
+    # 落库必为 JSON 可序列化形状。
+    options: Any = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "options", _interrupt_options_field(self.options))
 
 
 @dataclass(frozen=True)
@@ -148,7 +176,10 @@ class TurnEmit:
         self._t.send("usage", turnId=self.turn_id, eventSeq=self._next(), usage=usage)
 
     def interrupt(self, record: InterruptRecord) -> None:
-        """turn.interrupt 预览帧——记录供终态一致性校验（§8.6）。"""
+        """turn.interrupt 预览帧——记录供终态一致性校验（§8.6）。
+
+        options 已随 InterruptRecord 构造归一成 wire dict——与终态
+        turn.end.interrupt 共用同一对象，两侧字段必然一致。"""
         self.last_interrupt = record
         self._t.send(
             "turn.interrupt",
@@ -158,10 +189,16 @@ class TurnEmit:
             resumeToken=record.resume_token,
             prompt=record.prompt,
             payload=record.payload,
+            options=record.options,
         )
 
 
 # handler 签名：run_turn(init, turn, emit, cancelled) -> TurnOutcome
+# WP7 增量字段（可选，缺省 None）：turn.prompt 仍是平台组装好的完整文本
+# （默认 input mapper 用它）；自定义 graph/handler 可另读
+# turn.message.text（触发回合的人类消息原文）与 turn.context_text
+# （平台注入的会话历史）；resume 回合 turn.resume.decision 是审批按钮的
+# 结构化决定（approve/reject/respond/edit，前瞻 WP10 的 interrupt:resolve）。
 RunTurn = Callable[[SarpInitialize, SarpTurnStart, "TurnEmit", threading.Event], TurnOutcome]
 # on_initialize 可选：返回 {"capabilities": {...}, "model": {...}} 合并进 ready
 OnInitialize = Callable[[SarpInitialize, "TurnEmit"], dict | None]
@@ -505,12 +542,16 @@ class WorkerRuntime:
         if outcome.usage is not None:
             fields["usage"] = outcome.usage
         if outcome.interrupt is not None:
-            fields["interrupt"] = {
+            interrupt: dict[str, Any] = {
                 "interruptId": outcome.interrupt.interrupt_id,
                 "resumeToken": outcome.interrupt.resume_token,
                 "prompt": outcome.interrupt.prompt,
                 "payload": outcome.interrupt.payload,
             }
+            # WP7 §7.2：缺省不写（与预览帧 None→省略的口径一致）
+            if outcome.interrupt.options is not None:
+                interrupt["options"] = outcome.interrupt.options
+            fields["interrupt"] = interrupt
         if outcome.error is not None:
             fields["error"] = outcome.error.to_dict()
         self.transport.send("turn.end", turnId=emit.turn_id, eventSeq=emit._next(), **fields)

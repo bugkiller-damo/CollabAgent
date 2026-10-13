@@ -27,6 +27,7 @@ import {
   type IRuntimeDiagnostics,
 } from "./runtime-diagnostics.js";
 import { createEntrypointRefresher, type EntrypointRefresher } from "./runtime-entrypoint-refresh.js";
+import type { SarpInterruptOptions } from "./sarp-protocol.js";
 import { setupSlockWrapper } from "./setup-slock-wrapper.js";
 import type { DaemonConfig } from "./types/index.js";
 
@@ -326,9 +327,34 @@ export class DaemonCore {
   }
 
   /**
+   * WP7：interrupt.options → 出站安全摘要。
+   * - decisions 原样透传（worker 已白名单过滤，且枚举本身无敏感面）；
+   * - actions 只保留 name/argsPreview/description——args 先 JSON.stringify、
+   *   再过 redactSecrets、最后截断 ≤500 字符（顺序固定：先脱敏后截断，
+   *   保证截断边界不外泄密钥片段）；原始 args 不出 daemon。
+   */
+  private summarizeInterruptOptions(o: SarpInterruptOptions): PendingInterruptSummary["options"] {
+    const out: NonNullable<PendingInterruptSummary["options"]> = {};
+    if (o.decisions?.length) out.decisions = [...o.decisions];
+    if (o.actions?.length) {
+      out.actions = o.actions.slice(0, 10).map((a) => {
+        const action: { name: string; argsPreview?: string; description?: string } = { name: a.name };
+        if (a.args !== undefined) {
+          action.argsPreview = redactSecrets(JSON.stringify(a.args)).slice(0, 500);
+        }
+        if (a.description) action.description = a.description;
+        return action;
+      });
+    }
+    return out.decisions || out.actions ? out : undefined;
+  }
+
+  /**
    * 批次 C（P1.4）：pending interrupt → 安全摘要 → interrupts:state。
    * resumeToken/secret 一律不出 daemon；prompt 过 redact + 截断；
    * 过期未惰性清除的记录在此过滤掉。
+   * WP7：options 一并下发（decisions 透传，actions[].args → argsPreview
+   * 脱敏截断——原始 args 不出 daemon）。
    */
   private sendInterruptsState(records?: PendingRuntimeInterrupt[]): void {
     const now = Date.now();
@@ -344,6 +370,7 @@ export class DaemonCore {
         runtime: r.runtime,
         ...(r.channel ? { channel: r.channel } : {}),
         ...(r.threadId ? { threadId: r.threadId } : {}),
+        ...(r.options ? { options: this.summarizeInterruptOptions(r.options) } : {}),
         createdAt: r.createdAt,
         expiresAt: r.expiresAt,
       }));

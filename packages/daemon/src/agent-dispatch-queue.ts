@@ -26,6 +26,7 @@
 
 import { loadDaemonEnv } from "./config.js";
 import { DispatchError, errMessage, isDispatchError, isRetriableError } from "./errors.js";
+import type { SarpTurnMessage } from "./sarp-protocol.js";
 
 /**
  * A4：kind 语义化——入桶判别（triage/nudge/reminder 不与 message 合并）并随
@@ -57,7 +58,50 @@ export interface DispatchQueueItem {
   sender?: string;
   /** WP2：目标是 bridge（非 claude）runtime——投递时全批为真则不追加 Claude 专属的 REMINDER_TAIL */
   bridge?: boolean;
+  /**
+   * WP7：触发本条的人类消息原文与结构化附件（turn.start.message 素材）。
+   * 仅 kind="message"（message/dm/thread）入队可携带——reminder/triage/
+   * nudge 等系统来源即使调用方误传也在入队处丢弃。
+   */
+  message?: SarpTurnMessage;
+  /**
+   * WP7：入队时 attachTurnContext 注入的历史信封文本（turn.start.contextText
+   * 素材）。仅 bridge 回合下发；合并批次取最后一条定义值（最新信封历史最全）。
+   */
+  contextText?: string;
 }
+
+/**
+ * WP7：同桶合并批次的 wire message——text 按到达序 "\n\n" 拼接、attachments
+ * 顺序拼接、messageId 取最后一条定义值、sender 取第一条定义值。
+ * 全批无 message（reminder/triage/nudge 等非人类消息批次）→ undefined。
+ */
+export const mergeQueueMessages = (items: DispatchQueueItem[]): SarpTurnMessage | undefined => {
+  const msgs = items.filter((i) => i.message !== undefined).map((i) => i.message as SarpTurnMessage);
+  if (msgs.length === 0) return undefined;
+  const out: SarpTurnMessage = { text: msgs.map((m) => m.text).join("\n\n") };
+  const sender = msgs.map((m) => m.sender).find((s) => s !== undefined);
+  if (sender !== undefined) out.sender = sender;
+  const messageId = msgs
+    .map((m) => m.messageId)
+    .reverse()
+    .find((id) => id !== undefined);
+  if (messageId !== undefined) out.messageId = messageId;
+  const attachments = msgs.flatMap((m) => m.attachments ?? []);
+  if (attachments.length > 0) out.attachments = attachments;
+  return out;
+};
+
+/**
+ * WP7：合并批次的 contextText——取最后一条定义值（每条入队时各自构建，
+ * 最新一条的历史信封最全）。
+ */
+export const mergeQueueContextText = (items: DispatchQueueItem[]): string | undefined => {
+  for (let i = items.length - 1; i >= 0; i--) {
+    if (items[i].contextText !== undefined) return items[i].contextText;
+  }
+  return undefined;
+};
 
 /** 投递执行器：items 长度 >1 时表示合并投递。失败必须 reject，队列据此重试。 */
 export type DispatchDeliverFn = (agentName: string, items: DispatchQueueItem[]) => Promise<void>;
@@ -115,6 +159,10 @@ export interface AgentDispatchQueue {
     sender?: string;
     /** WP2：bridge runtime 标记——不参与分桶键 */
     bridge?: boolean;
+    /** WP7：人类消息原文与结构化附件（仅 kind="message" 入队生效） */
+    message?: SarpTurnMessage;
+    /** WP7：本条的注入历史信封文本（bridge 回合 turn.start.contextText 素材） */
+    contextText?: string;
   }): EnqueueStatus;
   /** 指定 agent（或全部）的 pending 数量（跨桶合计） */
   depth(agentName?: string): number;
@@ -404,6 +452,9 @@ export const createAgentDispatchQueue = (opts: DispatchQueueOptions): AgentDispa
     enqueue(input) {
       const { agentName } = input;
       const kind = input.kind ?? "message";
+      // WP7：message 只随人类消息类派发存在（message/dm/thread = kind "message"）；
+      // reminder/triage/nudge/dispatch 等系统回合不携带——调用方误传也在此丢弃。
+      const itemMessage = kind === "message" ? input.message : undefined;
       // 永久失败快速通道：agent 已停止/无 id 时重试无意义，直接死信
       if (opts.isDeliverable && !opts.isDeliverable(agentName)) {
         const err = new DispatchError("agent-stopped", `@${agentName} not deliverable (stopped or unknown agent)`);
@@ -420,6 +471,8 @@ export const createAgentDispatchQueue = (opts: DispatchQueueOptions): AgentDispa
           sourceId: input.sourceId,
           sender: input.sender,
           bridge: input.bridge,
+          message: itemMessage,
+          contextText: input.contextText,
         };
         safe(() => opts.onDeadLetter?.(agentName, item, err));
         return { status: "dead", err };
@@ -454,6 +507,8 @@ export const createAgentDispatchQueue = (opts: DispatchQueueOptions): AgentDispa
         sourceId: input.sourceId,
         sender: input.sender,
         bridge: input.bridge,
+        message: itemMessage,
+        contextText: input.contextText,
       };
       const done = new Promise<void>((r) => doneResolvers.set(item.id, r));
       bucket.pending.push(item);

@@ -197,6 +197,52 @@ describe("createRuntimeInterruptStore", () => {
     expect(old?.agentName).toBeUndefined();
   });
 
+  it("WP7：options/kind 随记录持久化并跨实例重载；旧记录缺省兼容", () => {
+    const path = tmpFile();
+    const store = createRuntimeInterruptStore(path);
+    const options = {
+      decisions: ["approve", "reject"] as Array<"approve" | "reject">,
+      actions: [{ name: "send_email", args: { to: "a@b.c" }, description: "发邮件" }],
+    };
+    store.put(rec({ options, kind: "message" }));
+
+    // 磁盘上原始 args 完整（脱敏只发生在出站摘要层）
+    const raw = JSON.parse(readFileSync(path, "utf-8"));
+    expect(raw.records[0].options).toEqual(options);
+    expect(raw.records[0].kind).toBe("message");
+
+    // 新实例读同一文件 → options/kind 完整往返
+    const store2 = createRuntimeInterruptStore(path);
+    const got = store2.take("a1", "slock:v1:a1:thread:t1", "bridge", "ep-1");
+    expect(got?.options).toEqual(options);
+    expect(got?.kind).toBe("message");
+
+    // 旧磁盘记录（无 options/kind）读出不炸
+    writeFileSync(
+      path,
+      JSON.stringify({
+        records: [
+          {
+            agentId: "a1",
+            runtime: "bridge",
+            entrypoint: "ep-1",
+            conversationId: "c-old",
+            interruptId: "i0",
+            resumeToken: "r0",
+            prompt: "?",
+            createdAt: 1,
+            expiresAt: Date.now() + 60_000,
+          },
+        ],
+      }),
+      "utf-8",
+    );
+    const store3 = createRuntimeInterruptStore(path);
+    const old = store3.take("a1", "c-old", "bridge", "ep-1");
+    expect(old?.options).toBeUndefined();
+    expect(old?.kind).toBeUndefined();
+  });
+
   it("损坏文件 → 空集起步不炸", () => {
     const path = tmpFile();
     writeFileSync(path, "{oops", "utf-8");

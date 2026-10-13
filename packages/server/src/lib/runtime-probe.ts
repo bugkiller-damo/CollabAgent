@@ -142,6 +142,36 @@ export function normalizeInterrupts(raw: unknown): PendingInterruptSummary[] {
     if (channel) summary.channel = channel;
     const threadId = optStr(rec.threadId);
     if (threadId) summary.threadId = threadId;
+    // WP7（SARP/1 options）：审批选项逐字段重建——decisions 只收字符串；
+    // actions 每条重建（name 必填字符串，缺则整条丢；argsPreview/description
+    // 为 daemon 预脱敏的展示文本，按字符串白名单收），≤10 条；options 内
+    // 未知子字段一律剥离。缺失/非对象/过滤后无有效内容 → 不挂该字段。
+    if (typeof rec.options === "object" && rec.options !== null && !Array.isArray(rec.options)) {
+      const o = rec.options as Record<string, unknown>;
+      const opts: NonNullable<PendingInterruptSummary["options"]> = {};
+      if (Array.isArray(o.decisions)) {
+        const decisions = o.decisions.filter((d): d is string => typeof d === "string");
+        if (decisions.length) opts.decisions = decisions;
+      }
+      if (Array.isArray(o.actions)) {
+        const actions: Array<{ name: string; argsPreview?: string; description?: string }> = [];
+        for (const a of o.actions) {
+          if (actions.length >= 10) break;
+          if (!a || typeof a !== "object" || Array.isArray(a)) continue;
+          const ar = a as Record<string, unknown>;
+          const name = optStr(ar.name);
+          if (!name) continue;
+          const action: { name: string; argsPreview?: string; description?: string } = { name };
+          const argsPreview = optStr(ar.argsPreview);
+          if (argsPreview) action.argsPreview = argsPreview;
+          const description = optStr(ar.description);
+          if (description) action.description = description;
+          actions.push(action);
+        }
+        if (actions.length) opts.actions = actions;
+      }
+      if (opts.decisions || opts.actions) summary.options = opts;
+    }
     out.push(summary);
   }
   return out;

@@ -57,13 +57,72 @@ export interface SarpInitializeFields {
   limits: { maxFrameBytes: number; silenceTimeoutMs: number; shutdownTimeoutMs?: number };
 }
 
+/**
+ * WP7：turn.start.message.attachments 条目——结构化附件。
+ * 与 prompt 里的文本摘要（formatAttachmentSummary）并存：摘要给无结构
+ * 处理能力的 runtime 用，结构化字段给能消费附件元数据的 worker 用。
+ */
+export interface SarpAttachment {
+  id: string;
+  filename: string;
+  mimeType: string;
+  sizeBytes: number;
+  url?: string;
+}
+
+/**
+ * WP7：turn.start.message——触发本回合的人类消息原文（不含平台指令与
+ * 历史信封）。reminder/triage/nudge 等非人类消息回合缺省；
+ * 队列合并批次由 daemon 侧按 "\n\n" 拼接 text、顺序拼接 attachments、
+ * messageId 取最后一条、sender 取第一条。
+ */
+export interface SarpTurnMessage {
+  text: string;
+  sender?: string;
+  messageId?: string;
+  attachments?: SarpAttachment[];
+}
+
+/**
+ * WP7：resume.decision——审批按钮产出的结构化决定（中立形状）。
+ * daemon 不从回复文本推断决定（WP10 的 interrupt:resolve 链路提供来源）；
+ * worker 侧按框架需要自行映射（LangChain HITL 决定、纯文本等）。
+ */
+export type SarpResumeDecision =
+  | { type: "approve" }
+  | { type: "reject"; message?: string }
+  | { type: "respond"; message: string }
+  | { type: "edit"; args: unknown };
+
+/**
+ * WP7：turn.interrupt / turn.end.interrupt 的 options——
+ * 供审批面渲染的可选决定枚举与待审批动作预览。
+ * decisions 只收规范枚举值；actions ≤10 条、name 必填，畸形条目丢弃（R-UF）。
+ */
+export interface SarpInterruptOptions {
+  decisions?: Array<"approve" | "reject" | "respond" | "edit">;
+  actions?: Array<{ name: string; args?: unknown; description?: string }>;
+}
+
 export interface SarpTurnStartFields {
   turnId: string;
   conversationId: string;
   attempt: number;
   source: { kind: string; channel?: string; threadId?: string; sender?: string };
+  /** 语义不变：平台组装好的完整文本（旧 worker 继续用它） */
   prompt: string;
-  resume?: { interruptId: string; resumeToken: string; value: string };
+  /** WP7：触发本回合的人类消息原文与结构化附件；非人类消息回合缺省 */
+  message?: SarpTurnMessage;
+  /** WP7：平台注入的会话历史信封文本（与 prompt 中的历史同源；仅 bridge 回合下发） */
+  contextText?: string;
+  resume?: {
+    interruptId: string;
+    resumeToken: string;
+    /** 保持必填非空字符串（兼容旧 SDK）；语义改为人类回复原文或决定的可读文本 */
+    value: string;
+    /** WP7：结构化审批决定（中立形状；无结构化来源时缺省） */
+    decision?: SarpResumeDecision;
+  };
 }
 
 export type SarpDaemonFrame =
@@ -183,6 +242,8 @@ export type SarpWorkerMessage =
       resumeToken: string;
       prompt: string;
       payload?: unknown;
+      /** WP7：审批选项（decisions 可选决定枚举；actions 待审批动作预览） */
+      options?: SarpInterruptOptions;
     }
   | {
       type: "turn.end";
@@ -193,7 +254,14 @@ export type SarpWorkerMessage =
       finalText?: string;
       sessionRef?: string;
       usage?: SarpUsage;
-      interrupt?: { interruptId: string; resumeToken: string; prompt: string; payload?: unknown };
+      interrupt?: {
+        interruptId: string;
+        resumeToken: string;
+        prompt: string;
+        payload?: unknown;
+        /** WP7：审批选项（同 turn.interrupt） */
+        options?: SarpInterruptOptions;
+      };
       error?: SarpWireError;
     };
 
@@ -281,11 +349,49 @@ const parseWireError = (o: Record<string, unknown>, key: string, t: string): Sar
   return err;
 };
 
+const INTERRUPT_DECISION_KINDS = new Set<string>(["approve", "reject", "respond", "edit"]);
+const INTERRUPT_OPTIONS_MAX_ACTIONS = 10;
+
+/**
+ * WP7/R-UF：interrupt.options 宽容解析——可选字段绝不抛 invalid-schema：
+ * decisions 只收规范枚举值（非枚举项丢弃）；actions 逐条校验（缺/空 name
+ * 丢弃、≤10 条），args 原样保留（出站摘要由 daemon-core 脱敏截断）。
+ * options 不是对象或解析后为空 → 返回 undefined。
+ */
+const parseInterruptOptions = (o: Record<string, unknown>): SarpInterruptOptions | undefined => {
+  const v = o.options;
+  if (v === undefined || v === null || !isPlainObject(v)) return undefined;
+  const out: SarpInterruptOptions = {};
+  if (Array.isArray(v.decisions)) {
+    const decisions = v.decisions.filter(
+      (d): d is "approve" | "reject" | "respond" | "edit" => typeof d === "string" && INTERRUPT_DECISION_KINDS.has(d),
+    );
+    if (decisions.length > 0) out.decisions = decisions;
+  }
+  if (Array.isArray(v.actions)) {
+    const actions: Array<{ name: string; args?: unknown; description?: string }> = [];
+    for (const a of v.actions) {
+      if (actions.length >= INTERRUPT_OPTIONS_MAX_ACTIONS) break;
+      if (!isPlainObject(a)) continue;
+      const name = a.name;
+      if (typeof name !== "string" || name === "") continue;
+      actions.push({
+        name,
+        ...(a.args !== undefined ? { args: a.args } : {}),
+        ...(typeof a.description === "string" ? { description: a.description } : {}),
+      });
+    }
+    if (actions.length > 0) out.actions = actions;
+  }
+  return out.decisions !== undefined || out.actions !== undefined ? out : undefined;
+};
+
 const parseInterrupt = (o: Record<string, unknown>, t: string) => ({
   interruptId: reqStr(o, "interruptId", t),
   resumeToken: reqStr(o, "resumeToken", t),
   prompt: reqStr(o, "prompt", t),
   payload: o.payload,
+  options: parseInterruptOptions(o),
 });
 
 /* ----------------------------- 解码器 ------------------------------ */

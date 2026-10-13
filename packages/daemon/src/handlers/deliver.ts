@@ -1,6 +1,7 @@
 import type { AttachmentRef, WsToDaemonMessage } from "@collabagent/shared";
 import { pickLocalTriageAgent } from "../agent-runtime-dispatch.js";
 import { errMessage } from "../errors.js";
+import type { SarpTurnMessage } from "../sarp-protocol.js";
 import type { HandlerContext } from "./types.js";
 
 type DeliverMsg = Extract<WsToDaemonMessage, { type: "agent:deliver" }>;
@@ -24,6 +25,33 @@ export function formatAttachmentSummary(attachments: AttachmentRef[] | undefined
         `[附件 ${i + 1}] ${a.filename}（${a.mimeType}，${formatBytes(a.sizeBytes)}）${a.url ? `：${a.url}` : ""}`,
     )
     .join("\n");
+}
+
+/**
+ * WP7：deliver 消息 → turn.start.message 的结构化形状。
+ * - text 用**原始** m.content（不带附件文本摘要——摘要只进 contentForAgent，
+ *   那是给无结构消费能力的 runtime 看的；两者并存互不替代）；
+ * - attachments 只抄已知字段；url 仅当 AttachmentRef 已携带时透传，绝不凭空构造；
+ * - 附件-only（text=""）也照常构建：合并批次里它的 attachments 能随其他
+ *   条目的 text 到达 wire；单发时 Python 端按空文本容忍丢弃（R-UF）。
+ */
+export function toSarpTurnMessage(
+  rawText: string,
+  sender: string,
+  messageId: string | undefined,
+  attachments: AttachmentRef[] | undefined,
+): SarpTurnMessage {
+  const msg: SarpTurnMessage = { text: rawText, sender, ...(messageId ? { messageId } : {}) };
+  if (attachments?.length) {
+    msg.attachments = attachments.map((a) => ({
+      id: a.id,
+      filename: a.filename,
+      mimeType: a.mimeType,
+      sizeBytes: a.sizeBytes,
+      ...(a.url ? { url: a.url } : {}),
+    }));
+  }
+  return msg;
 }
 
 function parseDeliverChannel(m: DeliverMsg["message"]): {
@@ -67,6 +95,8 @@ export async function handleAgentDeliver(ctx: HandlerContext, msg: DeliverMsg): 
           contentForAgent,
           threadId || undefined,
           m.id || undefined,
+          // WP7：原文 + 结构化附件（text 是不含附件摘要的 m.content）
+          toSarpTurnMessage(content, senderName, m.id || undefined, m.attachments),
         );
       } catch (err) {
         console.error("[Daemon] Dispatch routing failed:", errMessage(err));
@@ -85,7 +115,14 @@ export async function handleAgentDeliver(ctx: HandlerContext, msg: DeliverMsg): 
       if (!ctx.runtime.hasAgent(name)) continue;
       console.log(`[Daemon] DM -> @${name} (reply ${replyTarget})`);
       try {
-        await ctx.runtime.runAgentDm(name, replyTarget, senderHandle, contentForAgent);
+        await ctx.runtime.runAgentDm(
+          name,
+          replyTarget,
+          senderHandle,
+          contentForAgent,
+          // WP7：原文 + 结构化附件
+          toSarpTurnMessage(content, senderHandle, m.id || undefined, m.attachments),
+        );
       } catch (err) {
         console.error("[Daemon] DM dispatch failed:", errMessage(err));
       }
@@ -116,6 +153,8 @@ export async function handleAgentDeliver(ctx: HandlerContext, msg: DeliverMsg): 
         contentForAgent,
         threadId || undefined,
         m.id || undefined,
+        // WP7：原文 + 结构化附件
+        toSarpTurnMessage(content, senderName, m.id || undefined, m.attachments),
       );
     } catch (err) {
       console.error("[Daemon] Failed:", errMessage(err));

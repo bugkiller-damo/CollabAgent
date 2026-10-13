@@ -288,6 +288,99 @@ class TestInterruptResume:
         )
         h.finish()
 
+    def test_interrupt_options_in_preview_and_terminal(self, tmp_path):
+        """WP7 §7.2：InterruptRecord.options 同时进预览帧与终态 interrupt，
+        两处是同一对象（dict 原样透传）。"""
+        options = {
+            "decisions": ["approve", "reject", "respond", "edit"],
+            "actions": [{"name": "send_email", "args": {"to": "u"}, "description": "发信"}],
+        }
+
+        def hitl(init, turn, emit, cancelled):
+            rec = InterruptRecord(
+                interrupt_id="int-o",
+                resume_token=new_resume_token(),
+                prompt="approve?",
+                options=options,
+            )
+            return TurnOutcome(status="interrupted", interrupt=rec)
+
+        h = Harness(tmp_path)
+        h.start(hitl)
+        h.send("initialize", **INIT)
+        h.wait_frame(lambda f: f["type"] == "runtime.ready")
+        h.send("turn.start", **turn_fields("t1"))
+        end = h.wait_end("t1")
+        assert end["status"] == "interrupted"
+        prev = [f for f in h.frames() if f["type"] == "turn.interrupt"][0]
+        assert prev["options"] == options == end["interrupt"]["options"]
+        h.finish()
+
+    def test_interrupt_options_dataclass_normalized(self, tmp_path):
+        """options 也接受 SarpInterruptOptions——构造时归一为 wire dict。"""
+        from slock_runtime.protocol import SarpInterruptAction, SarpInterruptOptions
+
+        want = {"decisions": ["approve"], "actions": [{"name": "act", "args": {"k": 1}}]}
+
+        def hitl(init, turn, emit, cancelled):
+            rec = InterruptRecord(
+                interrupt_id="int-d",
+                resume_token=new_resume_token(),
+                prompt="ok?",
+                options=SarpInterruptOptions(
+                    decisions=("approve",),
+                    actions=(SarpInterruptAction(name="act", args={"k": 1}),),
+                ),
+            )
+            return TurnOutcome(status="interrupted", interrupt=rec)
+
+        h = Harness(tmp_path)
+        h.start(hitl)
+        h.send("initialize", **INIT)
+        h.wait_frame(lambda f: f["type"] == "runtime.ready")
+        h.send("turn.start", **turn_fields("t1"))
+        end = h.wait_end("t1")
+        prev = [f for f in h.frames() if f["type"] == "turn.interrupt"][0]
+        assert prev["options"] == want == end["interrupt"]["options"]
+        h.finish()
+
+    def test_interrupt_options_absent_by_default(self, tmp_path):
+        """不带 options 的老路径：两帧都不出现 options 键。"""
+        h = Harness(tmp_path)
+        h.start(self._interrupting)
+        h.send("initialize", **INIT)
+        h.wait_frame(lambda f: f["type"] == "runtime.ready")
+        h.send("turn.start", **turn_fields("t1"))
+        end = h.wait_end("t1")
+        prev = [f for f in h.frames() if f["type"] == "turn.interrupt"][0]
+        assert "options" not in prev and "options" not in end["interrupt"]
+        h.finish()
+
+    def test_interrupt_options_survive_journal_replay(self, tmp_path):
+        """options 经 journal 落库→回放仍一致（归一 dict，JSON 可序列化）。"""
+        options = {"decisions": ["approve"]}
+
+        def hitl(init, turn, emit, cancelled):
+            rec = InterruptRecord(
+                interrupt_id="int-r",
+                resume_token=new_resume_token(),
+                prompt="ok?",
+                options=options,
+            )
+            return TurnOutcome(status="interrupted", interrupt=rec)
+
+        h = Harness(tmp_path)
+        h.start(hitl)
+        h.send("initialize", **INIT)
+        h.wait_frame(lambda f: f["type"] == "runtime.ready")
+        h.send("turn.start", **turn_fields("tR"))
+        h.wait_end("tR")
+        # 同 turnId 重发 → journal 回放终态，不重跑 handler
+        h.send("turn.start", **turn_fields("tR", attempt=2))
+        e2 = h.wait_end("tR", count=2)
+        assert e2["status"] == "interrupted" and e2["interrupt"]["options"] == options
+        h.finish()
+
     def test_resume_roundtrip_and_single_use(self, tmp_path):
         journal = TurnJournal(str(tmp_path))
         h = Harness(journal=journal)

@@ -442,6 +442,143 @@ describe("PersistentJsonlWorkerSession", () => {
     });
   });
 
+  it("WP7：turn.start 携带 message/contextText/resume.decision", async () => {
+    const h = await openReady();
+    const p = h.session.send(
+      makeReq({
+        message: {
+          text: "原始消息",
+          sender: "bob",
+          messageId: "m-9",
+          attachments: [{ id: "att-1", filename: "a.pdf", mimeType: "application/pdf", sizeBytes: 10 }],
+        },
+        contextText: "<history/>",
+        resume: {
+          interruptId: "i1",
+          resumeToken: "r1",
+          value: "批准",
+          decision: { type: "reject", message: "太贵了" },
+        },
+      }),
+    );
+    await flush();
+    const ts = h.frames()[1]!;
+    expect(ts.type).toBe("turn.start");
+    expect(ts.message).toEqual({
+      text: "原始消息",
+      sender: "bob",
+      messageId: "m-9",
+      attachments: [{ id: "att-1", filename: "a.pdf", mimeType: "application/pdf", sizeBytes: 10 }],
+    });
+    expect(ts.contextText).toBe("<history/>");
+    expect(ts.resume).toEqual({
+      interruptId: "i1",
+      resumeToken: "r1",
+      value: "批准",
+      decision: { type: "reject", message: "太贵了" },
+    });
+    h.emit({ type: "turn.end", turnId: "t1", eventSeq: 1, status: "success", finalText: "ok" });
+    await expect(p).resolves.toMatchObject({ status: "success" });
+    h.session.stop();
+  });
+
+  it("WP7：可选字段缺省时 turn.start 不携带（向后兼容）", async () => {
+    const h = await openReady();
+    const p = h.session.send(makeReq());
+    await flush();
+    const ts = h.frames()[1]!;
+    expect("message" in ts).toBe(false);
+    expect("contextText" in ts).toBe(false);
+    h.emit({ type: "turn.end", turnId: "t1", eventSeq: 1, status: "success", finalText: "ok" });
+    await expect(p).resolves.toMatchObject({ status: "success" });
+    h.session.stop();
+  });
+
+  it("WP7：interrupted 终态的 options 进 emitted 事件与 send() 结果", async () => {
+    const h = await openReady();
+    const p = h.session.send(makeReq());
+    await flush();
+    const options = {
+      decisions: ["approve", "reject"],
+      actions: [{ name: "send_email", args: { to: "a@b.c" }, description: "发邮件" }],
+    };
+    h.emit({
+      type: "turn.interrupt",
+      turnId: "t1",
+      eventSeq: 1,
+      interruptId: "i1",
+      resumeToken: "r1",
+      prompt: "批准吗？",
+      options,
+    });
+    // 预览事件带 options（R-UF 直传，规范记录仍以 turn.end 为准）
+    expect(h.events).toContainEqual({
+      type: "interrupt",
+      turnId: "t1",
+      interrupt: {
+        interruptId: "i1",
+        resumeToken: "r1",
+        prompt: "批准吗？",
+        payload: undefined,
+        options,
+      },
+    });
+    h.emit({
+      type: "turn.end",
+      turnId: "t1",
+      eventSeq: 2,
+      status: "interrupted",
+      interrupt: { interruptId: "i1", resumeToken: "r1", prompt: "批准吗？", options },
+    });
+    await expect(p).resolves.toMatchObject({
+      status: "interrupted",
+      interrupt: { interruptId: "i1", resumeToken: "r1", prompt: "批准吗？", options },
+    });
+    const endEv = h.events.find((e) => e.type === "turn.end" && (e as { status?: string }).status === "interrupted") as
+      | { interrupt?: { options?: unknown } }
+      | undefined;
+    expect(endEv?.interrupt?.options).toEqual(options);
+    h.session.stop();
+  });
+
+  it("WP7：预览与终态的 options 不一致不算违规——一致性校验只比 interruptId/resumeToken/prompt", async () => {
+    const h = await openReady();
+    const p = h.session.send(makeReq());
+    await flush();
+    h.emit({
+      type: "turn.interrupt",
+      turnId: "t1",
+      eventSeq: 1,
+      interruptId: "i1",
+      resumeToken: "r1",
+      prompt: "批准吗？",
+      options: { decisions: ["approve"] },
+    });
+    // 终态 options 不同（甚至缺省）——不触发 protocol-violation
+    h.emit({
+      type: "turn.end",
+      turnId: "t1",
+      eventSeq: 2,
+      status: "interrupted",
+      interrupt: {
+        interruptId: "i1",
+        resumeToken: "r1",
+        prompt: "批准吗？",
+        options: { decisions: ["approve", "reject", "edit"], actions: [{ name: "a" }] },
+      },
+    });
+    await expect(p).resolves.toMatchObject({
+      status: "interrupted",
+      interrupt: {
+        interruptId: "i1",
+        resumeToken: "r1",
+        options: { decisions: ["approve", "reject", "edit"], actions: [{ name: "a" }] },
+      },
+    });
+    expect(h.child.kill).not.toHaveBeenCalled();
+    h.session.stop();
+  });
+
   it("进程回合中退出 → worker-exited（retriable）+ stderr 尾部脱敏", async () => {
     const onExit = vi.fn();
     const h = await openReady({ onExit });

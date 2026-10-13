@@ -26,6 +26,12 @@ ADVANCED = {
     "SarpTurnSource",
     "SarpResume",
     "SarpMcpDescriptor",
+    # WP7：SARP/1 v1 增量可选字段的协议 dataclass
+    "SarpTurnMessage",
+    "SarpAttachment",
+    "SarpResumeDecision",
+    "SarpInterruptOptions",
+    "SarpInterruptAction",
     "SarpError",
     "SarpProtocolError",
     "WireError",

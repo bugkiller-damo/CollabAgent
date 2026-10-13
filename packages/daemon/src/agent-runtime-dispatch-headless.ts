@@ -44,7 +44,18 @@ export interface DispatchHeadlessTurnOpts {
     attempt: number;
     /** §8.4：人类发送者名 → turn.start source.sender（bridge 专属，claude 忽略） */
     sender?: string;
-    resume?: { interruptId: string; resumeToken: string; value: string };
+    /** WP7：人类消息原文与结构化附件（仅人类消息来源批次有值；bridge 专属字段） */
+    message?: import("./sarp-protocol.js").SarpTurnMessage;
+    /** WP7：历史信封文本 → turn.start.contextText（doDispatch 仅 bridge 回合填充） */
+    contextText?: string;
+    resume?: {
+      interruptId: string;
+      resumeToken: string;
+      /** WP7/G2：人类回复原文（不是组装 prompt） */
+      value: string;
+      /** WP7：结构化审批决定（无结构化来源缺省——不从回复文本推断） */
+      decision?: import("./sarp-protocol.js").SarpResumeDecision;
+    };
   };
   /** Phase 2：interrupt 簿记——success 消费 / interrupted 覆写（§11.4） */
   interruptStore?: IRuntimeInterruptStore;
@@ -487,6 +498,10 @@ export const dispatchHeadlessTurn = async (opts: DispatchHeadlessTurnOpts): Prom
             threadId,
             ...(opts.turn.sender !== undefined ? { sender: opts.turn.sender } : {}),
           },
+          // WP7：message/contextText/resume.decision 透传——contextText 上游
+          // （doDispatch）仅 bridge 回合填充，Claude 分支恒 undefined。
+          message: opts.turn.message,
+          contextText: opts.turn.contextText,
           resume: opts.turn.resume,
         };
         const turnResult = await session.send(request);
@@ -515,6 +530,10 @@ export const dispatchHeadlessTurn = async (opts: DispatchHeadlessTurnOpts): Prom
               interruptId: turnResult.interrupt.interruptId,
               resumeToken: turnResult.interrupt.resumeToken,
               prompt: turnResult.interrupt.prompt,
+              // WP7：审批选项与来源 kind 随 pending 持久化——interrupts:state
+              // 摘要（daemon-core 脱敏）与 WP10 决定按钮回填入队 kind 使用。
+              options: turnResult.interrupt.options,
+              kind: opts.kind,
               createdAt: Date.now(),
               expiresAt: 0,
             });
@@ -608,6 +627,9 @@ export const dispatchHeadlessTurn = async (opts: DispatchHeadlessTurnOpts): Prom
           threadId,
           ...(opts.turn.sender !== undefined ? { sender: opts.turn.sender } : {}),
         },
+        // WP7：与 persistent 路径同一套透传（oneshot 仅 claude，字段恒空，保持形状一致）
+        message: opts.turn.message,
+        contextText: opts.turn.contextText,
         resume: opts.turn.resume,
       });
       if (turnResult?.sessionRef) {
