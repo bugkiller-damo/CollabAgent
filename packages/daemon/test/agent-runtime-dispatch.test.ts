@@ -1044,4 +1044,131 @@ describe("agent-runtime-dispatch (headless)", () => {
       }
     });
   });
+
+  describe("WP2：bridge 回合 prompt 走 neutral 模板（无 Claude 约定 / 无 reminder tail）", () => {
+    /** 与 Phase 2 同型的假 bridge driver——本 describe 自包含（作用域隔离） */
+    class FakeBridgeSession implements AgentRuntimeSession {
+      alive = true;
+      requests: AgentTurnRequest[] = [];
+      stopped = false;
+      endEvent: AgentRuntimeEvent = {
+        type: "turn.end",
+        status: "success",
+        result: "done",
+        usage: { costUsd: null, durationMs: 12, numTurns: 1, inputTokens: 10, outputTokens: 5 },
+      };
+      constructor(public opts: AgentRuntimeOpenOptions) {}
+      // biome-ignore lint/suspicious/noConfusingVoidType: 与 AgentRuntimeSession 契约一致（void = 仅事件结算）
+      send(req: AgentTurnRequest): Promise<void | AgentRuntimeTurnResult> {
+        this.requests.push(req);
+        this.opts.onEvent(this.endEvent);
+        return Promise.resolve({ status: "success", finalText: "done" });
+      }
+      stop(): void {
+        this.stopped = true;
+        this.alive = false;
+      }
+    }
+
+    const bridgeProfile: ResolvedAgentRuntimeProfile = {
+      runtime: "langgraph",
+      model: "gpt-test",
+      entrypoint: "ep-graph",
+      identity: "id-bridge",
+    };
+
+    const makeBridge = () => {
+      const sessions: FakeBridgeSession[] = [];
+      const driver: AgentRuntimeDriver = {
+        driverId: "fake-bridge",
+        runtimeIds: ["langgraph", "langchain"],
+        openSession: (o) => {
+          const s = new FakeBridgeSession(o);
+          sessions.push(s);
+          return s;
+        },
+        forgetAgent: vi.fn(),
+      };
+      harness = makeHarness({
+        runtimeRegistry: new AgentRuntimeRegistry([createClaudeRuntimeDriver(), driver]),
+        resolveRuntimeProfile: () => bridgeProfile,
+      });
+      return sessions;
+    };
+
+    it("runAgent：bridge 模板（发送者/原文/target 行），无 <slock-reminder>、无 CLI 兜底", async () => {
+      const sessions = makeBridge();
+      await harness.dispatch.runAgent(AGENT, "general", "#general", "bob", "看下报错");
+      await flush();
+      const prompt = sessions[0]!.requests[0]!.prompt;
+      expect(prompt).toContain("【@bob 在 #general 的消息】");
+      expect(prompt).toContain("看下报错");
+      expect(prompt).toContain('（本会话 target："#general"）');
+      expect(prompt).not.toContain("<slock-reminder>");
+      expect(prompt).not.toContain("slock message send");
+      expect(prompt).not.toContain("MEMORY.md");
+    });
+
+    it("runAgent（线程）：inThread headline 沿用同一判别", async () => {
+      const sessions = makeBridge();
+      await harness.dispatch.runAgent(AGENT, "general", "#general:t-1", "bob", "跟进", "t-1");
+      await flush();
+      expect(sessions[0]!.requests[0]!.prompt).toContain("【@bob 在 #general 线程中的消息】");
+    });
+
+    it("runAgentDm：bridge dm 模板", async () => {
+      const sessions = makeBridge();
+      await harness.dispatch.runAgentDm(AGENT, "dm:@bob", "bob", "私下问下");
+      await flush();
+      const prompt = sessions[0]!.requests[0]!.prompt;
+      expect(prompt).toContain("【@bob 的私信】");
+      expect(prompt).toContain('（本会话 target："dm:@bob"）');
+      expect(prompt).not.toContain("<slock-reminder>");
+    });
+
+    it("runAgentTriage：保留【频道分诊】前缀（回复守卫 isNudge 锚点）", async () => {
+      const sessions = makeBridge();
+      await harness.dispatch.runAgentTriage(AGENT, "general", "#general", "bob", "谁能看下");
+      await flush();
+      const prompt = sessions[0]!.requests[0]!.prompt;
+      expect(prompt).toContain("【频道分诊】");
+      expect(prompt).toContain("本回合的最终回答不会被自动发送");
+      expect(prompt).not.toContain("<slock-reminder>");
+    });
+
+    it("runAgentReminder patrol：保留【定时巡检】前缀", async () => {
+      const sessions = makeBridge();
+      await harness.dispatch.runAgentReminder(AGENT, {
+        kind: "patrol",
+        title: "巡检",
+        instructions: "看下失败任务",
+        channel: "#general",
+        id: "rem-1",
+      });
+      await flush();
+      const prompt = sessions[0]!.requests[0]!.prompt;
+      expect(prompt.startsWith("【定时巡检】")).toBe(true);
+      expect(prompt).not.toContain("slock message send");
+      expect(prompt).not.toContain("<slock-reminder>");
+    });
+
+    it("runAgentReminder 普通提醒：【提醒触发】模板", async () => {
+      const sessions = makeBridge();
+      await harness.dispatch.runAgentReminder(AGENT, { title: "喝水", channel: "#general", id: "rem-2" });
+      await flush();
+      const prompt = sessions[0]!.requests[0]!.prompt;
+      expect(prompt).toContain("【提醒触发】喝水");
+      expect(prompt).not.toContain("<slock-reminder>");
+    });
+
+    it("Claude 回归：runAgent 仍是 A3 任务模板 + <slock-reminder> 尾巴", async () => {
+      harness = makeHarness(); // 缺省 resolveRuntimeProfile → claude
+      await harness.dispatch.runAgent(AGENT, "general", "#general", "bob", "看下报错");
+      await flush();
+      const sent = FakePersistentClaude.instances[0]!.sent[0]!;
+      expect(sent).toContain("你在 #general 频道被 @ 了");
+      expect(sent).toContain("<slock-reminder>");
+      expect(sent).toContain("slock message send --target");
+    });
+  });
 });

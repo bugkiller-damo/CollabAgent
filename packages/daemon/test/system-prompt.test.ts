@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { generateRelaySystemPrompt, generateSystemPrompt } from "../src/system-prompt.js";
+import { generateBridgeSystemPrompt, generateRelaySystemPrompt, generateSystemPrompt } from "../src/system-prompt.js";
 
 /**
  * A3（报告 §8.13/§8.14）：自主系统提示从「聊天回复者」重写为「工程师」。
@@ -139,5 +139,80 @@ describe("generateRelaySystemPrompt（中继模式不受影响）", () => {
     expect(p).toContain("@relay");
     expect(p).toContain("直接输出");
     expect(p).toContain("不要使用任何工具");
+  });
+});
+
+describe("generateBridgeSystemPrompt（WP2：bridge worker 平台提示）", () => {
+  const AGENT = { name: "lg-agent", displayName: "LG Agent", description: "数据分析" };
+
+  it("neutral（缺省）：身份 + 授权 + 回复方式，无 Claude 工作区/CLI 约定", () => {
+    const p = generateBridgeSystemPrompt(AGENT);
+    expect(p).toContain("@lg-agent");
+    expect(p).toContain("Agent Worker");
+    expect(p).toContain("数据分析");
+    expect(p).toContain("## 授权");
+    expect(p).toContain("## 回复方式");
+    // WP2 核心契约：普通消息回合的最终回答由平台自动代发
+    expect(p).toContain("最终回答会由平台自动以你的身份发到当前会话");
+    // 不再有 Claude 专属约定
+    expect(p).not.toContain("MEMORY.md");
+    expect(p).not.toContain("deliverables/");
+    expect(p).not.toContain("slock message send");
+    expect(p).not.toContain("slock server info");
+    expect(p).not.toContain("slock attachment view");
+    expect(p).not.toContain("slock profile show");
+    expect(p).not.toContain("当前工作目录是你的专属");
+    expect(p).not.toContain("不会被自动发送");
+    expect(p).not.toContain("直接打字");
+  });
+
+  it("neutral + mcpAvailable=false：不列 slock 工具面与任务派发段", () => {
+    const p = generateBridgeSystemPrompt(AGENT, { isManager: true, otherAgents: [] }, { mcpAvailable: false });
+    expect(p).not.toContain("## slock 工具");
+    expect(p).not.toContain("send_message`（");
+    expect(p).not.toContain("## 任务派发");
+    expect(p).not.toContain("upload_attachment");
+    // 回复方式段仍在（不含 MCP 专属那条）
+    expect(p).toContain("## 回复方式");
+    expect(p).toContain("最终回答会由平台自动以你的身份发到当前会话");
+  });
+
+  it("agentic + workspacePath：追加 ## 工作区 段（绝对路径 + deliverables + MEMORY.md）", () => {
+    const p = generateBridgeSystemPrompt(AGENT, undefined, {
+      profile: "agentic",
+      workspacePath: "/srv/agents/lg-agent",
+    });
+    expect(p).toContain("## 工作区");
+    expect(p).toContain("/srv/agents/lg-agent");
+    expect(p).toContain("/srv/agents/lg-agent/deliverables/");
+    expect(p).toContain("/srv/agents/lg-agent/MEMORY.md");
+    expect(p).toContain("upload_attachment");
+  });
+
+  it("agentic + mcpAvailable=false：工作区段不带附件上传指引", () => {
+    const p = generateBridgeSystemPrompt(AGENT, undefined, {
+      profile: "agentic",
+      workspacePath: "/srv/agents/lg-agent",
+      mcpAvailable: false,
+    });
+    expect(p).toContain("/srv/agents/lg-agent/MEMORY.md");
+    expect(p).not.toContain("upload_attachment");
+  });
+
+  it("agentic 无 workspacePath → 退回 neutral（不产出残缺工作区段）", () => {
+    const p = generateBridgeSystemPrompt(AGENT, undefined, { profile: "agentic" });
+    expect(p).not.toContain("## 工作区");
+    expect(p).not.toContain("MEMORY.md");
+  });
+
+  it("dispatchContext 三分支沿用（经理/worker/无）", () => {
+    const mgr = generateBridgeSystemPrompt(AGENT, { isManager: true, otherAgents: [] });
+    expect(mgr).toContain("担任经理");
+    expect(mgr).toContain("dispatch_task");
+    const worker = generateBridgeSystemPrompt(AGENT, { isManager: false, otherAgents: [] });
+    expect(worker).toContain("不是**经理");
+    expect(worker).toContain("report_task");
+    const none = generateBridgeSystemPrompt(AGENT, null);
+    expect(none).toContain("如果你被设为");
   });
 });

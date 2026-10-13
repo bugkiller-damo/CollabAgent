@@ -101,6 +101,9 @@ daemon 读本机 `<daemon 进程 cwd>/.slock/runtimes.json`（`slockDir()` 默�
   `default` 必须在列表中）。选择经 `initialize.runtime.model` 下发给 worker。
 - `requireDurableThreads: true` 时握手能力 `durableThreads=false` 会拒绝
   entrypoint——LangGraph worker 需挂持久 checkpointer（如 SqliteSaver）。
+- `promptProfile`：平台提示档位。`neutral`（默认）平台提示不含工作区和
+  `MEMORY.md` 约定；`agentic` 追加工作区绝对路径、`deliverables/` 交付目录、
+  `MEMORY.md` 持久记忆约定；`none` 完全不下发平台提示。
 
 **CentOS Stream 9 前置**：官方 AppStream 提供 Python 3.11 与 Node.js 20。
 包尚未发布到公共 PyPI，当前受支持路径是把本地/内部 wheel 装进独立 venv：

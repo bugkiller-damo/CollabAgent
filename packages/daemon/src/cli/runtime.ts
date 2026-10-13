@@ -73,6 +73,7 @@ export function runtimeList(opts?: { manifest?: string }): RuntimeListResult {
     secretRefs: e.secretRefs,
     model: e.model,
     mcpToolAllowlist: e.mcpToolAllowlist,
+    promptProfile: e.promptProfile,
     requireDurableThreads: e.requireDurableThreads,
     startupTimeoutMs: e.startupTimeoutMs,
     silenceTimeoutMs: e.silenceTimeoutMs,
@@ -331,6 +332,7 @@ export function runtimeDoctor(id: string, opts?: { manifest?: string }): Runtime
         secretRefs: entry.secretRefs,
         model: entry.model,
         mcpToolAllowlist: entry.mcpToolAllowlist,
+        promptProfile: entry.promptProfile,
         requireDurableThreads: entry.requireDurableThreads,
         startupTimeoutMs: entry.startupTimeoutMs,
         silenceTimeoutMs: entry.silenceTimeoutMs,
@@ -399,6 +401,7 @@ interface EntryFlagOpts {
   modelMode?: string;
   modelAllowed?: string[];
   mcpTool?: string[];
+  promptProfile?: string;
   durable?: boolean;
   startupTimeout?: string;
   silenceTimeout?: string;
@@ -418,6 +421,7 @@ const buildEntryPatch = (o: EntryFlagOpts): Record<string, unknown> => {
   if (o.secretEnv !== undefined) patch.secretEnv = o.secretEnv;
   if (o.secretRef !== undefined) patch.secretRefs = o.secretRef;
   if (o.mcpTool !== undefined) patch.mcpToolAllowlist = o.mcpTool;
+  if (o.promptProfile !== undefined) patch.promptProfile = o.promptProfile;
   if (o.durable) patch.requireDurableThreads = true;
   const num = (v: string | undefined): number | undefined => (v === undefined ? undefined : Number(v));
   if (o.startupTimeout !== undefined) patch.startupTimeoutMs = num(o.startupTimeout);
@@ -470,6 +474,10 @@ const addEntryFlags = (cmd: Command, forEdit: boolean): Command => {
       "MCP tool allowlist entry (repeatable; omit = all platform tools exposed)",
       collect,
       undefined as unknown as string[],
+    )
+    .option(
+      "--prompt-profile <profile>",
+      "platform prompt profile: neutral (default) | agentic (workspace + MEMORY.md) | none (no platform prompt)",
     )
     .option("--durable", "require durable threads (LangGraph checkpoint resume)")
     .option("--startup-timeout <ms>", "startupTimeoutMs 1000-120000")

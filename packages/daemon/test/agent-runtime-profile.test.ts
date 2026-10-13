@@ -141,6 +141,21 @@ describe("resolveAgentRuntimeProfile", () => {
     expect(p.error).toBeUndefined();
   });
 
+  it("promptProfile：manifest 缺省 → neutral；显式值透传", () => {
+    const def = resolveAgentRuntimeProfile({ runtime: "langgraph", entrypoint: "ep-1" }, manifest(entry()));
+    expect(def.promptProfile).toBe("neutral");
+    const explicit = resolveAgentRuntimeProfile(
+      { runtime: "langgraph", entrypoint: "ep-1" },
+      manifest(entry({ promptProfile: "none" })),
+    );
+    expect(explicit.promptProfile).toBe("none");
+    const agentic = resolveAgentRuntimeProfile(
+      { runtime: "langgraph", entrypoint: "ep-1" },
+      manifest(entry({ promptProfile: "agentic" })),
+    );
+    expect(agentic.promptProfile).toBe("agentic");
+  });
+
   it("identity 随 runtime/model/entrypoint/manifest 修订变化", () => {
     const base = resolveAgentRuntimeProfile({ runtime: "langgraph", entrypoint: "ep-1" }, manifest(entry()));
     const byModel = resolveAgentRuntimeProfile(

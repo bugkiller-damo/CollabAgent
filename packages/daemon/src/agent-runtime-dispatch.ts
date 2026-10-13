@@ -25,6 +25,13 @@ import type { IAgentStateMachine } from "./agent-runtime-state.js";
 import type { ITurnTracker } from "./agent-runtime-turn-tracker.js";
 import type { IAgentSessionStore } from "./agent-session-store.js";
 import type { IThreadSessionStore } from "./agent-thread-sessions.js";
+import {
+  buildBridgeDmPrompt,
+  buildBridgeMessagePrompt,
+  buildBridgePatrolPrompt,
+  buildBridgeReminderPrompt,
+  buildBridgeTriagePrompt,
+} from "./bridge-turn-prompt.js";
 import { loadDaemonEnv } from "./config.js";
 import { DispatchError, errMessage } from "./errors.js";
 import type { IIdleReclaimer } from "./idle-reclaimer.js";
@@ -285,6 +292,16 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
   const resolveRuntimeProfile =
     deps.resolveRuntimeProfile ??
     ((agentName: string) => resolveAgentRuntimeProfile(agentInfo.get(agentName) ?? {}, defaultManifestLoader()));
+  // WP2：是否 bridge（SARP/1）runtime 的统一判别——与 dispatch-headless 的
+  // runtime !== "claude" 一致。resolver 出错时返回带 error 的 profile（不抛），
+  // 但注入的实现理论上可能抛——抛异常按非 bridge 处理（保守走 Claude 模板）。
+  const isBridgeAgent = (agentName: string): boolean => {
+    try {
+      return resolveRuntimeProfile(agentName).runtime !== "claude";
+    } catch {
+      return false;
+    }
+  };
   const { transitionState, clearStartupTimer } = stateMachine;
   // P0.5：provider 的会话累计成本 → 本回合增量，换算在 driver 边界内
   //（claude-runtime 的 normalizer 持有基线）；forgetSessionCost 只做转发。
@@ -557,10 +574,16 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
       if (items.length > 1) {
         console.log(`[Daemon] @${agentName} merged ${items.length} queued messages into one dispatch`);
       }
+      // WP2：REMINDER_TAIL 全是 Claude 专属约定（slock CLI/MEMORY.md/「直接打字
+      // 不会发出」）——bridge worker 批次不追加；混合批按非 bridge 处理（同桶
+      // 合并只发生在同 agent 内，bridge 标记同批一致，every 只是兜底）。
+      const tail = items.every((i) => i.bridge)
+        ? ""
+        : REMINDER_TAIL(agentName, items[0].channelName, items[0].threadId);
       await doDispatch(
         agentName,
         items[0].channelName,
-        merged + REMINDER_TAIL(agentName, items[0].channelName, items[0].threadId),
+        merged + tail,
         items[0].threadId,
         items[0].kind,
         // §8.4：turnId 随首 item（retry 复用）；attempt=历史失败数+1；
@@ -622,7 +645,18 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
     // 「已缓冲」toast 保持旧语义：只有 agent 确实在忙（在途/积压/退避中）才提示，
     // 空闲时队列会立即排空，不打扰用户
     const wasBusy = dispatchQueue.isBusy(agentName);
-    const res = dispatchQueue.enqueue({ agentName, channelName, content: userMsg, kind, threadId, sourceId, sender });
+    const res = dispatchQueue.enqueue({
+      agentName,
+      channelName,
+      content: userMsg,
+      kind,
+      threadId,
+      sourceId,
+      sender,
+      // WP2：bridge 标记随 item——守卫追问（nudge）等所有入队路径统一判定，
+      // deliver 据此决定是否追加 REMINDER_TAIL。
+      bridge: isBridgeAgent(agentName),
+    });
     if (wasBusy) {
       console.log(`[Daemon] @${agentName} busy — message queued (dispatch queue)`);
       try {
@@ -715,14 +749,16 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
   ): Promise<void> => {
     const inThread = Boolean(threadId) || replyTarget.includes(":");
     const where = inThread ? `#${channelName} 的一个线程里` : `#${channelName} 频道`;
-    // A3：「本次任务」段从系统提示下沉到回合 prompt——把任务做成工程师形态
-    //（干完再交付）而不只是「发一条回复」。
-    const taskPrompt = [
-      `你在 ${where}被 @ 了。来自 @${senderName} 的消息：${content}`,
-      ``,
-      `把这条消息当成交给你的任务做完整：需要动手就动手（命令 / 文件 / 编译 / 网络都可以），产出按交付协议走（代码 / 长内容 → deliverables/ + upload_attachment）。`,
-      `完成后用 \`send_message\` 工具（target="${replyTarget}"）在${inThread ? "该线程内" : "该频道"}发结果；没有该工具时退回 \`slock message send --target "${replyTarget}"\`（内容从 stdin 传入）。注意 target 必须严格用 "${replyTarget}"。`,
-    ].join("\n");
+    // WP2：bridge worker 用 neutral 模板（无 CLI 兜底/工作区约定；最终回答由
+    // 平台代发）；Claude 分支保持 A3 工程师形态原文。
+    const taskPrompt = isBridgeAgent(agentName)
+      ? buildBridgeMessagePrompt({ channelName, replyTarget, senderName, content, inThread })
+      : [
+          `你在 ${where}被 @ 了。来自 @${senderName} 的消息：${content}`,
+          ``,
+          `把这条消息当成交给你的任务做完整：需要动手就动手（命令 / 文件 / 编译 / 网络都可以），产出按交付协议走（代码 / 长内容 → deliverables/ + upload_attachment）。`,
+          `完成后用 \`send_message\` 工具（target="${replyTarget}"）在${inThread ? "该线程内" : "该频道"}发结果；没有该工具时退回 \`slock message send --target "${replyTarget}"\`（内容从 stdin 传入）。注意 target 必须严格用 "${replyTarget}"。`,
+        ].join("\n");
     const packed = await attachTurnContext(agentName, channelName, taskPrompt, threadId, content, messageId);
     await dispatchToAgent(agentName, channelName, packed.userMsg, packed.threadId, undefined, undefined, senderName);
   };
@@ -733,13 +769,16 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
     senderName: string,
     content: string,
   ): Promise<void> => {
-    const userMsg = [
-      `你收到了一条来自 @${senderName} 的私信（DM）：${content}`,
-      ``,
-      `把这条私信当成交给你的任务做完整（需要动手就动手）。完成后用 \`send_message\` 工具（target="${replyTarget}"）直接回复；没有该工具时退回` +
-        `\`slock message send --target "${replyTarget}"\`（内容从 stdin 传入）。`,
-      `注意 target 必须严格用 "${replyTarget}"；私信是一对一的，无需被 @ 也应当回应。`,
-    ].join("\n");
+    // WP2：bridge worker 用 neutral 模板（与 runAgent 同一判别）。
+    const userMsg = isBridgeAgent(agentName)
+      ? buildBridgeDmPrompt({ replyTarget, senderName, content })
+      : [
+          `你收到了一条来自 @${senderName} 的私信（DM）：${content}`,
+          ``,
+          `把这条私信当成交给你的任务做完整（需要动手就动手）。完成后用 \`send_message\` 工具（target="${replyTarget}"）直接回复；没有该工具时退回` +
+            `\`slock message send --target "${replyTarget}"\`（内容从 stdin 传入）。`,
+          `注意 target 必须严格用 "${replyTarget}"；私信是一对一的，无需被 @ 也应当回应。`,
+        ].join("\n");
     // A3/§8.6：DM 注入小预算历史（channel 参数 = "dm:@x" 目标）
     const packed = await attachTurnContext(agentName, replyTarget, userMsg, undefined, content);
     await dispatchToAgent(agentName, replyTarget, packed.userMsg, undefined, undefined, undefined, senderName);
@@ -747,8 +786,23 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
 
   const runAgentReminder = async (agentName: string, reminder: ReminderFirePayload): Promise<void> => {
     const channelName = (reminder.channel || "").replace(/^#/, "").split(":")[0] || "general";
+    // WP2：bridge 模板保留【定时巡检】/【提醒触发】语义——巡检前缀是回复守卫
+    // isNudge 的判定锚（这类回合的最终回答不会被代发，沉默是合法产出）。
+    const bridge = isBridgeAgent(agentName);
     if (reminder.kind === "patrol") {
-      await dispatchToAgent(agentName, channelName, buildPatrolPrompt(reminder), undefined, "reminder", reminder.id);
+      const prompt = bridge ? buildBridgePatrolPrompt(reminder) : buildPatrolPrompt(reminder);
+      await dispatchToAgent(agentName, channelName, prompt, undefined, "reminder", reminder.id);
+      return;
+    }
+    if (bridge) {
+      await dispatchToAgent(
+        agentName,
+        channelName,
+        buildBridgeReminderPrompt(reminder),
+        undefined,
+        "reminder",
+        reminder.id,
+      );
       return;
     }
     const where = reminder.channel
@@ -772,7 +826,10 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
     threadId?: string,
     messageId?: string,
   ): Promise<void> => {
-    const taskPrompt = buildTriagePrompt({ channelName, replyTarget, senderName, content });
+    // WP2：bridge 分诊模板保留【频道分诊】前缀（回复守卫 isNudge 判定锚）。
+    const taskPrompt = isBridgeAgent(agentName)
+      ? buildBridgeTriagePrompt({ channelName, replyTarget, senderName, content })
+      : buildTriagePrompt({ channelName, replyTarget, senderName, content });
     // 分诊是 nudge 性质：只保留线程追问语境，不注顶层小预算上下文
     const packed = await attachTurnContext(agentName, channelName, taskPrompt, threadId, content, messageId, false);
     await dispatchToAgent(agentName, channelName, packed.userMsg, packed.threadId, "triage", undefined, senderName);

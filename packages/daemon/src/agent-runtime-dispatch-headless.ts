@@ -307,10 +307,6 @@ export const dispatchHeadlessTurn = async (opts: DispatchHeadlessTurnOpts): Prom
           // Phase 2：bridge worker 走 SARP initialize——平台提示走文本字段
           // （runtime-neutral），MCP 走 initialize.platform.mcp 描述符由
           // worker 自己挂 client，不写 .mcp.json/.claude settings。
-          platformPrompt = generateBridgeSystemPrompt(
-            { name: agentName, displayName: info.displayName, description: info.description },
-            dispatchContext,
-          );
           try {
             const mcpBundlePath = await bundleSlockMcpServer();
             if (mcpBundlePath) {
@@ -334,6 +330,16 @@ export const dispatchHeadlessTurn = async (opts: DispatchHeadlessTurnOpts): Prom
           } catch (err) {
             console.warn(
               `[Daemon] @${agentName} MCP bundle resolve failed (bridge), worker runs without MCP: ${errMessage(err)}`,
+            );
+          }
+          // WP2：平台提示在 MCP 描述符解析之后生成——mcpAvailable 决定工具面
+          // 段是否出现；promptProfile=none 不下发（initialize 无 systemPrompt）。
+          const promptProfile = runtimeProfile.promptProfile ?? "neutral";
+          if (promptProfile !== "none") {
+            platformPrompt = generateBridgeSystemPrompt(
+              { name: agentName, displayName: info.displayName, description: info.description },
+              dispatchContext,
+              { profile: promptProfile, workspacePath: ws, mcpAvailable: mcpDescriptor !== undefined },
             );
           }
         } else {

@@ -7,6 +7,8 @@ import { mkdirPrivateSync, slockDir } from "./private-dir.js";
 
 export type { BridgeRuntimeId };
 export type RuntimeModelMode = "fixed" | "select";
+/** WP2：平台提示档位——neutral（缺省）/ agentic（追加工作区+MEMORY.md）/ none（不下发） */
+export type RuntimePromptProfile = "neutral" | "agentic" | "none";
 
 export interface RuntimeManifestEntry {
   id: string;
@@ -29,6 +31,11 @@ export interface RuntimeManifestEntry {
    * SDK 直连 MCP server——真正的授权仍是 scoped token / server policy。
    */
   mcpToolAllowlist: string[];
+  /**
+   * WP2：平台提示档位。缺省不写进归一化条目——字段显式设置才进
+   * revision（sha256 全字段 hash），避免既有条目的 revision 集体漂移。
+   */
+  promptProfile?: RuntimePromptProfile;
   model: { mode: RuntimeModelMode; default: string; allowed: string[] };
   requireDurableThreads: boolean;
   startupTimeoutMs: number;
@@ -56,6 +63,7 @@ const ID_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const ENV_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /** MCP 工具名约定（send_message / dispatch_task 等 snake_case；容错允许 -） */
 const MCP_TOOL_RE = /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/;
+const PROMPT_PROFILES = new Set<RuntimePromptProfile>(["neutral", "agentic", "none"]);
 const SHELL_OPERATOR_RE = /[;&|`<>]/;
 const DANGEROUS_ENV = new Set(["NODE_OPTIONS", "PYTHONPATH", "LD_PRELOAD", "DYLD_INSERT_LIBRARIES"]);
 const CREDENTIAL_ENV_RE = /(^|_)(TOKEN|SECRET|PASSWORD|PASS|API_KEY|PRIVATE_KEY|ACCESS_KEY|CLIENT_SECRET)($|_)/;
@@ -226,6 +234,15 @@ export function validateEntry(raw: unknown): ValidatedEntry {
     return fail("entry-durable-invalid");
   }
 
+  // WP2：promptProfile 三值枚举；非法值 fail-closed。缺省不写进归一化
+  // 条目——revision=全字段 hash，补默认值会把现存条目 identity 全部改掉。
+  const promptProfile =
+    raw.promptProfile !== undefined &&
+    (typeof raw.promptProfile !== "string" || !PROMPT_PROFILES.has(raw.promptProfile as RuntimePromptProfile))
+      ? null
+      : (raw.promptProfile as RuntimePromptProfile | undefined);
+  if (promptProfile === null) return fail("entry-prompt-profile-invalid");
+
   return {
     id,
     runtime,
@@ -241,6 +258,7 @@ export function validateEntry(raw: unknown): ValidatedEntry {
       secretEnv,
       secretRefs,
       mcpToolAllowlist,
+      ...(promptProfile ? { promptProfile } : {}),
       model: { mode, default: defaultModel, allowed: mode === "fixed" ? [] : allowed },
       requireDurableThreads: raw.requireDurableThreads === true,
       startupTimeoutMs,

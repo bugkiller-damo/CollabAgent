@@ -46,6 +46,7 @@ const conformantEntry = (over: Record<string, unknown> = {}): Record<string, unk
   secretRefs: ["STORED_KEY"],
   model: { mode: "select", default: "gpt-4o", allowed: ["gpt-4o", "gpt-5"] },
   requireDurableThreads: true,
+  promptProfile: "agentic",
   startupTimeoutMs: 15000,
   silenceTimeoutMs: 300000,
   shutdownTimeoutMs: 10000,
@@ -82,6 +83,13 @@ describe("runtime-manifest.schema.json", () => {
       if (key === "revision") continue; // revision 是 loader 计算值，manifest 文件不含
       expect(entryProps, `schema missing property "${key}"`).toContain(key);
     }
+  });
+
+  it("schema promptProfile 枚举与 validator 一致（三值之外两边都拒）", () => {
+    const prop = entrySchema?.properties?.promptProfile as { enum?: string[] } | undefined;
+    expect(prop?.enum).toEqual(["neutral", "agentic", "none"]);
+    expect(validateEntry(conformantEntry({ promptProfile: "verbose" })).error).toBe("entry-prompt-profile-invalid");
+    expect(validateEntry(conformantEntry({ promptProfile: "none" })).error).toBeUndefined();
   });
 
   it("schema 声明的 id pattern 与 validator 一致（坏 id 两边都拒）", () => {

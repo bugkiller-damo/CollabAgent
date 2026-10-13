@@ -55,6 +55,8 @@ export interface DispatchQueueItem {
   sourceId?: string;
   /** Phase 2（§8.4）：人类发送者名——bridge worker 的 turn.start source.sender */
   sender?: string;
+  /** WP2：目标是 bridge（非 claude）runtime——投递时全批为真则不追加 Claude 专属的 REMINDER_TAIL */
+  bridge?: boolean;
 }
 
 /** 投递执行器：items 长度 >1 时表示合并投递。失败必须 reject，队列据此重试。 */
@@ -111,6 +113,8 @@ export interface AgentDispatchQueue {
     sourceId?: string;
     /** Phase 2：人类发送者名（turn.start source.sender） */
     sender?: string;
+    /** WP2：bridge runtime 标记——不参与分桶键 */
+    bridge?: boolean;
   }): EnqueueStatus;
   /** 指定 agent（或全部）的 pending 数量（跨桶合计） */
   depth(agentName?: string): number;
@@ -415,6 +419,7 @@ export const createAgentDispatchQueue = (opts: DispatchQueueOptions): AgentDispa
           turnId: `turn-${turnBootNonce}-${nextTurnId++}`,
           sourceId: input.sourceId,
           sender: input.sender,
+          bridge: input.bridge,
         };
         safe(() => opts.onDeadLetter?.(agentName, item, err));
         return { status: "dead", err };
@@ -448,6 +453,7 @@ export const createAgentDispatchQueue = (opts: DispatchQueueOptions): AgentDispa
         turnId: `turn-${turnBootNonce}-${nextTurnId++}`,
         sourceId: input.sourceId,
         sender: input.sender,
+        bridge: input.bridge,
       };
       const done = new Promise<void>((r) => doneResolvers.set(item.id, r));
       bucket.pending.push(item);

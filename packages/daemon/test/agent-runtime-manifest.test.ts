@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -251,5 +252,30 @@ describe("createRuntimeManifestLoader", () => {
     const lines = readFileSync(manifestAuditPath(p), "utf-8").trim().split("\n");
     expect(lines).toHaveLength(1);
     expect(JSON.parse(lines[0]!).revision).toBe("missing");
+  });
+});
+
+describe("promptProfile（WP2）", () => {
+  it.each(["neutral", "agentic", "none"])("合法值 %s → 归一化进条目", (promptProfile) => {
+    const p = writeManifest(tmp(), { version: 1, entries: [validEntry({ promptProfile })] });
+    const entry = loadRuntimeManifest(p).entries.get("ep-1");
+    expect(entry?.promptProfile).toBe(promptProfile);
+  });
+
+  it("非法值 → invalidEntries 记 entry-prompt-profile-invalid", () => {
+    const p = writeManifest(tmp(), { version: 1, entries: [validEntry({ promptProfile: "verbose" })] });
+    const snap = loadRuntimeManifest(p);
+    expect(snap.entries.size).toBe(0);
+    expect(snap.invalidEntries.get("ep-1")?.code).toBe("entry-prompt-profile-invalid");
+  });
+
+  it("缺省不写进归一化条目 → 现存条目 revision 不变", () => {
+    const p = writeManifest(tmp(), { version: 1, entries: [validEntry()] });
+    const entry = loadRuntimeManifest(p).entries.get("ep-1")!;
+    // 缺省时归一化条目上根本没有 promptProfile 这个键——否则全字段 hash
+    // 会让所有已部署条目的 revision 漂移、会话无谓重启。
+    expect(Object.hasOwn(entry, "promptProfile")).toBe(false);
+    const { revision, ...normalized } = entry;
+    expect(revision).toBe(createHash("sha256").update(JSON.stringify(normalized)).digest("hex"));
   });
 });

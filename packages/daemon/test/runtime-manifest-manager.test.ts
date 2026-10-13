@@ -131,6 +131,19 @@ describe("createRuntimeManifestManager.update", () => {
     if (!r.ok) expect(r.code).toBe("entry-env-invalid");
     expect(readFileSync(manifestPath(dir), "utf-8")).toBe(before);
   });
+
+  it("promptProfile 补丁：合法值落盘、非法值 entry-prompt-profile-invalid 不落盘", () => {
+    const dir = tmp();
+    seed(dir, [validEntry()]);
+    const mgr = createRuntimeManifestManager(manifestPath(dir));
+    const ok = mgr.update("ep-1", { promptProfile: "agentic" });
+    expect(ok.ok).toBe(true);
+    expect(mgr.snapshot().entries.get("ep-1")?.promptProfile).toBe("agentic");
+    const bad = mgr.update("ep-1", { promptProfile: "verbose" });
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) expect(bad.code).toBe("entry-prompt-profile-invalid");
+    expect(mgr.snapshot().entries.get("ep-1")?.promptProfile).toBe("agentic");
+  });
 });
 
 describe("createRuntimeManifestManager.remove", () => {

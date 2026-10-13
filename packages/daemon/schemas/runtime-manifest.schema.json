@@ -95,6 +95,10 @@
           },
           "additionalProperties": true
         },
+        "promptProfile": {
+          "enum": ["neutral", "agentic", "none"],
+          "description": "Platform system-prompt profile for bridge workers. neutral (default when omitted): runtime-neutral prompt without workspace/MEMORY.md conventions. agentic: additionally declares the absolute workspace path, deliverables/ and MEMORY.md. none: no platform prompt is sent in initialize.platform.systemPrompt. Only written into the normalized entry when explicitly set (entry revision = full-field hash)."
+        },
         "requireDurableThreads": {
           "type": "boolean",
           "default": false,

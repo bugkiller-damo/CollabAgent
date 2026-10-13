@@ -81,6 +81,7 @@ pnpm exec tsx src/index.ts \
 | `model.mode` | `fixed` = 锁死 default（API 传别的 model → 400 `model_fixed`）；`select` = 限 `allowed` 名单（不在名单 → 400 `model_not_allowed`） |
 | `model.default` / `allowed` | `init_chat_model` 的 `<provider>:<model>` 格式。DeepSeek = `openai:deepseek-chat` / `openai:deepseek-reasoner` |
 | `requireDurableThreads` | langgraph 必须 `true`（有 SqliteSaver checkpoint）；langchain 示例为 `false` |
+| `promptProfile` | 平台提示档位：`neutral`（默认；不含工作区和 `MEMORY.md` 约定）、`agentic`（追加工作区绝对路径 / `deliverables/` / `MEMORY.md` 约定）、`none`（不下发平台提示） |
 
 ---
 

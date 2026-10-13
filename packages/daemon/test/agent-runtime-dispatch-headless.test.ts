@@ -625,4 +625,51 @@ describe("批次 C：bridge MCP allowlist / 诊断打点 / interrupt 上下文�
       }),
     );
   });
+
+  it("WP2：promptProfile=none → platformPrompt 不下发（initialize 无 systemPrompt）", async () => {
+    const { driver, openSession } = fakeBridgeDriver(async () => ({ status: "success" }));
+    await dispatchHeadlessTurn(bridgeOpts(bridgeEntry({ promptProfile: "none" }), { runtimeDriver: driver }));
+    expect(openSession.mock.calls[0]![0].platformPrompt).toBeUndefined();
+  });
+
+  it("WP2：缺省 promptProfile → neutral（含身份/回复方式，无 MEMORY.md/CLI 兜底）", async () => {
+    const { driver, openSession } = fakeBridgeDriver(async () => ({ status: "success" }));
+    await dispatchHeadlessTurn(bridgeOpts(bridgeEntry(), { runtimeDriver: driver }));
+    const prompt = openSession.mock.calls[0]![0].platformPrompt as string;
+    expect(prompt).toContain("Agent Worker");
+    expect(prompt).toContain("最终回答会由平台自动以你的身份发到当前会话");
+    expect(prompt).not.toContain("MEMORY.md");
+    expect(prompt).not.toContain("slock message send");
+    expect(prompt).not.toContain("deliverables/");
+  });
+
+  it("WP2：MCP bundle 不可用 → 平台提示不列 slock 工具面", async () => {
+    // afterEach 里 bundleSlockMcpServerMock 已 mockResolvedValue(null)
+    const { driver, openSession } = fakeBridgeDriver(async () => ({ status: "success" }));
+    await dispatchHeadlessTurn(bridgeOpts(bridgeEntry(), { runtimeDriver: driver }));
+    const prompt = openSession.mock.calls[0]![0].platformPrompt as string;
+    expect(openSession.mock.calls[0]![0].mcp).toBeUndefined();
+    expect(prompt).not.toContain("## slock 工具");
+    expect(prompt).not.toContain("## 任务派发");
+  });
+
+  it("WP2：MCP bundle 可用 → 平台提示列 slock 工具面", async () => {
+    bundleSlockMcpServerMock.mockResolvedValue("mcp-bundle.cjs");
+    const { driver, openSession } = fakeBridgeDriver(async () => ({ status: "success" }));
+    await dispatchHeadlessTurn(bridgeOpts(bridgeEntry(), { runtimeDriver: driver }));
+    const prompt = openSession.mock.calls[0]![0].platformPrompt as string;
+    expect(openSession.mock.calls[0]![0].mcp).toBeDefined();
+    expect(prompt).toContain("## slock 工具");
+    expect(prompt).toContain("send_message");
+  });
+
+  it("WP2：promptProfile=agentic → 追加 ## 工作区 段（工作区绝对路径 + MEMORY.md）", async () => {
+    const { driver, openSession } = fakeBridgeDriver(async () => ({ status: "success" }));
+    await dispatchHeadlessTurn(bridgeOpts(bridgeEntry({ promptProfile: "agentic" }), { runtimeDriver: driver }));
+    const prompt = openSession.mock.calls[0]![0].platformPrompt as string;
+    expect(prompt).toContain("## 工作区");
+    // createWorkspaceDirMock 返回的固定工作区路径
+    expect(prompt).toContain("D:/tmp-p112");
+    expect(prompt).toContain("D:/tmp-p112/MEMORY.md");
+  });
 });

@@ -108,6 +108,24 @@ describe("runtimeAdd / runtimeEdit / runtimeRemove", () => {
     if (!r.ok) expect(r.code).toBe("entry-runtime-invalid");
     expect(existsSync(manifestAt(dir))).toBe(false);
   });
+
+  it("promptProfile：合法值写入 + list 透出；非法值被拒", () => {
+    const dir = tmp();
+    const opts = { manifest: manifestAt(dir) };
+    const add = runtimeAdd(validEntry({ promptProfile: "agentic" }), opts);
+    expect(add.ok).toBe(true);
+    const l = runtimeList(opts);
+    expect(l.entries[0]?.promptProfile).toBe("agentic");
+
+    const bad = runtimeEdit("ep-1", { promptProfile: "verbose" }, opts);
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) expect(bad.code).toBe("entry-prompt-profile-invalid");
+    expect(runtimeList(opts).entries[0]?.promptProfile).toBe("agentic");
+
+    const none = runtimeEdit("ep-1", { promptProfile: "none" }, opts);
+    expect(none.ok).toBe(true);
+    expect(runtimeList(opts).entries[0]?.promptProfile).toBe("none");
+  });
 });
 
 describe("runtimeProbe", () => {
