@@ -4,7 +4,7 @@ import { createObservationBus, type ObservationBus } from "./agent-observation.j
 import { createWorkerCrashGuard } from "./agent-runtime-crash-guard.js";
 import { createCredentialsClient } from "./agent-runtime-credentials.js";
 import { createDispatch, type ReminderFirePayload } from "./agent-runtime-dispatch.js";
-import { AgentRuntimeRegistry, type AgentRuntimeSession } from "./agent-runtime-driver.js";
+import { AgentRuntimeRegistry, type AgentRuntimeSession, type CancelTurnResult } from "./agent-runtime-driver.js";
 import { createExitChain } from "./agent-runtime-exit.js";
 import { createRuntimeInterruptStore, defaultInterruptStorePath } from "./agent-runtime-interrupt-store.js";
 import { createRuntimeManifestLoader } from "./agent-runtime-manifest.js";
@@ -208,6 +208,13 @@ export interface IAgentRuntime {
   // 生命周期
   /** 停进程/清队列，状态 → idle（保留注册，下次消息可冷启动） */
   stopAgent(agentName: string): void;
+  /**
+   * WP11：取消 agent 当前回合（browser agent:cancel-turn → daemon）。
+   * 与 agent:stop / interrupt:* 同一解析口径：agentId → 注册名 → 常驻会话；
+   * 会话缺失或 driver 未实现 cancelTurn（claude/oneshot 等）→ no-op。
+   * 结果仅用于日志——不回 server（控制帧单向）。
+   */
+  cancelTurn(agentId: string): Promise<CancelTurnResult>;
   /** daemon 关闭：全部 agent → stopped，dispose 派发队列 */
   stopAll(): void;
   /** 记录该 agent 的首选终端尺寸（面板尺寸协商用）——下次 spawn 直接按此尺寸启动 */
@@ -847,6 +854,25 @@ export const createAgentRuntime = (
         /* store 清理是旁路 */
       }
       haltAgent(agentName, "idle");
+    },
+
+    async cancelTurn(agentId: string): Promise<CancelTurnResult> {
+      // WP11：解析口径与 agent:stop / interrupt:* 一致——agentId 可传注册名
+      // 或 UUID；会话缺失 / driver 未实现 cancelTurn（claude、oneshot、
+      // 非 bridge runtime）一律 no-op，不报错不杀进程。
+      const name = resolveAgentName(agentId);
+      if (!name) {
+        console.log(`[Daemon] cancel-turn ignored: unknown agent ${agentId}`);
+        return "idle";
+      }
+      const session = persistentSessions.get(name);
+      if (!session || typeof session.cancelTurn !== "function") {
+        console.log(`[Daemon] cancel-turn ignored: @${name} has no cancellable session`);
+        return "idle";
+      }
+      const result = await session.cancelTurn("cancel requested by owner");
+      console.log(`[Daemon] cancel-turn @${name} → ${result}`);
+      return result;
     },
 
     stopAll(): void {

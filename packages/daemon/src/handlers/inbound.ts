@@ -165,6 +165,10 @@ export const parseWsToDaemonMessage = (raw: unknown): WsToDaemonMessage | null =
       };
     case "agent:stop":
       return { type: "agent:stop", agentId: asString(raw.agentId) ?? "" };
+    // WP11：停止当前回合（browser → server → daemon；daemon 侧只对 bridge/SARP
+    // 常驻会话生效，无活动回合即 no-op）
+    case "agent:cancel-turn":
+      return { type: "agent:cancel-turn", agentId: asString(raw.agentId) ?? "" };
     case "agent:duty": {
       const duty: AgentDuty = raw.duty === "off" ? "off" : "on";
       return {

@@ -233,6 +233,7 @@ class TestHandshake:
         assert caps["streamingText"] is True
         assert caps["toolEvents"] is True
         assert caps["interrupts"] is False
+        assert caps["cancel"] is True  # turn.cancel 协作取消
         assert caps["durableThreads"] is False
         assert caps["mcp"] is False
         assert caps["usage"] == "tokens"

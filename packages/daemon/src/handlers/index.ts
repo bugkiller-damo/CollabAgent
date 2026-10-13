@@ -21,6 +21,17 @@ export async function dispatchDaemonMessage(ctx: HandlerContext, msg: WsToDaemon
     case "agent:stop":
       handleAgentStop(ctx, msg);
       break;
+    case "agent:cancel-turn":
+      // WP11：停止当前回合——runtime 侧解析 agentId → 常驻会话 → turn.cancel；
+      // 无会话/不支持 runtime → no-op（与其他控制帧同纪律，不报错）。
+      if (msg.agentId) {
+        try {
+          await ctx.runtime.cancelTurn(msg.agentId);
+        } catch (err) {
+          console.warn(`[Daemon] cancel-turn failed: ${(err as Error)?.message}`);
+        }
+      }
+      break;
     case "agent:duty":
       handleAgentDuty(ctx, msg);
       break;

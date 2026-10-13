@@ -220,6 +220,8 @@ export interface SarpCapabilities {
   usage?: "none" | "tokens" | "cost" | string;
   pty?: boolean;
   maxConcurrency?: number;
+  /** WP11：worker 声明支持 turn.cancel 回合中取消（进程保留）——web 按它显示「停止当前回合」 */
+  cancel?: boolean;
 }
 
 export type SarpWorkerMessage =
@@ -481,6 +483,7 @@ export const decodeSarpWorkerFrame = (line: string | Buffer): SarpWorkerMessage 
           usage: optStr(caps, "usage", t),
           pty: optBool(caps, "pty", t),
           maxConcurrency: optNum(caps, "maxConcurrency", t),
+          cancel: optBool(caps, "cancel", t),
         },
         model: model
           ? { selected: optStr(model, "selected", t), overrides: optBool(model, "overrides", t) }

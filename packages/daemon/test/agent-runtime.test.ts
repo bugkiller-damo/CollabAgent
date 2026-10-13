@@ -223,6 +223,39 @@ describe("agent-runtime loadExistingAgents", () => {
   });
 });
 
+describe("WP11：cancelTurn（agent:cancel-turn 入口）", () => {
+  let manager: FakeAgentManager;
+  let runtime: IAgentRuntime;
+
+  beforeEach(() => {
+    delete process.env.SLOCK_USE_PTY;
+    manager = createFakeAgentManager();
+    runtime = createAgentRuntime(
+      { serverUrl: "http://fake-server.test", apiKey: "test-api-key" },
+      createLiveRunRegistry(),
+      undefined,
+      manager,
+    );
+  });
+
+  afterEach(() => {
+    runtime.stopAll();
+    vi.restoreAllMocks();
+  });
+
+  it("未知 agentId / 未注册名 → 'idle' no-op（不报错）", async () => {
+    await expect(runtime.cancelTurn("cccccccc-3333-3333-3333-333333333333")).resolves.toBe("idle");
+    await expect(runtime.cancelTurn("ghost")).resolves.toBe("idle");
+  });
+
+  it("已注册但无常驻会话 → 'idle' no-op（agent 空闲/从未 spawn）", async () => {
+    runtime.registerAgent(A_ID, A, { runtime: "bridge", entrypoint: "ep-1" });
+    await expect(runtime.cancelTurn(A_ID)).resolves.toBe("idle");
+    // 注册名直通同一解析口径
+    await expect(runtime.cancelTurn(A)).resolves.toBe("idle");
+  });
+});
+
 describe("WP10：resolveInterrupt（interrupt:resolve 入口）", () => {
   const CONV = `slock:v1:${A_ID}:channel:general`;
   let manager: FakeAgentManager;

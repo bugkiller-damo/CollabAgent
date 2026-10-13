@@ -99,6 +99,7 @@ worker exit 0
     "mcp": true,                 // 会消费 platform.mcp
     "usage": "tokens",           // "tokens" | "cost" | "none"
     "pty": false,
+    "cancel": true,              // WP11：支持 turn.cancel 回合中取消（进程保留）
     "maxConcurrency": 1
   },
   "model": { "selected": "openai:deepseek-chat", "overrides": true }
@@ -172,6 +173,12 @@ worker exit 0
 
 { "type": "shutdown", "reason": "...", "timeoutMs": 5000 }
 ```
+
+`turn.cancel` 是**回合级取消**：worker 应尽快结束该 turn 并回
+`turn.end{status:"cancelled"}`（终态仍恰一个），**进程保留**可接后续
+turn.start。声明 `capabilities.cancel: true` 的 worker 必须实现；daemon
+在宽限内等不到终态即按沉默超时同口径杀进程（web「停止当前回合」按钮
+→ `agent:cancel-turn` → daemon `turn.cancel`）。
 
 `turn.start` 必填：`turnId / conversationId / attempt / source / prompt`。
 `prompt` 语义不变——平台组装好的完整文本（平台指令 + 历史信封 +

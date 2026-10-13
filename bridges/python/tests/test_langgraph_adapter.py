@@ -329,6 +329,7 @@ class TestDurableThreads:
         ready = frames[0]
         assert ready["capabilities"]["durableThreads"] is False
         assert ready["capabilities"]["interrupts"] is True
+        assert ready["capabilities"]["cancel"] is True  # turn.cancel 协作取消
         assert ready["capabilities"]["maxConcurrency"] == 1
         assert ready["runtime"]["id"] == "bridge"
 

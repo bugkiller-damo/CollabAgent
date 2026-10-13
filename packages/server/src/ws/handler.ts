@@ -654,6 +654,13 @@ function registerConnection(connection: WebSocket, ident: ResolvedIdentity, isDa
                 { scope: t.scope },
               );
           });
+        } else if (msg.type === "agent:cancel-turn") {
+          // WP11：停止当前回合——与 interrupt:dismiss 同一属主/路由口径（取消
+          // 他人 agent 的回合同样是 owner 私域操作）。daemon 侧只对 bridge/SARP
+          // 常驻会话生效；无活动回合即 no-op（静默丢与其他控制帧同纪律）。
+          void resolveInterruptTarget(userId, msg.agentId).then((t) => {
+            if (t) sendToDaemon(t.target, { type: "agent:cancel-turn", agentId: msg.agentId }, { scope: t.scope });
+          });
         }
       } catch {
         /* ignore */
@@ -685,8 +692,9 @@ function registerConnection(connection: WebSocket, ident: ResolvedIdentity, isDa
 }
 
 /**
- * 批次 C（P1.4）：interrupt:dismiss / WP10 interrupt:resolve 的路由解析——
- * agentId → 属主校验（agents.user_id === 浏览器 userId，审批是 owner 私域操作）
+ * 批次 C（P1.4）：interrupt:dismiss / WP10 interrupt:resolve / WP11
+ * agent:cancel-turn 的路由解析——agentId → 属主校验
+ * （agents.user_id === 浏览器 userId，审批/回合取消是 owner 私域操作）
  * → 托管机器 machineKey + server scope + 审批人 handle（approver，resolve 帧用）。
  * 查不到/非属主 → null（静默丢，与其他 browser→daemon 控制帧同纪律）。
  */

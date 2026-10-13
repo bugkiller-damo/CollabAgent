@@ -64,6 +64,21 @@ describe("sarp-conformance — healthy fixture", () => {
     expect(c?.detail).toContain("cancelled");
   }, 30000);
 
+  it("WP11：capabilities.cancel=false → cancel skip（worker 明确声明不支持）", async () => {
+    const report = await runSarpConformance({
+      spawnSpec: spec({
+        SLOCK_FX_CAPABILITIES: JSON.stringify({ cancel: false }),
+        SLOCK_FX_TURN_DELAY_MS: "300",
+      }),
+      runtimeId: "bridge",
+      stepTimeoutMs: 6000,
+    });
+    expect(report.ok).toBe(true);
+    const c = checkOf(report, "cancel");
+    expect(c?.status).toBe("skip");
+    expect(c?.detail).toContain("cancel=false");
+  }, 30000);
+
   it("无 turn 延迟：turn 先于 cancel 落地 → cancel skip（未验证，不假 pass）", async () => {
     const report = await runSarpConformance({
       spawnSpec: spec(),

@@ -21,7 +21,12 @@
 import { type ChildProcess, spawn as nodeSpawn } from "node:child_process";
 import { normalizeRuntimeId } from "@collabagent/shared";
 import { applyAgentEnv } from "../agent-env-whitelist.js";
-import type { AgentRuntimeSession, AgentRuntimeTurnResult, AgentTurnRequest } from "../agent-runtime-driver.js";
+import type {
+  AgentRuntimeSession,
+  AgentRuntimeTurnResult,
+  AgentTurnRequest,
+  CancelTurnResult,
+} from "../agent-runtime-driver.js";
 import type { AgentRuntimeEvent, AgentRuntimeUsage } from "../agent-runtime-events.js";
 import { DispatchError, errMessage } from "../errors.js";
 import { killProcessTree, treeKillSpawnOptions } from "../process-tree.js";
@@ -81,6 +86,8 @@ const STDERR_RING_CHARS = 16 * 1024;
 const STDERR_TAIL_CHARS = 300;
 /** stop() 里 turn.cancel → 强制结算的宽限上限 */
 const CANCEL_GRACE_MAX_MS = 1500;
+/** WP11：cancelTurn（停止当前回合，不杀进程）等终态的宽限上限 */
+const CANCEL_TURN_GRACE_MAX_MS = 5000;
 /** SIGTERM 后等 exit 的宽限（§8.8 超时兜底转 SIGKILL） */
 const SIGKILL_GRACE_MS = 2000;
 
@@ -116,6 +123,10 @@ interface ActiveTurn {
   resolve: (r: AgentRuntimeTurnResult) => void;
   reject: (e: Error) => void;
   settled: boolean;
+  /** WP11：本回合已写过 turn.cancel（同回合幂等——stop()/cancelTurn 不重复写） */
+  cancelSent?: boolean;
+  /** WP11：回合 settle 时通知（true=resolve / false=reject）——cancelTurn 的等待钩 */
+  settleWaiters?: Array<(ok: boolean) => void>;
 }
 
 export class PersistentJsonlWorkerSession implements AgentRuntimeSession {
@@ -654,12 +665,28 @@ export class PersistentJsonlWorkerSession implements AgentRuntimeSession {
     if (!turn || turn.settled) return;
     turn.settled = true;
     turn.resolve(result);
+    this.fireSettleWaiters(turn, true);
   }
 
   private rejectTurn(turn: ActiveTurn | null | undefined, err: Error): void {
     if (!turn || turn.settled) return;
     turn.settled = true;
     turn.reject(err);
+    this.fireSettleWaiters(turn, false);
+  }
+
+  /** settle 后一次性通知（清空列表防二次回调）；waiter 抛错不影响主链路 */
+  private fireSettleWaiters(turn: ActiveTurn, ok: boolean): void {
+    const waiters = turn.settleWaiters;
+    turn.settleWaiters = undefined;
+    if (!waiters) return;
+    for (const w of waiters) {
+      try {
+        w(ok);
+      } catch {
+        /* 等待方回调是旁路 */
+      }
+    }
   }
 
   /** 回合脱离 active 槽位：停沉默计时；stop 流程中等回合结算以继续 shutdown。 */
@@ -868,6 +895,68 @@ export class PersistentJsonlWorkerSession implements AgentRuntimeSession {
   }
 
   /**
+   * WP11：停止当前回合——结束活动回合但保留 worker 进程（与 stop() 的语义
+   * 分层：不置 stopped、不进 shutdown/SIGTERM 流程、队列后续消息照常派发）。
+   *
+   * - 无活动回合 / 回合已结算 → "idle"（no-op）；
+   * - 会话已进入 stop() / 进程已死 → "killed"（进程反正不保）；
+   * - 写 turn.cancel（同回合幂等：重复调用共享同一次等待）后宽限
+   *   min(shutdownMs, 5000ms) 内等本回合任一终态——success / interrupted /
+   *   cancelled 都算「回合已结束、进程存活」，一律返回 "cancelled"；
+   * - 宽限内等不到（worker 不应答 cancel）或回合被 reject（runtime.error /
+   *   协议违规 / 进程退出）→ 进程不可信，回退与沉默超时相同的 kill 路径，
+   *   返回 "killed"。
+   */
+  async cancelTurn(reason: string): Promise<CancelTurnResult> {
+    const turn = this.activeTurn;
+    if (!turn || turn.settled) return "idle";
+    if (this.stopped || !this.proc) return "killed";
+    if (!turn.cancelSent) {
+      turn.cancelSent = true;
+      if (!this.writeFrame({ type: "turn.cancel", fields: { turnId: turn.turnId, reason } })) {
+        // stdin 已死：等不到终态——与 turn.start EPIPE 同处理（reject + kill）
+        this.activeTurn = null;
+        this.rejectTurn(
+          turn,
+          new DispatchError("worker-exited", `worker stdin write failed on turn.cancel${this.stderrTail()}`),
+        );
+        this.killProcess();
+        return "killed";
+      }
+    }
+    const grace = Math.min(this.opts.timeouts.shutdownMs, CANCEL_TURN_GRACE_MAX_MS);
+    // settled 记回合走向：resolve → "cancelled"；reject / timeout → "killed"。
+    let settledAs: "resolved" | "rejected" | null = null;
+    await new Promise<void>((res) => {
+      const timer = setTimeout(() => {
+        if (settledAs === null) res();
+      }, grace);
+      (turn.settleWaiters ??= []).push((ok) => {
+        settledAs = ok ? "resolved" : "rejected";
+        clearTimeout(timer);
+        res();
+      });
+    });
+    if (settledAs === "resolved") return "cancelled";
+    if (settledAs === "rejected") return "killed";
+    // 超时：turn.cancel 无应答 = worker 不可信——settle 当前回合 + 杀进程
+    // （同 silence 超时的破坏面；agent 下次 dispatch 冷启动重建会话）。
+    const t = this.activeTurn;
+    if (t === turn && !t.settled) {
+      this.activeTurn = null;
+      this.rejectTurn(
+        turn,
+        new DispatchError(
+          "runtime-silence-timeout",
+          `turn.cancel not answered within ${grace}ms — killing worker${this.stderrTail()}`,
+        ),
+      );
+      this.killProcess();
+    }
+    return "killed";
+  }
+
+  /**
    * 幂等停止。流程（§8.8）：turn.cancel → ≤1.5s 宽限 → 无 turn.end 则强制
    * 结算（agent-stopped）→ shutdown → 等 runtime.stopped 或 shutdownMs →
    * SIGTERM → 2s 不 exit → SIGKILL。stdin 写失败直接进 kill 路径。
@@ -890,6 +979,7 @@ export class PersistentJsonlWorkerSession implements AgentRuntimeSession {
         this.resolveStopped();
       } else if (turn && !turn.settled) {
         if (this.writeFrame({ type: "turn.cancel", fields: { turnId: turn.turnId, reason: "agent stopped" } })) {
+          turn.cancelSent = true;
           const grace = Math.min(CANCEL_GRACE_MAX_MS, this.opts.timeouts.shutdownMs);
           this.stopTimer = setTimeout(() => {
             this.stopTimer = null;

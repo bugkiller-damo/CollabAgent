@@ -219,6 +219,8 @@ export const wsFromBrowserSchema = z.union([
       decision: interruptDecisionSchema,
     })
     .passthrough(),
+  // WP11：停止当前回合——属主校验后转发托管 daemon（与 interrupt:dismiss 同口径）
+  z.object({ type: z.literal("agent:cancel-turn"), agentId: str }).passthrough(),
   pongSchema,
 ]);
 

@@ -478,33 +478,39 @@ export const runSarpConformance = async (opts: ConformanceOptions): Promise<Conf
       }
 
       /* ---------------- cancel ----------------
-       * turn.cancel 是基础协议帧——不做 capabilities 门（interrupts 是 HITL
-       * resume 能力，LangChain worker interrupts=false 也支持 cooperative
-       * cancel）。turn 先于 cancel 落地（success/error/interrupted）→ skip
+       * turn.cancel 是基础协议帧——默认不做 capabilities 门（interrupts 是
+       * HITL resume 能力，LangChain worker interrupts=false 也支持 cooperative
+       * cancel）。WP11 起 capabilities.cancel 是显式声明位：worker 声明
+       * cancel===false = 明确不支持回合中取消 → 跳过本检查；未声明（undefined）
+       * 仍按基础帧跑。turn 先于 cancel 落地（success/error/interrupted）→ skip
        * 「cancel 未被验证」，不假装 pass。 */
-      workerA.send({
-        type: "turn.start",
-        turnId: "conf-tc",
-        conversationId: "conf-conv",
-        attempt: 1,
-        source: { kind: "message", channel: "conformance" },
-        prompt: "long turn to cancel",
-      });
-      workerA.send({ type: "turn.cancel", turnId: "conf-tc", reason: "conformance cancel" });
-      try {
-        const cFrames = await readTurnFrames();
-        const cEnd = cFrames[cFrames.length - 1]!;
-        if (cEnd.turnId !== "conf-tc") {
-          fail("cancel", `turn.end.turnId=${cEnd.turnId} != conf-tc`);
-        } else if (cEnd.status === "cancelled") {
-          pass("cancel", "turn.end status=cancelled");
-        } else if (["success", "error", "interrupted"].includes(String(cEnd.status))) {
-          skip("cancel", `turn ended status=${cEnd.status} before cancel took effect — cancel path unverified`);
-        } else {
-          fail("cancel", `unexpected status=${cEnd.status}`);
+      if (ready.capabilities?.cancel === false) {
+        skip("cancel", "worker declares capabilities.cancel=false");
+      } else {
+        workerA.send({
+          type: "turn.start",
+          turnId: "conf-tc",
+          conversationId: "conf-conv",
+          attempt: 1,
+          source: { kind: "message", channel: "conformance" },
+          prompt: "long turn to cancel",
+        });
+        workerA.send({ type: "turn.cancel", turnId: "conf-tc", reason: "conformance cancel" });
+        try {
+          const cFrames = await readTurnFrames();
+          const cEnd = cFrames[cFrames.length - 1]!;
+          if (cEnd.turnId !== "conf-tc") {
+            fail("cancel", `turn.end.turnId=${cEnd.turnId} != conf-tc`);
+          } else if (cEnd.status === "cancelled") {
+            pass("cancel", "turn.end status=cancelled");
+          } else if (["success", "error", "interrupted"].includes(String(cEnd.status))) {
+            skip("cancel", `turn ended status=${cEnd.status} before cancel took effect — cancel path unverified`);
+          } else {
+            fail("cancel", `unexpected status=${cEnd.status}`);
+          }
+        } catch (err) {
+          fail("cancel", `no turn.end after cancel — cancel ignored? (${(err as Error).message})`);
         }
-      } catch (err) {
-        fail("cancel", `no turn.end after cancel — cancel ignored? (${(err as Error).message})`);
       }
 
       /* ---------------- journal replay（§15.4）----------------

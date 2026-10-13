@@ -5,8 +5,10 @@ import { Crown } from "@lucide/vue";
 import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { apiClient, apiGet, apiPatch, apiPost } from "../../api";
+import { buildCancelTurnFrame, canCancelTurn } from "../../lib/agent-turn-cancel";
 import { isPresetAvatarUrl } from "../../lib/defaultAvatars";
 import { channelPath, parseChannelRoute } from "../../lib/nav";
+import { wsSend } from "../../lib/wsManager";
 import {
   type ComputerEntrypoint,
   type ComputerRecord,
@@ -212,6 +214,49 @@ const bridgeEntrypointOptions = computed(() =>
 const currentEntrypoint = computed(
   () => usableEntrypoints.value.find((e) => e.id === profile.value?.entrypoint) ?? null,
 );
+
+/**
+ * WP11：「停止当前回合」——bridge runtime + worker 声明 capabilities.cancel +
+ * live 状态 working 才显示（判定细则见 lib/agent-turn-cancel.ts）。点击经
+ * WS 发 agent:cancel-turn（server 属主校验 → 托管 daemon → turn.cancel），
+ * 只结束当前回合，不杀常驻 worker 进程。
+ */
+const showCancelTurn = computed(() =>
+  canCancelTurn({
+    isAgent: profile.value?.type === "agent",
+    ownedByMe: !!profile.value?.ownedByMe,
+    runtime: profile.value?.runtime,
+    status: agentStore.agents[profile.value?.handle || ""]?.status,
+    capabilities: (currentEntrypoint.value?.capabilities as Record<string, unknown> | undefined) ?? null,
+  }),
+);
+
+const cancelTurnBusy = ref(false);
+let cancelTurnTimer: ReturnType<typeof setTimeout> | null = null;
+
+function cancelCurrentTurn() {
+  const p = profile.value;
+  if (!p || !showCancelTurn.value || cancelTurnBusy.value) return;
+  cancelTurnBusy.value = true;
+  wsSend(buildCancelTurnFrame(p.id));
+  // 回合终态经 agent:status → idle 回推收敛按钮；daemon 取消宽限 ≤5s（超时
+  // 回退 kill 也会推状态变更），6s 兜底复位防永久 loading。
+  cancelTurnTimer = setTimeout(() => {
+    cancelTurnTimer = null;
+    cancelTurnBusy.value = false;
+  }, 6000);
+}
+
+// 状态离开 working（终态回推）即复位 loading，不等兜底计时
+watch(showCancelTurn, (v) => {
+  if (!v) {
+    if (cancelTurnTimer) {
+      clearTimeout(cancelTurnTimer);
+      cancelTurnTimer = null;
+    }
+    cancelTurnBusy.value = false;
+  }
+});
 
 /** bridge 模型选项 = 当前 entrypoint 的 model 策略（fixed 时只读展示） */
 const bridgeModelOptions = computed(() => {
@@ -541,6 +586,16 @@ async function expandChannels() {
       <div class="mt-4 flex flex-wrap gap-2">
         <Button size="sm" @click="sendMessage">发消息</Button>
         <Button v-if="profile.type === 'agent'" size="sm" variant="secondary" @click="openObserve">打开观察</Button>
+        <Button
+          v-if="showCancelTurn"
+          size="sm"
+          variant="secondary"
+          :loading="cancelTurnBusy"
+          title="只结束当前回合——worker 进程保留，队列里的后续消息照常处理"
+          @click="cancelCurrentTurn"
+        >
+          停止当前回合
+        </Button>
         <Button v-if="isChannelView" size="sm" variant="ghost" @click="mentionHere">在此 @</Button>
         <Button v-if="isSelf" size="sm" variant="ghost" @click="goEdit">编辑资料</Button>
       </div>

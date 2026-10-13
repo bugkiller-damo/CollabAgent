@@ -1052,6 +1052,47 @@ describe("agent-runtime-dispatch (headless)", () => {
       }
     });
 
+    it("WP11：turnResult cancelled = 正常回合收口——不重试不死信，队列后续消息继续派发同一会话", async () => {
+      const { registry, sessions } = makeBridgeRegistry();
+      harness = makeHarness({
+        runtimeRegistry: registry,
+        resolveRuntimeProfile: () => bridgeProfile,
+      });
+      // 第一回合：send resolve cancelled（worker 对 turn.cancel 回 cancelled 终态）。
+      // turn.end.usage 在 AgentRuntimeEvent 契约里必填（driver 恒发规范化对象），
+      // fake 终态帧必须带上——缺了会让观察帧映射抛 TypeError，整条 send reject。
+      await harness.dispatch.dispatchToAgent(AGENT, "general", "hi", undefined, undefined, undefined, "alice");
+      const sess = sessions[0]!;
+      sess.result = { status: "cancelled" };
+      sess.endEvent = {
+        type: "turn.end",
+        status: "cancelled",
+        usage: { costUsd: null, durationMs: 6, numTurns: 1 },
+      };
+      await harness.dispatch.dispatchToAgent(AGENT, "general", "stop it");
+      await flush();
+
+      // cancelled 终态走完成功路径：该项不再重试（send 仍只调了 1 次该回合）、无死信
+      expect(sess.requests).toHaveLength(2);
+      expect(sess.requests[1]!.attempt).toBe(1);
+      expect(harness.onDeliveryDeadLetter).not.toHaveBeenCalled();
+
+      // 队列后续消息照常投递到同一常驻会话（worker 未被取消杀）
+      sess.result = { status: "success", finalText: "done" };
+      sess.endEvent = {
+        type: "turn.end",
+        status: "success",
+        result: "done",
+        usage: { costUsd: null, durationMs: 8, numTurns: 1 },
+      };
+      await harness.dispatch.dispatchToAgent(AGENT, "general", "next question");
+      await flush();
+      expect(sessions).toHaveLength(1);
+      expect(sess.requests).toHaveLength(3);
+      expect(sess.requests[2]!.prompt).toContain("next question");
+      expect(harness.onDeliveryDeadLetter).not.toHaveBeenCalled();
+    });
+
     // ---- WP10：interrupt:resolve 结构化恢复（审批面按钮 → resume.decision） ----
 
     const putPending = (

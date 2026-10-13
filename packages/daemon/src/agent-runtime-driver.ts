@@ -73,10 +73,26 @@ export interface AgentRuntimeTurnResult {
   interrupt?: AgentRuntimeInterrupt;
 }
 
+/**
+ * WP11：回合级取消结果。
+ * - `"idle"`：无活动回合（调用方语义上的 no-op）；
+ * - `"cancelled"`：取消已生效——活动回合到达任一终态（turn.end），
+ *   常驻进程保留、会话可继续接后续回合；
+ * - `"killed"`：等不到终态/进程已死/写帧失败——已回退既有 kill 路径，
+ *   进程不保（下次 dispatch 冷启动重建）。
+ */
+export type CancelTurnResult = "cancelled" | "killed" | "idle";
+
 export interface AgentRuntimeSession {
   readonly alive: boolean;
   // biome-ignore lint/suspicious/noConfusingVoidType: void 是有意的——persistent 会话可只经事件结算不返回值
   send(request: AgentTurnRequest): Promise<void | AgentRuntimeTurnResult>;
+  /**
+   * WP11：停止当前回合（不销毁会话/进程）。可选能力——目前只有
+   * bridge/SARP 常驻 worker 会话实现（turn.cancel 帧）；未实现 = 该
+   * runtime 不支持回合级取消，runtime 层按 no-op 处理。
+   */
+  cancelTurn?(reason: string): Promise<CancelTurnResult>;
   stop(): void | Promise<void>;
 }
 

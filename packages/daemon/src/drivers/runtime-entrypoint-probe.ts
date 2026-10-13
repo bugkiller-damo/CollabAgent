@@ -50,6 +50,8 @@ const sanitizeCapabilities = (value: unknown): RuntimeCapabilityProbe | null => 
     "interrupts",
     "mcp",
     "pty",
+    // WP11：回合中取消能力（web「停止当前回合」按钮的可见性依据）
+    "cancel",
   ] as const) {
     if (typeof input[key] === "boolean") output[key] = input[key];
   }

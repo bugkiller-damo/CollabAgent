@@ -493,6 +493,10 @@ export type WsToDaemonMessage =
       decision: SarpResumeDecision;
       approver?: string;
     }
+  // WP11：取消 agent 当前回合（不杀常驻 worker 进程）——server 属主校验后
+  // 路由到托管 daemon；daemon 侧对 bridge/SARP 会话写 turn.cancel，超时回退
+  // 既有 kill 路径；无活动回合/不支持的 runtime → no-op。
+  | { type: "agent:cancel-turn"; agentId: string }
   | { type: "ping" };
 
 // ---------- daemon → server ----------
@@ -521,6 +525,8 @@ export interface RuntimeCapabilityProbe {
   usage?: "none" | "tokens" | "cost";
   pty?: boolean;
   maxConcurrency?: number;
+  /** WP11：worker 声明支持 turn.cancel（回合中取消，进程保留） */
+  cancel?: boolean;
 }
 
 /**
@@ -753,6 +759,9 @@ export type WsFromBrowserMessage =
       interruptId: string;
       decision: SarpResumeDecision;
     }
+  // WP11：取消 agent 当前回合（停止当前回合按钮）——server 属主校验后
+  // 转发托管 daemon；只对 bridge/SARP 常驻会话生效。
+  | { type: "agent:cancel-turn"; agentId: string }
   | { type: "pong" };
 
 export interface AgentWorkspaceFile {

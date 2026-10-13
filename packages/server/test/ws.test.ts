@@ -542,3 +542,66 @@ describe("WS: interrupt:resolve 路由（WP10）", () => {
     daemonWs.close();
   });
 });
+
+describe("WS: agent:cancel-turn 路由（WP11）", () => {
+  // 建属主 agent + 该机 daemon 连接（ready → machineKey 注册），返回 agentId
+  async function setupOwnedDaemonAgent(u: { cookie: string; csrf: string; userId: string }) {
+    const comp = await ensureTestComputer(u);
+    const r = await api("/api/agents", {
+      method: "POST",
+      cookie: u.cookie,
+      csrf: u.csrf,
+      body: { name: `wp11_${uniqHandle()}`, serverId: comp.serverId },
+    });
+    expect(r.status).toBe(200);
+    const { token, machineUuid } = await mintMachineToken(u);
+    const { ws, connected } = connectWs({ Authorization: `Bearer ${token}` });
+    await connected;
+    ws.send(JSON.stringify({ type: "ready", machineUuid }));
+    await tick(150);
+    return { agentId: r.data.agent.id as string, ws };
+  }
+
+  it("属主 cancel-turn → 原样转发托管 daemon（agentId 直通）", async () => {
+    const u = await registerUser();
+    const { agentId, ws: daemonWs } = await setupOwnedDaemonAgent(u);
+    const { ws: browser, connected } = connectWs({ Cookie: u.cookie });
+    await connected;
+
+    const got = nextMessage(daemonWs);
+    browser.send(JSON.stringify({ type: "agent:cancel-turn", agentId }));
+    const fwd = await got;
+    expect(fwd).toMatchObject({ type: "agent:cancel-turn", agentId });
+    browser.close();
+    daemonWs.close();
+  });
+
+  it("非属主 cancel-turn → 静默丢（daemon 收不到帧），浏览器不断连", async () => {
+    const owner = await registerUser();
+    const other = await registerUser();
+    const { agentId, ws: daemonWs } = await setupOwnedDaemonAgent(owner);
+    const { ws: browser, connected } = connectWs({ Cookie: other.cookie });
+    await connected;
+
+    const got = nextMessage(daemonWs, 1500);
+    browser.send(JSON.stringify({ type: "agent:cancel-turn", agentId }));
+    await expect(got).rejects.toThrow(/timeout/);
+    expect(browser.readyState).toBe(WebSocket.OPEN);
+    browser.close();
+    daemonWs.close();
+  });
+
+  it("缺 agentId 的半帧 → schema 丢帧（不路由、不断连）", async () => {
+    const u = await registerUser();
+    const { ws: daemonWs } = await setupOwnedDaemonAgent(u);
+    const { ws: browser, connected } = connectWs({ Cookie: u.cookie });
+    await connected;
+
+    const got = nextMessage(daemonWs, 1500);
+    browser.send(JSON.stringify({ type: "agent:cancel-turn" }));
+    await expect(got).rejects.toThrow(/timeout/);
+    expect(browser.readyState).toBe(WebSocket.OPEN);
+    browser.close();
+    daemonWs.close();
+  });
+});

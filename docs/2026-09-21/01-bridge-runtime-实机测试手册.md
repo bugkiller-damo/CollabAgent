@@ -131,6 +131,8 @@ Invoke-RestMethod -Headers $H "http://localhost:3001/api/messages/history?channe
 
 LangGraph 示例的审批门：每个回合 `review` 节点 `interrupt()` 挂起 → daemon 回 `approve`/`reject` 开头的下一条消息即 resume。**结构化审批（WP10）**：worker 在 `interrupt()` 里声明 `options.decisions`（`"approve"`/`"reject"`/`"respond"`）时，web 审批横幅渲染对应按钮——点击发 `interrupt:resolve`，daemon 校验 pending 后派发 `turn.start`（`resume.value` 为可读文本、`resume.decision` 为结构化决定、`source.sender` 为审批人 handle）；`edit` 决定协议已通但 UI 一期不渲染。声明了 `options.actions` 时横幅同时列出动作名 + 参数预览。文本回复照常可用（`resume.value` = 消息原文）。
 
+**单回合取消（WP11）**：worker `runtime.ready` 声明 `capabilities.cancel: true` 时，属主在 agent 档案页（`/@<handle>`）看到「停止当前回合」按钮（仅 working 态显示）——点击发 `agent:cancel-turn`，server 属主校验后路由托管 daemon → `turn.cancel` → worker 回 `turn.end{status:"cancelled"}` 收敛，**worker 进程保留**、队列后续消息照常派发；daemon 宽限 `min(shutdownMs, 5s)` 内等不到终态回退杀进程（下次 dispatch 冷启动重建）。验证：派发一条长回合消息后点按钮，观察态回 idle 且下条消息沿用同一会话。
+
 ---
 
 ## 5. 常见失败速查

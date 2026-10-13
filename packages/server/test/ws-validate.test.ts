@@ -69,7 +69,7 @@ const DAEMON_FRAMES: Record<string, unknown> = {
   pong: { type: "pong" },
 };
 
-/** browser→server 全部 7 个 type 的最小合法帧 */
+/** browser→server 全部 8 个 type 的最小合法帧 */
 const BROWSER_FRAMES: Record<string, unknown> = {
   "terminal:watch": { type: "terminal:watch", agentName: "x" },
   "terminal:unwatch": { type: "terminal:unwatch", agentName: "x" },
@@ -85,6 +85,8 @@ const BROWSER_FRAMES: Record<string, unknown> = {
     interruptId: "i1",
     decision: { type: "approve" },
   },
+  // WP11：停止当前回合 → 属主校验后转发托管 daemon（turn.cancel）
+  "agent:cancel-turn": { type: "agent:cancel-turn", agentId: "a" },
   pong: { type: "pong" },
 };
 
@@ -183,6 +185,15 @@ describe("WS 入站校验：browser→server 逐 type 对齐", () => {
   it("interrupt:dismiss 缺 conversationId → 丢帧（防半帧把整 agent 的 pending 误清）", () => {
     expect(
       parseWsInbound(JSON.stringify({ type: "interrupt:dismiss", agentId: "a" }), wsFromBrowserSchema, "browser-test"),
+    ).toBeNull();
+  });
+
+  it("agent:cancel-turn 缺 agentId / agentId 非字符串 → 丢帧", () => {
+    expect(
+      parseWsInbound(JSON.stringify({ type: "agent:cancel-turn" }), wsFromBrowserSchema, "browser-test"),
+    ).toBeNull();
+    expect(
+      parseWsInbound(JSON.stringify({ type: "agent:cancel-turn", agentId: 7 }), wsFromBrowserSchema, "browser-test"),
     ).toBeNull();
   });
 });

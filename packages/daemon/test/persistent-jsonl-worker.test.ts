@@ -764,4 +764,116 @@ describe("PersistentJsonlWorkerSession", () => {
     await rejected;
     expect(h.child.kill).toHaveBeenCalled();
   });
+
+  describe("WP11：cancelTurn（停止当前回合，进程保留）", () => {
+    it("无活动回合 → 'idle'（不写任何帧、不杀进程）", async () => {
+      const h = await openReady();
+      await expect(h.session.cancelTurn!("user stop")).resolves.toBe("idle");
+      expect(h.frames()).toHaveLength(1); // 只有 initialize
+      expect(h.child.kill).not.toHaveBeenCalled();
+      expect(h.session.alive).toBe(true);
+    });
+
+    it("活动回合 → 写 turn.cancel；turn.end cancelled → 'cancelled'，进程保留可接后续回合", async () => {
+      const h = await openReady();
+      const p = h.session.send(makeReq());
+      await flush();
+      const c = h.session.cancelTurn!("user stop");
+      await flush();
+      expect(h.frames()[2]).toMatchObject({ type: "turn.cancel", turnId: "t1", reason: "user stop" });
+      h.emit({ type: "turn.end", turnId: "t1", eventSeq: 1, status: "cancelled" });
+      await expect(c).resolves.toBe("cancelled");
+      await expect(p).resolves.toMatchObject({ status: "cancelled" });
+      // 非破坏性：不置 stopped、不进 shutdown 流程、进程保留
+      expect(h.child.kill).not.toHaveBeenCalled();
+      expect(h.session.alive).toBe(true);
+      expect(h.frames().map((f) => f.type)).not.toContain("shutdown");
+      // 同一会话可接下一回合（队列后续消息照常派发）
+      const p2 = h.session.send(makeReq({ turnId: "t2" }));
+      await flush();
+      expect(h.frames().at(-1)).toMatchObject({ type: "turn.start", turnId: "t2" });
+      h.emit({ type: "turn.end", turnId: "t2", eventSeq: 1, status: "success", finalText: "ok" });
+      await expect(p2).resolves.toMatchObject({ status: "success" });
+      h.session.stop();
+    });
+
+    it("同回合重复调用幂等：turn.cancel 只写一次，两个调用方共享同一次等待", async () => {
+      const h = await openReady();
+      const p = h.session.send(makeReq());
+      await flush();
+      const c1 = h.session.cancelTurn!("r1");
+      const c2 = h.session.cancelTurn!("r2");
+      await flush();
+      expect(h.frames().filter((f) => f.type === "turn.cancel")).toHaveLength(1);
+      h.emit({ type: "turn.end", turnId: "t1", eventSeq: 1, status: "cancelled" });
+      await expect(c1).resolves.toBe("cancelled");
+      await expect(c2).resolves.toBe("cancelled");
+      await p;
+      h.session.stop();
+    });
+
+    it("宽限内无终态（worker 不应答 cancel）→ 回退 kill 路径：send reject + 杀进程，返回 'killed'", async () => {
+      const h = await openReady({ timeouts: { shutdownMs: 30 } });
+      const p = h.session.send(makeReq());
+      const rejected = expect(p).rejects.toMatchObject({ code: "runtime-silence-timeout" });
+      await flush();
+      const c = h.session.cancelTurn!("user stop");
+      await rejected;
+      await expect(c).resolves.toBe("killed");
+      expect(h.child.kill).toHaveBeenCalled();
+      expect(h.session.alive).toBe(false);
+    });
+
+    it("回合被其他终态抢先结算：resolve（success/interrupted）→ 'cancelled'；reject（error 终态）→ 'killed'", async () => {
+      // success 抢先：按钮语义上回合已结束、进程活着 → cancelled
+      const h = await openReady();
+      const p = h.session.send(makeReq());
+      await flush();
+      const c = h.session.cancelTurn!("user stop");
+      h.emit({ type: "turn.end", turnId: "t1", eventSeq: 1, status: "success", finalText: "抢答完了" });
+      await expect(c).resolves.toBe("cancelled");
+      await expect(p).resolves.toMatchObject({ status: "success" });
+      expect(h.session.alive).toBe(true);
+      h.session.stop();
+
+      // error 终态：回合被 reject——进程虽活着，但取消并未以「回合结束于进程保留」收尾 → killed
+      const h2 = await openReady();
+      const p2 = h2.session.send(makeReq());
+      await flush();
+      const c2 = h2.session.cancelTurn!("user stop");
+      h2.emit({
+        type: "turn.end",
+        turnId: "t1",
+        eventSeq: 1,
+        status: "error",
+        error: { code: "TURN_FAILED", message: "boom" },
+      });
+      await expect(p2).rejects.toMatchObject({ code: "worker-error" });
+      await expect(c2).resolves.toBe("killed");
+      expect(h2.session.alive).toBe(true); // error 终态本身不杀进程
+      h2.session.stop();
+    });
+
+    it("回合中途进程死亡 → 'killed'（如实回报进程没保住）", async () => {
+      const h = await openReady();
+      const p = h.session.send(makeReq());
+      const rejected = expect(p).rejects.toMatchObject({ code: "worker-exited" });
+      await flush();
+      const c = h.session.cancelTurn!("user stop");
+      h.child.emit("exit", 1);
+      await rejected;
+      await expect(c).resolves.toBe("killed");
+    });
+
+    it("stop() 进行中调用 → 'killed'（进程反正不保），不再写第二个 turn.cancel", async () => {
+      const h = await openReady();
+      const p = h.session.send(makeReq());
+      const rejected = expect(p).rejects.toMatchObject({ code: "agent-stopped" });
+      await flush();
+      void h.session.stop();
+      await expect(h.session.cancelTurn!("user stop")).resolves.toBe("killed");
+      await rejected;
+      expect(h.frames().filter((f) => f.type === "turn.cancel")).toHaveLength(1); // stop() 写的那帧
+    });
+  });
 });

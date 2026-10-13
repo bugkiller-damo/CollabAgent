@@ -84,6 +84,28 @@ describe("decodeSarpWorkerFrame — 信封", () => {
     });
   });
 
+  it("WP11：capabilities.cancel 布尔位透传；非布尔 → invalid-schema（已知键严格）", () => {
+    const msg = decodeSarpWorkerFrame(
+      frame({
+        type: "runtime.ready",
+        runtime: { id: "bridge" },
+        capabilities: { maxConcurrency: 1, cancel: true },
+      }),
+    );
+    expect(msg).toMatchObject({ capabilities: { cancel: true } });
+    // 非布尔 cancel 与其余 capability 键同口径——invalid-schema（已知字段类型
+    // 严格校验，非 R-UF 容忍范围）
+    expect(
+      decodeErr(
+        frame({
+          type: "runtime.ready",
+          runtime: { id: "bridge" },
+          capabilities: { maxConcurrency: 1, cancel: "yes" },
+        }),
+      ).reason,
+    ).toBe("invalid-schema");
+  });
+
   it("protocol/version/seq/timestamp 缺失或非法 → 信封错误", () => {
     expect(decodeErr(JSON.stringify({ type: "x", seq: 1, timestamp: "t" })).reason).toBe("invalid-envelope");
     expect(decodeErr(frame({ type: "runtime.stopped" }).replace('"version":1', '"version":2')).reason).toBe(

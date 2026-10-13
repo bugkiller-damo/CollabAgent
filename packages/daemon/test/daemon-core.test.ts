@@ -35,6 +35,7 @@ const makeFakeRuntime = (obsBus: ReturnType<typeof createObservationBus>): FakeR
     runAgentTriage: vi.fn(async () => {}),
     dispatchToAgent: vi.fn(async () => {}),
     resolveInterrupt: vi.fn(async () => {}),
+    cancelTurn: vi.fn(async () => "idle" as const),
     findMentionedAgent: vi.fn(() => null),
     setPreferredTermSize: vi.fn(),
     getAgentState: vi.fn(() => "idle"),
@@ -383,6 +384,28 @@ describe("daemon-core 消息路由", () => {
       const m = sent.find((x) => x.type === "terminal:history");
       expect(m).toMatchObject({ agentName: "nonexistent-agent" });
       expect(typeof m!.text).toBe("string");
+    });
+  });
+
+  describe("agent:cancel-turn（WP11：停止当前回合）", () => {
+    it("合法帧 → runtime.cancelTurn(agentId)（结果仅进日志，不回 server）", async () => {
+      runtime.cancelTurn.mockResolvedValue("cancelled");
+      await call({ type: "agent:cancel-turn", agentId: AGENT_ID });
+      expect(runtime.cancelTurn).toHaveBeenCalledWith(AGENT_ID);
+      expect(sent.filter((m) => m.type === "agent:cancel-turn")).toHaveLength(0); // 控制帧单向，无回执
+    });
+
+    it("缺/空 agentId → 不触 runtime（半帧静默丢）", async () => {
+      await call({ type: "agent:cancel-turn", agentId: "" });
+      await call({ type: "agent:cancel-turn" });
+      expect(runtime.cancelTurn).not.toHaveBeenCalled();
+    });
+
+    it("runtime.cancelTurn 抛错 → warn 吞掉，不炸 dispatch", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      runtime.cancelTurn.mockRejectedValue(new Error("boom"));
+      await call({ type: "agent:cancel-turn", agentId: AGENT_ID });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("cancel-turn"));
     });
   });
 

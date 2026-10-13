@@ -72,6 +72,8 @@ def probe_capabilities(streaming: bool, load_mcp_tools: bool = True) -> dict:
         "toolEvents": True,
         "durableThreads": False,
         "interrupts": False,
+        # turn.cancel 协作取消：逐事件查 cancelled + async task.cancel()
+        "cancel": True,
         "mcp": bool(load_mcp_tools),
         "usage": "tokens",
     }
@@ -88,6 +90,8 @@ def handshake_fields(init: SarpInitialize, *, streaming: bool, has_mcp: bool) ->
             "streamingText": streaming,
             "toolEvents": True,
             "interrupts": False,
+            # turn.cancel 协作取消：逐事件查 cancelled + async task.cancel()
+            "cancel": True,
             "durableThreads": False,
             "mcp": has_mcp,
             "usage": "tokens",

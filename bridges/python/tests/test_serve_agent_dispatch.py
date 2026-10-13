@@ -306,6 +306,7 @@ class TestDispatch:
         s.feed(_init_frame(tmp_path))
         ready = s.wait_type("runtime.ready")
         assert ready["capabilities"]["interrupts"] is True  # 图能力面
+        assert ready["capabilities"]["cancel"] is True
         s.feed(_turn(2, "t1", "conv-1", "hi"))
         assert s.wait_turn_end("t1")["status"] == "success"
         s.feed(_turn(3, "t2", "conv-1", "again"))
@@ -333,6 +334,7 @@ class TestDispatch:
         assert ready["model"]["selected"] == "lc-model"
         caps = ready["capabilities"]
         assert caps["interrupts"] is False and caps["durableThreads"] is False
+        assert caps["cancel"] is True
 
         deltas = [f["text"] for f in frames if f["type"] == "assistant.delta"]
         assert "".join(deltas) == "hello world"

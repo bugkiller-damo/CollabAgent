@@ -44,7 +44,15 @@ const goodFrame = JSON.stringify({
   version: 1,
   type: "probe.result",
   runtime: { id: "bridge", bridgeVersion: "0.1.0", frameworkVersion: "0.2.0" },
-  capabilities: { maxConcurrency: 1, persistentProcess: true, streamingText: true, usage: "tokens", bogus: "dropped" },
+  capabilities: {
+    maxConcurrency: 1,
+    persistentProcess: true,
+    streamingText: true,
+    usage: "tokens",
+    // WP11：cancel 布尔位进白名单（web「停止当前回合」按钮的可见性依据）
+    cancel: true,
+    bogus: "dropped",
+  },
 });
 
 const deps = (over: Partial<Parameters<typeof probeRuntimeEntrypoints>[1]> = {}) => ({
@@ -77,6 +85,7 @@ describe("probeRuntimeEntrypoints", () => {
       persistentProcess: true,
       streamingText: true,
       usage: "tokens",
+      cancel: true,
     });
     expect(p?.capabilities).not.toHaveProperty("bogus");
   });
