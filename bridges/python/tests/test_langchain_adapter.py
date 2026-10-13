@@ -268,6 +268,66 @@ class TestHandshake:
         h.finish()
 
 
+class TestWorkspaceCwd:
+    """workspace_cwd=True：initialize 握手期把进程 cwd 切到 init.workspace_path
+    ——工厂与 Runnable 里的相对路径以专属工作区为基准。Harness 已注入独立
+    journal（tmp_path），serve 不会再 mkdir 工作区目录；worker 跑在同进程
+    线程里 os.chdir 会改宿主 cwd——monkeypatch.chdir 保证用例间隔离。"""
+
+    def test_workspace_cwd_switches_to_workspace(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        seen: dict = {}
+
+        def factory(init, tools):
+            seen["cwd"] = Path(os.getcwd()).resolve()
+            return FakeAgent()
+
+        h = Harness(tmp_path)
+        h.start(factory, workspace_cwd=True)
+        fields = init_fields()
+        fields["workspace"] = {"path": str(ws)}  # init_fields 的 **over 进 platform，顶层要直接改
+        h.send("initialize", **fields)
+        h.ready()
+        assert seen["cwd"] == ws.resolve()
+        h.send("shutdown")
+        assert h.finish() == 0
+
+    def test_workspace_cwd_default_keeps_manifest_cwd(self, tmp_path, monkeypatch):
+        marker = tmp_path / "marker"
+        marker.mkdir()
+        monkeypatch.chdir(marker)
+        seen: dict = {}
+
+        def factory(init, tools):
+            seen["cwd"] = Path(os.getcwd()).resolve()
+            return FakeAgent()
+
+        # workspace 路径此时甚至不需要存在——开关默认 False 不触发 chdir
+        h = Harness(tmp_path)
+        h.start(factory)
+        fields = init_fields()
+        fields["workspace"] = {"path": str(tmp_path / "ws")}
+        h.send("initialize", **fields)
+        h.ready()
+        assert seen["cwd"] == marker.resolve()
+        h.send("shutdown")
+        assert h.finish() == 0
+
+    def test_workspace_cwd_missing_dir_fails_handshake(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        h = Harness(tmp_path)
+        h.start(FakeAgent(), workspace_cwd=True)
+        fields = init_fields()
+        fields["workspace"] = {"path": str(tmp_path / "no-such-dir")}
+        h.send("initialize", **fields)
+        err = h.wait_frame(lambda f: f["type"] == "runtime.error")
+        assert err["error"]["code"] == "CWD_NOT_FOUND"
+        assert err["error"]["retryable"] is False
+        assert h.finish() == 2
+
+
 # ---------------------------------------------------------------------------
 # 流式回合
 # ---------------------------------------------------------------------------

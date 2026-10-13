@@ -149,6 +149,9 @@ def main() -> int:
             build_graph,
             interrupt_mapper=_interrupt_prompt,
             custom_event_mapper=_custom_progress,
+            # cwd 切到专属工作区：相对路径文件操作以工作区为基准
+            #（checkpoint 本身已用 init.workspace_path 绝对路径定位）
+            workspace_cwd=True,
         )
     finally:
         for conn in _CHECKPOINT_CONNS:

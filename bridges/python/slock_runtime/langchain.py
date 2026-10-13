@@ -26,10 +26,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 from collections.abc import Callable
 from typing import Any
 
-from .errors import GRAPH_INPUT_INVALID, PROTOCOL_VIOLATION, SarpError
+from .errors import CWD_NOT_FOUND, GRAPH_INPUT_INVALID, PROTOCOL_VIOLATION, SarpError
 from .mcp import SlockMcpClient
 from .protocol import SarpInitialize, SarpTurnStart
 from .runtime import TurnEmit, TurnOutcome, WorkerRuntime
@@ -54,6 +55,7 @@ def serve_langchain(
     cost_calculator: CostCalculator | None = None,
     system_prompt_mode: str = "prepend",
     streaming: bool = True,
+    workspace_cwd: bool = False,
     runtime_id: str = "langchain",
     framework_version: str | None = None,
     transport: Any = None,
@@ -64,6 +66,12 @@ def serve_langchain(
 
     agent_or_factory：现成的 Runnable，或工厂 ``fn(init, tools) -> Runnable``
     ——工厂在 initialize 之后、Slock MCP tools 就绪之后调用（§12.4）。
+
+    workspace_cwd=True 时，initialize 握手期间把进程 cwd 切到
+    init.workspace_path（daemon 建好的专属持久工作区）——工厂函数与
+    Runnable 里的相对路径即以工作区为基准。默认 False：cwd 保持
+    manifest 里声明的目录。工作区不可进入（chdir 失败）→
+    runtime.error(CWD_NOT_FOUND)，握手失败。
     """
     if system_prompt_mode not in ("prepend", "none"):
         raise ValueError(f"system_prompt_mode must be 'prepend' or 'none', got {system_prompt_mode!r}")
@@ -75,6 +83,15 @@ def serve_langchain(
     holder: dict[str, Any] = {"mcp_client": None, "agent": None, "slock_tool_names": frozenset()}
 
     def _on_initialize(init: SarpInitialize, emit: TurnEmit) -> dict:
+        if workspace_cwd:
+            try:
+                os.chdir(init.workspace_path)
+            except OSError as e:
+                raise SarpError(
+                    CWD_NOT_FOUND,
+                    f"workspace_cwd: cannot chdir to {init.workspace_path!r}: {e}",
+                    retryable=False,
+                ) from e
         tools: list = []
         if init.mcp is not None and load_mcp_tools:
             client = SlockMcpClient(init.mcp)

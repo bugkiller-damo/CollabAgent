@@ -60,6 +60,12 @@ sys.exit(rt.serve(run_turn, on_initialize))
 推荐 factory 形态：SDK 保证 `initialize` → MCP 连接 → 建图 → `runtime.ready`
 的顺序，systemPrompt/model override 都能在建图时生效。
 
+`workspace_cwd=True`（两个 `serve_*` 同名参数，默认 `False`）会在
+initialize 握手期把进程 cwd 切到 `init.workspace_path`——daemon 为 worker
+建好的专属持久工作区；工厂函数与图/Runnable 里的相对路径即以工作区为
+基准。默认 `False` 时 cwd 保持 manifest `cwd`（通常是代码目录）。工作区
+不可进入 → `runtime.error(CWD_NOT_FOUND)`，握手失败。
+
 ## 自动 probe
 
 `--slock-probe` 由 `WorkerRuntime.serve` 内置处理：进程打印**单行**

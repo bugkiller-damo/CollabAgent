@@ -105,6 +105,14 @@ daemon 读本机 `<daemon 进程 cwd>/.slock/runtimes.json`（`slockDir()` 默�
   `MEMORY.md` 约定；`agentic` 追加工作区绝对路径、`deliverables/` 交付目录、
   `MEMORY.md` 持久记忆约定；`none` 完全不下发平台提示。
 
+worker 进程启动时的 cwd 就是 manifest 里的 `cwd`（代码目录），**不是**
+`init.workspace_path`（daemon 为 agent 建好的专属持久工作区）。文件类
+操作请用 `init.workspace_path` 绝对路径，或在 `serve_langgraph` /
+`serve_langchain` 上开 `workspace_cwd=True`——握手期把进程 cwd 切到工作区，
+之后图/Runnable 里的相对路径即以工作区为基准（目录不可进入 →
+`runtime.error(CWD_NOT_FOUND)`）。worker 自管的 `.env` 等代码旁文件请用
+`Path(__file__).parent` 定位，不要依赖 cwd。
+
 **CentOS Stream 9 前置**：官方 AppStream 提供 Python 3.11 与 Node.js 20。
 包尚未发布到公共 PyPI，当前受支持路径是把本地/内部 wheel 装进独立 venv：
 

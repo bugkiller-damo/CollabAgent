@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import queue
 import sqlite3
 import sys
@@ -27,6 +28,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from slock_runtime.idempotency import TurnJournal
 from slock_runtime.langgraph import serve_langgraph
 from slock_runtime.transport import SarpTransport
 
@@ -541,6 +543,57 @@ class TestErrors:
         code, frames = run_worker(_echo_graph(tmp_path), [init])
         assert code == 2 and frames[0]["type"] == "runtime.error"
         assert frames[0]["error"]["code"] == "RUNTIME_ID_MISMATCH"
+
+
+class TestWorkspaceCwd:
+    """workspace_cwd=True：initialize 握手期把进程 cwd 切到 init.workspace_path
+    ——工厂与图节点里的相对路径以专属工作区为基准。worker 跑在同进程线程里，
+    os.chdir 会改宿主 cwd——monkeypatch.chdir 保证用例间隔离。"""
+
+    def test_workspace_cwd_switches_to_workspace(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        seen: dict = {}
+
+        def factory(init, tools):
+            seen["cwd"] = Path(os.getcwd()).resolve()
+            return _echo_graph(tmp_path)
+
+        code, _ = run_worker(factory, [_init_frame(ws)], workspace_cwd=True)
+        assert code == 0
+        assert seen["cwd"] == ws.resolve()
+
+    def test_workspace_cwd_default_keeps_manifest_cwd(self, tmp_path, monkeypatch):
+        marker = tmp_path / "marker"
+        marker.mkdir()
+        monkeypatch.chdir(marker)
+        seen: dict = {}
+
+        def factory(init, tools):
+            seen["cwd"] = Path(os.getcwd()).resolve()
+            return _echo_graph(tmp_path)
+
+        # workspace 路径此时甚至不需要存在——开关默认 False 不触发 chdir
+        code, _ = run_worker(factory, [_init_frame(tmp_path / "ws")])
+        assert code == 0
+        assert seen["cwd"] == marker.resolve()
+
+    def test_workspace_cwd_missing_dir_fails_handshake(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        missing = tmp_path / "no-such-dir"
+        # 注入现成 journal：serve 里 `TurnJournal(init.workspace_path)` 的默认
+        # 构造会 mkdir -p 工作区（idempotency.py:48，先于 on_initialize）——
+        # 不绕过它的话目录在 chdir 前就存在，永远打不到 CWD_NOT_FOUND
+        code, frames = run_worker(
+            _echo_graph(tmp_path),
+            [_init_frame(missing)],
+            workspace_cwd=True,
+            journal=TurnJournal(str(tmp_path)),
+        )
+        assert code == 2 and frames[0]["type"] == "runtime.error"
+        assert frames[0]["error"]["code"] == "CWD_NOT_FOUND"
+        assert frames[0]["error"]["retryable"] is False
 
 
 class TestStreamingModes:

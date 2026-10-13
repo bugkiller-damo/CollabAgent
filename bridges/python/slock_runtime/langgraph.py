@@ -28,13 +28,14 @@
 from __future__ import annotations
 
 import json
+import os
 import secrets
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from .errors import GRAPH_INPUT_INVALID, INTERRUPT_NOT_FOUND, RUNTIME_ID_MISMATCH, SarpError
+from .errors import CWD_NOT_FOUND, GRAPH_INPUT_INVALID, INTERRUPT_NOT_FOUND, RUNTIME_ID_MISMATCH, SarpError
 from .mcp import SlockMcpClient
 from .protocol import SarpInitialize, SarpTurnStart
 from .runtime import InterruptRecord, TurnEmit, TurnOutcome, WorkerRuntime, new_resume_token
@@ -306,6 +307,7 @@ def serve_langgraph(
     custom_event_mapper: Callable[[Any], str | None] | None = None,
     cost_calculator: Callable[[dict], float | None] | None = None,
     streaming: bool = True,
+    workspace_cwd: bool = False,
     runtime_id: str = "langgraph",
     framework_version: str | None = None,
     transport: Any = None,
@@ -316,6 +318,12 @@ def serve_langgraph(
     graph_or_factory：CompiledStateGraph 实例，或 `factory(init, tools) ->
     graph` 工厂（§12.4：graph 不能在 import 时就 compile——Slock MCP tools
     要等 initialize 下发后才有；tools 是 list[SlockTool]）。
+
+    workspace_cwd=True 时，initialize 握手期间把进程 cwd 切到
+    init.workspace_path（daemon 为该 worker 建好的专属持久工作区）——工厂
+    函数与图节点里的相对路径即以工作区为基准。默认 False：cwd 保持
+    manifest 里声明的目录（通常是用户代码目录）。工作区不可进入
+    （chdir 失败）→ runtime.error(CWD_NOT_FOUND)，握手失败。
 
     mapper 签名：
     - input_mapper(init, turn, fresh) -> graph input；fresh = thread 无
@@ -337,6 +345,15 @@ def serve_langgraph(
                 f"initialize.runtime.id={init.runtime_id!r} != worker runtime_id={runtime_id!r}",
                 retryable=False,
             )
+        if workspace_cwd:
+            try:
+                os.chdir(init.workspace_path)
+            except OSError as e:
+                raise SarpError(
+                    CWD_NOT_FOUND,
+                    f"workspace_cwd: cannot chdir to {init.workspace_path!r}: {e}",
+                    retryable=False,
+                ) from e
         client: SlockMcpClient | None = None
         tools: list[SlockTool] = []
         if init.mcp is not None:
