@@ -27,6 +27,12 @@
  *   SLOCK_FX_NO_TURN_END=1        脚本无自带终态时不补隐式 turn.end（silence 测试）
  *   SLOCK_FX_EMPTY_SUCCESS=1      等价脚本 [{"end":{"status":"success"}}]
  *   SLOCK_FX_ECHO_PROMPT=1        把 turn.start.prompt 作为 delta 回显 + success finalText
+ *   SLOCK_FX_SHUTDOWN_NO_STOP=1   shutdown 时不发 runtime.stopped 直接 exit(0)（§6 违例）
+ *   SLOCK_FX_SHUTDOWN_IGNORE=1    shutdown 帧装死：不回 stopped 也不退（静默挂死测试）
+ *   SLOCK_FX_MALFORMED_ERROR_EXIT=1 无法解析的入向行 → runtime.error{MALFORMED_INPUT}
+ *                                 后 exit(2)（对齐 Python SDK 的 fail-closed 剖面）
+ *   SLOCK_FX_JOURNAL=1            最小 turn journal（§15.4）：已完成 turnId 重发
+ *                                 只回放存的 turn.end（fresh turn → eventSeq 1），不重跑脚本
  *
  * SLOCK_FX_SCRIPT 指令（按序执行，每元素取第一个匹配的键）：
  *   {"delta":"s"}                          → assistant.delta{text:s}
@@ -61,6 +67,10 @@ const MODEL_SELECTED = env.SLOCK_FX_MODEL_SELECTED || "fx-model";
 const MODEL_OVERRIDE = env.SLOCK_FX_MODEL_OVERRIDE !== "false";
 const SEQ_RESET = env.SLOCK_FX_SEQ_RESET === "1";
 const NO_TURN_END = env.SLOCK_FX_NO_TURN_END === "1";
+const JOURNAL = env.SLOCK_FX_JOURNAL === "1";
+
+/** SLOCK_FX_JOURNAL=1：turnId → 已发出的 turn.end spec（终态先落 journal 再发）。 */
+const turnJournal = new Map();
 
 const DEFAULT_CAPABILITIES = {
   persistentProcess: true,
@@ -144,8 +154,11 @@ const sendTurnFrame = (turn, type, fields) => {
 };
 
 const sendTurnEnd = (turn, spec) => {
-  sendTurnFrame(turn, "turn.end", { status: "success", ...spec });
+  const endSpec = { status: "success", ...spec };
+  sendTurnFrame(turn, "turn.end", endSpec);
   turn.ended = true;
+  // §15.4：终态先落 journal 再发——重发同 turnId 时回放这份 spec。
+  if (JOURNAL) turnJournal.set(turn.turnId, endSpec);
 };
 
 /** 可被打断的回合内 sleep：turn.cancel / stdin 关闭时立即返回；timer unref 不拖住进程。 */
@@ -276,7 +289,11 @@ const runTurnScript = async (turn, frame) => {
     if (delayMs > 0) await turnSleep(turn, delayMs);
     for (const instr of buildScript(frame)) {
       if (turn.cancelled) return;
-      await execInstruction(turn, instr);
+      // sleep 是唯一真正异步的指令：只在它身上让出事件循环，turn.cancel 才有
+      // 机会插入打断。其余指令同步跑完——无 delay 的快回合整个在 turn.start
+      // 行处理内完成（终态先于后续 cancel 行落地），消除 stdin 合块竞态。
+      if (isPlainObject(instr) && "sleep" in instr) await execInstruction(turn, instr);
+      else void execInstruction(turn, instr);
     }
     if (!turn.cancelled && !turn.ended && !NO_TURN_END) {
       const end = { status: "success", sessionRef: "fx-thread-1", usage: { ...DEFAULT_USAGE } };
@@ -323,11 +340,18 @@ const onInitialize = (frame) => {
 };
 
 const onTurnStart = (frame) => {
+  const turnId = typeof frame.turnId === "string" && frame.turnId ? frame.turnId : "turn-unknown";
+  // §15.4 journal 回放：同 turnId 已有终态 → 只重发存的 turn.end
+  // （fresh turn → eventSeq 1），不重跑脚本。
+  if (JOURNAL && turnJournal.has(turnId)) {
+    sendFrame({ type: "turn.end", turnId, eventSeq: 1, ...turnJournal.get(turnId) });
+    return;
+  }
   // maxConcurrency=1：新 turn.start 到达时静默放弃还在跑的旧脚本。
   if (currentTurn) cancelTurn(currentTurn);
   let wakeResolve = () => {};
   const turn = {
-    turnId: typeof frame.turnId === "string" && frame.turnId ? frame.turnId : "turn-unknown",
+    turnId,
     conversationId: frame.conversationId,
     source: frame.source,
     resume: frame.resume,
@@ -354,6 +378,10 @@ const onTurnCancel = (frame) => {
 };
 
 const onShutdown = () => {
+  // SLOCK_FX_SHUTDOWN_IGNORE=1：装死——不回 stopped 也不退（静默挂死测试）。
+  if (env.SLOCK_FX_SHUTDOWN_IGNORE === "1") return;
+  // SLOCK_FX_SHUTDOWN_NO_STOP=1：§6 违例——不发 runtime.stopped 直接退。
+  if (env.SLOCK_FX_SHUTDOWN_NO_STOP === "1") process.exit(0);
   const line = JSON.stringify(buildFrame({ type: "runtime.stopped", reason: "shutdown" }));
   // 等 stdout 真正写出去再退，避免 Windows pipe 上最后一帧被 process.exit 截断。
   process.stdout.write(`${line}\n`, () => process.exit(0));
@@ -404,6 +432,18 @@ const runService = () => {
       frame = JSON.parse(text);
     } catch (e) {
       stderr(`ignoring invalid JSON line: ${e.message}`);
+      if (env.SLOCK_FX_MALFORMED_ERROR_EXIT === "1") {
+        // fail-closed（对齐 Python SDK）：runtime.error 后 exit(2)；
+        // 等 stdout 写出去再退，避免 Windows pipe 上 error 帧被截断。
+        const line = JSON.stringify(
+          buildFrame({
+            type: "runtime.error",
+            error: { code: "MALFORMED_INPUT", message: "bad line", retryable: false },
+          }),
+        );
+        process.stdout.write(`${line}\n`, () => process.exit(2));
+        outSeq = SEQ_RESET ? 1 : outSeq + 1;
+      }
       return;
     }
     if (!isPlainObject(frame)) {

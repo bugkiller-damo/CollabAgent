@@ -5,8 +5,13 @@ import { runSarpConformance } from "../src/sarp-conformance.js";
 
 /**
  * sarp-conformance runner 自测：对 fixture worker 跑全检查项。
- * fixture 实现了完整握手/turn/cancel/shutdown，但不实现 turn journal
- * （replay 应 skip），坏行静默忽略（malformed 应 pass）。
+ * fixture 实现了完整握手/turn/cancel/shutdown；SLOCK_FX_JOURNAL=1 才开
+ * turn journal（否则 replay 检查会逮到「重跑」→ fail）。坏行默认静默忽略
+ * （malformed 走 ignore-continue + shutdown 可达路径）。
+ *
+ * 报告顺序：handshake → turn-lifecycle → seq-monotonic → eventseq-monotonic
+ * → cancel → replay → shutdown → shutdown-exit → malformed-stdin
+ * （malformed 在独立 Session B 里跑——fail-closed worker 会自杀，排最后）。
  */
 
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "sarp-worker.mjs");
@@ -22,9 +27,9 @@ const checkOf = (report: { checks: { name: string; status: string }[] }, name: s
   report.checks.find((c) => c.name === name);
 
 describe("sarp-conformance — healthy fixture", () => {
-  it("全部检查通过（replay skip）", async () => {
+  it("全部检查通过（TURN_DELAY 让 cancel 确定在途中落地；replay skip）", async () => {
     const report = await runSarpConformance({
-      spawnSpec: spec(),
+      spawnSpec: spec({ SLOCK_FX_TURN_DELAY_MS: "300" }),
       runtimeId: "langgraph",
       entrypoint: "fx-graph",
       stepTimeoutMs: 6000,
@@ -42,6 +47,123 @@ describe("sarp-conformance — healthy fixture", () => {
       "shutdown-exit": "pass",
       replay: "skip",
     });
+  }, 30000);
+
+  it("capabilities.interrupts=false 也照跑 cancel（cancel 是基础协议帧，不是 HITL 能力）", async () => {
+    const report = await runSarpConformance({
+      spawnSpec: spec({
+        SLOCK_FX_CAPABILITIES: JSON.stringify({ interrupts: false }),
+        SLOCK_FX_TURN_DELAY_MS: "300",
+      }),
+      runtimeId: "langgraph",
+      stepTimeoutMs: 6000,
+    });
+    expect(report.ok).toBe(true);
+    const c = checkOf(report, "cancel");
+    expect(c?.status).toBe("pass");
+    expect(c?.detail).toContain("cancelled");
+  }, 30000);
+
+  it("无 turn 延迟：turn 先于 cancel 落地 → cancel skip（未验证，不假 pass）", async () => {
+    const report = await runSarpConformance({
+      spawnSpec: spec(),
+      runtimeId: "langgraph",
+      stepTimeoutMs: 6000,
+    });
+    expect(report.ok).toBe(true);
+    const c = checkOf(report, "cancel");
+    expect(c?.status).toBe("skip");
+    expect(c?.detail).toContain("before cancel took effect");
+  }, 30000);
+});
+
+describe("sarp-conformance — 双会话与关停纪律", () => {
+  it("SLOCK_FX_MALFORMED_ERROR_EXIT=1 → malformed pass（runtime.error + exit 2），session A shutdown 真验证", async () => {
+    const report = await runSarpConformance({
+      spawnSpec: spec({ SLOCK_FX_MALFORMED_ERROR_EXIT: "1" }),
+      runtimeId: "langgraph",
+      stepTimeoutMs: 6000,
+    });
+    expect(report.ok).toBe(true);
+    const m = checkOf(report, "malformed-stdin");
+    expect(m?.status).toBe("pass");
+    expect(m?.detail).toContain("exit code=2");
+    // fail-closed 剖面不再吞掉 shutdown 验证：session A 里真跑 stopped + exit 0
+    expect(checkOf(report, "shutdown")?.status).toBe("pass");
+    expect(checkOf(report, "shutdown-exit")?.status).toBe("pass");
+  }, 30000);
+
+  it("SLOCK_FX_SHUTDOWN_NO_STOP=1 → 未发 stopped 就退 → shutdown fail / exit 0 → shutdown-exit pass", async () => {
+    const report = await runSarpConformance({
+      spawnSpec: spec({ SLOCK_FX_SHUTDOWN_NO_STOP: "1" }),
+      runtimeId: "langgraph",
+      stepTimeoutMs: 6000,
+    });
+    expect(report.ok).toBe(false);
+    const s = checkOf(report, "shutdown");
+    expect(s?.status).toBe("fail");
+    expect(s?.detail).toContain("without runtime.stopped");
+    expect(checkOf(report, "shutdown-exit")?.status).toBe("pass");
+  }, 30000);
+
+  it("SLOCK_FX_SHUTDOWN_IGNORE=1 → shutdown/shutdown-exit fail；坏行被忽略但 shutdown 不可达 → malformed fail", async () => {
+    const report = await runSarpConformance({
+      spawnSpec: spec({ SLOCK_FX_SHUTDOWN_IGNORE: "1" }),
+      runtimeId: "langgraph",
+      stepTimeoutMs: 1500,
+    });
+    expect(report.ok).toBe(false);
+    expect(checkOf(report, "shutdown")?.status).toBe("fail");
+    expect(checkOf(report, "shutdown-exit")?.status).toBe("fail");
+    expect(checkOf(report, "malformed-stdin")?.status).toBe("fail");
+  }, 40000);
+
+  it("skipTurns=true → 回合面全 skip，handshake/shutdown/shutdown-exit/malformed-stdin pass", async () => {
+    const report = await runSarpConformance({
+      spawnSpec: spec(),
+      runtimeId: "langgraph",
+      skipTurns: true,
+      stepTimeoutMs: 6000,
+    });
+    expect(report.ok).toBe(true);
+    const statuses = Object.fromEntries(report.checks.map((c) => [c.name, c.status]));
+    expect(statuses).toMatchObject({
+      handshake: "pass",
+      "turn-lifecycle": "skip",
+      "seq-monotonic": "skip",
+      "eventseq-monotonic": "skip",
+      cancel: "skip",
+      replay: "skip",
+      shutdown: "pass",
+      "shutdown-exit": "pass",
+      "malformed-stdin": "pass",
+    });
+  }, 30000);
+});
+
+describe("sarp-conformance — journal replay（§15.4）", () => {
+  it("SLOCK_FX_JOURNAL=1 + expectJournal → replay pass（只回放单帧终态）", async () => {
+    const report = await runSarpConformance({
+      spawnSpec: spec({ SLOCK_FX_JOURNAL: "1" }),
+      runtimeId: "langgraph",
+      expectJournal: true,
+      stepTimeoutMs: 6000,
+    });
+    expect(report.ok).toBe(true);
+    expect(checkOf(report, "replay")?.status).toBe("pass");
+  }, 30000);
+
+  it("expectJournal 但 worker 无 journal → replay fail（重跑被逮）", async () => {
+    const report = await runSarpConformance({
+      spawnSpec: spec(),
+      runtimeId: "langgraph",
+      expectJournal: true,
+      stepTimeoutMs: 6000,
+    });
+    expect(report.ok).toBe(false);
+    const r = checkOf(report, "replay");
+    expect(r?.status).toBe("fail");
+    expect(r?.detail).toContain("re-executed");
   }, 30000);
 });
 

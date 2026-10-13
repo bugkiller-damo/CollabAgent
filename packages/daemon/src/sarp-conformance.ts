@@ -11,17 +11,36 @@
  *   });
  *   report.ok === false → 哪条 check 挂了看 report.checks。
  *
- * 检查项（与 docs SARP/1 协议文档一一对应）：
+ * 双会话结构：malformed 测试是破坏性的（fail-closed worker 收到坏行会
+ * exit），不能与优雅关停验证共用进程，故同一 spawnSpec 顺序起两个 worker——
+ *   Session A：spawn → initialize/handshake → [turn-lifecycle → seq-monotonic
+ *              → eventseq-monotonic → cancel → replay] → shutdown → shutdown-exit
+ *   Session B：spawn → initialize → 等到 runtime.ready → malformed-stdin
+ * 报告检查集固定为：handshake, turn-lifecycle, seq-monotonic,
+ * eventseq-monotonic, cancel, replay, shutdown, shutdown-exit, malformed-stdin。
+ *
+ * 检查项（与 docs/2026-09-21/02-sarp1-protocol.md 一一对应）：
  *   handshake          initialize → runtime.ready（requestId 回显 + runtime.id）
- *   seq-monotonic      出向帧 seq 严格递增
  *   turn-lifecycle     turn.start → 恰好一个 turn.end（turnId 匹配）
+ *   seq-monotonic      出向帧 seq 严格递增（读帧途中越序 → 该项与在跑的
+ *                      回合检查一起 fail，不再无条件 pass）
  *   eventseq-monotonic 回合帧 eventSeq 从 1 严格递增
- *   cancel             turn.cancel → cancelled 终态（worker 不支持则 skip）
- *   shutdown           shutdown → runtime.stopped + 进程干净退出
- *   malformed-stdin    非 JSON 行入向 → worker 不应静默崩溃（回 error 或忽略均可，
- *                      但不得无终态地挂起——随后 shutdown 必须仍可达）
- *   replay             同 turnId 重发 → journal 回放同终态（仅 journal 实现要查；
- *                      expectJournal=false 时 skip）
+ *   cancel             turn.cancel → cancelled 终态。cancel 是基础协议帧，
+ *                      不看 capabilities.interrupts（那是 LangGraph HITL
+ *                      resume 能力，LangChain worker interrupts=false 照样
+ *                      支持 cooperative cancel）。turn 先于 cancel 完成
+ *                      （success/error/interrupted）→ skip「未验证」而非假 pass。
+ *   replay             同 turnId 重发 → journal 只回放已存终态帧（§15.4）：
+ *                      恰好一个 turn.end 且 status 一致 → pass；多发回合帧
+ *                      = 重跑 handler → fail；expectJournal=false → skip。
+ *   shutdown           shutdown → runtime.stopped → exit(0)（§6）：
+ *                      容忍 stopped 前的 drain 帧（SDK 先排空 pending 回合）；
+ *                      未发 stopped 就退 → fail；worker 在发 shutdown 前已死
+ *                      → 双 skip（优雅关停未验证，不再假 pass）。
+ *   shutdown-exit      进程退出码必须 0；不退/退非零 → fail。
+ *   malformed-stdin    非 JSON 行入向（独立会话 B）：合规 = (a) 忽略继续服务
+ *                      且 shutdown 仍可达，或 (b) runtime.error + exit(非零)
+ *                      fail-closed；不合规 = 静默挂死（坏行后 shutdown 不可达）。
  *
  * 纪律：runner 只断言「协议层不变量」，不断言业务语义（文本内容、模型选择等）。
  */
@@ -91,6 +110,9 @@ interface Frame {
 const PROTOCOL = "slock.agent-runtime";
 const VERSION = 1;
 
+/** nextEvent 的三态观察结果：帧 / 进程退出 / 窗口内无任何动静。 */
+type WorkerEvent = { kind: "frame"; frame: Frame } | { kind: "exit"; code: number | null } | { kind: "timeout" };
+
 class WorkerProc {
   readonly proc: ChildProcessWithoutNullStreams;
   private buf = "";
@@ -132,6 +154,8 @@ class WorkerProc {
     this.proc.stderr.on("data", (chunk: Buffer) => {
       this.stderrBuf += chunk.toString("utf-8");
     });
+    // worker 先死时写 stdin 的 EPIPE——忽略，退出状态由 exit/close 事件反映。
+    this.proc.stdin.on("error", () => {});
     this.proc.stdout.on("close", () => {
       this.stdoutClosed = true;
       for (const w of this.waiters.splice(0)) {
@@ -143,6 +167,16 @@ class WorkerProc {
       this.proc.on("exit", (code) => {
         this.exitCode = code;
         resolve(code);
+      });
+      // spawn 失败（ENOENT/EACCES）没有 exit 事件——按 exitCode=-1 终结并释放 waiter。
+      this.proc.on("error", (err) => {
+        if (this.exitCode === null) this.exitCode = -1;
+        this.stdoutClosed = true;
+        for (const w of this.waiters.splice(0)) {
+          clearTimeout(w.timer);
+          w.reject(new Error(`worker spawn error: ${err.message}`));
+        }
+        resolve(this.exitCode);
       });
     });
   }
@@ -188,6 +222,74 @@ class WorkerProc {
     return JSON.parse(await this.readLine(timeoutMs));
   }
 
+  /** 已退出进程的退出码；未退出 → null（不等待）。 */
+  exitCodeSync(): number | null {
+    return this.exitCode;
+  }
+
+  /** 解析不了的 stdout 行当 __garbage__ 帧吐给调用方——runner 不得因 worker
+   *  乱写 stdout 而崩掉（那本身就是待逮的违例）。 */
+  private static parseFrame(line: string): Frame {
+    try {
+      return JSON.parse(line) as Frame;
+    } catch {
+      return { type: "__garbage__" };
+    }
+  }
+
+  /** stdout 关闭后的退出码等待：给 exit 事件 1s 宽限，缺席报 timeout——
+   *  worker 可以关流续跑，runner 不得跟着挂死。 */
+  private exitEvent(): Promise<WorkerEvent> {
+    return Promise.race([
+      this.exited.then((code) => ({ kind: "exit", code }) as WorkerEvent),
+      new Promise<WorkerEvent>((r) => setTimeout(() => r({ kind: "timeout" }), 1000)),
+    ]);
+  }
+
+  /**
+   * 竞速观察下一个事件：frame / exit / timeout 三选一。
+   * malformed/shutdown 检查靠它区分「worker 回应」「fail-closed 退出」「静默挂死」。
+   * 缓冲里还有未读行时永远先吐帧（进程退出前排空的帧优先于退出码）。
+   */
+  nextEvent(timeoutMs: number): Promise<WorkerEvent> {
+    if (this.lines.length) {
+      return Promise.resolve({ kind: "frame", frame: WorkerProc.parseFrame(this.lines.shift()!) });
+    }
+    if (this.stdoutClosed) {
+      // stdout 已关 = 帧流终结；exit 事件可能差一拍，等它落地拿真实退出码（有界）。
+      return this.exitEvent();
+    }
+    return new Promise<WorkerEvent>((resolve) => {
+      const cleanup = () => {
+        clearTimeout(waiter.timer);
+        const i = this.waiters.indexOf(waiter);
+        if (i >= 0) this.waiters.splice(i, 1);
+        this.proc.off("exit", onExit);
+      };
+      const onExit = (code: number | null) => {
+        cleanup();
+        resolve({ kind: "exit", code });
+      };
+      const waiter = {
+        resolve: (l: string) => {
+          cleanup();
+          resolve({ kind: "frame", frame: WorkerProc.parseFrame(l) });
+        },
+        reject: (_e: Error) => {
+          // stdout 关闭但 exit 事件未到/缺席 → 竞速真实退出码与短宽限。
+          cleanup();
+          void this.exitEvent().then(resolve);
+        },
+        timer: setTimeout(() => {
+          cleanup();
+          resolve({ kind: "timeout" });
+        }, timeoutMs),
+      };
+      this.proc.on("exit", onExit);
+      this.waiters.push(waiter);
+    });
+  }
+
   kill(): void {
     try {
       this.proc.kill("SIGKILL");
@@ -208,16 +310,13 @@ export const runSarpConformance = async (opts: ConformanceOptions): Promise<Conf
   const skip = (name: string, detail?: string) => check(name, "skip", detail);
 
   const spawnFn = (opts.spawn ?? spawn) as typeof spawn;
-  let worker: WorkerProc;
-  try {
-    worker = new WorkerProc(opts.spawnSpec, spawnFn);
-  } catch (err) {
-    fail("spawn", `spawn failed: ${(err as Error).message}`);
-    return { ok: false, checks, stderrTail: "" };
-  }
+  const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-  try {
-    /* ---------------- handshake ---------------- */
+  /**
+   * 会话共用起手：发 initialize 并等首帧。Session A 拿首帧做完整字段校验
+   * （handshake 检查）；Session B 只要求首帧是 runtime.ready 即可继续。
+   */
+  const sendInitialize = async (worker: WorkerProc): Promise<{ requestId: string; first: Frame }> => {
     const requestId = `conf-${Math.random().toString(36).slice(2, 10)}`;
     worker.send({
       type: "initialize",
@@ -232,29 +331,62 @@ export const runSarpConformance = async (opts: ConformanceOptions): Promise<Conf
       platform: {},
       limits: { maxFrameBytes: 1048576, silenceTimeoutMs: Math.max(t * 4, 30000), shutdownTimeoutMs: 5000 },
     });
+    return { requestId, first: await worker.readFrame(t) };
+  };
 
+  /** shutdown 可达性探针：发 shutdown，等 runtime.stopped 或进程退出（上限 t）。 */
+  const probeShutdown = async (worker: WorkerProc): Promise<boolean> => {
+    try {
+      worker.send({ type: "shutdown", reason: "conformance done", timeoutMs: 3000 });
+    } catch {
+      /* 写失败 → 进程多半刚死；继续看退出事件 */
+    }
+    const deadline = Date.now() + t;
+    for (;;) {
+      const ev = await worker.nextEvent(Math.max(1, deadline - Date.now()));
+      if (ev.kind === "frame") {
+        if (ev.frame.type === "runtime.stopped") return true;
+        continue; // drain 帧（pending 回合终态/usage 等）继续等
+      }
+      return ev.kind === "exit";
+    }
+  };
+
+  /* ==================== Session A：握手 + 回合面 + 优雅关停 ==================== */
+  let workerA: WorkerProc;
+  try {
+    workerA = new WorkerProc(opts.spawnSpec, spawnFn);
+  } catch (err) {
+    fail("handshake", `spawn failed: ${(err as Error).message}`);
+    return { ok: false, checks, stderrTail: "" };
+  }
+
+  let tailA = "";
+  try {
+    /* ---------------- handshake ---------------- */
+    let requestId: string;
     let ready: Frame;
     try {
-      ready = await worker.readFrame(t);
+      ({ requestId, first: ready } = await sendInitialize(workerA));
     } catch (err) {
       fail("handshake", `runtime.ready not received: ${(err as Error).message}`);
-      return { ok: false, checks, stderrTail: worker.stderrTail() };
+      return { ok: false, checks, stderrTail: workerA.stderrTail() };
     }
     if (ready.type !== "runtime.ready") {
       fail("handshake", `first frame type=${ready.type} (expected runtime.ready)`);
-      return { ok: false, checks, stderrTail: worker.stderrTail() };
+      return { ok: false, checks, stderrTail: workerA.stderrTail() };
     }
     if (ready.requestId !== requestId) {
       fail("handshake", `requestId echo mismatch: got ${ready.requestId}`);
-      return { ok: false, checks, stderrTail: worker.stderrTail() };
+      return { ok: false, checks, stderrTail: workerA.stderrTail() };
     }
     if (ready.runtime?.id !== opts.runtimeId) {
       fail("handshake", `runtime.id=${ready.runtime?.id} != expected ${opts.runtimeId}`);
-      return { ok: false, checks, stderrTail: worker.stderrTail() };
+      return { ok: false, checks, stderrTail: workerA.stderrTail() };
     }
     if (ready.seq !== 1) {
       fail("handshake", `ready.seq=${ready.seq} (expected 1)`);
-      return { ok: false, checks, stderrTail: worker.stderrTail() };
+      return { ok: false, checks, stderrTail: workerA.stderrTail() };
     }
     if (
       opts.expectModel !== undefined &&
@@ -262,19 +394,24 @@ export const runSarpConformance = async (opts: ConformanceOptions): Promise<Conf
       (ready.model as { selected?: string }).selected !== opts.expectModel
     ) {
       fail("handshake", `model.selected=${(ready.model as { selected?: string }).selected} != ${opts.expectModel}`);
-      return { ok: false, checks, stderrTail: worker.stderrTail() };
+      return { ok: false, checks, stderrTail: workerA.stderrTail() };
     }
     pass("handshake", `runtime.id=${ready.runtime.id}, requestId echoed`);
 
     /* ---------------- 工具函数 ---------------- */
     let lastSeq = ready.seq ?? 1;
+    // seq 越序发生在回合读帧途中：错误先归到在跑的检查，flag 留给 seq-monotonic 判 fail。
+    let seqViolation: string | null = null;
     const readTurnFrames = async (): Promise<Frame[]> => {
       const frames: Frame[] = [];
       for (;;) {
-        const f = await worker.readFrame(t);
+        const f = await workerA.readFrame(t);
         frames.push(f);
         if (f.seq !== undefined) {
-          if (f.seq <= lastSeq) throw new Error(`seq regression: ${f.seq} <= ${lastSeq}`);
+          if (f.seq <= lastSeq) {
+            seqViolation = `seq regression: ${f.seq} <= ${lastSeq}`;
+            throw new Error(seqViolation);
+          }
           lastSeq = f.seq;
         }
         if (f.type === "turn.end") return frames;
@@ -292,7 +429,7 @@ export const runSarpConformance = async (opts: ConformanceOptions): Promise<Conf
       skip("replay", "skipTurns");
     } else {
       /* ---------------- turn-lifecycle ---------------- */
-      worker.send({
+      workerA.send({
         type: "turn.start",
         turnId: "conf-t1",
         conversationId: "conf-conv",
@@ -305,17 +442,25 @@ export const runSarpConformance = async (opts: ConformanceOptions): Promise<Conf
         t1Frames = await readTurnFrames();
       } catch (err) {
         fail("turn-lifecycle", `no turn.end: ${(err as Error).message}`);
-        return { ok: false, checks, stderrTail: worker.stderrTail() };
+        // seq 越序归到 seq-monotonic 名下一起 fail——越序才是根因。
+        if (seqViolation) fail("seq-monotonic", seqViolation);
+        return { ok: false, checks, stderrTail: workerA.stderrTail() };
       }
       const t1End = t1Frames[t1Frames.length - 1]!;
       if (t1End.turnId !== "conf-t1") {
         fail("turn-lifecycle", `turn.end.turnId=${t1End.turnId} != conf-t1`);
-      } else if (!["success", "error", "cancelled", "interrupted"].includes(String(t1End.status))) {
-        fail("turn-lifecycle", `turn.end.status=${t1End.status} unknown`);
-      } else {
-        pass("turn-lifecycle", `turn.end status=${t1End.status}`);
+        return { ok: false, checks, stderrTail: workerA.stderrTail() };
       }
-      pass("seq-monotonic", `last seq=${lastSeq}`);
+      if (!["success", "error", "cancelled", "interrupted"].includes(String(t1End.status))) {
+        fail("turn-lifecycle", `turn.end.status=${t1End.status} unknown`);
+        return { ok: false, checks, stderrTail: workerA.stderrTail() };
+      }
+      pass("turn-lifecycle", `turn.end status=${t1End.status}`);
+      if (seqViolation) {
+        fail("seq-monotonic", seqViolation);
+      } else {
+        pass("seq-monotonic", `last seq=${lastSeq}`);
+      }
 
       const turnScoped = t1Frames.filter((f) => f.turnId === "conf-t1" && f.eventSeq !== undefined);
       const eventSeqs = turnScoped.map((f) => f.eventSeq as number);
@@ -328,35 +473,41 @@ export const runSarpConformance = async (opts: ConformanceOptions): Promise<Conf
         pass("eventseq-monotonic", `${eventSeqs.length} frames, 1..${eventSeqs[eventSeqs.length - 1]}`);
       }
 
-      /* ---------------- cancel ---------------- */
-      if (ready.capabilities?.interrupts !== false) {
-        worker.send({
-          type: "turn.start",
-          turnId: "conf-tc",
-          conversationId: "conf-conv",
-          attempt: 1,
-          source: { kind: "message", channel: "conformance" },
-          prompt: "long turn to cancel",
-        });
-        worker.send({ type: "turn.cancel", turnId: "conf-tc", reason: "conformance cancel" });
-        try {
-          const cFrames = await readTurnFrames();
-          const cEnd = cFrames[cFrames.length - 1]!;
-          if (cEnd.status === "cancelled" || cEnd.status === "success") {
-            pass("cancel", `turn.end status=${cEnd.status}`);
-          } else {
-            fail("cancel", `unexpected status=${cEnd.status}`);
-          }
-        } catch (err) {
-          fail("cancel", `no terminal after cancel: ${(err as Error).message}`);
+      /* ---------------- cancel ----------------
+       * turn.cancel 是基础协议帧——不做 capabilities 门（interrupts 是 HITL
+       * resume 能力，LangChain worker interrupts=false 也支持 cooperative
+       * cancel）。turn 先于 cancel 落地（success/error/interrupted）→ skip
+       * 「cancel 未被验证」，不假装 pass。 */
+      workerA.send({
+        type: "turn.start",
+        turnId: "conf-tc",
+        conversationId: "conf-conv",
+        attempt: 1,
+        source: { kind: "message", channel: "conformance" },
+        prompt: "long turn to cancel",
+      });
+      workerA.send({ type: "turn.cancel", turnId: "conf-tc", reason: "conformance cancel" });
+      try {
+        const cFrames = await readTurnFrames();
+        const cEnd = cFrames[cFrames.length - 1]!;
+        if (cEnd.turnId !== "conf-tc") {
+          fail("cancel", `turn.end.turnId=${cEnd.turnId} != conf-tc`);
+        } else if (cEnd.status === "cancelled") {
+          pass("cancel", "turn.end status=cancelled");
+        } else if (["success", "error", "interrupted"].includes(String(cEnd.status))) {
+          skip("cancel", `turn ended status=${cEnd.status} before cancel took effect — cancel path unverified`);
+        } else {
+          fail("cancel", `unexpected status=${cEnd.status}`);
         }
-      } else {
-        skip("cancel", "capabilities.interrupts=false");
+      } catch (err) {
+        fail("cancel", `no turn.end after cancel — cancel ignored? (${(err as Error).message})`);
       }
 
-      /* ---------------- journal replay ---------------- */
+      /* ---------------- journal replay（§15.4）----------------
+       * journaled worker 对重复 turnId 只回放已存的终态帧，不重跑 handler：
+       * 恰好一个 turn.end 且 status 一致 → pass；多出回合帧 = 重跑 → fail。 */
       if (opts.expectJournal) {
-        worker.send({
+        workerA.send({
           type: "turn.start",
           turnId: "conf-t1", // 与已完成回合同 turnId → 应回放同终态，不重跑
           conversationId: "conf-conv",
@@ -367,10 +518,12 @@ export const runSarpConformance = async (opts: ConformanceOptions): Promise<Conf
         try {
           const rFrames = await readTurnFrames();
           const rEnd = rFrames[rFrames.length - 1]!;
-          if (rEnd.status === t1End.status) {
-            pass("replay", `replayed turn.end status=${rEnd.status}`);
-          } else {
+          if (rFrames.length > 1) {
+            fail("replay", `turn re-executed (${rFrames.length} frames) — expected stored-terminal replay`);
+          } else if (rEnd.status !== t1End.status) {
             fail("replay", `replay status=${rEnd.status} != original ${t1End.status}`);
+          } else {
+            pass("replay", `replayed turn.end status=${rEnd.status} (single stored terminal)`);
           }
         } catch (err) {
           fail("replay", `no replayed turn.end: ${(err as Error).message}`);
@@ -380,64 +533,127 @@ export const runSarpConformance = async (opts: ConformanceOptions): Promise<Conf
       }
     }
 
-    /* ---------------- malformed-stdin ---------------- */
-    // 两种合规行为：忽略坏行继续服务（容错），或 runtime.error 后 exit 非零（fail-closed）。
-    // 不合规行为：静默挂死（无 error 也无进程退出且后续 shutdown 不可达）。
-    let workerDead = false;
-    worker.sendRaw("{not json at all");
-    try {
-      const maybeErr = await Promise.race([
-        worker.readFrame(1500),
-        new Promise<null>((r) => setTimeout(() => r(null), 1500)),
-      ]);
-      if (maybeErr === null) {
-        pass("malformed-stdin", "bad line ignored, worker alive");
-      } else if (maybeErr.type === "runtime.error") {
-        pass("malformed-stdin", `runtime.error: ${maybeErr.error?.code ?? "?"}`);
-      } else {
-        pass("malformed-stdin", `responded type=${maybeErr.type}`);
-      }
-    } catch {
-      // stdout 已关 → 进程大概率已 fail-closed 退出；等 exited 确认
-      const code = await Promise.race([worker.exited, new Promise<null>((r) => setTimeout(() => r(null), 1500))]);
-      if (code === null) {
-        pass("malformed-stdin", "stdout closed; exit pending");
-      } else {
-        workerDead = true;
-        pass("malformed-stdin", `fail-closed exit code=${code}`);
-      }
-    }
-
-    /* ---------------- shutdown ---------------- */
-    if (workerDead) {
-      pass("shutdown", "worker already exited (fail-closed on bad frame)");
-      pass("shutdown-exit", "exit confirmed above");
+    /* ---------------- shutdown（Session A，skipTurns 也照跑）----------------
+     * §6 正常退出纪律：shutdown → runtime.stopped{reason} → exit(0)。
+     * worker 在发 shutdown 前已死 → 优雅关停根本没被验证 → 双 skip，不假 pass。 */
+    const preCode = workerA.exitCodeSync();
+    if (preCode !== null) {
+      skip("shutdown", `worker already exited (code=${preCode}) — graceful shutdown not exercised`);
+      skip("shutdown-exit", `worker already exited (code=${preCode}) — graceful shutdown not exercised`);
     } else {
       try {
-        worker.send({ type: "shutdown", reason: "conformance done", timeoutMs: 3000 });
-      } catch (err) {
-        fail("shutdown", `send failed: ${(err as Error).message}`);
-      }
-      try {
-        const stopped = await worker.readFrame(t);
-        if (stopped.type === "runtime.stopped") {
-          pass("shutdown", "runtime.stopped received");
-        } else {
-          pass("shutdown", `frame type=${stopped.type} before exit`);
-        }
+        workerA.send({ type: "shutdown", reason: "conformance done", timeoutMs: 3000 });
       } catch {
-        pass("shutdown", "stdout closed after shutdown");
+        /* 写失败 → 进程多半刚死；下面的 nextEvent 会拿到 exit */
       }
-      const code = await Promise.race([worker.exited, new Promise<null>((r) => setTimeout(() => r(null), t))]);
+      // 等 runtime.stopped：容忍其前的 drain 帧（SDK 先排空 pending 回合）。
+      const deadline = Date.now() + t;
+      for (;;) {
+        const ev = await workerA.nextEvent(Math.max(1, deadline - Date.now()));
+        if (ev.kind === "frame") {
+          if (ev.frame.type === "runtime.stopped") {
+            pass("shutdown", "runtime.stopped received");
+            break;
+          }
+          continue; // drain 帧
+        }
+        if (ev.kind === "exit") {
+          fail("shutdown", `exited (code=${ev.code}) without runtime.stopped (§6 requires stopped before exit)`);
+          break;
+        }
+        fail("shutdown", `no runtime.stopped within ${t}ms`);
+        break;
+      }
+      // §6：正常退出必须是 exit(0)；任何非零（含 fail-closed 的 2）都不算干净关停。
+      await Promise.race([workerA.exited, sleep(t)]);
+      const code = workerA.exitCodeSync();
       if (code === null) {
-        fail("shutdown-exit", "process did not exit after shutdown");
+        fail("shutdown-exit", "did not exit after shutdown");
+      } else if (code === 0) {
+        pass("shutdown-exit", "exit code=0");
       } else {
-        pass("shutdown-exit", `exit code=${code}`);
+        fail("shutdown-exit", `exit code=${code}`);
       }
     }
   } finally {
-    worker.kill();
+    tailA = workerA.stderrTail();
+    workerA.kill();
   }
 
-  return { ok: checks.every((c) => c.status !== "fail"), checks, stderrTail: worker.stderrTail() };
+  /* ==================== Session B：malformed-stdin（破坏性，独立 worker） ====================
+   * §6 入向坏行纪律：合规 = (a) 忽略坏行继续服务且 shutdown 仍可达，或
+   * (b) runtime.error 后 exit(非零) fail-closed；不合规 = 静默挂死。
+   * 因为 (b) 会直接杀死进程，本检查必须在独立会话里跑（Session A 已先完成
+   * 优雅关停验证，报告里它仍排最后）。 */
+  let tailB = "";
+  let workerB: WorkerProc | null = null;
+  try {
+    workerB = new WorkerProc(opts.spawnSpec, spawnFn);
+    const { first } = await sendInitialize(workerB);
+    if (first.type !== "runtime.ready") {
+      skip("malformed-stdin", `worker did not reach ready in malformed session: first frame type=${first.type}`);
+    } else {
+      try {
+        workerB.sendRaw("{not json at all");
+      } catch {
+        /* 写失败 → 进程多半刚死；nextEvent 会拿到 exit */
+      }
+      // 首个可观察事件窗口约 2s：帧 / 退出 / 静默三态分流。
+      const firstEv = await workerB.nextEvent(Math.min(2000, t));
+      if (firstEv.kind === "frame" && firstEv.frame.type === "runtime.error") {
+        // (b) 候选：runtime.error 后应 fail-closed exit(非零)。
+        await Promise.race([workerB.exited, sleep(t)]);
+        const code = workerB.exitCodeSync();
+        if (code !== null) {
+          if (code !== 0) {
+            pass("malformed-stdin", `runtime.error + fail-closed exit code=${code}`);
+          } else {
+            fail("malformed-stdin", "exited 0 after runtime.error (§6 expects non-zero)");
+          }
+        } else if (await probeShutdown(workerB)) {
+          // 报错但继续服务（容错实现）：shutdown 仍可达即合规。
+          pass("malformed-stdin", "runtime.error reported; worker continues (shutdown reachable)");
+        } else {
+          fail("malformed-stdin", "runtime.error then hang — shutdown unreachable");
+        }
+      } else if (firstEv.kind === "exit") {
+        if (firstEv.code !== 0 && firstEv.code !== null) {
+          pass("malformed-stdin", `fail-closed exit code=${firstEv.code} (no runtime.error emitted)`);
+        } else {
+          fail(
+            "malformed-stdin",
+            `silent exit(${firstEv.code}) — §6 allows ignore-continue or runtime.error+non-zero exit`,
+          );
+        }
+      } else if (firstEv.kind === "frame") {
+        // 其他帧回应：worker 活着——但仍须验证 shutdown 可达。
+        if (await probeShutdown(workerB)) {
+          pass("malformed-stdin", `responded type=${firstEv.frame.type}; shutdown reachable`);
+        } else {
+          fail("malformed-stdin", `responded type=${firstEv.frame.type} but shutdown unreachable`);
+        }
+      } else if (await probeShutdown(workerB)) {
+        // (a)：静默忽略坏行且 shutdown 仍可达 → 合规容错。
+        pass("malformed-stdin", "bad line ignored; shutdown reachable");
+      } else {
+        fail("malformed-stdin", "ignored bad line but shutdown unreachable (silent hang)");
+      }
+    }
+  } catch (err) {
+    // session B 起不来（spawn/initialize/ready 失败）→ malformed 无法验证 → skip
+    if (!checks.some((c) => c.name === "malformed-stdin")) {
+      skip("malformed-stdin", `worker did not reach ready in malformed session: ${(err as Error).message}`);
+    }
+  } finally {
+    if (workerB) {
+      tailB = workerB.stderrTail();
+      workerB.kill();
+    }
+  }
+
+  return {
+    ok: checks.every((c) => c.status !== "fail"),
+    checks,
+    stderrTail: [tailA, tailB].filter((s) => s !== "").join("\n"),
+  };
 };
