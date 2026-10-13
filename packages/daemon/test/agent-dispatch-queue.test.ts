@@ -542,6 +542,93 @@ describe("agent-dispatch-queue", () => {
     for (const id of bootOneIds) expect(seen.has(id)).toBe(false);
     expect([...seen].every((id) => id.startsWith("turn-"))).toBe(true);
   });
+
+  // ---- WP10：interrupt:resolve 恢复回合条目 ----
+
+  const resolveRef = (id: string) => ({
+    conversationId: `conv-${id}`,
+    interruptId: `int-${id}`,
+    decision: { type: "approve" as const },
+  });
+
+  it("WP10：resolve 是硬边界——不与普通消息合并、resolve 之间也不互并（FIFO 保序）", async () => {
+    let release!: () => void;
+    const deliver = vi
+      .fn()
+      .mockImplementationOnce(() => new Promise<void>((r) => (release = r)))
+      .mockResolvedValue(undefined);
+    const onMerged = vi.fn();
+    const q = createAgentDispatchQueue({ deliver, onMerged });
+    q.enqueue({ ...makeItem(), content: "m1" }); // 在途挂住
+    await flush(5);
+    q.enqueue({ ...makeItem(), content: "m2" });
+    q.enqueue({ ...makeItem(), content: "【审批】批准", resolve: resolveRef("1") });
+    q.enqueue({ ...makeItem(), content: "m3" });
+    q.enqueue({ ...makeItem(), content: "【审批】拒绝", resolve: resolveRef("2") });
+    release();
+    await flush();
+    // m1 之后：resolve 前后切开 → [m2] [resolve1] [m3] [resolve2] 各自单条
+    expect(deliver).toHaveBeenCalledTimes(5);
+    const batches = deliver.mock.calls.slice(1).map((c) => c[1] as DispatchQueueItem[]);
+    expect(batches[0].map((i) => i.content)).toEqual(["m2"]);
+    expect(batches[1]).toHaveLength(1);
+    expect(batches[1][0].resolve).toMatchObject({ conversationId: "conv-1", interruptId: "int-1" });
+    expect(batches[2].map((i) => i.content)).toEqual(["m3"]);
+    expect(batches[3]).toHaveLength(1);
+    expect(batches[3][0].resolve?.interruptId).toBe("int-2");
+    expect(onMerged).not.toHaveBeenCalled(); // 全程无合并批
+    q.dispose();
+  });
+
+  it("WP10：resolve 条目跳过 dedup——同文本的多次决定各自入队", async () => {
+    const deliver = vi.fn().mockResolvedValue(undefined);
+    const q = createAgentDispatchQueue({ deliver });
+    const item = { ...makeItem(), content: "【审批】批准" };
+    const r1 = q.enqueue({ ...item, resolve: resolveRef("1") });
+    const r2 = q.enqueue({ ...item, resolve: resolveRef("2") });
+    expect(r1.status).toBe("queued");
+    expect(r2.status).toBe("queued"); // 同内容不被吞——是两个不同的决定
+    await flush();
+    expect(deliver).toHaveBeenCalledTimes(2);
+    q.dispose();
+  });
+
+  it("WP10：普通消息不与 pending resolve 的雷同文本去重", async () => {
+    let release!: () => void;
+    const deliver = vi
+      .fn()
+      .mockImplementationOnce(() => new Promise<void>((r) => (release = r)))
+      .mockResolvedValue(undefined);
+    const q = createAgentDispatchQueue({ deliver });
+    q.enqueue({ ...makeItem(), content: "m1" });
+    await flush(5);
+    q.enqueue({ ...makeItem(), content: "dup", resolve: resolveRef("1") });
+    const res = q.enqueue({ ...makeItem(), content: "dup" }); // 同文本普通消息照常入队
+    expect(res.status).toBe("queued");
+    release();
+    await flush();
+    expect(deliver).toHaveBeenCalledTimes(3);
+    expect(deliver.mock.calls[1][1][0].resolve).toBeTruthy();
+    expect(deliver.mock.calls[2][1][0].resolve).toBeUndefined();
+    q.dispose();
+  });
+
+  it("WP10：resolve 条目重试保留身份（turnId/interruptId 原样重投）", async () => {
+    const deliver = vi.fn().mockRejectedValueOnce(new Error("boom")).mockResolvedValue(undefined);
+    const q = createAgentDispatchQueue({ deliver, baseDelayMs: 5, maxDelayMs: 10 });
+    const res = q.enqueue({ ...makeItem(), content: "【审批】批准", resolve: resolveRef("1") });
+    expect(res.status).toBe("queued");
+    if (res.status !== "queued") return;
+    const turnId = res.item.turnId;
+    await flush(60);
+    expect(deliver).toHaveBeenCalledTimes(2);
+    for (const c of deliver.mock.calls) {
+      const item = (c[1] as DispatchQueueItem[])[0];
+      expect(item.turnId).toBe(turnId);
+      expect(item.resolve?.interruptId).toBe("int-1");
+    }
+    q.dispose();
+  });
 });
 
 describe("WP7 — item.message/contextText 与 mergeQueueMessages", () => {

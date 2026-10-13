@@ -142,6 +142,33 @@ export const encodeSarpFrame = (frame: SarpDaemonFrame, seq: number, opts?: { ti
     ...frame.fields,
   }) + "\n";
 
+/**
+ * WP10：结构化决定 → 人类可读文本（SarpTurnStartFields.resume.value 兼容字段——
+ * 旧 SDK / 不识 decision 的 worker 仍可吃这段文本；不识 edit 的 worker 至少
+ * 看到"参数已被修改"并可选择用文本恢复）。
+ */
+export function sarpResumeDecisionText(d: SarpResumeDecision): string {
+  switch (d.type) {
+    case "approve":
+      return "【审批】批准";
+    case "reject":
+      return d.message ? `【审批】拒绝：${d.message}` : "【审批】拒绝";
+    case "respond":
+      return `【审批】回复：${d.message}`;
+    case "edit": {
+      // args 可能是任意 JSON——序列化失败/超长时收敛为定长占位文本
+      let argsText = "";
+      try {
+        const s = JSON.stringify(d.args);
+        if (s && s !== "undefined") argsText = s.length > 500 ? `${s.slice(0, 497)}…` : s;
+      } catch {
+        argsText = "<unserializable>";
+      }
+      return argsText ? `【审批】修改参数：${argsText}` : "【审批】修改参数";
+    }
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* Worker → Daemon（解码）                                              */
 /* ------------------------------------------------------------------ */

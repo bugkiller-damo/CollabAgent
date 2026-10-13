@@ -53,6 +53,23 @@ export async function dispatchDaemonMessage(ctx: HandlerContext, msg: WsToDaemon
         }
       }
       break;
+    case "interrupt:resolve":
+      // WP10：审批面结构化决定——runtime 侧校验 pending（不消费）+ 入队
+      // resolve 硬边界条目；approver 由 server 注入，进回合 source.sender。
+      if (msg.agentId && msg.conversationId && msg.interruptId) {
+        try {
+          await ctx.runtime.resolveInterrupt(
+            msg.agentId,
+            msg.conversationId,
+            msg.interruptId,
+            msg.decision,
+            msg.approver,
+          );
+        } catch (err) {
+          console.warn(`[Daemon] interrupt resolve failed: ${(err as Error)?.message}`);
+        }
+      }
+      break;
     case "ping":
       handlePing(ctx);
       break;

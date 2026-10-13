@@ -439,3 +439,106 @@ describe("WS: broadcast delivery", () => {
     wsC.close();
   });
 });
+
+describe("WS: interrupt:resolve 路由（WP10）", () => {
+  // 建属主 agent + 该机 daemon 连接（ready → machineKey 注册），返回 agentId
+  async function setupOwnedDaemonAgent(u: { cookie: string; csrf: string; userId: string }) {
+    const comp = await ensureTestComputer(u);
+    const r = await api("/api/agents", {
+      method: "POST",
+      cookie: u.cookie,
+      csrf: u.csrf,
+      body: { name: `wp10_${uniqHandle()}`, serverId: comp.serverId },
+    });
+    expect(r.status).toBe(200);
+    const { token, machineUuid } = await mintMachineToken(u);
+    const { ws, connected } = connectWs({ Authorization: `Bearer ${token}` });
+    await connected;
+    ws.send(JSON.stringify({ type: "ready", machineUuid }));
+    await tick(150);
+    return { agentId: r.data.agent.id as string, ws };
+  }
+
+  it("属主 resolve → 路由到托管 daemon，附 server 注入的 approver handle", async () => {
+    const u = await registerUser();
+    const { agentId, ws: daemonWs } = await setupOwnedDaemonAgent(u);
+    const { ws: browser, connected } = connectWs({ Cookie: u.cookie });
+    await connected;
+
+    const got = nextMessage(daemonWs);
+    browser.send(
+      JSON.stringify({
+        type: "interrupt:resolve",
+        agentId,
+        conversationId: `slock:v1:${agentId}:channel:general`,
+        interruptId: "int-1",
+        decision: { type: "reject", message: "先别动" },
+      }),
+    );
+    const fwd = await got;
+    expect(fwd).toMatchObject({
+      type: "interrupt:resolve",
+      agentId,
+      conversationId: `slock:v1:${agentId}:channel:general`,
+      interruptId: "int-1",
+      decision: { type: "reject", message: "先别动" },
+      // approver 由 server 查库注入 = 属主 handle——不信浏览器自报
+      approver: u.handle,
+    });
+    browser.close();
+    daemonWs.close();
+  });
+
+  it("非属主 resolve → 静默丢（daemon 收不到帧），且不产生断连", async () => {
+    const owner = await registerUser();
+    const other = await registerUser();
+    const { agentId, ws: daemonWs } = await setupOwnedDaemonAgent(owner);
+    const { ws: browser, connected } = connectWs({ Cookie: other.cookie });
+    await connected;
+
+    const got = nextMessage(daemonWs, 1500);
+    browser.send(
+      JSON.stringify({
+        type: "interrupt:resolve",
+        agentId,
+        conversationId: `slock:v1:${agentId}:channel:general`,
+        interruptId: "int-1",
+        decision: { type: "approve" },
+      }),
+    );
+    await expect(got).rejects.toThrow(/timeout/);
+    expect(browser.readyState).toBe(WebSocket.OPEN);
+    browser.close();
+    daemonWs.close();
+  });
+
+  it("畸形 decision（respond 缺 message / 未知 type）→ 丢帧，不路由", async () => {
+    const u = await registerUser();
+    const { agentId, ws: daemonWs } = await setupOwnedDaemonAgent(u);
+    const { ws: browser, connected } = connectWs({ Cookie: u.cookie });
+    await connected;
+
+    const got = nextMessage(daemonWs, 1500);
+    browser.send(
+      JSON.stringify({
+        type: "interrupt:resolve",
+        agentId,
+        conversationId: "slock:v1:x:channel:g",
+        interruptId: "int-1",
+        decision: { type: "respond" }, // 缺必填 message
+      }),
+    );
+    browser.send(
+      JSON.stringify({
+        type: "interrupt:resolve",
+        agentId,
+        conversationId: "slock:v1:x:channel:g",
+        interruptId: "int-1",
+        decision: { type: "approve-all" }, // 未知决定类型
+      }),
+    );
+    await expect(got).rejects.toThrow(/timeout/);
+    browser.close();
+    daemonWs.close();
+  });
+});

@@ -115,6 +115,61 @@ describe("parseWsToDaemonMessage", () => {
     expect(parseWsToDaemonMessage(null)).toBeNull();
   });
 
+  it("WP10：interrupt:resolve 归一化——decision 白名单重建 + approver 透传", () => {
+    const msg = parseWsToDaemonMessage({
+      type: "interrupt:resolve",
+      agentId: "a-1",
+      conversationId: "slock:v1:a-1:channel:general",
+      interruptId: "int-9",
+      decision: { type: "reject", message: "先别动", evil: "x" },
+      approver: "alice",
+    });
+    expect(msg).toEqual({
+      type: "interrupt:resolve",
+      agentId: "a-1",
+      conversationId: "slock:v1:a-1:channel:general",
+      interruptId: "int-9",
+      decision: { type: "reject", message: "先别动" },
+      approver: "alice",
+    });
+  });
+
+  it("WP10：interrupt:resolve 畸形 decision → 整帧丢弃（不产半决定）", () => {
+    const base = {
+      type: "interrupt:resolve",
+      agentId: "a",
+      conversationId: "c",
+      interruptId: "i",
+    };
+    // respond 缺/空 message → 丢
+    expect(parseWsToDaemonMessage({ ...base, decision: { type: "respond" } })).toBeNull();
+    expect(parseWsToDaemonMessage({ ...base, decision: { type: "respond", message: "" } })).toBeNull();
+    expect(parseWsToDaemonMessage({ ...base, decision: { type: "respond", message: 7 } })).toBeNull();
+    // edit 缺 args → 丢
+    expect(parseWsToDaemonMessage({ ...base, decision: { type: "edit" } })).toBeNull();
+    // 未知/非对象 decision → 丢
+    expect(parseWsToDaemonMessage({ ...base, decision: { type: "approve-all" } })).toBeNull();
+    expect(parseWsToDaemonMessage({ ...base, decision: "approve" })).toBeNull();
+    expect(parseWsToDaemonMessage({ ...base })).toBeNull();
+  });
+
+  it("WP10：interrupt:resolve 各 decision 形态（approve/edit/respond）", () => {
+    for (const decision of [
+      { type: "approve" },
+      { type: "respond", message: "用 GET 就行" },
+      { type: "edit", args: { file: "a.ts" } },
+    ] as const) {
+      const msg = parseWsToDaemonMessage({
+        type: "interrupt:resolve",
+        agentId: "a",
+        conversationId: "c",
+        interruptId: "i",
+        decision,
+      });
+      expect(msg && msg.type === "interrupt:resolve" && msg.decision).toEqual(decision);
+    }
+  });
+
   it("readDeliverMessage prefers nested message over top-level", () => {
     const m = readDeliverMessage({
       content: "outer",

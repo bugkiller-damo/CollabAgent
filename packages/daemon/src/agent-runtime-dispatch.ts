@@ -4,6 +4,7 @@ import { type CostGateDecision, evaluateCostGate, type ICostTracker } from "./ag
 import {
   createAgentDispatchQueue,
   type DispatchQueueItem,
+  type DispatchResolveRef,
   mergeQueueContextText,
   mergeQueueMessages,
 } from "./agent-dispatch-queue.js";
@@ -41,7 +42,7 @@ import { loadDaemonEnv } from "./config.js";
 import { DispatchError, errMessage } from "./errors.js";
 import type { IIdleReclaimer } from "./idle-reclaimer.js";
 import type { PostStartInputWriter } from "./post-start-input-writer.js";
-import type { SarpTurnMessage } from "./sarp-protocol.js";
+import { type SarpTurnMessage, sarpResumeDecisionText } from "./sarp-protocol.js";
 
 /** reminder.fire 负载（T2：kind='patrol' 时带 instructions 走巡检 prompt 模板） */
 export interface ReminderFirePayload {
@@ -129,6 +130,11 @@ export interface IDispatch {
     message?: SarpTurnMessage,
     /** WP7：本条的注入历史信封文本（bridge 回合 turn.start.contextText） */
     contextText?: string,
+    /**
+     * WP10：interrupt:resolve 恢复回合——携带 pending 记录的精确身份
+     * （conversationId+interruptId）与结构化决定；队列内硬边界条目。
+     */
+    resolve?: DispatchResolveRef,
   ): Promise<void>;
   runAgent(
     agentName: string,
@@ -419,6 +425,8 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
       message?: SarpTurnMessage;
       /** WP7：合并批次的历史信封文本（仅 bridge 回合下发 turn.start.contextText） */
       contextText?: string;
+      /** WP10：resolve 批次恒为单条——该条目锁定的 pending 身份与决定 */
+      resolve?: DispatchResolveRef;
     },
   ): Promise<void> => {
     // P0.6：执行前成本门。队列 drain 已拦过一次，这里是兜底——覆盖
@@ -455,13 +463,18 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
     // Phase 2（§8.4/§11）：回合元数据——turnId 随队列 item（retry 复用），
     // conversationId 按 §11.1 分类法生成；同 conversation 有 pending
     // interrupt 时把 resumeToken 附进请求（下一条消息即 resume.value）。
-    const conversationId = buildConversationId({
-      agentId,
-      kind,
-      channelName,
-      threadId,
-      sourceId: turnSeed?.sourceId,
-    });
+    // WP10：resolve 条目自带 pending 的 conversationId——不派生（派生键可能
+    // 与 pending 记录不一致，决定会错投到别的会话桶）。
+    const resolve = turnSeed?.resolve;
+    const conversationId =
+      resolve?.conversationId ??
+      buildConversationId({
+        agentId,
+        kind,
+        channelName,
+        threadId,
+        sourceId: turnSeed?.sourceId,
+      });
     const pendingInterrupt = deps.interruptStore?.take(
       agentId,
       conversationId,
@@ -469,6 +482,34 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
       runtimeProfile.entrypoint,
       runtimeProfile.manifestRevision,
     );
+
+    // WP10：结构化恢复前置校验——take() 是不消费的只读校验（§11.4.4 消耗在
+    // 回合终态簿记）。pending 缺失/被顶替（interruptId 不符）/options 已
+    // 声明却未包含该决定 → 不派发回合、不删别人的记录；推送最新快照让
+    // 审批面收敛（行消失靠快照，无本地乐观移除）。按成功 settle——不是
+    // 投递错误，不重试不死信。
+    if (resolve) {
+      const allowed =
+        pendingInterrupt !== null &&
+        pendingInterrupt !== undefined &&
+        pendingInterrupt.interruptId === resolve.interruptId &&
+        (pendingInterrupt.options?.decisions === undefined ||
+          pendingInterrupt.options.decisions.includes(resolve.decision.type));
+      if (!allowed) {
+        console.warn(
+          `[Daemon] @${agentName} interrupt resolve dropped: no matching pending ` +
+            `(conv=${resolve.conversationId} interrupt=${resolve.interruptId} ` +
+            `pending=${pendingInterrupt?.interruptId ?? "none"})`,
+        );
+        try {
+          options.onInterruptsChange?.(deps.interruptStore?.list() ?? []);
+        } catch {
+          /* 快照推送是旁路，不阻断队列 */
+        }
+        return;
+      }
+    }
+
     const turn = {
       turnId: turnSeed?.turnId ?? `turn-${Date.now().toString(36)}-${nextFallbackTurnId++}`,
       conversationId,
@@ -482,7 +523,10 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
         ? {
             interruptId: pendingInterrupt.interruptId,
             resumeToken: pendingInterrupt.resumeToken,
-            value: turnSeed?.resumeValue ?? userMsg,
+            // WP10：结构化决定的 resume.value 用决定的可读文本（approve/reject/
+            // respond/edit → "【审批】…"），普通消息恢复沿用原文 merged。
+            value: resolve ? sarpResumeDecisionText(resolve.decision) : (turnSeed?.resumeValue ?? userMsg),
+            ...(resolve ? { decision: resolve.decision } : {}),
           }
         : undefined,
     };
@@ -635,6 +679,8 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
           sender: items[0].sender,
           message: mergedMessage,
           contextText: mergedContextText,
+          // WP10：resolve 批次恒为单条（队列硬边界），items[0] 即该条目
+          resolve: items[0].resolve,
         },
       );
     },
@@ -680,6 +726,8 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
     message?: SarpTurnMessage,
     /** WP7：本条注入的历史信封文本（bridge 回合 turn.start.contextText 素材） */
     contextText?: string,
+    /** WP10：interrupt:resolve 恢复回合的定位/决定（队列硬边界条目） */
+    resolve?: DispatchResolveRef,
   ): Promise<void> => {
     const gate = evaluateCostGate(deps.costTracker, agentName);
     if (gate.blocked) {
@@ -703,6 +751,7 @@ export const createDispatch = (deps: DispatchDeps): IDispatch => {
       bridge: isBridgeAgent(agentName),
       message,
       contextText,
+      resolve,
     });
     if (wasBusy) {
       console.log(`[Daemon] @${agentName} busy — message queued (dispatch queue)`);

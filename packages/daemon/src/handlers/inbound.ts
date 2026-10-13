@@ -11,6 +11,7 @@ import type {
   AgentDuty,
   AgentRuntimeProfile,
   AttachmentRef,
+  SarpResumeDecision,
   WsAgentStartAgent,
   WsAgentStartConfig,
   WsDeliverMessage,
@@ -124,6 +125,29 @@ const readReminder = (v: unknown): WsReminderFire => {
   };
 };
 
+/**
+ * WP10：interrupt:resolve 的 decision 归一化——白名单重建（防畸形对象/注入
+ * 未知字段进 turn.start.resume.decision）。respond.message 必填、edit.args
+ * 必填（undefined → 整条丢弃）；非法返回 undefined → 整帧丢弃。
+ */
+const readResumeDecision = (v: unknown): SarpResumeDecision | undefined => {
+  if (!isRecord(v)) return undefined;
+  switch (v.type) {
+    case "approve":
+      return { type: "approve" };
+    case "reject":
+      return { type: "reject", ...(asString(v.message) !== undefined ? { message: asString(v.message) } : {}) };
+    case "respond": {
+      const message = asString(v.message);
+      return message ? { type: "respond", message } : undefined;
+    }
+    case "edit":
+      return v.args !== undefined ? { type: "edit", args: v.args } : undefined;
+    default:
+      return undefined;
+  }
+};
+
 export const parseWsToDaemonMessage = (raw: unknown): WsToDaemonMessage | null => {
   if (!isRecord(raw) || typeof raw.type !== "string") return null;
 
@@ -188,6 +212,19 @@ export const parseWsToDaemonMessage = (raw: unknown): WsToDaemonMessage | null =
         agentId: asString(raw.agentId) ?? "",
         conversationId: asString(raw.conversationId) ?? "",
       };
+    case "interrupt:resolve": {
+      // decision 是结构化载荷——畸形即整帧丢弃（半决定比丢帧更糟）
+      const decision = readResumeDecision(raw.decision);
+      if (!decision) return null;
+      return {
+        type: "interrupt:resolve",
+        agentId: asString(raw.agentId) ?? "",
+        conversationId: asString(raw.conversationId) ?? "",
+        interruptId: asString(raw.interruptId) ?? "",
+        decision,
+        approver: asString(raw.approver),
+      };
+    }
     default:
       return null;
   }

@@ -69,7 +69,7 @@ const DAEMON_FRAMES: Record<string, unknown> = {
   pong: { type: "pong" },
 };
 
-/** browser→server 全部 6 个 type 的最小合法帧 */
+/** browser→server 全部 7 个 type 的最小合法帧 */
 const BROWSER_FRAMES: Record<string, unknown> = {
   "terminal:watch": { type: "terminal:watch", agentName: "x" },
   "terminal:unwatch": { type: "terminal:unwatch", agentName: "x" },
@@ -77,6 +77,14 @@ const BROWSER_FRAMES: Record<string, unknown> = {
   "terminal:resize": { type: "terminal:resize", agentName: "x", cols: 120, rows: 40 },
   // 批次 C（P1.4）：审批面驳回 → server 属主校验后路由到托管 daemon
   "interrupt:dismiss": { type: "interrupt:dismiss", agentId: "a", conversationId: "slock:v1:a:channel:g" },
+  // WP10：审批面结构化决定 → 属主校验 + approver 注入后路由回托管 daemon
+  "interrupt:resolve": {
+    type: "interrupt:resolve",
+    agentId: "a",
+    conversationId: "slock:v1:a:channel:g",
+    interruptId: "i1",
+    decision: { type: "approve" },
+  },
   pong: { type: "pong" },
 };
 
@@ -176,5 +184,60 @@ describe("WS 入站校验：browser→server 逐 type 对齐", () => {
     expect(
       parseWsInbound(JSON.stringify({ type: "interrupt:dismiss", agentId: "a" }), wsFromBrowserSchema, "browser-test"),
     ).toBeNull();
+  });
+});
+
+describe("WP10：interrupt:resolve 决策校验", () => {
+  const base = {
+    type: "interrupt:resolve",
+    agentId: "a",
+    conversationId: "slock:v1:a:channel:g",
+    interruptId: "i1",
+  };
+  const parseBrowser = (frame: unknown): unknown | null =>
+    parseWsInbound(JSON.stringify(frame), wsFromBrowserSchema, "browser-test");
+
+  it("四种 decision 形态均通过；reject.message 可选", () => {
+    for (const decision of [
+      { type: "approve" },
+      { type: "reject" },
+      { type: "reject", message: "不行" },
+      { type: "respond", message: "请先补一个测试" },
+      { type: "edit", args: { file: "a.ts", line: 3 } },
+    ]) {
+      const out = parseBrowser({ ...base, decision });
+      expect(out).toMatchObject({ type: "interrupt:resolve", decision });
+    }
+  });
+
+  it("decision 缺失/非对象/未知 type → 丢帧", () => {
+    expect(parseBrowser({ ...base })).toBeNull();
+    expect(parseBrowser({ ...base, decision: "approve" })).toBeNull();
+    expect(parseBrowser({ ...base, decision: { type: "maybe" } })).toBeNull();
+    expect(parseBrowser({ ...base, decision: { type: 7 } })).toBeNull();
+  });
+
+  it("respond 缺 message / 非字符串 → 丢帧（必填语义）", () => {
+    expect(parseBrowser({ ...base, decision: { type: "respond" } })).toBeNull();
+    expect(parseBrowser({ ...base, decision: { type: "respond", message: 42 } })).toBeNull();
+  });
+
+  it("reject.message 非字符串 → 丢帧；超长 → 丢帧（4KB 上限）", () => {
+    expect(parseBrowser({ ...base, decision: { type: "reject", message: 1 } })).toBeNull();
+    expect(parseBrowser({ ...base, decision: { type: "respond", message: "x".repeat(4001) } })).toBeNull();
+  });
+
+  it("edit 缺 args → 丢帧；args 超 16KB JSON → 丢帧", () => {
+    expect(parseBrowser({ ...base, decision: { type: "edit" } })).toBeNull();
+    const big = { type: "edit", args: { blob: "y".repeat(17 * 1024) } };
+    expect(parseBrowser({ ...base, decision: big })).toBeNull();
+    // 边界内正常放行
+    const ok = parseBrowser({ ...base, decision: { type: "edit", args: { blob: "y".repeat(1024) } } });
+    expect(ok).toMatchObject({ type: "interrupt:resolve" });
+  });
+
+  it("缺 interruptId → 丢帧（无 interruptId 无法定位 pending，防误清）", () => {
+    const { interruptId: _dropped, ...noId } = base;
+    expect(parseBrowser({ ...noId, decision: { type: "approve" } })).toBeNull();
   });
 });

@@ -627,11 +627,30 @@ function registerConnection(connection: WebSocket, ident: ResolvedIdentity, isDa
           // 批次 C（P1.4）：审批面驳回——仅限 agent 属主本人（pending 是
           // owner 私域数据，频道同事无权驳回别人的审批），路由到托管该机
           // 器的 daemon 连接删 pending（resumeToken 随记录作废）。
-          void resolveInterruptDismissTarget(userId, msg.agentId).then((t) => {
+          void resolveInterruptTarget(userId, msg.agentId).then((t) => {
             if (t)
               sendToDaemon(
                 t.target,
                 { type: "interrupt:dismiss", agentId: msg.agentId, conversationId: msg.conversationId },
+                { scope: t.scope },
+              );
+          });
+        } else if (msg.type === "interrupt:resolve") {
+          // WP10：审批面结构化决定——与 dismiss 同一属主/路由口径，转发时
+          // 附 approver=审批人 handle（由 server 查库填入，不信浏览器自报），
+          // daemon 把它作为 resume 回合的 source.sender。
+          void resolveInterruptTarget(userId, msg.agentId).then((t) => {
+            if (t)
+              sendToDaemon(
+                t.target,
+                {
+                  type: "interrupt:resolve",
+                  agentId: msg.agentId,
+                  conversationId: msg.conversationId,
+                  interruptId: msg.interruptId,
+                  decision: msg.decision,
+                  ...(t.approver ? { approver: t.approver } : {}),
+                },
                 { scope: t.scope },
               );
           });
@@ -666,21 +685,27 @@ function registerConnection(connection: WebSocket, ident: ResolvedIdentity, isDa
 }
 
 /**
- * 批次 C（P1.4）：interrupt:dismiss 的路由解析——agentId → 属主校验
- * （agents.user_id === 浏览器 userId，驳回是 owner 私域操作）→ 托管机器
- * machineKey + server scope。查不到/非属主 → null（静默丢，与其他
- * browser→daemon 控制帧同纪律）。
+ * 批次 C（P1.4）：interrupt:dismiss / WP10 interrupt:resolve 的路由解析——
+ * agentId → 属主校验（agents.user_id === 浏览器 userId，审批是 owner 私域操作）
+ * → 托管机器 machineKey + server scope + 审批人 handle（approver，resolve 帧用）。
+ * 查不到/非属主 → null（静默丢，与其他 browser→daemon 控制帧同纪律）。
  */
-async function resolveInterruptDismissTarget(
+async function resolveInterruptTarget(
   userId: string,
   agentId: string,
-): Promise<{ target: string; scope: string | null } | null> {
+): Promise<{ target: string; scope: string | null; approver: string | null } | null> {
   if (!wsPg) return null;
   try {
-    const r = await wsPg.query<{ user_id: string; server_id: string | null; machine_uuid: string | null }>(
-      `SELECT a.user_id, a.server_id, c.machine_uuid
+    const r = await wsPg.query<{
+      user_id: string;
+      server_id: string | null;
+      machine_uuid: string | null;
+      approver: string | null;
+    }>(
+      `SELECT a.user_id, a.server_id, c.machine_uuid, u.handle AS approver
          FROM agents a
          LEFT JOIN computers c ON c.id = a.computer_id
+         LEFT JOIN users u ON u.id = a.user_id
         WHERE a.id = $1 AND a.user_id::text = $2
         LIMIT 1`,
       [agentId, userId],
@@ -690,7 +715,7 @@ async function resolveInterruptDismissTarget(
     const uid = String(row.user_id);
     const scope = row.server_id ? String(row.server_id) : null;
     const target = row.machine_uuid ? `${uid}:${row.machine_uuid}` : (machineKeyForScope(uid, scope) ?? uid);
-    return { target, scope };
+    return { target, scope, approver: row.approver ? String(row.approver) : null };
   } catch {
     return null;
   }

@@ -26,7 +26,7 @@
 
 import { loadDaemonEnv } from "./config.js";
 import { DispatchError, errMessage, isDispatchError, isRetriableError } from "./errors.js";
-import type { SarpTurnMessage } from "./sarp-protocol.js";
+import type { SarpResumeDecision, SarpTurnMessage } from "./sarp-protocol.js";
 
 /**
  * A4：kind 语义化——入桶判别（triage/nudge/reminder 不与 message 合并）并随
@@ -34,6 +34,21 @@ import type { SarpTurnMessage } from "./sarp-protocol.js";
  * "dispatch" 保留给经理派单路径。
  */
 export type DispatchKind = "message" | "reminder" | "dispatch" | "triage" | "nudge";
+
+/**
+ * WP10：interrupt:resolve 恢复回合的定位/载荷——入队即锁定 pending 记录身份
+ * （conversationId+interruptId，doDispatch 直接拿去 take，不再派生），
+ * decision 原样进 turn.start.resume.decision。
+ *
+ * 带 resolve 的 item 在队列里是硬边界：不与任何条目合并（拼接会丢身份）、
+ * 不参与 dedup（决定文本天然雷同："【审批】批准" ×N 是不同的控制动作）、
+ * content 即决定的可读文本（resume.value 同源）。
+ */
+export interface DispatchResolveRef {
+  conversationId: string;
+  interruptId: string;
+  decision: SarpResumeDecision;
+}
 
 export interface DispatchQueueItem {
   id: string;
@@ -69,6 +84,8 @@ export interface DispatchQueueItem {
    * 素材）。仅 bridge 回合下发；合并批次取最后一条定义值（最新信封历史最全）。
    */
   contextText?: string;
+  /** WP10：interrupt:resolve 恢复回合——存在时本条独占一次投递（见 DispatchResolveRef） */
+  resolve?: DispatchResolveRef;
 }
 
 /**
@@ -163,6 +180,8 @@ export interface AgentDispatchQueue {
     message?: SarpTurnMessage;
     /** WP7：本条的注入历史信封文本（bridge 回合 turn.start.contextText 素材） */
     contextText?: string;
+    /** WP10：interrupt:resolve 恢复回合——硬边界条目（不合并/不去重） */
+    resolve?: DispatchResolveRef;
   }): EnqueueStatus;
   /** 指定 agent（或全部）的 pending 数量（跨桶合计） */
   depth(agentName?: string): number;
@@ -337,8 +356,14 @@ export const createAgentDispatchQueue = (opts: DispatchQueueOptions): AgentDispa
 
     // 忙碌合并：一次取走同桶全部 pending 作为一批投递（A4：绝不跨桶合并——
     // 不同频道/线程/kind 的消息不拼进同一回合，target 由桶唯一确定）。
-    const batch = bucket.pending.splice(0, bucket.pending.length);
-    for (const item of batch) bucket.inflight.add(item.content);
+    // WP10：resolve 条目是硬边界——头部是 resolve 只取它一条；否则取首个
+    // resolve 之前的连续普通段（resolve 之间也不互并：每条锁定的
+    // interruptId/conversationId 必须原样送达）。
+    const headIsResolve = bucket.pending[0]?.resolve !== undefined;
+    const firstResolveIdx = bucket.pending.findIndex((p) => p.resolve !== undefined);
+    const take = headIsResolve ? 1 : firstResolveIdx === -1 ? bucket.pending.length : firstResolveIdx;
+    const batch = bucket.pending.splice(0, take);
+    for (const item of batch) if (!item.resolve) bucket.inflight.add(item.content);
     if (batch.length > 1) safe(() => opts.onMerged?.(agentName, batch));
 
     // A4/§8.13⑦：in-flight 超时只告警、继续等真实 settle——回合级 deliver
@@ -376,7 +401,8 @@ export const createAgentDispatchQueue = (opts: DispatchQueueOptions): AgentDispa
         const t = now();
         for (const item of batch) {
           // A4 去重后写：只在真实投递成功时记录 dedup 窗口
-          bucket.recentContents.set(item.content, t);
+          // WP10：resolve 条目不写 dedup 簿记（控制动作，不是可去重的消息）
+          if (!item.resolve) bucket.recentContents.set(item.content, t);
           settleDone(item);
         }
         safe(() => opts.onDelivered?.(agentName, batch));
@@ -473,6 +499,7 @@ export const createAgentDispatchQueue = (opts: DispatchQueueOptions): AgentDispa
           bridge: input.bridge,
           message: itemMessage,
           contextText: input.contextText,
+          resolve: input.resolve,
         };
         safe(() => opts.onDeadLetter?.(agentName, item, err));
         return { status: "dead", err };
@@ -486,10 +513,13 @@ export const createAgentDispatchQueue = (opts: DispatchQueueOptions): AgentDispa
       // recentContents，同内容重发不被吞。
       // 代价是「用户 15s 内连发两条一模一样的消息」会被吞一条，可接受：
       // 正常人类/agent 对话极少逐字重复，而重复派发的危害（agent 干两遍活）更大。
+      // WP10：resolve 条目跳过 dedup——决定文本雷同（"【审批】批准"）是不同
+      // 控制动作；反向地普通消息也不与 pending resolve 的文本比内容。
       if (
-        bucket.recentContents.has(input.content) ||
-        bucket.inflight.has(input.content) ||
-        bucket.pending.some((p) => p.content === input.content)
+        !input.resolve &&
+        (bucket.recentContents.has(input.content) ||
+          bucket.inflight.has(input.content) ||
+          bucket.pending.some((p) => !p.resolve && p.content === input.content))
       ) {
         return { status: "deduped" };
       }
@@ -509,6 +539,7 @@ export const createAgentDispatchQueue = (opts: DispatchQueueOptions): AgentDispa
         bridge: input.bridge,
         message: itemMessage,
         contextText: input.contextText,
+        resolve: input.resolve,
       };
       const done = new Promise<void>((r) => doneResolvers.set(item.id, r));
       bucket.pending.push(item);

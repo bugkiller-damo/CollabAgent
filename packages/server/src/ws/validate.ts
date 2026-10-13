@@ -160,6 +160,41 @@ export const wsFromDaemonSchema = z.union([
 
 // ---------- browser → server（WsFromBrowserMessage，5 成员） ----------
 
+/** WP10：decision 文本上限（reject/respond 的 message） */
+const DECISION_MESSAGE_MAX = 4000;
+/** WP10：edit.args JSON 化后的字符上限（防巨型载荷灌进 turn.start） */
+const DECISION_ARGS_JSON_MAX = 16 * 1024;
+
+const decisionArgsJsonLen = (v: unknown): number => {
+  try {
+    return JSON.stringify(v)?.length ?? Number.POSITIVE_INFINITY;
+  } catch {
+    // 循环引用等不可序列化结构——按超限丢弃
+    return Number.POSITIVE_INFINITY;
+  }
+};
+
+/**
+ * WP10：interrupt:resolve 的 SarpResumeDecision（shared 联合的线校验）。
+ * respond.message 必填、reject.message 可选、edit.args 必填且 JSON ≤16KB。
+ */
+const interruptDecisionSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("approve") }).passthrough(),
+  z.object({ type: z.literal("reject"), message: str.max(DECISION_MESSAGE_MAX).optional() }).passthrough(),
+  z.object({ type: z.literal("respond"), message: str.max(DECISION_MESSAGE_MAX) }).passthrough(),
+  z
+    .object({
+      type: z.literal("edit"),
+      // 输出类型须排除 undefined（unknown 含 undefined 会让 args 推断成可选键，
+      // 赋不进 SarpResumeDecision.edit.args: unknown）；运行时检查同样拒绝缺省。
+      args: z.custom<NonNullable<unknown>>(
+        (v) => v !== undefined && decisionArgsJsonLen(v) <= DECISION_ARGS_JSON_MAX,
+        "args required, JSON.stringify(args) ≤ 16KB",
+      ),
+    })
+    .passthrough(),
+]);
+
 export const wsFromBrowserSchema = z.union([
   z.object({ type: z.literal("terminal:watch"), agentName: str }).passthrough(),
   z.object({ type: z.literal("terminal:unwatch"), agentName: str }).passthrough(),
@@ -174,6 +209,16 @@ export const wsFromBrowserSchema = z.union([
     .passthrough(),
   // 批次 C（P1.4）：审批面驳回——server 校验属主后路由到托管 daemon
   z.object({ type: z.literal("interrupt:dismiss"), agentId: str, conversationId: str }).passthrough(),
+  // WP10：审批面结构化决定——interruptId 定位 daemon 侧那条 pending
+  z
+    .object({
+      type: z.literal("interrupt:resolve"),
+      agentId: str,
+      conversationId: str,
+      interruptId: str,
+      decision: interruptDecisionSchema,
+    })
+    .passthrough(),
   pongSchema,
 ]);
 

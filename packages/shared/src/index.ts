@@ -456,6 +456,17 @@ export interface WsNotification {
 
 // ---------- server → daemon ----------
 
+/**
+ * WP10：interrupt:resolve 的结构化审批决定（与 daemon sarp-protocol.ts 的
+ * SarpResumeDecision 同形状——这里是 browser↔server↔daemon 的 WS 线契约）。
+ * worker 侧按框架需要自行映射（LangGraph HITL decisions / 纯文本等）。
+ */
+export type SarpResumeDecision =
+  | { type: "approve" }
+  | { type: "reject"; message?: string }
+  | { type: "respond"; message: string }
+  | { type: "edit"; args: unknown };
+
 export type WsToDaemonMessage =
   | { type: "connected"; serverTime: ISO8601 }
   | { type: "agent:start"; agentId?: UUID; agent?: WsAgentStartAgent; config?: WsAgentStartConfig }
@@ -471,6 +482,17 @@ export type WsToDaemonMessage =
   // 批次 C（P1.4）：web 审批面驳回一个 pending interrupt——daemon 按
   // (agentId, conversationId) 清除本地 pending 记录（resumeToken 作废）。
   | { type: "interrupt:dismiss"; agentId: string; conversationId: string }
+  // WP10：web 审批面结构化决定——daemon 校验 pending 后派发 resume 回合
+  // （turn.start.resume.decision）。approver = 审批人 handle，由 server 填
+  // （不信浏览器自带字段），进 turn.start.source.sender。
+  | {
+      type: "interrupt:resolve";
+      agentId: string;
+      conversationId: string;
+      interruptId: string;
+      decision: SarpResumeDecision;
+      approver?: string;
+    }
   | { type: "ping" };
 
 // ---------- daemon → server ----------
@@ -721,6 +743,16 @@ export type WsFromBrowserMessage =
   // 批次 C（P1.4）：审批面驳回 pending interrupt——server 校验属主后路由到
   // 托管 daemon（agentId+conversationId 定位 daemon 侧 pending 记录）
   | { type: "interrupt:dismiss"; agentId: string; conversationId: string }
+  // WP10：审批面结构化决定（approve/reject/respond/edit）——server 校验属主
+  // 并注入 approver handle 后路由到托管 daemon；interruptId 防误消费同会话
+  // 里后来顶替的旧 pending。
+  | {
+      type: "interrupt:resolve";
+      agentId: string;
+      conversationId: string;
+      interruptId: string;
+      decision: SarpResumeDecision;
+    }
   | { type: "pong" };
 
 export interface AgentWorkspaceFile {

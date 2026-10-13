@@ -1,5 +1,9 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAgentRuntime, type IAgentRuntime } from "../src/agent-runtime.js";
+import { createRuntimeInterruptStore } from "../src/agent-runtime-interrupt-store.js";
 import { createLiveRunRegistry } from "../src/live-run-registry.js";
 import { createFakeAgentManager, type FakeAgentManager } from "./fakes/fake-agent-manager.js";
 
@@ -216,5 +220,135 @@ describe("agent-runtime loadExistingAgents", () => {
     await runtime.loadExistingAgents();
     expect(runtime.listAgentNames()).toEqual([]);
     expect(errSpy).toHaveBeenCalled();
+  });
+});
+
+describe("WP10：resolveInterrupt（interrupt:resolve 入口）", () => {
+  const CONV = `slock:v1:${A_ID}:channel:general`;
+  let manager: FakeAgentManager;
+  let runtime: IAgentRuntime;
+  let tmp: string;
+  let interruptStore: ReturnType<typeof createRuntimeInterruptStore>;
+  let onInterruptsChange: ReturnType<typeof vi.fn>;
+
+  const putPending = (over?: Record<string, unknown>) =>
+    interruptStore.put({
+      agentId: A_ID,
+      agentName: A,
+      channel: "general",
+      runtime: "bridge",
+      entrypoint: "ep-1",
+      conversationId: CONV,
+      interruptId: "int-1",
+      resumeToken: "tok-1",
+      prompt: "批准执行吗？",
+      options: { decisions: ["approve", "reject", "respond"] },
+      kind: "message",
+      createdAt: Date.now(),
+      expiresAt: Date.now() + 60_000,
+      ...over,
+    });
+
+  beforeEach(() => {
+    delete process.env.SLOCK_USE_PTY;
+    manager = createFakeAgentManager();
+    tmp = mkdtempSync(join(tmpdir(), "slock-rt-"));
+    interruptStore = createRuntimeInterruptStore(join(tmp, "interrupts.json"));
+    onInterruptsChange = vi.fn();
+    runtime = createAgentRuntime(
+      {
+        serverUrl: "http://fake-server.test",
+        apiKey: "test-api-key",
+        interruptStore,
+        onInterruptsChange,
+      },
+      createLiveRunRegistry(),
+      undefined,
+      manager,
+    );
+    runtime.registerAgent(A_ID, A, { runtime: "bridge", entrypoint: "ep-1", runtimeProfileError: null });
+  });
+
+  afterEach(() => {
+    runtime.stopAll();
+    rmSync(tmp, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
+
+  it("合法决定 → 按 pending 来源路由入队（approve 文本 + approver sender + resolve 锁）且不消费记录", async () => {
+    putPending();
+    const spy = vi.spyOn(runtime, "dispatchToAgent").mockResolvedValue(undefined);
+    await runtime.resolveInterrupt(A_ID, CONV, "int-1", { type: "approve" }, "alice-h");
+    expect(spy).toHaveBeenCalledWith(
+      A,
+      "general",
+      "【审批】批准",
+      undefined,
+      "message",
+      undefined,
+      "alice-h",
+      undefined,
+      undefined,
+      { conversationId: CONV, interruptId: "int-1", decision: { type: "approve" } },
+    );
+    // 只读校验不消费——投递时由 doDispatch take() 二次锁定（避免与入队间隔竞态丢中断）
+    expect(interruptStore.list()).toHaveLength(1);
+    expect(onInterruptsChange).not.toHaveBeenCalled(); // 记录未变 → 不推快照
+  });
+
+  it("reject/respond 生成可读 content，kind/channel/threadId 沿用 pending 记录", async () => {
+    putPending({ threadId: "t-5", kind: "dispatch", conversationId: CONV });
+    const spy = vi.spyOn(runtime, "dispatchToAgent").mockResolvedValue(undefined);
+    await runtime.resolveInterrupt(A_ID, CONV, "int-1", { type: "reject", message: "先补测试" }, "alice-h");
+    await runtime.resolveInterrupt(A_ID, CONV, "int-1", { type: "respond", message: "用 GET 就行" });
+    expect(spy.mock.calls[0]).toEqual([
+      A,
+      "general",
+      "【审批】拒绝：先补测试",
+      "t-5",
+      "dispatch",
+      undefined,
+      "alice-h",
+      undefined,
+      undefined,
+      { conversationId: CONV, interruptId: "int-1", decision: { type: "reject", message: "先补测试" } },
+    ]);
+    expect(spy.mock.calls[1]![2]).toBe("【审批】回复：用 GET 就行");
+    expect(spy.mock.calls[1]![6]).toBeUndefined(); // approver 缺省
+    expect(spy).toHaveBeenCalledTimes(2); // 两条各自独立入队——不在本层去重
+  });
+
+  it("陈旧请求（记录缺失 / interruptId 顶替 / 决定未声明 / agentId 不符）→ warn + 重推快照，不入队不误删", async () => {
+    putPending();
+    const spy = vi.spyOn(runtime, "dispatchToAgent").mockResolvedValue(undefined);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await runtime.resolveInterrupt(A_ID, "conv-ghost", "int-1", { type: "approve" });
+    await runtime.resolveInterrupt(A_ID, CONV, "int-OLD", { type: "approve" }); // 被 int-1 顶替
+    await runtime.resolveInterrupt(A_ID, CONV, "int-1", { type: "edit", args: {} }); // 未声明 edit
+    await runtime.resolveInterrupt("cccccccc-3333-3333-3333-333333333333", CONV, "int-1", { type: "approve" });
+
+    expect(spy).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledTimes(4);
+    expect(onInterruptsChange).toHaveBeenCalledTimes(4); // 每条都重推快照收敛审批面
+    expect(interruptStore.list().map((r) => r.interruptId)).toEqual(["int-1"]); // 原记录原样保留
+  });
+
+  it("过期 pending → 拒绝入队（投递层 take 也会惰性清除）", async () => {
+    putPending({ expiresAt: Date.now() - 1 });
+    const spy = vi.spyOn(runtime, "dispatchToAgent").mockResolvedValue(undefined);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await runtime.resolveInterrupt(A_ID, CONV, "int-1", { type: "approve" });
+    expect(spy).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(onInterruptsChange).toHaveBeenCalledTimes(1);
+  });
+
+  it("pending 无 options 声明 → 任意合法决定放行", async () => {
+    putPending({ options: undefined });
+    const spy = vi.spyOn(runtime, "dispatchToAgent").mockResolvedValue(undefined);
+    await runtime.resolveInterrupt(A_ID, CONV, "int-1", { type: "edit", args: { file: "a.ts" } });
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy.mock.calls[0]![9]).toMatchObject({ decision: { type: "edit", args: { file: "a.ts" } } });
   });
 });

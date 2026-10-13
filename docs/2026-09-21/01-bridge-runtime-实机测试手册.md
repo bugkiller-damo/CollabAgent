@@ -129,7 +129,7 @@ Invoke-RestMethod -Method Post -Headers ($H + @{'Content-Type'='application/json
 Invoke-RestMethod -Headers $H "http://localhost:3001/api/messages/history?channel=dm:<channelId>&limit=20"
 ```
 
-LangGraph 示例的审批门：每个回合 `review` 节点 `interrupt()` 挂起 → daemon 回 `approve`/`reject` 开头的下一条消息即 resume。
+LangGraph 示例的审批门：每个回合 `review` 节点 `interrupt()` 挂起 → daemon 回 `approve`/`reject` 开头的下一条消息即 resume。**结构化审批（WP10）**：worker 在 `interrupt()` 里声明 `options.decisions`（`"approve"`/`"reject"`/`"respond"`）时，web 审批横幅渲染对应按钮——点击发 `interrupt:resolve`，daemon 校验 pending 后派发 `turn.start`（`resume.value` 为可读文本、`resume.decision` 为结构化决定、`source.sender` 为审批人 handle）；`edit` 决定协议已通但 UI 一期不渲染。声明了 `options.actions` 时横幅同时列出动作名 + 参数预览。文本回复照常可用（`resume.value` = 消息原文）。
 
 ---
 
@@ -150,4 +150,4 @@ LangGraph 示例的审批门：每个回合 `review` 节点 `interrupt()` 挂起
 - DeepSeek：`langchain-openai` 1.6.2 + `OPENAI_BASE_URL=https://api.deepseek.com`，模型 `deepseek-chat`/`deepseek-reasoner` 可用。
 - venv：`bridges/python/.venv`（uv 建的，无 pip——装包用 `uv pip install --python .venv/Scripts/python.exe <pkg>`）。
 - worker 持久跨回合；杀进程后下条消息自动 respawn（dispatch 850ms 重试），SqliteSaver checkpoint 在 `<workspace>/.slock/langgraph-checkpoints.sqlite`，thread 上下文不丢。
-- 审批 prompt 目前以 progress 消息短暂出现后被删——频道里**没有**持久的「待审批」提示，UX 改进项。
+- 待审批中断有持久入口：web 频道页顶部的审批横幅（`PendingInterruptBanner`）按 daemon 快照渲染，含 prompt / options.actions / 结构化决定按钮；驳回按钮作废 pending 记录（`interrupt:dismiss`）。

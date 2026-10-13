@@ -33,6 +33,8 @@ const makeFakeRuntime = (obsBus: ReturnType<typeof createObservationBus>): FakeR
     runAgentDm: vi.fn(async () => {}),
     runAgentReminder: vi.fn(async () => {}),
     runAgentTriage: vi.fn(async () => {}),
+    dispatchToAgent: vi.fn(async () => {}),
+    resolveInterrupt: vi.fn(async () => {}),
     findMentionedAgent: vi.fn(() => null),
     setPreferredTermSize: vi.fn(),
     getAgentState: vi.fn(() => "idle"),
@@ -521,6 +523,61 @@ describe("daemon-core 消息路由", () => {
       ]);
       const last = sent.filter((m) => m.type === "interrupts:state").at(-1)!;
       expect((last.interrupts as Array<Record<string, unknown>>)[0]!.options).toBeUndefined();
+    });
+  });
+
+  describe("interrupt:resolve（WP10）", () => {
+    it("合法帧 → runtime.resolveInterrupt 收 (agentId, conv, interruptId, decision, approver)", async () => {
+      await call({
+        type: "interrupt:resolve",
+        agentId: AGENT_ID,
+        conversationId: "conv-1",
+        interruptId: "int-9",
+        decision: { type: "reject", message: "先别动" },
+        approver: "alice-h",
+      });
+      expect(runtime.resolveInterrupt).toHaveBeenCalledWith(
+        AGENT_ID,
+        "conv-1",
+        "int-9",
+        { type: "reject", message: "先别动" },
+        "alice-h",
+      );
+    });
+
+    it("approver 缺省 → undefined 透传（server 注入可缺）", async () => {
+      await call({
+        type: "interrupt:resolve",
+        agentId: AGENT_ID,
+        conversationId: "conv-1",
+        interruptId: "int-9",
+        decision: { type: "approve" },
+      });
+      expect(runtime.resolveInterrupt).toHaveBeenCalledWith(
+        AGENT_ID,
+        "conv-1",
+        "int-9",
+        { type: "approve" },
+        undefined,
+      );
+    });
+
+    it("畸形 decision / 缺 interruptId → 不触 runtime", async () => {
+      await call({
+        type: "interrupt:resolve",
+        agentId: AGENT_ID,
+        conversationId: "c",
+        interruptId: "i",
+        decision: { type: "respond" }, // respond 缺 message → 整帧丢弃
+      });
+      await call({
+        type: "interrupt:resolve",
+        agentId: AGENT_ID,
+        conversationId: "c",
+        interruptId: "",
+        decision: { type: "approve" },
+      });
+      expect(runtime.resolveInterrupt).not.toHaveBeenCalled();
     });
   });
 

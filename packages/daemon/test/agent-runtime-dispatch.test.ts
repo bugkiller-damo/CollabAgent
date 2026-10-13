@@ -1051,6 +1051,277 @@ describe("agent-runtime-dispatch (headless)", () => {
         rmSync(tmp, { recursive: true, force: true });
       }
     });
+
+    // ---- WP10：interrupt:resolve 结构化恢复（审批面按钮 → resume.decision） ----
+
+    const putPending = (
+      store: ReturnType<typeof createRuntimeInterruptStore>,
+      over?: Partial<Parameters<typeof store.put>[0]>,
+    ) =>
+      store.put({
+        agentId: AGENT_ID,
+        agentName: AGENT,
+        channel: "general",
+        threadId: "t-9",
+        runtime: "bridge",
+        entrypoint: "ep-graph",
+        conversationId: `slock:v1:${AGENT_ID}:thread:t-9`,
+        interruptId: "int-77",
+        resumeToken: "tok-77",
+        prompt: "批准执行危险操作？",
+        options: { decisions: ["approve", "reject", "respond", "edit"] },
+        kind: "message",
+        createdAt: Date.now(),
+        expiresAt: Date.now() + 60_000,
+        ...over,
+      });
+
+    it("resolve 回合：pending 身份锁定 + resume.decision 原样 + approver 进 source.sender", async () => {
+      const tmp = mkdtempSync(join(tmpdir(), "slock-istore-"));
+      const store = createRuntimeInterruptStore(join(tmp, "interrupts.json"));
+      const { registry, sessions } = makeBridgeRegistry();
+      harness = makeHarness({
+        runtimeRegistry: registry,
+        resolveRuntimeProfile: () => bridgeProfile,
+        interruptStore: store,
+      });
+      try {
+        const conv = `slock:v1:${AGENT_ID}:thread:t-9`;
+        putPending(store);
+        // 模拟 runtime.resolveInterrupt 的入队形态：content=决定可读文本、
+        // sender=approver、resolve 锁定 (conversationId, interruptId, decision)
+        await harness.dispatch.dispatchToAgent(
+          AGENT,
+          "general",
+          "【审批】批准",
+          "t-9",
+          "message",
+          undefined,
+          "alice-h",
+          undefined,
+          undefined,
+          { conversationId: conv, interruptId: "int-77", decision: { type: "approve" } },
+        );
+        await flush();
+
+        expect(sessions).toHaveLength(1);
+        const req = sessions[0]!.requests[0]!;
+        expect(req.conversationId).toBe(conv); // 锁定 pending 的 conversationId，不派生
+        expect(req.prompt).toBe("【审批】批准"); // 决定可读文本（bridge 无 reminder tail）
+        expect(req.resume).toEqual({
+          interruptId: "int-77",
+          resumeToken: "tok-77",
+          value: "【审批】批准",
+          decision: { type: "approve" },
+        });
+        expect(req.source).toMatchObject({ kind: "message", channel: "general", threadId: "t-9", sender: "alice-h" });
+        // success 终态 → pending 按 §11.4 消耗
+        expect(store.list()).toHaveLength(0);
+        expect(harness.onDeliveryDeadLetter).not.toHaveBeenCalled();
+      } finally {
+        rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+
+    it("reject/respond/edit 的可读 resume.value 与 decision 直通", async () => {
+      const tmp = mkdtempSync(join(tmpdir(), "slock-istore-"));
+      const store = createRuntimeInterruptStore(join(tmp, "interrupts.json"));
+      const { registry, sessions } = makeBridgeRegistry();
+      harness = makeHarness({
+        runtimeRegistry: registry,
+        resolveRuntimeProfile: () => bridgeProfile,
+        interruptStore: store,
+      });
+      try {
+        const conv = `slock:v1:${AGENT_ID}:thread:t-9`;
+        const cases: Array<{ text: string; decision: any; value: string }> = [
+          {
+            text: "【审批】拒绝：先补测试",
+            decision: { type: "reject", message: "先补测试" },
+            value: "【审批】拒绝：先补测试",
+          },
+          {
+            text: "【审批】回复：用 GET 就行",
+            decision: { type: "respond", message: "用 GET 就行" },
+            value: "【审批】回复：用 GET 就行",
+          },
+          {
+            text: '【审批】修改参数：{"file":"a.ts"}',
+            decision: { type: "edit", args: { file: "a.ts" } },
+            value: '【审批】修改参数：{"file":"a.ts"}',
+          },
+        ];
+        const sess = () => sessions[0]!;
+        for (const [idx, c] of cases.entries()) {
+          putPending(store, { interruptId: `int-${idx}`, resumeToken: `tok-${idx}` });
+          await harness.dispatch.dispatchToAgent(
+            AGENT,
+            "general",
+            c.text,
+            "t-9",
+            "message",
+            undefined,
+            "alice-h",
+            undefined,
+            undefined,
+            { conversationId: conv, interruptId: `int-${idx}`, decision: c.decision },
+          );
+          await flush();
+          const req = sess().requests.at(-1)!;
+          expect(req.resume).toEqual({
+            interruptId: `int-${idx}`,
+            resumeToken: `tok-${idx}`,
+            value: c.value,
+            decision: c.decision,
+          });
+          expect(store.list()).toHaveLength(0); // 每轮 success 消耗后再放下一条
+        }
+      } finally {
+        rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+
+    it("interruptId 不符（pending 被顶替）→ 不派发、不删记录、推快照；非投递错误", async () => {
+      const tmp = mkdtempSync(join(tmpdir(), "slock-istore-"));
+      const store = createRuntimeInterruptStore(join(tmp, "interrupts.json"));
+      const { registry, sessions } = makeBridgeRegistry();
+      harness = makeHarness({
+        runtimeRegistry: registry,
+        resolveRuntimeProfile: () => bridgeProfile,
+        interruptStore: store,
+      });
+      const onInterruptsChange = vi.fn();
+      harness.deps.options.onInterruptsChange = onInterruptsChange;
+      try {
+        const conv = `slock:v1:${AGENT_ID}:thread:t-9`;
+        putPending(store, { interruptId: "int-NEW" }); // 同会话被新 interrupt 顶替
+        await harness.dispatch.dispatchToAgent(
+          AGENT,
+          "general",
+          "【审批】批准",
+          "t-9",
+          "message",
+          undefined,
+          "alice-h",
+          undefined,
+          undefined,
+          { conversationId: conv, interruptId: "int-OLD", decision: { type: "approve" } },
+        );
+        await flush();
+        expect(sessions).toHaveLength(0); // turn.start 从未发出
+        expect(store.list().map((r) => r.interruptId)).toEqual(["int-NEW"]); // 顶替记录原样保留
+        expect(onInterruptsChange).toHaveBeenCalled();
+        expect(harness.onDeliveryDeadLetter).not.toHaveBeenCalled(); // 陈旧恢复不是投递错误
+      } finally {
+        rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+
+    it("options.decisions 未声明该决定 → 不派发、记录保留", async () => {
+      const tmp = mkdtempSync(join(tmpdir(), "slock-istore-"));
+      const store = createRuntimeInterruptStore(join(tmp, "interrupts.json"));
+      const { registry, sessions } = makeBridgeRegistry();
+      harness = makeHarness({
+        runtimeRegistry: registry,
+        resolveRuntimeProfile: () => bridgeProfile,
+        interruptStore: store,
+      });
+      try {
+        const conv = `slock:v1:${AGENT_ID}:thread:t-9`;
+        putPending(store, { options: { decisions: ["reject"] } }); // 只声明 reject
+        await harness.dispatch.dispatchToAgent(
+          AGENT,
+          "general",
+          "【审批】批准",
+          "t-9",
+          "message",
+          undefined,
+          "alice-h",
+          undefined,
+          undefined,
+          { conversationId: conv, interruptId: "int-77", decision: { type: "approve" } },
+        );
+        await flush();
+        expect(sessions).toHaveLength(0);
+        expect(store.list()).toHaveLength(1);
+      } finally {
+        rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+
+    it("pending 已消失（dismiss/过期被清）→ 静默丢弃不发回合", async () => {
+      const tmp = mkdtempSync(join(tmpdir(), "slock-istore-"));
+      const store = createRuntimeInterruptStore(join(tmp, "interrupts.json"));
+      const { registry, sessions } = makeBridgeRegistry();
+      harness = makeHarness({
+        runtimeRegistry: registry,
+        resolveRuntimeProfile: () => bridgeProfile,
+        interruptStore: store,
+      });
+      const onInterruptsChange = vi.fn();
+      harness.deps.options.onInterruptsChange = onInterruptsChange;
+      try {
+        const conv = `slock:v1:${AGENT_ID}:thread:t-9`;
+        putPending(store, { expiresAt: Date.now() - 1 }); // 已过期——take 惰性清除返回 null
+        await harness.dispatch.dispatchToAgent(
+          AGENT,
+          "general",
+          "【审批】批准",
+          "t-9",
+          "message",
+          undefined,
+          "alice-h",
+          undefined,
+          undefined,
+          { conversationId: conv, interruptId: "int-77", decision: { type: "approve" } },
+        );
+        await flush();
+        expect(sessions).toHaveLength(0);
+        expect(store.list()).toHaveLength(0); // take 已惰性清掉过期记录
+        expect(onInterruptsChange).toHaveBeenCalled();
+      } finally {
+        rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+
+    it("resolve 不与积压消息合并——锁定身份单独成回合", async () => {
+      const tmp = mkdtempSync(join(tmpdir(), "slock-istore-"));
+      const store = createRuntimeInterruptStore(join(tmp, "interrupts.json"));
+      const { registry, sessions } = makeBridgeRegistry();
+      harness = makeHarness({
+        runtimeRegistry: registry,
+        resolveRuntimeProfile: () => bridgeProfile,
+        interruptStore: store,
+      });
+      try {
+        const conv = `slock:v1:${AGENT_ID}:thread:t-9`;
+        putPending(store);
+        // resolve 消耗 pending（success 终态删记录）→ 紧随其后的同会话
+        // 普通消息开全新回合（resume 缺省）——两个独立 turn.start。
+        // （队列层的硬边界/不合并语义由 agent-dispatch-queue.test.ts 覆盖）
+        await harness.dispatch.dispatchToAgent(
+          AGENT,
+          "general",
+          "【审批】批准",
+          "t-9",
+          "message",
+          undefined,
+          "alice-h",
+          undefined,
+          undefined,
+          { conversationId: conv, interruptId: "int-77", decision: { type: "approve" } },
+        );
+        await harness.dispatch.dispatchToAgent(AGENT, "general", "追问一句", "t-9");
+        await flush();
+        const reqs = sessions[0]!.requests;
+        expect(reqs).toHaveLength(2);
+        expect(reqs[0]!.resume?.decision).toEqual({ type: "approve" });
+        expect(reqs[1]!.resume).toBeUndefined();
+        expect(reqs[1]!.prompt).toContain("追问一句");
+      } finally {
+        rmSync(tmp, { recursive: true, force: true });
+      }
+    });
   });
 
   describe("WP2：bridge 回合 prompt 走 neutral 模板（无 Claude 约定 / 无 reminder tail）", () => {

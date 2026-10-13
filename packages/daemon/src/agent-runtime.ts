@@ -27,6 +27,7 @@ import { errMessage } from "./errors.js";
 import { createIdleReclaimer, reclaimIdleAgent } from "./idle-reclaimer.js";
 import { createPostStartInputWriter, type PostStartInputWriter } from "./post-start-input-writer.js";
 import { createRuntimeDiagnostics, defaultDiagnosticsPath } from "./runtime-diagnostics.js";
+import { sarpResumeDecisionText } from "./sarp-protocol.js";
 import type {
   AgentStatus,
   IAgentManager,
@@ -131,7 +132,34 @@ export interface AgentRuntimeOptions {
 
 export interface IAgentRuntime {
   // 消息分发
-  dispatchToAgent(agentName: string, channelName: string, userMsg: string, threadId?: string): Promise<void>;
+  dispatchToAgent(
+    agentName: string,
+    channelName: string,
+    userMsg: string,
+    threadId?: string,
+    kind?: import("./agent-dispatch-queue.js").DispatchKind,
+    sourceId?: string,
+    sender?: string,
+    message?: import("./sarp-protocol.js").SarpTurnMessage,
+    contextText?: string,
+    /** WP10：interrupt:resolve 恢复回合（队列硬边界条目） */
+    resolve?: import("./agent-dispatch-queue.js").DispatchResolveRef,
+  ): Promise<void>;
+  /**
+   * WP10：interrupt:resolve——审批面结构化决定恢复 pending interrupt。
+   * 只读校验（不提前消费）：pending 缺失/过期/interruptId 不符/决定未被
+   * options.decisions 声明 → warn + 重推 interrupts 快照；合法 → 以
+   * pending 的来源路由（channel/threadId/kind）入队一条硬边界条目，
+   * 真正的 take/消耗在 doDispatch 投递时按 §11.4 簿记。
+   */
+  resolveInterrupt(
+    agentId: string,
+    conversationId: string,
+    interruptId: string,
+    decision: import("./sarp-protocol.js").SarpResumeDecision,
+    /** server 注入的审批人 handle → 回合 source.sender */
+    approver?: string,
+  ): Promise<void>;
   runAgent(
     agentName: string,
     channelName: string,
@@ -626,6 +654,56 @@ export const createAgentRuntime = (
     runAgentDm,
     runAgentReminder,
     runAgentTriage,
+
+    /**
+     * WP10：interrupt:resolve（server 路由来的审批面结构化决定）。
+     * 只读校验 pending——缺失/过期/interruptId 不符/决定未被声明
+     * → warn + 重推快照，不消费记录；合法 → 以 pending 的 channel/
+     * thread/kind 入队一条 resolve 硬边界条目，身份复核在 doDispatch。
+     */
+    resolveInterrupt(
+      agentId: string,
+      conversationId: string,
+      interruptId: string,
+      decision: import("./sarp-protocol.js").SarpResumeDecision,
+      approver?: string,
+    ): Promise<void> {
+      const rePush = (): void => {
+        try {
+          options.onInterruptsChange?.(interruptStore.list());
+        } catch {
+          /* 快照推送是旁路 */
+        }
+      };
+      const pending = interruptStore.list().find((r) => r.agentId === agentId && r.conversationId === conversationId);
+      const agentName = resolveAgentName(agentId) ?? pending?.agentName ?? null;
+      const decisionAllowed =
+        pending !== undefined &&
+        pending.interruptId === interruptId &&
+        pending.expiresAt > Date.now() &&
+        (pending.options?.decisions === undefined || pending.options.decisions.includes(decision.type));
+      if (!agentName || !pending?.channel || !decisionAllowed) {
+        console.warn(
+          `[Daemon] interrupt resolve ignored: no matching pending ` +
+            `(agent=${agentName ?? agentId} conv=${conversationId} interrupt=${interruptId} ` +
+            `pending=${pending?.interruptId ?? "none"})`,
+        );
+        rePush();
+        return Promise.resolve();
+      }
+      return runtimeApi.dispatchToAgent(
+        agentName,
+        pending.channel,
+        sarpResumeDecisionText(decision),
+        pending.threadId,
+        pending.kind ?? "message",
+        undefined,
+        approver,
+        undefined,
+        undefined,
+        { conversationId, interruptId, decision },
+      );
+    },
 
     registerAgent(id: string, name: string, info: AgentRegistrationInfo): void {
       // A4：已注册的 agent 收到 agent:start 重推（PATCH 编辑/值班重复开）只做
