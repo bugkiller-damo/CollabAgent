@@ -102,6 +102,7 @@ pnpm vitest run          # packages/daemon 测试（47 文件 / 497 用例）
 
 | 文档 | 用途 |
 |------|------|
+| `docs/2026-10-13/01-bridge-runtime统一与自建agent改造方案.md` | **bridge runtime 统一（langchain/langgraph → `bridge`）+ 自建 agent 适配缺口修复（WP1~WP12，待实施）** |
 | `docs/2026-09-20/01-daemon-claude-decoupling-audit.md` | Claude 耦合度审计（Phase 0 依据） |
 | `docs/2026-09-20/02-daemon-langchain-langgraph-runtime-design.md` | **多 runtime 设计全书（Phase 0~5 已全部落地）** |
 | `docs/2026-09-21/01-bridge-runtime-实机测试手册.md` | bridge runtime 实机测试操作手册（flag/manifest/验证路径/失败速查） |
