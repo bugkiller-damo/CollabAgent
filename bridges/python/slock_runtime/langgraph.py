@@ -20,9 +20,16 @@
   其余 provider=langgraph；
 - interrupt() → InterruptRecord + TurnOutcome(interrupted)；resume token
   签发/单次消耗由 runtime journal 兜底（§11.4），adapter 不碰；
+- §9.1 默认 interrupt 渲染（用户提供 interrupt_mapper 时以用户为准）：
+  str 原样；LangChain HITLRequest（dict 含 action_requests 列表）→
+  可读中文提示 + options（decisions=各 allowed_decisions 交集、
+  actions=name/args/description 预览）；dict 含字符串键
+  prompt/question/message → 取该值；其余 → json.dumps 截断；
 - turn.resume → Command(resume=resume_mapper(init, turn, interrupt_value)
-  ——resume_mapper 缺省 None 时 turn.resume.value 原样透传（WP8；WP9
-  补默认归约）；
+  ——用户提供 resume_mapper 时以用户为准；缺省走 §9.2 默认归约：
+  HITLRequest → {"decisions":[...]}（结构化 decision 映射，或文本归类
+  ——批准词 approve、其余一律 reject/respond，歧义输入不执行被拦截
+  动作）；非 HITL → decision dict 透传，无 decision 时 value 原文；
 - graph.checkpointer 决定 durableThreads：InMemorySaver/MemorySaver/None
   → false，其余（SqliteSaver/Postgres…）→ true（§11.3）；
 - §8.3 执行模式：auto 按 checkpointer 类名 Async* / async-only 节点判定；
@@ -50,7 +57,14 @@ from dataclasses import dataclass
 from typing import Any
 
 from .errors import GRAPH_INPUT_INVALID, INTERRUPT_NOT_FOUND, SarpError
-from .protocol import SarpInitialize, SarpTurnStart
+from .protocol import (
+    INTERRUPT_DECISION_KINDS,
+    SarpInitialize,
+    SarpInterruptOptions,
+    SarpResumeDecision,
+    SarpTurnStart,
+    parse_interrupt_options,
+)
 from .runtime import InterruptRecord, RunTurn, TurnEmit, TurnOutcome, new_resume_token
 from .tool_events import tool_provider_fields
 
@@ -183,6 +197,233 @@ def _jsonable(v: Any) -> bool:
         return True
     except Exception:
         return False
+
+
+# ---------------------------------------------------------------------------
+# §9.1 interrupt 默认渲染 + §9.2 resume 默认归约
+#
+# LangChain `HumanInTheLoopMiddleware` 以 interrupt(HITLRequest) 挂起：
+#   {"action_requests": [{"name","args","description"?}…],
+#    "review_configs":  [{"action_name","allowed_decisions"…}…]}
+# 恢复值必须是 {"decisions": [Decision…]}——决定数与 action_requests 数
+# 一致（middleware 校验，human_in_the_loop.py:483-489）。D11：此前
+# Command(resume=<文本>) 撞 `interrupt(...)["decisions"]` 直接崩、
+# resume token 已被 journal 消耗、审批作废——默认归约兜住这条路径。
+# ---------------------------------------------------------------------------
+
+
+def _hitl_request(value: Any) -> dict | None:
+    """LangChain HITLRequest 判定：dict 且含 action_requests 列表。"""
+    if isinstance(value, dict) and isinstance(value.get("action_requests"), list):
+        return value
+    return None
+
+
+def _hitl_allowed_decisions(request: dict) -> list[str]:
+    """各 review_configs[].allowed_decisions 的交集（只收已知决定枚举、
+    排序输出保证帧形状确定）；取不到/交集为空 → []（调用方省略 decisions）。
+
+    review_configs 缺失或条目畸形 → 该条按空集计——宁可不渲染审批按钮，
+    也不放行不能确认被允许的决定。"""
+    configs = request.get("review_configs")
+    if not isinstance(configs, list) or not configs:
+        return []
+    acc: set[str] | None = None
+    for cfg in configs:
+        allowed = cfg.get("allowed_decisions") if isinstance(cfg, dict) else None
+        kinds = (
+            {d for d in allowed if isinstance(d, str) and d in INTERRUPT_DECISION_KINDS}
+            if isinstance(allowed, list)
+            else set()
+        )
+        acc = kinds if acc is None else acc & kinds
+    return sorted(acc) if acc else []
+
+
+def _hitl_actions(request: dict) -> list[dict]:
+    """action_requests → options.actions 预览条目（name 必填，args/
+    description 可选）——产出 dirty dict 由 parse_interrupt_options 归一。"""
+    actions: list[dict] = []
+    for a in request.get("action_requests") or []:
+        if not isinstance(a, dict):
+            continue
+        name = a.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        item: dict[str, Any] = {"name": name}
+        args = a.get("args")
+        # 协议帧纪律：args 必须 JSON 可序列化——否则整帧 dumps 失败、
+        # 回合 handler 中途死亡（与 payload 的 _jsonable 判定同口径）
+        if args is not None and _jsonable(args):
+            item["args"] = args
+        desc = a.get("description")
+        if isinstance(desc, str) and desc:
+            item["description"] = desc
+        actions.append(item)
+    return actions
+
+
+def _short_arg(v: Any, limit: int = 60) -> str:
+    """审批提示里的单个参数值：str 原样，其余 json；超长截断。"""
+    if isinstance(v, str):
+        s = v
+    else:
+        try:
+            s = json.dumps(v, ensure_ascii=False, default=str)
+        except Exception:
+            s = str(v)
+    return s if len(s) <= limit else s[:limit] + "…"
+
+
+_HITL_DECISION_LABELS = {"approve": "批准", "reject": "拒绝", "respond": "回复", "edit": "修改"}
+
+
+def _hitl_prompt(request: dict) -> str:
+    """HITLRequest → 可读中文提示（§9.1）：
+    需要审批：调用 send_email（to=…, body=…）。可选：批准 / 拒绝 / 回复 / 修改"""
+    parts: list[str] = []
+    for a in request.get("action_requests") or []:
+        if not isinstance(a, dict):
+            continue
+        name = a.get("name") if isinstance(a.get("name"), str) else "?"
+        args = a.get("args")
+        arg_s = ""
+        if isinstance(args, dict) and args:
+            inner = ", ".join(f"{k}={_short_arg(v)}" for k, v in args.items())
+            arg_s = f"（{inner}）"
+        parts.append(f"调用 {name}{arg_s}")
+    suffix = ""
+    decisions = _hitl_allowed_decisions(request)
+    if decisions:
+        suffix = "。可选：" + " / ".join(_HITL_DECISION_LABELS.get(d, d) for d in decisions)
+    body = "；".join(parts)
+    return _truncate(f"需要审批：{body}{suffix}" if body else f"需要审批{suffix}")
+
+
+def _default_interrupt_render(value: Any) -> tuple[str, SarpInterruptOptions | None]:
+    """§9.1 默认 interrupt 渲染 → (prompt, options)。
+
+    options 经 parse_interrupt_options 归一（decisions 过滤枚举、
+    actions ≤10 条、name 必填）——与 daemon 侧过滤口径一致。"""
+    if isinstance(value, str):
+        return value, None
+    hitl = _hitl_request(value)
+    if hitl is not None:
+        options = parse_interrupt_options(
+            {"decisions": _hitl_allowed_decisions(hitl), "actions": _hitl_actions(hitl)}
+        )
+        return _hitl_prompt(hitl), options
+    if isinstance(value, dict):
+        for key in ("prompt", "question", "message"):
+            v = value.get(key)
+            if isinstance(v, str):
+                return v, None
+    try:
+        s = json.dumps(value, ensure_ascii=False, default=str)
+    except Exception:
+        s = str(value)
+    return _truncate(s), None
+
+
+# 文本 resume 的批准词表（§9.2）：剥首尾空白/标点后大小写不敏感精确命中
+_APPROVE_WORDS = frozenset({"批准", "同意", "可以", "确认", "approve", "yes", "ok", "lgtm"})
+_APPROVE_STRIP_CHARS = " \t\r\n。！？!?.,，、；;：:…~～-—_*\"'“”‘’`（）()[]【】{}<>《》"
+
+
+def _is_approval_text(text: str) -> bool:
+    """剥首尾空白与标点（内部内容不动）后命中批准词表。"""
+    t = text.strip(_APPROVE_STRIP_CHARS).strip().lower()
+    return t in _APPROVE_WORDS
+
+
+def _decision_wire(decision: SarpResumeDecision) -> dict:
+    """非 HITL interrupt 的 decision 透传（中立形状 → dict，None 键省略）。"""
+    out: dict[str, Any] = {"type": decision.type}
+    if decision.message is not None:
+        out["message"] = decision.message
+    if decision.args is not None:
+        out["args"] = decision.args
+    return out
+
+
+def _hitl_decision_for_action(decision: SarpResumeDecision, action: Any, fallback_message: str) -> dict:
+    """SarpResumeDecision → HITL Decision dict（§9.2；edit 按该 action 的
+    名字展开 edited_action——同名换参语义，中间件按名查可用工具）。"""
+    dtype = decision.type
+    if dtype == "approve":
+        return {"type": "approve"}
+    if dtype == "reject":
+        out: dict[str, Any] = {"type": "reject"}
+        if decision.message is not None:
+            out["message"] = decision.message
+        return out
+    if dtype == "respond":
+        # message 必填——缺省退回 resume.value（用户回复原文），不崩回合
+        msg = decision.message if isinstance(decision.message, str) else fallback_message
+        return {"type": "respond", "message": msg}
+    if dtype == "edit":
+        name = action.get("name") if isinstance(action, dict) else None
+        return {
+            "type": "edit",
+            "edited_action": {"name": name if isinstance(name, str) else "", "args": decision.args},
+        }
+    # R-UF 前向兼容：未知决定类型原样下传，中间件报「Unexpected human
+    # decision」清晰错误——默认映射不擅自归类
+    out = {"type": dtype}
+    if decision.message is not None:
+        out["message"] = decision.message
+    return out
+
+
+def _hitl_text_decision(text: str, request: dict) -> dict:
+    """纯文本 resume → HITL 决定（§9.2）：批准词 → approve；**其余一律
+    reject**（歧义输入不得执行被拦截动作），message=原文。reject 不在
+    allowed_decisions → 退 respond；仍不允许 → GRAPH_INPUT_INVALID。"""
+    if _is_approval_text(text):
+        return {"type": "approve"}
+    allowed = set(_hitl_allowed_decisions(request))
+    if "reject" in allowed:
+        return {"type": "reject", "message": text}
+    if "respond" in allowed:
+        return {"type": "respond", "message": text}
+    raise SarpError(
+        GRAPH_INPUT_INVALID,
+        f"resume text {text!r} cannot be mapped to an allowed HITL decision "
+        f"(allowed: {sorted(allowed)})",
+        retryable=False,
+    )
+
+
+def _hitl_resume(turn: SarpTurnStart, request: dict) -> dict:
+    """HITLRequest → {"decisions": […]}——按 action_requests 数量复制
+    （中间件要求决定数与挂起 tool_call 数一致）。"""
+    actions = list(request.get("action_requests") or [])
+    resume = turn.resume
+    if resume is not None and resume.decision is not None:
+        d = resume.decision
+        decisions = [_hitl_decision_for_action(d, a, resume.value) for a in actions]
+    else:
+        text = resume.value if resume is not None else ""
+        decisions = [_hitl_text_decision(text, request) for _ in actions]
+    return {"decisions": decisions}
+
+
+def _default_resume_value(turn: SarpTurnStart, interrupt_value: Any) -> Any:
+    """§9.2 默认 resume 归约（resume_mapper 缺省时）。
+
+    - HITLRequest → {"decisions":[…]}（decision 结构化映射 / 文本归类）；
+    - 非 HITL：decision 出席 → decision dict 透传；否则 value 原文（现状语义）。
+
+    已知限制（§9.2）：resume token 在 runtime.py:_spawn_turn 先于映射被
+    消耗——默认映射只抛明确的 SarpError（GRAPH_INPUT_INVALID），绝不
+    意外崩溃或模糊放行被拦截动作；校验前移到消费之前留作后续。"""
+    hitl = _hitl_request(interrupt_value)
+    if hitl is not None:
+        return _hitl_resume(turn, hitl)
+    resume = turn.resume
+    if resume is not None and resume.decision is not None:
+        return _decision_wire(resume.decision)
+    return resume.value if resume is not None else None
 
 
 # ---------------------------------------------------------------------------
@@ -522,14 +763,21 @@ def make_run_turn(
     def _interrupt_record(interrupts: Any) -> InterruptRecord:
         first = next(iter(interrupts), None)
         value = getattr(first, "value", first)
-        prompt = interrupt_mapper(value) if interrupt_mapper else None
-        if not prompt:
-            prompt = str(value)
+        options = None
+        if interrupt_mapper is not None:
+            # 用户 mapper 优先（§9.1：自带 mapper 时不产出默认 options）；
+            # falsy 结果回退默认渲染——与旧 `str(value)` 兜底同语义
+            prompt = interrupt_mapper(value)
+            if not prompt:
+                prompt, options = _default_interrupt_render(value)
+        else:
+            prompt, options = _default_interrupt_render(value)
         return InterruptRecord(
             interrupt_id=f"lg-{secrets.token_hex(8)}",
             resume_token=new_resume_token(),
             prompt=prompt,
             payload=value if _jsonable(value) else None,
+            options=options,
         )
 
     def _handle_update(data: Any, emit: TurnEmit) -> Any | None:
@@ -587,16 +835,17 @@ def make_run_turn(
             raise SarpError(GRAPH_INPUT_INVALID, f"input_mapper failed: {e}", retryable=False) from e
 
     def _resume_value(init: SarpInitialize, turn: SarpTurnStart, snap: Any) -> Any:
-        """resume_mapper(init, turn, interrupt_value)；缺省 → turn.resume.value
-        原样（WP8 现状保持；WP9 补默认归约）。"""
-        if resume_mapper is None:
-            return turn.resume.value
-        try:
-            return resume_mapper(init, turn, _first_interrupt_value(snap))
-        except SarpError:
-            raise
-        except Exception as e:
-            raise SarpError(GRAPH_INPUT_INVALID, f"resume_mapper failed: {e}", retryable=False) from e
+        """resume_mapper(init, turn, interrupt_value)；缺省 → §9.2 默认归约
+        （HITLRequest → {"decisions":[…]}，非 HITL → decision/value 原文）。"""
+        interrupt_value = _first_interrupt_value(snap)
+        if resume_mapper is not None:
+            try:
+                return resume_mapper(init, turn, interrupt_value)
+            except SarpError:
+                raise
+            except Exception as e:
+                raise SarpError(GRAPH_INPUT_INVALID, f"resume_mapper failed: {e}", retryable=False) from e
+        return _default_resume_value(turn, interrupt_value)
 
     def _has_pending(snap: Any) -> bool:
         return bool(getattr(snap, "next", None)) if snap is not None else False
@@ -839,7 +1088,8 @@ def serve_langgraph(
       checkpoint 历史。默认规则见 _default_input_mapper。缺省 mapper 时
       握手期校验图输入 schema 含 "messages" 键（§8.4）。
     - output_mapper(state_values) -> str：终态 get_state().values → finalText。
-    - interrupt_mapper(interrupt.value) -> str：审批提示文本。
+    - interrupt_mapper(interrupt.value) -> str：审批提示文本；缺省走
+      §9.1 默认渲染（HITLRequest → 可读提示 + options）。
     - custom_event_mapper(custom_data) -> str|None：返回 str 才发 progress。
     - cost_calculator(usage_dict) -> float|None：仅提供时才产出 costUsd。
 

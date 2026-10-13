@@ -324,10 +324,16 @@ def serve_agent(
       键（§8.4），自定义 mapper 时跳过该校验。
     - `output_mapper(values|result) -> str`：终态 → finalText。
     - `interrupt_mapper(interrupt.value) -> str`：审批提示文本（图路径）。
+      缺省走 §9.1 默认渲染——HITLRequest 出可读提示 + options
+      （decisions/actions 预览），str 原样，其余 json 截断。
     - `resume_mapper(init, turn, interrupt_value) -> Any`：resume 值映射
-      （图路径；缺省 None = `turn.resume.value` 原样进 `Command(resume=)`，
-      WP9 将补默认归约）。`interrupt_value` 是当前 thread 首个 pending
-      interrupt 的 value（取不到为 None）。
+      （图路径）。`interrupt_value` 是当前 thread 首个 pending interrupt
+      的 value（取不到为 None）。缺省走 §9.2 默认归约：LangChain
+      HITLRequest → `{"decisions": [...]}`（`turn.resume.decision` 结构化
+      决定按 approve/reject/respond/edit 映射并按 action_requests 数量
+      复制；纯文本按批准词表归类 approve、其余一律 reject/respond——
+      歧义输入不执行被拦截动作），非 HITL interrupt → decision dict
+      透传或 `turn.resume.value` 原文。
     - `custom_event_mapper(custom_data) -> str | None`：返回 str 才发
       progress（图路径）。
     - `usage_extractor(result) -> dict | None`（Runnable 路径）。
