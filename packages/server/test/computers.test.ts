@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it } from "vitest";
-import { connectCommand } from "../src/routes/computers.js";
+import { connectCommands } from "../src/routes/computers.js";
 import { api, cleanupTestData, closeSql, ensureTestComputer, registerUser, sql, uniqHandle } from "./helpers.js";
 
 afterAll(async () => {
@@ -13,16 +13,26 @@ async function createOrg(cookie: string, name = "zz_comp_org") {
   return r.data.org as { id: string; name: string };
 }
 
-// 接入向导命令生成：前缀由 DAEMON_LAUNCH_CMD 配置（默认 monorepo dev 形态），
-// 分发部署改 env 即切 npx/二进制/docker 形态；--server-url/--api-key/--server 恒定由代码追加。
-describe("connectCommand", () => {
-  it("默认 pnpm dev 形态；launchCmd 可注入覆盖；尾斜杠归一化；--server 仅在有名时追加", () => {
-    expect(connectCommand("http://h:3001/", "tok")).toBe(
-      "pnpm --filter @collabagent/daemon dev -- --server-url http://h:3001 --api-key tok",
+// 接入向导命令生成（slock computer 两步形态）：前缀由 DAEMON_LAUNCH_CMD 配置
+// （默认 monorepo dev 形态），分发部署改 env 即切 slock/npx/二进制形态；
+// setup/start/<name>/--server-url/--api-key 恒定由代码追加。
+describe("connectCommands", () => {
+  it("默认 computer 形态；launchCmd 可注入覆盖；尾斜杠归一化；server 名落 /<name> 位置参数", () => {
+    const def = connectCommands("http://h:3001/", "tok");
+    expect(def.setup).toBe(
+      "pnpm --filter @collabagent/daemon computer -- setup /server --server-url http://h:3001 --api-key tok",
     );
-    expect(connectCommand("http://h:3001", "tok", "srv", "npx --yes @collabagent/daemon")).toBe(
-      'npx --yes @collabagent/daemon --server-url http://h:3001 --api-key tok --server "srv"',
-    );
+    expect(def.start).toBe("pnpm --filter @collabagent/daemon computer -- start /server");
+
+    const named = connectCommands("http://h:3001", "tok", "bugkillers-test-server", "slock computer");
+    expect(named.setup).toBe("slock computer setup /bugkillers-test-server --server-url http://h:3001 --api-key tok");
+    expect(named.start).toBe("slock computer start /bugkillers-test-server");
+  });
+
+  it("server 名含空格 → /<name> 整体加引号；双引号剥离", () => {
+    const spaced = connectCommands("http://h:3001", "tok", 'my "srv"', "slock computer");
+    expect(spaced.setup).toBe('slock computer setup "/my srv" --server-url http://h:3001 --api-key tok');
+    expect(spaced.start).toBe('slock computer start "/my srv"');
   });
 });
 
@@ -179,8 +189,9 @@ describe("/api/computers（server-scoped）", () => {
     });
     expect(ok.status).toBe(200);
     expect(ok.data.token).toMatch(/^sk_machine_/);
+    expect(String(ok.data.command)).toContain("setup /");
     expect(String(ok.data.command)).toContain("--api-key");
-    expect(String(ok.data.command)).toContain("--server");
+    expect(String(ok.data.startCommand)).toContain(`start /${ok.data.serverName}`);
     expect(ok.data.serverId).toBe(org.id);
 
     // 签发不吊销同 scope 旧钥（多机各持一枚是合法形态）；单钥吊销走 /api/profile/tokens

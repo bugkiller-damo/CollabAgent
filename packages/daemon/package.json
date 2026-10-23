@@ -9,6 +9,7 @@
     "dev": "tsx src/supervisor.ts",
     "dev:once": "tsx src/index.ts",
     "serve": "tsx src/supervisor.ts",
+    "computer": "tsx src/cli.ts computer",
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",

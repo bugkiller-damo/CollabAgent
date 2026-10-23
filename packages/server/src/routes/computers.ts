@@ -141,17 +141,41 @@ function mintMachineTokenValue(): string {
   return "sk_machine_" + randomBytes(16).toString("hex").slice(0, 32);
 }
 
-export function connectCommand(
+/**
+ * 接入向导命令（slock computer 形态，raft-computer 式两步）：
+ *   setup = 含密钥的一次性登记（落 ~/.slock/servers.json）
+ *   start = 日常启动/重启（登记后不再需要 token）
+ * server 名作 /<name> 位置参数——daemon 侧 normalizeServerName 归一，
+ * 并在握手时与 token scope 比对（写错拒连，运维可见性而非权限边界）。
+ */
+export function connectCommands(
   serverUrl: string,
   token: string,
   serverName?: string,
   launchCmd = config.DAEMON_LAUNCH_CMD,
-): string {
+): { setup: string; start: string } {
   const origin = serverUrl.replace(/\/+$/, "");
-  const base = `${launchCmd} --server-url ${origin} --api-key ${token}`;
-  // --server 是运维声明（与 token scope 一致性校验 + 日志可读），不是权限边界
-  if (!serverName) return base;
-  return `${base} --server "${serverName.replace(/"/g, "")}"`;
+  const slug = `/${(serverName || "server").replace(/"/g, "")}`;
+  const target = /\s/.test(slug) ? `"${slug}"` : slug;
+  return {
+    setup: `${launchCmd} setup ${target} --server-url ${origin} --api-key ${token}`,
+    start: `${launchCmd} start ${target}`,
+  };
+}
+
+function requestOrigin(req: FastifyRequest): string {
+  const proto = String(req.headers["x-forwarded-proto"] || req.protocol || "http");
+  const host = String(req.headers["x-forwarded-host"] || req.headers.host || "localhost:3001");
+  return `${proto}://${host}`;
+}
+
+/**
+ * 接入命令占位版（--api-key <MACHINE_TOKEN>）——GET 响应内嵌，web 默认渲染
+ * 命令块不需要先签真令牌；真实 setup 命令只在 POST /me/token 下发。
+ */
+async function connectCommandsForScope(app: FastifyInstance, req: FastifyRequest, serverId: string) {
+  const server = await app.pg.query<{ name: string }>("SELECT name FROM servers WHERE id = $1", [serverId]);
+  return connectCommands(requestOrigin(req), "<MACHINE_TOKEN>", server.rows[0]?.name || "server");
 }
 
 /**
@@ -195,6 +219,8 @@ export async function computerRoutes(app: FastifyInstance) {
       computers: r.rows.map((row) => serializeRow(row, viewerId, { handle: row.owner_handle, name: row.owner_name })),
       // Phase 4 rollout 开关：web 据此决定创建表单是否展示 bridge runtime/entrypoint
       bridgeRuntimes: bridgeRuntimesEnabled(),
+      // 接入命令占位版（<MACHINE_TOKEN>）——列表页「接入」卡片默认可见，无需先签令牌
+      commands: await connectCommandsForScope(app, req, serverId),
     };
   });
 
@@ -228,7 +254,11 @@ export async function computerRoutes(app: FastifyInstance) {
     if (!(await isServerMember(app, String(row.server_id), String(req.user.sub)))) {
       return reply.status(403).send({ error: "not a member of that server" });
     }
-    return { computer: serializeRow(row, String(req.user.sub)) };
+    return {
+      computer: serializeRow(row, String(req.user.sub)),
+      // 接入命令占位版——详情页「接入」卡片同一渲染口径
+      commands: await connectCommandsForScope(app, req, String(row.server_id)),
+    };
   });
 
   // PATCH /api/computers/:id — 属主改 name/description（逐机，不再按 user 单行）
@@ -319,14 +349,14 @@ export async function computerRoutes(app: FastifyInstance) {
       ],
     );
 
-    const proto = String(req.headers["x-forwarded-proto"] || req.protocol || "http");
-    const host = String(req.headers["x-forwarded-host"] || req.headers.host || "localhost:3001");
-    const origin = `${proto}://${host}`;
+    const commands = connectCommands(requestOrigin(req), tokenValue, serverName);
     return {
       token: tokenValue,
       serverId,
       serverName,
-      command: connectCommand(origin, tokenValue, serverName),
+      // command = setup 行（含密钥），web 老客户端仍渲染它；startCommand 是登记后的日常启停命令
+      command: commands.setup,
+      startCommand: commands.start,
       message: "Save this token — it won't be shown again.",
     };
   });

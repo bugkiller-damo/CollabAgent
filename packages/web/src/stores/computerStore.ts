@@ -89,16 +89,25 @@ export function claudeInstalled(runtimes: RuntimeProbe[]): boolean {
   return runtimes.some((r) => r.id === "claude" && r.status === "installed");
 }
 
+/** 接入命令（server 渲染）：setup 行含 <MACHINE_TOKEN> 占位符，签发后由真实命令替换 */
+export interface ConnectCommandSet {
+  setup: string;
+  start: string;
+}
+
 /**
  * 活跃 server 的计算机列表（apiClient 自动携 x-server-id——切 server 后须 refresh）。
  * 不再有懒建行/单机状态对象：机器行只在 daemon ready 时由服务端落库。
  */
+
 export const useComputerStore = defineStore("computer", () => {
   const computers = ref<ComputerRecord[]>([]);
   const loading = ref(false);
   const loaded = ref(false);
   /** Phase 4 rollout：server 侧 SLOCK_BRIDGE_RUNTIMES——关时 UI 不出 bridge 选项 */
   const bridgeRuntimes = ref(false);
+  /** 接入命令占位版——「接入」卡片默认渲染，无需先点生成令牌 */
+  const commands = ref<ConnectCommandSet | null>(null);
 
   const myComputers = computed(() => computers.value.filter((c) => c.mine));
   /** 我在本 server 至少一台机器在线——rail 圆点/老「已连接」语义的新形态 */
@@ -107,13 +116,19 @@ export const useComputerStore = defineStore("computer", () => {
   async function refresh(): Promise<ComputerRecord[]> {
     loading.value = true;
     try {
-      const d = await apiGet<{ computers: ComputerRecord[]; bridgeRuntimes?: boolean }>("/api/computers");
+      const d = await apiGet<{
+        computers: ComputerRecord[];
+        bridgeRuntimes?: boolean;
+        commands?: ConnectCommandSet;
+      }>("/api/computers");
       computers.value = d.computers || [];
       bridgeRuntimes.value = d.bridgeRuntimes === true;
+      commands.value = d.commands ?? null;
       return computers.value;
     } catch {
       // 无活跃 server / 非成员 / 端点失败 → 空态（页面自己渲染接入引导）
       computers.value = [];
+      commands.value = null;
       return [];
     } finally {
       loaded.value = true;
@@ -121,5 +136,5 @@ export const useComputerStore = defineStore("computer", () => {
     }
   }
 
-  return { computers, myComputers, connected, bridgeRuntimes, loading, loaded, refresh };
+  return { computers, myComputers, connected, bridgeRuntimes, commands, loading, loaded, refresh };
 });

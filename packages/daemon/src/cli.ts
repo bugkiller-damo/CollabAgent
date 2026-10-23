@@ -4,6 +4,7 @@ import { registerAgent } from "./cli/agent.js";
 import { registerAttachment } from "./cli/attachment.js";
 import { registerAuth } from "./cli/auth.js";
 import { registerChannel } from "./cli/channel.js";
+import { registerComputer } from "./cli/computer.js";
 import { registerCost } from "./cli/cost.js";
 import { registerDispatch } from "./cli/dispatch.js";
 import { registerMessage } from "./cli/message.js";
@@ -35,6 +36,7 @@ registerAgent(program.command("agent").description("Agent duty / listing"));
 registerCost(program.command("cost").description("Local daemon cost accounting (D3)"));
 registerSession(program.command("session").description("Local thread↔session map (D2)"));
 registerRuntime(program.command("runtime").description("Local runtime manifest / bridge entrypoints (Batch B)"));
+registerComputer(program.command("computer").description("Local daemon lifecycle (setup/start/stop/restart)"));
 
 program.parseAsync().catch((err) => {
   if (err instanceof CliExit) {

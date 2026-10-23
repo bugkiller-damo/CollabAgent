@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { type AgentPresence, composePresence, normalizeRuntimeId, PRESENCE_LABEL } from "@collabagent/shared";
-import { Check, Monitor } from "@lucide/vue";
+import { Monitor } from "@lucide/vue";
 import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { apiClient, apiGet, apiPatch, apiPost } from "../api";
 import AgentWorkspacePanel from "../components/agent/AgentWorkspacePanel.vue";
 import ConfirmDialog from "../components/ConfirmDialog.vue";
+import ConnectCommands from "../components/computer/ConnectCommands.vue";
 import PageHeader from "../components/layout/PageHeader.vue";
 import Avatar from "../components/ui/Avatar.vue";
 import AvatarPresetPicker from "../components/ui/AvatarPresetPicker.vue";
@@ -61,9 +62,8 @@ const descDraft = ref("");
 const editing = ref(false);
 
 const tokenCommand = ref("");
+const startCommand = ref("");
 const generating = ref(false);
-const copied = ref(false);
-const confirmRotate = ref(false);
 const confirmDelete = ref(false);
 const deleting = ref(false);
 
@@ -85,6 +85,8 @@ const confirmOffDuty = ref<AgentRow | null>(null);
 /** 详情页直取（member 可读任意 server 的行）——列表只覆盖活跃 server，深链可能跨界 */
 const detailRow = ref<ComputerRecord | null>(null);
 const detailMissing = ref(false);
+/** 详情页 GET /:id 内嵌的接入命令占位版（列表页走 computerStore.commands） */
+const detailCommands = ref<{ setup: string; start: string } | null>(null);
 
 const catalog = runtimeCatalog();
 const WIRED_RUNTIMES = new Set(["claude"]);
@@ -263,8 +265,11 @@ async function loadDetail() {
   detailMissing.value = false;
   if (!routeId.value) return;
   try {
-    const d = await apiGet<{ computer: ComputerRecord }>(`/api/computers/${routeId.value}`);
+    const d = await apiGet<{ computer: ComputerRecord; commands?: { setup: string; start: string } }>(
+      `/api/computers/${routeId.value}`,
+    );
     detailRow.value = d.computer;
+    detailCommands.value = d.commands ?? null;
   } catch {
     detailMissing.value = true;
   }
@@ -306,40 +311,33 @@ async function saveIdentity() {
   }
 }
 
-/** 生成接入命令——scope 由调用点决定：列表页=活跃 server；详情页=该机所在 server */
-const rotateScope = ref<string | null>(null);
-async function rotateToken() {
-  const serverId = rotateScope.value;
-  confirmRotate.value = false;
+/** 接入命令占位版（server 渲染）——列表页来自 store，详情页来自 GET /:id */
+const presetCommands = computed(() => (detailMode.value ? detailCommands.value : computerStore.commands));
+/** 展示口径：签过令牌 → 真命令；否则占位模板（--api-key <MACHINE_TOKEN>） */
+const setupCmd = computed(() => tokenCommand.value || presetCommands.value?.setup || "");
+const startCmd = computed(() => startCommand.value || presetCommands.value?.start || "");
+
+/** 签发机器令牌并把真实登记命令原地填入 + 尝试自动复制 */
+async function generateToken(serverId: string) {
   if (!serverId) return;
   generating.value = true;
   error.value = "";
   try {
-    const r = await apiPost<{ token: string; command: string }>("/api/computers/me/token", { serverId });
+    const r = await apiPost<{ token: string; command: string; startCommand?: string }>("/api/computers/me/token", {
+      serverId,
+    });
     tokenCommand.value = r.command;
-    toast.success("已生成新连接命令");
+    startCommand.value = r.startCommand ?? "";
+    try {
+      await copyText(r.command);
+      toast.success("已生成并复制登记命令");
+    } catch {
+      toast.success("已生成登记命令，请复制");
+    }
   } catch (err: any) {
     error.value = err?.message || "生成失败";
   } finally {
     generating.value = false;
-  }
-}
-
-function requestRotate(serverId: string) {
-  rotateScope.value = serverId;
-  confirmRotate.value = true;
-}
-
-async function copyCommand() {
-  if (!tokenCommand.value) return;
-  try {
-    await copyText(tokenCommand.value);
-    copied.value = true;
-    setTimeout(() => {
-      copied.value = false;
-    }, 2000);
-  } catch {
-    toast.error("复制失败，请手动选择命令");
   }
 }
 
@@ -420,6 +418,7 @@ async function deleteComputer() {
     confirmDelete.value = false;
     toast.success("已删除计算机");
     tokenCommand.value = "";
+    startCommand.value = "";
     await computerStore.refresh();
     void router.push("/computers");
   } catch (err: any) {
@@ -573,25 +572,23 @@ watch(
         <Card class="space-y-3">
           <p class="text-xs font-semibold uppercase tracking-wide text-muted">接入</p>
           <p class="text-sm text-gray-600 dark:text-gray-300">
-            在要接入「{{ serverStore.activeServer?.name || "本 server" }}」的电脑上执行连接命令——一台机器一条 daemon
+            在要接入「{{ serverStore.activeServer?.name || "本 server" }}」的电脑上先登记再启动——一条
+            <code class="rounded bg-black/10 px-1 dark:bg-white/10">slock computer setup</code> 落盘凭据，之后只需
+            <code class="rounded bg-black/10 px-1 dark:bg-white/10">start / restart</code>。一台机器一条 daemon
             进程，同时只服务一个 server。
           </p>
           <template v-if="canAttachActive">
-            <Button size="sm" :loading="generating" @click="requestRotate(serverStore.activeServer!.id)">
+            <ConnectCommands
+              v-if="setupCmd"
+              :setup-command="setupCmd"
+              :start-command="startCmd"
+              :token-ready="!!tokenCommand"
+              :generating="generating"
+              @generate="generateToken(serverStore.activeServer!.id)"
+            />
+            <Button v-else size="sm" :loading="generating" @click="generateToken(serverStore.activeServer!.id)">
               生成连接命令
             </Button>
-            <div v-if="tokenCommand" class="space-y-2">
-              <div class="break-all rounded bg-gray-900 p-3 font-mono text-xs text-green-400 dark:bg-black">
-                {{ tokenCommand }}
-              </div>
-              <div class="flex items-center gap-2">
-                <Button size="sm" variant="secondary" @click="copyCommand">
-                  <Check v-if="copied" class="mr-0.5 inline h-3.5 w-3.5" aria-hidden="true" />
-                  {{ copied ? "已复制" : "复制命令" }}
-                </Button>
-              </div>
-              <p class="text-xs text-muted">令牌只显示这一次。命令里的 --server 会与本 server 校验，写错会拒连。</p>
-            </div>
           </template>
           <p v-else class="text-xs text-muted">只有本 server 的所有者可以接入计算机。</p>
         </Card>
@@ -780,19 +777,17 @@ watch(
             为「{{ serverNameOf(computer.serverId) }}」生成新的连接命令——可在本机或其他电脑上执行，每台机器一条
             daemon 进程。
           </p>
-          <Button size="sm" :loading="generating" @click="requestRotate(computer.serverId)">生成连接命令</Button>
-          <div v-if="tokenCommand" class="space-y-2">
-            <div class="break-all rounded bg-gray-900 p-3 font-mono text-xs text-green-400 dark:bg-black">
-              {{ tokenCommand }}
-            </div>
-            <div class="flex items-center gap-2">
-              <Button size="sm" variant="secondary" @click="copyCommand">
-                <Check v-if="copied" class="mr-0.5 inline h-3.5 w-3.5" aria-hidden="true" />
-                {{ copied ? "已复制" : "复制命令" }}
-              </Button>
-            </div>
-            <p class="text-xs text-muted">令牌只显示这一次。换 server 接入请回到对应 server 再生成。</p>
-          </div>
+          <ConnectCommands
+            v-if="setupCmd"
+            :setup-command="setupCmd"
+            :start-command="startCmd"
+            :token-ready="!!tokenCommand"
+            :generating="generating"
+            @generate="generateToken(computer.serverId)"
+          />
+          <Button v-else size="sm" :loading="generating" @click="generateToken(computer.serverId)">
+            生成连接命令
+          </Button>
         </Card>
 
         <Card class="space-y-3">
@@ -948,14 +943,6 @@ watch(
       </div>
     </Modal>
 
-    <ConfirmDialog
-      v-if="confirmRotate"
-      title="生成新的连接命令？"
-      message="会为该 server 签发一枚机器令牌（同 server 可有多枚，分别给不同机器用）。"
-      confirm-label="生成"
-      @confirm="rotateToken"
-      @cancel="confirmRotate = false"
-    />
     <ConfirmDialog
       v-if="confirmOffDuty"
       :title="`让 @${confirmOffDuty.name} 停班？`"
