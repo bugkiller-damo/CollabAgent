@@ -18,8 +18,8 @@ console.log("Demo user created:", user.id);
 
 // Create a default server
 const [server] = await sql`
-  INSERT INTO servers (name, created_by)
-  VALUES ('Default Server', ${user.id})
+  INSERT INTO servers (name, created_by, is_public)
+  VALUES ('Default Server', ${user.id}, true)
   ON CONFLICT DO NOTHING
   RETURNING id
 `;

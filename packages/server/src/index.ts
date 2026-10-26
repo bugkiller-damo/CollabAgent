@@ -323,8 +323,13 @@ server.log.info("[DB] Schema migrated");
 // Auto-seed default data (first run only)
 const serverCount = await sql`SELECT count(*)::int as c FROM servers`;
 if (serverCount[0].c === 0) {
-  // created_by 留空：播种时通常还没有用户（首个注册用户会被并入此服务器）
-  const [sv] = await sql`INSERT INTO servers (name, created_by) VALUES ('Default Server', NULL) RETURNING id`;
+  // created_by 留空：播种时通常还没有用户（首个注册用户会被并入此服务器）。
+  // is_public 必须显式置 true——029 回填只在迁移时已有 server 的库上生效，
+  // 全新库是「先迁移后播种」，不显式置位广场永远 is_public=false
+  // （getDefaultServerId 靠回退能解析，但 is_public 直查方会拿到 0 行，
+  // 且后续任一 is_public 翻转都会把默认社区抢走）。
+  const [sv] =
+    await sql`INSERT INTO servers (name, created_by, is_public) VALUES ('Default Server', NULL, true) RETURNING id`;
   for (const ch of ["general", "random", "engineering"]) {
     await sql`INSERT INTO channels (server_id, name, description) VALUES (${sv.id}, ${ch}, ${ch === "general" ? "General discussion" : ch === "random" ? "Random topics" : "Engineering team"})`;
   }

@@ -202,6 +202,10 @@ export async function cleanupTestData(): Promise<void> {
   // invites.created_by 无级联——测试用户发的邀请行不先删，users 删除撞
   // invites_created_by_fkey（server_id 侧倒是有 ON DELETE CASCADE）。
   await sql`DELETE FROM invites WHERE created_by::text = ANY(${uids})`;
+  // is_public 复位兜底：翻转类用例若漏还原，残留的 is_public 测试 server 会参与
+  // 默认社区判定（getDefaultServerId 最早 is_public 优先）；删服前复位保证解析
+  // 不被删除动作扰动（含 60s 缓存窗口内不落悬空 id）。
+  await sql`UPDATE servers SET is_public = false WHERE created_by::text = ANY(${uids}) OR owner_id::text = ANY(${uids})`;
   await sql`DELETE FROM servers WHERE created_by::text = ANY(${uids}) OR owner_id::text = ANY(${uids})`;
   await sql`DELETE FROM users WHERE id::text = ANY(${uids})`;
 }

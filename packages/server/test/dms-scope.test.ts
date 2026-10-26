@@ -25,8 +25,11 @@ async function createOrg(cookie: string, name = "zz_test_dms") {
 }
 
 async function plazaId(): Promise<string> {
+  // 与 getDefaultServerId 同口径：最早 is_public。翻转类用例运行期间库里可能短暂
+  // 存在多个 is_public server，断言「恰 1 行」对并行调度过敏——取最早一行即可
+  // （最早恒为广场，测试 server 的 created_at 都在其后）。
   const rows = await sql`SELECT id FROM servers WHERE is_public = true ORDER BY created_at ASC LIMIT 1`;
-  expect(rows.length).toBe(1);
+  expect(rows.length).toBeGreaterThanOrEqual(1);
   return String(rows[0].id);
 }
 

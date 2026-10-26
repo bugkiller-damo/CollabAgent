@@ -680,6 +680,14 @@ describe("permission model: POST /api/orgs/:id/join 自助加入", () => {
     expect(leave.status).toBe(200);
     const rejoin = await api(`/api/orgs/${org.id}/join`, { method: "POST", cookie: joiner.cookie });
     expect(rejoin.status).toBe(200);
+
+    // 还原：is_public 是全局默认社区判定的输入，翻完不还原会把污染留给并行文件
+    const restore = await api(`/api/orgs/${org.id}`, {
+      method: "PATCH",
+      cookie: u.cookie,
+      body: { isPublic: false },
+    });
+    expect(restore.status).toBe(200);
   });
 
   it("无效/不存在 serverId → 400/404", async () => {
@@ -728,6 +736,14 @@ describe("GET /api/orgs/discover 公共 server 发现面", () => {
     expect((d.data.servers || []).some((s: any) => s.id === pub.id)).toBe(false);
     const orgs = await api("/api/orgs", { cookie: joiner.cookie });
     expect((orgs.data.orgs || []).some((o: any) => o.id === pub.id)).toBe(true);
+
+    // 还原：is_public 泄漏会让本 server 在清理前一直停在发现面/公共语义里
+    const restore = await api(`/api/orgs/${pub.id}`, {
+      method: "PATCH",
+      cookie: u.cookie,
+      body: { isPublic: false },
+    });
+    expect(restore.status).toBe(200);
   });
 });
 
