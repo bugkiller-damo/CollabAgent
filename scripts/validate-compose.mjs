@@ -61,11 +61,13 @@ assert(server.deploy?.resources?.limits?.memory, "server 必须设置内存资�
 assert(server.restart, "server 必须设置 restart 策略");
 assert(
   typeof server.environment?.JWT_SECRET === "string" && server.environment.JWT_SECRET.includes("${JWT_SECRET:?"),
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: 文案描述 compose 必选插值语法，本来就是字面量
   "server JWT_SECRET 必须使用必选插值 ${JWT_SECRET:?...}（O5 联动）",
 );
 assert(
   typeof server.environment?.REFRESH_SECRET === "string" &&
     server.environment.REFRESH_SECRET.includes("${REFRESH_SECRET:?"),
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: 同上，字面量文档文案
   "server REFRESH_SECRET 必须使用必选插值 ${REFRESH_SECRET:?...}（O5 联动）",
 );
 assert(server.environment?.NODE_ENV === "production", "server 必须 NODE_ENV=production");
