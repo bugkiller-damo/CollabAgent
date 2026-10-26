@@ -15,8 +15,23 @@
     "node": ">=20.0.0",
     "pnpm": ">=9.0.0"
   },
+  "pnpm": {
+    "overrides": {
+      "proxy-addr": "^2.0.8",
+      "body-parser": "^2.4.0",
+      "brace-expansion": "^5.0.11",
+      "@fastify/ajv-compiler>fast-uri": "^4.1.4",
+      "@fastify/fast-json-stringify-compiler>fast-uri": "^4.1.4",
+      "ajv>fast-uri": "^3.1.7"
+    },
+    "auditConfig": {
+      "ignoreGhsas": [
+        "GHSA-mrhx-c7xc-m3w5"
+      ]
+    }
+  },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.8",
-    "lefthook": "^2.1.10"
+    "@biomejs/biome": "^2.6.3",
+    "lefthook": "^2.2.2"
   }
 }

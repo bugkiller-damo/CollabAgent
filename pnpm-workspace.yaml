@@ -7,3 +7,20 @@ allowBuilds:
   lefthook: true
   node-pty: true
   vue-demi: true
+
+# pnpm >=10 从本文件读配置；package.json#pnpm 里同一份是给 CI 的 pnpm 9 读的，两处保持一致
+overrides:
+  proxy-addr: "^2.0.8"
+  body-parser: "^2.4.0"
+  brace-expansion: "^5.0.11"
+  "@fastify/ajv-compiler>fast-uri": "^4.1.4"
+  "@fastify/fast-json-stringify-compiler>fast-uri": "^4.1.4"
+  "ajv>fast-uri": "^3.1.7"
+
+# GHSA-mrhx-c7xc-m3w5（zod）：上游只在 4.6.6 修复，zod@3.x 无补丁；
+# 升 zod4 是独立迁移任务（.passthrough() 等 API 变更 + @anthropic-ai/sdk 兼容面），
+# 该 CVE 为「无长度约束数组校验」型 DoS，本仓库 zod 仅用于 server↔daemon WS
+# 消息校验与 MCP 工具入参 schema，暴露面可控——先豁免，迁移单独排期。
+auditConfig:
+  ignoreGhsas:
+    - GHSA-mrhx-c7xc-m3w5
