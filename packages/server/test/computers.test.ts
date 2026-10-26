@@ -13,20 +13,29 @@ async function createOrg(cookie: string, name = "zz_comp_org") {
   return r.data.org as { id: string; name: string };
 }
 
-// 接入向导命令生成（slock computer 两步形态）：前缀由 DAEMON_LAUNCH_CMD 配置
-// （默认 monorepo dev 形态），分发部署改 env 即切 slock/npx/二进制形态；
+// 接入向导命令生成（slock computer 三步形态）：前缀由 DAEMON_LAUNCH_CMD 配置
+// （默认全局 `slock computer` 形态，S2+；旧部署可覆盖回 pnpm 前缀），
+// 安装命令由 DAEMON_INSTALL_CMD 配置（空 = web 隐藏 ⓪ 步）；
 // setup/start/<name>/--server-url/--api-key 恒定由代码追加。
 describe("connectCommands", () => {
-  it("默认 computer 形态；launchCmd 可注入覆盖；尾斜杠归一化；server 名落 /<name> 位置参数", () => {
+  it("默认 slock computer 形态；launchCmd/installCmd 可注入覆盖；尾斜杠归一化；server 名落 /<name> 位置参数", () => {
     const def = connectCommands("http://h:3001/", "tok");
-    expect(def.setup).toBe(
-      "pnpm --filter @collabagent/daemon computer -- setup /server --server-url http://h:3001 --api-key tok",
-    );
-    expect(def.start).toBe("pnpm --filter @collabagent/daemon computer -- start /server");
+    expect(def.setup).toBe("slock computer setup /server --server-url http://h:3001 --api-key tok");
+    expect(def.start).toBe("slock computer start /server");
+    expect(def.install).toBe("npm i -g ./packages/daemon");
 
-    const named = connectCommands("http://h:3001", "tok", "bugkillers-test-server", "slock computer");
-    expect(named.setup).toBe("slock computer setup /bugkillers-test-server --server-url http://h:3001 --api-key tok");
-    expect(named.start).toBe("slock computer start /bugkillers-test-server");
+    const named = connectCommands(
+      "http://h:3001",
+      "tok",
+      "bugkillers-test-server",
+      "pnpm --filter @collabagent/daemon computer --",
+      "",
+    );
+    expect(named.setup).toBe(
+      "pnpm --filter @collabagent/daemon computer -- setup /bugkillers-test-server --server-url http://h:3001 --api-key tok",
+    );
+    expect(named.start).toBe("pnpm --filter @collabagent/daemon computer -- start /bugkillers-test-server");
+    expect(named.install).toBe("");
   });
 
   it("server 名含空格 → /<name> 整体加引号；双引号剥离", () => {

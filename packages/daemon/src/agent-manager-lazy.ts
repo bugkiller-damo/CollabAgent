@@ -26,7 +26,21 @@ export interface ILazyAgentManager extends IAgentManager {
 }
 
 export const createLazyAgentManager = (
-  loader: () => Promise<IAgentManager> = async () => (await import("./agent-manager.js")).createAgentManager(),
+  loader: () => Promise<IAgentManager> = async () => {
+    try {
+      return (await import("./agent-manager.js")).createAgentManager();
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException)?.code;
+      const msg = String((err as Error)?.message ?? err);
+      if ((code === "MODULE_NOT_FOUND" || code === "ERR_MODULE_NOT_FOUND") && msg.includes("node-pty")) {
+        throw new Error(
+          "node-pty unavailable (SLOCK_USE_PTY=1 requires the native node-pty dependency; release bundles ship without it — use headless mode or install node-pty)",
+          { cause: err },
+        );
+      }
+      throw err;
+    }
+  },
 ): ILazyAgentManager => {
   let real: IAgentManager | null = null;
   let loading: Promise<IAgentManager> | null = null;

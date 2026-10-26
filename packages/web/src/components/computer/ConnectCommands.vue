@@ -6,7 +6,8 @@ import { toast } from "../../stores/toastStore";
 import Button from "../ui/Button.vue";
 
 /**
- * 计算机接入命令块（slock computer 两步形态）——默认即渲染，不藏在按钮后：
+ * 计算机接入命令块（slock computer 三步形态）——默认即渲染，不藏在按钮后：
+ *   ⓪ install —— 一次性装全局 slock CLI（DAEMON_INSTALL_CMD 下发；空串则隐藏）；
  *   ① setup —— 一次性登记。tokenReady=false 时展示占位模板
  *      （--api-key <MACHINE_TOKEN>），点「生成机器令牌」后原地换成真命令；
  *   ② start —— 日常启动/重启，不含密钥，任何时候都可直接复制。
@@ -15,19 +16,22 @@ import Button from "../ui/Button.vue";
 const props = defineProps<{
   setupCommand: string;
   startCommand: string;
+  /** ⓪ 安装命令（如 "npm i -g ./packages/daemon"）；空/undefined = 隐藏安装步 */
+  installCommand?: string;
   /** true = setup 行已含真实令牌；false = 占位模板，须先生成令牌 */
   tokenReady: boolean;
   generating?: boolean;
 }>();
 const emit = defineEmits<{ generate: [] }>();
 
+const copiedInstall = ref(false);
 const copiedSetup = ref(false);
 const copiedStart = ref(false);
 
-async function copy(which: "setup" | "start") {
-  const text = which === "setup" ? props.setupCommand : props.startCommand;
+async function copy(which: "install" | "setup" | "start") {
+  const text = which === "install" ? props.installCommand : which === "setup" ? props.setupCommand : props.startCommand;
   if (!text) return;
-  const flag = which === "setup" ? copiedSetup : copiedStart;
+  const flag = which === "install" ? copiedInstall : which === "setup" ? copiedSetup : copiedStart;
   try {
     await copyText(text);
     flag.value = true;
@@ -42,6 +46,17 @@ async function copy(which: "setup" | "start") {
 
 <template>
   <div class="space-y-3">
+    <div v-if="installCommand" class="space-y-1.5">
+      <p class="text-xs font-medium text-gray-700 dark:text-gray-300">⓪ 安装 slock CLI（每台机器一次）</p>
+      <div class="break-all rounded bg-gray-900 p-3 font-mono text-xs text-green-400 dark:bg-black">
+        {{ installCommand }}
+      </div>
+      <Button size="sm" variant="secondary" @click="copy('install')">
+        <Check v-if="copiedInstall" class="mr-0.5 inline h-3.5 w-3.5" aria-hidden="true" />
+        {{ copiedInstall ? "已复制" : "复制安装命令" }}
+      </Button>
+      <p class="text-xs text-muted">装完后 <code class="rounded bg-black/10 px-1 dark:bg-white/10">slock</code> 全局可用。</p>
+    </div>
     <div class="space-y-1.5">
       <p class="text-xs font-medium text-gray-700 dark:text-gray-300">
         ① 在目标电脑上登记（只跑一次；令牌只显示这一次）

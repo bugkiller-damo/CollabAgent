@@ -3,14 +3,21 @@
   "version": "0.1.0",
   "type": "module",
   "bin": {
-    "collabagent-daemon": "./dist/index.js"
+    "collabagent-daemon": "./dist-bundle/daemon.cjs",
+    "slock": "./dist-bundle/cli.cjs"
   },
+  "files": [
+    "dist-bundle",
+    "schemas"
+  ],
   "scripts": {
     "dev": "tsx src/supervisor.ts",
     "dev:once": "tsx src/index.ts",
     "serve": "tsx src/supervisor.ts",
     "computer": "tsx src/cli.ts computer",
     "build": "tsc",
+    "build:dist": "node scripts/build-dist.mjs",
+    "prepack": "node scripts/build-dist.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "test": "vitest run"
@@ -23,10 +30,12 @@
     "commander": "^12.1.0",
     "dotenv": "^17.4.2",
     "fflate": "0.8.3",
-    "node-pty": "^1.1.0",
     "undici": "^7.29.0",
     "ws": "^8.21.3",
     "zod": "^3.25.76"
+  },
+  "optionalDependencies": {
+    "node-pty": "^1.1.0"
   },
   "devDependencies": {
     "@types/ws": "^8.5.0",

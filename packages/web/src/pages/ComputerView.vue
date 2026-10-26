@@ -86,7 +86,7 @@ const confirmOffDuty = ref<AgentRow | null>(null);
 const detailRow = ref<ComputerRecord | null>(null);
 const detailMissing = ref(false);
 /** 详情页 GET /:id 内嵌的接入命令占位版（列表页走 computerStore.commands） */
-const detailCommands = ref<{ setup: string; start: string } | null>(null);
+const detailCommands = ref<{ install?: string; setup: string; start: string } | null>(null);
 
 const catalog = runtimeCatalog();
 const WIRED_RUNTIMES = new Set(["claude"]);
@@ -265,9 +265,10 @@ async function loadDetail() {
   detailMissing.value = false;
   if (!routeId.value) return;
   try {
-    const d = await apiGet<{ computer: ComputerRecord; commands?: { setup: string; start: string } }>(
-      `/api/computers/${routeId.value}`,
-    );
+    const d = await apiGet<{
+      computer: ComputerRecord;
+      commands?: { install?: string; setup: string; start: string };
+    }>(`/api/computers/${routeId.value}`);
     detailRow.value = d.computer;
     detailCommands.value = d.commands ?? null;
   } catch {
@@ -316,6 +317,8 @@ const presetCommands = computed(() => (detailMode.value ? detailCommands.value :
 /** 展示口径：签过令牌 → 真命令；否则占位模板（--api-key <MACHINE_TOKEN>） */
 const setupCmd = computed(() => tokenCommand.value || presetCommands.value?.setup || "");
 const startCmd = computed(() => startCommand.value || presetCommands.value?.start || "");
+/** ⓪ 安装命令（DAEMON_INSTALL_CMD 下发；空 = 组件隐藏该步） */
+const installCmd = computed(() => presetCommands.value?.install || "");
 
 /** 签发机器令牌并把真实登记命令原地填入 + 尝试自动复制 */
 async function generateToken(serverId: string) {
@@ -582,6 +585,7 @@ watch(
               v-if="setupCmd"
               :setup-command="setupCmd"
               :start-command="startCmd"
+              :install-command="installCmd"
               :token-ready="!!tokenCommand"
               :generating="generating"
               @generate="generateToken(serverStore.activeServer!.id)"
@@ -781,6 +785,7 @@ watch(
             v-if="setupCmd"
             :setup-command="setupCmd"
             :start-command="startCmd"
+            :install-command="installCmd"
             :token-ready="!!tokenCommand"
             :generating="generating"
             @generate="generateToken(computer.serverId)"

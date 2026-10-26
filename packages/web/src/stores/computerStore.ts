@@ -89,8 +89,9 @@ export function claudeInstalled(runtimes: RuntimeProbe[]): boolean {
   return runtimes.some((r) => r.id === "claude" && r.status === "installed");
 }
 
-/** 接入命令（server 渲染）：setup 行含 <MACHINE_TOKEN> 占位符，签发后由真实命令替换 */
+/** 接入命令（server 渲染）：setup 行含 <MACHINE_TOKEN> 占位符，签发后由真实命令替换；install 空 = 隐藏 ⓪ 安装步 */
 export interface ConnectCommandSet {
+  install?: string;
   setup: string;
   start: string;
 }

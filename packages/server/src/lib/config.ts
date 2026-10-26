@@ -69,8 +69,10 @@ export function parseCookieSecure(raw: string): boolean | "auto" {
   return "auto";
 }
 
-/** 接入向导生成的 daemon 启动前缀默认值（monorepo 开发形态）。 */
-const DEFAULT_DAEMON_LAUNCH_CMD = "pnpm --filter @collabagent/daemon computer --";
+/** 接入向导生成的 daemon 命令前缀默认值——S2 后全局 `slock` 是规范形态。 */
+const DEFAULT_DAEMON_LAUNCH_CMD = "slock computer";
+/** 接入向导「⓪ 安装 slock CLI」命令默认值——repo 内装机路径；S4 发行通道落地后部署侧应覆盖为 registry/tarball/install.ps1 形态。 */
+const DEFAULT_DAEMON_INSTALL_CMD = "npm i -g ./packages/daemon";
 
 export const config = {
   PORT: Number(process.env.PORT) || 3001,
@@ -117,10 +119,14 @@ export const config = {
   // 目录不存在（本地 vite 开发 / 纯后端部署）时自动跳过 SPA 托管。
   WEB_DIST_DIR: env("WEB_DIST_DIR", ""),
   // 接入向导生成命令的 `slock computer` 前缀（routes/computers.ts connectCommands）。
-  // 分发部署时覆盖，如已装 CLI 的 "slock computer"、二进制绝对路径或
-  // "npx --yes @collabagent/daemon computer"；setup/start/<name>/--server-url/--api-key
-  // 参数仍由代码追加。
+  // 默认 "slock computer"（全局 CLI 形态）；旧部署可覆盖为
+  // "pnpm --filter @collabagent/daemon computer --" 或二进制绝对路径；
+  // setup/start/<name>/--server-url/--api-key 参数仍由代码追加。
   DAEMON_LAUNCH_CMD: env("DAEMON_LAUNCH_CMD", DEFAULT_DAEMON_LAUNCH_CMD).trim() || DEFAULT_DAEMON_LAUNCH_CMD,
+  // 接入向导「⓪ 安装」命令（ConnectCommands 组件渲染，空串 = 隐藏该步）。
+  // 默认 repo 内 `npm i -g ./packages/daemon`；正式发行落地后部署侧应覆盖为
+  // 托管形态，如 "irm https://<host>/dl/install.ps1 | iex" 或 "npm i -g @collabagent/daemon"。
+  DAEMON_INSTALL_CMD: env("DAEMON_INSTALL_CMD", DEFAULT_DAEMON_INSTALL_CMD).trim(),
   LOGIN_MAX_ATTEMPTS: Number(process.env.LOGIN_MAX_ATTEMPTS) || 5,
   LOGIN_LOCK_MS: Number(process.env.LOGIN_LOCK_MS) || 15 * 60 * 1000,
   // IP 维度登录失败阈值（NAT 共享 IP，默认显著高于账号维度）

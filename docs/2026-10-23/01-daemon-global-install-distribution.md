@@ -1,7 +1,7 @@
 # Daemon 全局安装与分发设计（raft-computer 式）
 
 日期：2026-10-23
-状态：方案评审稿（未动工）
+状态：**S1 产物化 + S2 npm 全局装 + S3-A 常驻子命令已落地**（见 §7 落地记录）；S3-B install 脚本、S4~S5 未动工
 关联：`slock computer` 命令组已落地（本文件 §2 盘点）；web 端 /computers 接入卡已出两步命令。
 
 ---
@@ -161,13 +161,13 @@ web /computers 行已存 `machineUuid`（daemon ready upsert）。若要做 raft
 
 ## 5. 分期与验收
 
-| 期 | 范围 | 验收 |
-|----|------|------|
-| **S1 产物化** | §4.1 构建脚本 + §4.2 三处解耦 + bin 注册 + node-pty optional | `node dist-bundle/daemon.cjs --server-url ... --api-key ...` 在无 src 的目录起得来；agent slock/MCP 在 bundle 下可用 |
-| **S2 npm 全局装** | §4.3 | 本机任意 cwd `slock computer setup/start` 全流程 |
-| **S3 install + 常驻** | §4.4 | 干净 Windows 机 `irm ... \| iex` → setup → start --detach → 重启登录后仍在线 |
-| **S4 发行通道** | §4.5-B 自有 server `/dl/` | 内网机器从自部署 server 拉包安装 |
-| **S5 体验补齐** | §4.6 + update/uninstall/doctor + 前置体检 | — |
+| 期 | 范围 | 验收 | 状态 |
+|----|------|------|------|
+| **S1 产物化** | §4.1 构建脚本 + §4.2 三处解耦 + bin 注册 + node-pty optional | `node dist-bundle/daemon.cjs --server-url ... --api-key ...` 在无 src 的目录起得来；agent slock/MCP 在 bundle 下可用 | ✅ 2026-10-23（§7） |
+| **S2 npm 全局装** | §4.3 | 本机任意 cwd `slock computer setup/start` 全流程 | ✅ 2026-10-23（§7.2） |
+| **S3 install + 常驻** | §4.4 | 干净 Windows 机 `irm ... \| iex` → setup → start --detach → 重启登录后仍在线 | 🟡 A 半（常驻子命令）✅ 2026-10-26（§7.3）；B 半（install 脚本）未动工 |
+| **S4 发行通道** | §4.5-B 自有 server `/dl/` | 内网机器从自部署 server 拉包安装 | 未动工 |
+| **S5 体验补齐** | §4.6 + update/uninstall/doctor + 前置体检 | — | 未动工 |
 
 S1+S2 是「全局可用」的最小闭环；S3 之后才配叫「守护进程」。
 
@@ -178,6 +178,113 @@ S1+S2 是「全局可用」的最小闭环；S3 之后才配叫「守护进程�
 - **多 server 同机**：registry 已支持多 profile，但一台机器同时只跑一个 daemon（pidfile/单实例语义）——`start /<a>` 时如在跑别的 server 应提示先 stop。当前 `start` 的 alreadyRunning 检查按 profile stateDir 分别算——多 profile 多 stateDir 时会允许并存（设计如此还是有洞，动工时定死）
 - **install 脚本签名**：Windows SmartScreen 对未签名 ps1 有警告；短期接受，正式分发再签
 - **`SLOCK_STATE_DIR` 默认**：发行形态下 daemonRoot 是安装目录，stateDir 默认 `<root>/.slock` 会落在安装目录下——升级覆盖时状态被带走？应改为默认 `~/.slock/state/<serverName>`（profile.stateDir 可覆盖）。**这是与 repo 开发态语义的一处分叉，需要拍板**（repo 态保留 `<root>/.slock` 兼容既有状态；install 形态用 `~/.slock/state/`）
+
+## 7. 落地记录
+
+### 7.1 S1 产物化（2026-10-23 实现）
+
+### 新增文件
+
+| 文件 | 内容 |
+|------|------|
+| `scripts/build-dist.mjs` | esbuild → `dist-bundle/{daemon.cjs, cli.cjs, slock-mcp-server.cjs}`（cjs/node20；external：`node-pty`、`esbuild`、`bufferutil`、`utf-8-validate`） |
+| `src/dist-assets.ts` | `findDistAsset(fileName, {envVar, root, roots, env})`——统一发行产物探测：env 覆盖 > `<root>/<file>` 与 `<root>/dist-bundle/<file>`（root 候选：opts.root > `SLOCK_DAEMON_ROOT` > argv[1] 目录 > import.meta 目录向上找包根）；`roots` 参数为测试全隔离开关 |
+| `test/dist-assets.test.ts` | 探测顺序 6 用例 |
+
+### 修改
+
+| 文件 | 内容 |
+|------|------|
+| `load-env.ts` | **修启动崩溃**：esbuild cjs 下 `import.meta.url` 为 undefined，原 `fileURLToPath` 顶层裸调直接炸。改为候选探测：`SLOCK_DAEMON_ROOT/.env` > `import.meta 上级/.env` > `argv[1] 目录/.env`，判空+existsSync |
+| `setup-slock-wrapper.ts` | 三级 CLI 产物来源：① `findDistAsset("cli.cjs", SLOCK_CLI_BUNDLE)` 预打复制 → ② dev esbuild src/cli.ts（import.meta 判空 + existsSync）→ ③ `slock %*` 走 PATH（全局 shim） |
+| `mcp-bundle.ts` | 同上两级：`SLOCK_MCP_BUNDLE`/`findDistAsset` 预打复制 > dev esbuild > null |
+| `cli/computer.ts` | ① `isDaemonRoot` 判定扩展：除 named package.json 外，「含 daemon.cjs（平铺或 dist-bundle/）」也算根——安装布局没有 package.json；② `computerStart` 入口探测 `src/supervisor.ts` > `daemon.cjs` > `dist/index.js`；③ spawn env 增加 `SLOCK_DAEMON_ROOT=<root>`（daemon 进程内 dist-assets 自解析不依赖 argv 布局） |
+| `agent-manager-lazy.ts` | loader 包 try/catch：node-pty `MODULE_NOT_FOUND` → 可读错误（指明 `SLOCK_USE_PTY=1` 需原生依赖、发行包不含） |
+| `package.json` | bin：`collabagent-daemon`→`dist-bundle/daemon.cjs`，新增 `slock`→`dist-bundle/cli.cjs`；script `build:dist`；`node-pty` 移 `optionalDependencies` |
+| `.gitignore` | `dist-bundle/` |
+
+### 与原方案的偏差
+
+1. **入口探测顺序**：文档原写「daemon.cjs（发行）> supervisor.ts（dev）」，实现为 **supervisor.ts > daemon.cjs > dist/index.js**——repo 里即便 `build:dist` 过也优先 dev supervisor（保 watch 语义）；安装布局没有 src/，自然落到 daemon.cjs，两布局各自正确。
+2. **supervisor 不进产物**照做，但 bundle 模式下 `computer start` 直跑 `daemon.cjs`——**崩溃即退，无自动拉起**（restart 循环归 S3，与 detached/自启一起做）。dev 路径不受影响。
+3. **bin 指向 dist-bundle 而非 dist**：`collabagent-daemon` 从 `dist/index.js`（tsc）改为 `dist-bundle/daemon.cjs`——npm 全局装才有单文件入口。
+4. **`roots` 测试开关**：findDistAsset 的 argv[1]/import.meta 自解析在 vitest 下会命中真实仓库——测试需要 `roots` 参数完全替换候选。
+5. **无 esbuild banner**：`index.ts`/`cli.ts` 源文件自带 `#!` 首行且 esbuild 保留；再加 banner 会产生双 shebang（第二条在非 0 偏移 = 语法错误）。
+
+### 冒烟验证（实机）
+
+将三个 cjs 拷入无 src 的临时目录（`~/.slock/servers.json` 手工放一个假 profile）：
+
+- `node cli.cjs computer list` → JSON 正常，token 脱敏 ✅
+- `node cli.cjs computer start` → `mode: "bundle daemon.cjs (no supervisor)"`，daemon.cjs 引导成功：claude 探测 ✅、`MCP server bundle copied`（预打路径）✅、`CLI bundle copied` + slock.bat/slock 写入 ✅、WS 真实连接本机 dev server ✅、假 token 被 4001 正确拒绝退出 ✅
+- 即「无 src 目录下 daemon 起得来 + agent slock/MCP 产物就位」的 S1 验收实测通过。
+
+验证命令：`pnpm --filter @collabagent/daemon build:dist` / `typecheck` / `test`（dist-assets 6 + computer-registry 8 全过；全量 988 pass，唯一失败是已修的测试隔离问题）。
+
+### 7.2 S2 npm 全局装（2026-10-23 实现）
+
+装机命令（本机即验）：
+
+```
+npm i -g ./packages/daemon    # 本地目录装 = symlink/junction，改码重打即生效
+slock computer setup /<name> --server-url <url> --api-key <key>
+slock computer start /<name>  # 任意 cwd
+```
+
+新增/修改：
+
+| 项 | 内容 |
+|----|------|
+| `package.json` `files` | `["dist-bundle", "schemas"]`——`npm pack`/publish 白名单 |
+| `prepack` script | `node scripts/build-dist.mjs`——pack 前必刷新产物 |
+| `findDaemonRootUp` 两趟扫描 | 第一趟只认 named package.json，第二趟才认 daemon.cjs 布局——`argv[1]` 落在 `dist-bundle/` 时若单趟会先命中产物目录，把根误判为 `dist-bundle`（stateDir 裂成 `dist-bundle/.slock`）；先找 package.json 保证 repo 包根永远胜出 |
+| `normalizeRoot`（realpath） | `resolveDaemonRoot`/`rootFor` 返回值一律 `realpathSync`——`npm i -g` 本地装是 junction，`argv[1]` 穿的是 `%APPDATA%\npm\node_modules\@collabagent\daemon\` 链接路径，不归一会把 stateDir 定到 npm 链接侧、与 repo `.slock` 裂成双状态树（双 daemon.pid → 单实例守卫失效） |
+
+实机冒烟（npm 全局 shim + 任意 cwd + `--state-dir` 隔离）：
+
+- `slock --version` → `0.1.0`；shim 三件（`slock`/`slock.cmd`/`slock.ps1`）落 `%APPDATA%\npm\` ✅
+- `slock computer setup /x --state-dir <tmp>` → servers.json 落 `~/.slock/` ✅
+- `slock computer start` → `mode: "supervisor+tsx"`（repo 包根经 symlink realpath 后命中，`src/supervisor.ts` 存在故走 dev 监督）；预打复制路径显示真实 repo 路径 `D:\code\slock\packages\daemon\dist-bundle\` ✅；假 token 4001 拒退 + supervisor 崩溃重启生效；taskkill 整树清场 ✅
+
+遗留：`slock` shim 依赖 npm 全局 prefix 在 PATH（装过任何全局 CLI 的机器都有）；非本机/非 repo 机器的全局装要等 S4 发行通道（`npm i -g <tgz|registry>`）。
+
+**前后端同步（2026-10-23 同批）**：接入卡升级为 raft 式三步——⓪ 安装 slock CLI（新 `DAEMON_INSTALL_CMD` 下发，默认 `npm i -g ./packages/daemon`，空串 = 前端隐藏该步）→ ① setup（占位→生成令牌填真）→ ② start。`DAEMON_LAUNCH_CMD` 默认由 pnpm 前缀换为 `slock computer`（旧部署可 env 覆盖回退）；`connectCommands` 返回 `{install, setup, start}`，`POST /me/token` 增 `installCommand`；`.env.example` 注释同步。
+
+### 7.3 S3-A 常驻形态（2026-10-26 实现）
+
+命令面（`cli/computer.ts` + `cli/computer-autostart.ts`）：
+
+```
+slock computer start /<name> --detach   # 后台：_run 拉起循环托管，stdio→<stateDir>/daemon.log
+slock computer restart /<name> --detach
+slock computer status [/<name>]         # launcher/daemon pid 活性 + stateDir + log + autostart
+slock computer logs [/<name>] [-n N]    # tail daemon.log（默认 50，上限 5000）
+slock computer install [/<name>]        # 登录自启注册
+slock computer uninstall [/<name>]
+slock computer _run <name>              # 内部拉起循环（hidden，不手用）
+```
+
+实现要点：
+
+| 件 | 内容 |
+|----|------|
+| `--detach` | `resolveSelfArgv`（cli.cjs > tsx+src/cli.ts）直起 `node cli.cjs computer _run /<name>`，`stdio:["ignore",fd,fd]` + `detached:true` + `unref()`；launcher.pid 记 **node _run 进程**（非 shell 包装层） |
+| `_run` 拉起循环 | spawn 与前台 start 同 plan/env；exit/error 竞速等待；正常 1s 重拉；60s 窗口内 >5 次崩 → 30s 退避；SIGINT/SIGTERM 停子树后退出（`stopping` 旗标防拉起） |
+| **Windows fd 重定向坑（实测）** | `detached:true` + `shell:true` + 自定义 stdio fd = **子进程输出全部丢失**（cmd /d /s /c 包装层不继承自定义句柄）。修复：detached 一律 argv 直起 `process.execPath`，不用 shell；内层 `_run→daemon` 的非 detached `shell:true`+`inherit` 不受影响 |
+| `status` | 读 `computer-launcher.pid`/`daemon.pid` 判活（ESRCH vs EPERM）；stateDir/log 路径；`autostart` 探测（文件存在或 schtasks /query） |
+| `install`/`uninstall` | 纯 spec `autostartPlan(name,node,cli,platform,home)` 注入平台/家目录可测；Windows `schtasks /create /tn SlockComputer-<name> /sc onlogon /tr "<node> <cli> computer start /<name> --detach"`；macOS `~/Library/LaunchAgents/ai.slock.computer.<name>.plist` + `launchctl load -w`；Linux `~/.config/systemd/user/slock-computer-<name>.service` + `systemctl --user enable --now`；失败返回 `manual` 手工指引不硬崩；**只收 node 直跑的 cli.cjs**（登录态无 tsx/pnpm 上下文，dev 布局无 bundle 时明确报 `cli-bundle-required`） |
+| `logs` | tail `<stateDir>/daemon.log`，`--lines` 默认 50 clamp 5000；action 层直打文本（非 JSON），人读友好 |
+
+实机冒烟（dist-bundle/cli.cjs + 独立 HOME/stateDir）：
+
+- `setup → start --detach` → launcher pid（node _run）落盘、立即返回 ✅
+- `status` → launcher/daemon 双活 ✅；`logs -n` → 真 tail（全链路输出经 fd→_run→npx→tsx→daemon 落文件，含 supervisor watch 行）✅
+- `taskkill /F` 杀 daemon → 拉起循环 1~4s 内重拉新 daemon pid ✅（崩溃拉起实测）
+- `stop` → taskkill /T /F 整树（launcher→_run→cmd→npx→tsx→daemon）清场，无拉起、无残留 ✅
+
+测试：`computer-autostart.test.ts` 4 用例（三平台 spec + unsupported）；`computer-status-logs.test.ts` 5 用例（tail 截取/空文件/死 pid/status 结构）。
+
+边界/遗留：`install` 未在本机实际注册（spec 已测，真注册待首次实装时验）；`stop` 管不住非 `computer start` 起的 daemon（同前）；stateDir 分叉决策（§6）仍 open——install 形态 `~/.slock/state/<name>` vs repo `<root>/.slock`，当前默认沿用后者。
 
 ## 附录：名词
 

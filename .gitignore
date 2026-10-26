@@ -3,6 +3,7 @@ node_modules/
 .env
 .env.*
 dist/
+dist-bundle/
 packages/server/uploads/
 .DS_Store
 Thumbs.db

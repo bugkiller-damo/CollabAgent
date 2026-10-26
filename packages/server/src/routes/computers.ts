@@ -142,9 +142,10 @@ function mintMachineTokenValue(): string {
 }
 
 /**
- * 接入向导命令（slock computer 形态，raft-computer 式两步）：
- *   setup = 含密钥的一次性登记（落 ~/.slock/servers.json）
- *   start = 日常启动/重启（登记后不再需要 token）
+ * 接入向导命令（slock computer 形态，raft-computer 式三步）：
+ *   install = 一次性装全局 CLI（DAEMON_INSTALL_CMD，空 = web 隐藏该步）
+ *   setup   = 含密钥的一次性登记（落 ~/.slock/servers.json）
+ *   start   = 日常启动/重启（登记后不再需要 token）
  * server 名作 /<name> 位置参数——daemon 侧 normalizeServerName 归一，
  * 并在握手时与 token scope 比对（写错拒连，运维可见性而非权限边界）。
  */
@@ -153,11 +154,13 @@ export function connectCommands(
   token: string,
   serverName?: string,
   launchCmd = config.DAEMON_LAUNCH_CMD,
-): { setup: string; start: string } {
+  installCmd = config.DAEMON_INSTALL_CMD,
+): { install: string; setup: string; start: string } {
   const origin = serverUrl.replace(/\/+$/, "");
   const slug = `/${(serverName || "server").replace(/"/g, "")}`;
   const target = /\s/.test(slug) ? `"${slug}"` : slug;
   return {
+    install: installCmd,
     setup: `${launchCmd} setup ${target} --server-url ${origin} --api-key ${token}`,
     start: `${launchCmd} start ${target}`,
   };
@@ -357,6 +360,7 @@ export async function computerRoutes(app: FastifyInstance) {
       // command = setup 行（含密钥），web 老客户端仍渲染它；startCommand 是登记后的日常启停命令
       command: commands.setup,
       startCommand: commands.start,
+      installCommand: commands.install,
       message: "Save this token — it won't be shown again.",
     };
   });
