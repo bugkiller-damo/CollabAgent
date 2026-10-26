@@ -17,6 +17,7 @@
     "computer": "tsx src/cli.ts computer",
     "build": "tsc",
     "build:dist": "node scripts/build-dist.mjs",
+    "pack:dist": "node scripts/pack-dist.mjs",
     "prepack": "node scripts/build-dist.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",

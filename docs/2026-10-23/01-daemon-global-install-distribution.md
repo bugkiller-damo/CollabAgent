@@ -1,7 +1,7 @@
 # Daemon 全局安装与分发设计（raft-computer 式）
 
 日期：2026-10-23
-状态：**S1 产物化 + S2 npm 全局装 + S3-A 常驻子命令已落地**（见 §7 落地记录）；S3-B install 脚本、S4~S5 未动工
+状态：**S1 产物化 + S2 npm 全局装 + S3 常驻/install 脚本已落地**（见 §7 落地记录）；S4 发行通道、S5 未动工
 关联：`slock computer` 命令组已落地（本文件 §2 盘点）；web 端 /computers 接入卡已出两步命令。
 
 ---
@@ -165,7 +165,7 @@ web /computers 行已存 `machineUuid`（daemon ready upsert）。若要做 raft
 |----|------|------|------|
 | **S1 产物化** | §4.1 构建脚本 + §4.2 三处解耦 + bin 注册 + node-pty optional | `node dist-bundle/daemon.cjs --server-url ... --api-key ...` 在无 src 的目录起得来；agent slock/MCP 在 bundle 下可用 | ✅ 2026-10-23（§7） |
 | **S2 npm 全局装** | §4.3 | 本机任意 cwd `slock computer setup/start` 全流程 | ✅ 2026-10-23（§7.2） |
-| **S3 install + 常驻** | §4.4 | 干净 Windows 机 `irm ... \| iex` → setup → start --detach → 重启登录后仍在线 | 🟡 A 半（常驻子命令）✅ 2026-10-26（§7.3）；B 半（install 脚本）未动工 |
+| **S3 install + 常驻** | §4.4 | 干净 Windows 机 `irm ... \| iex` → setup → start --detach → 重启登录后仍在线 | ✅ 2026-10-26（§7.3 + §7.4）；install.ps1 已本地自测，真机待首次部署验证 |
 | **S4 发行通道** | §4.5-B 自有 server `/dl/` | 内网机器从自部署 server 拉包安装 | 未动工 |
 | **S5 体验补齐** | §4.6 + update/uninstall/doctor + 前置体检 | — | 未动工 |
 
@@ -284,7 +284,29 @@ slock computer _run <name>              # 内部拉起循环（hidden，不手�
 
 测试：`computer-autostart.test.ts` 4 用例（三平台 spec + unsupported）；`computer-status-logs.test.ts` 5 用例（tail 截取/空文件/死 pid/status 结构）。
 
-边界/遗留：`install` 未在本机实际注册（spec 已测，真注册待首次实装时验）；`stop` 管不住非 `computer start` 起的 daemon（同前）；stateDir 分叉决策（§6）仍 open——install 形态 `~/.slock/state/<name>` vs repo `<root>/.slock`，当前默认沿用后者。
+边界/遗留：`install` 未在本机实际注册（spec 已测，真注册待首次实装时验）；`stop` 管不住非 `computer start` 起的 daemon（同前）。
+
+### 7.4 S3-B install 脚本 + 发行打包（2026-10-26 实现）
+
+三件新物：
+
+| 件 | 内容 |
+|----|------|
+| `scripts/pack-dist.mjs` | `pnpm pack:dist` → `release/`：`slock-daemon-<ver>.tar.gz`（三个 cjs 平铺包根）+ `.sha256` + `version.json` + install 脚本副本。整个 `release/` 就是 S4 `/dl/` 目录的内容物——托管落地即通 |
+| `install/install.ps1` | `irm ... \| iex` 或 `-Base <url\|dir>` 直跑：Node≥20 → version.json 解析 → 下载/拷贝 → sha256 校验（不符即拒装）→ `~/.slock/runtime/<ver>/` 解压 → `current` junction → `~/.slock/bin/` 三件 shim（`slock.cmd`/`slock.ps1`/`slock` sh，内嵌 `SLOCK_DAEMON_ROOT=<current>`——升级换 junction，shim 不动）→ 用户级 PATH 去重持久化 + 本会话即生效 → 打印 setup/start 指引 |
+| `install/install.sh` | POSIX 对称：`~/.slock/state/` 同款布局、curl/wget 下载、sha256sum/shasum 校验、symlink current、sh shim、追加 `.zshrc`/`.bashrc`/`.profile`（首个命中文件，grep 去重幂等） |
+
+**同批拍板（§6 open 项闭合）**：stateDir 分叉落地——repo 布局（root 有 package.json）→ `<root>/.slock` 沿用；install 布局（bundle-only 根）→ `~/.slock/state/<name>`，版本目录轮换不再带走状态树。配套修复：`buildLaunchEnv` **恒 pin `SLOCK_STATE_DIR`**（此前仅 profile.stateDir 显式设置时才传——否则 daemon 自身按 `<root>/.slock` 推导会与 CLI 的 `~/.slock/state/` 计算裂成两棵树、单实例守卫失效）。
+
+本机自测（`-Base <release/ 目录>`，隔离 USERPROFILE）：
+
+- Node 22.20.0 ✅ → version.json 解析 → tarball 下载（本地拷贝路径）→ sha256 verified ✅ → `runtime/0.1.0/` 解压 + `current` junction ✅ → 三 shim 写入 ✅ → PATH 幂等（重复装提示 already contains）✅
+- 装出的 `slock.cmd`：`--version` → 0.1.0；`computer setup → start --detach` → `mode: "bundle daemon.cjs detached"`，stateDir = `~/.slock/state/demo`（**不在版本目录内**）✅；`status` 双活、`logs` 真 tail ✅；`stop` 整树清场 ✅
+- stateDir 树内全部状态件归位：daemon.pid / computer-launcher.pid / daemon.log / slock.bat / slock-cli.cjs / slock-mcp-server.cjs ✅
+
+验收对照：「干净 Windows 机 `irm | iex` → setup → start --detach → 重启登录后仍在线」——前四步已实测等价通过（`-Base` 本地目录代替 https 下载，同一代码路径）；「重启登录后仍在线」依赖 `computer install` 自启注册，spec 已测但真注册未实机跑过（留待首次部署）。
+
+至此 S3 全部落地。剩余 S4（发行通道：server `/dl/` 静态路由或 GitHub Releases——`release/` 目录已是现成内容物）、S5（update/uninstall/doctor + 前置体检）。
 
 ## 附录：名词
 

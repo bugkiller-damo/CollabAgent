@@ -28,6 +28,7 @@
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { closeSync, existsSync, openSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Command } from "commander";
@@ -207,8 +208,16 @@ export function resolveComputerTarget(
   return { name: only, profile: profiles[only]! };
 }
 
-const resolveStateDir = (profile: ComputerProfile, daemonRoot: string): string =>
-  profile.stateDir ?? join(daemonRoot, ".slock");
+/**
+ * stateDir 默认分叉（§6 拍板）：repo 布局（root 有 package.json）→ `<root>/.slock`
+ * 与既有状态树共用；install 布局（bundle-only 根，如 ~/.slock/runtime/<ver>）→
+ * `~/.slock/state/<name>`——版本目录随升级轮换，状态树不能钉在会过期的目录下。
+ */
+const resolveStateDir = (profile: ComputerProfile, daemonRoot: string, name?: string): string =>
+  profile.stateDir ??
+  (hasDaemonPackageJson(daemonRoot)
+    ? join(daemonRoot, ".slock")
+    : join(homedir(), ".slock", "state", name ?? "default"));
 
 const rootFor = (profile: ComputerProfile, deps?: ComputerDeps): string => {
   const root =
@@ -308,7 +317,7 @@ export function computerStop(argName: string | undefined, deps?: ComputerDeps) {
   const profiles = loadComputerProfiles(deps?.registryPath);
   const { name, profile } = resolveComputerTarget(argName, profiles);
   const root = deps?.daemonRoot ?? resolveDaemonRoot() ?? profile.daemonRoot;
-  const stateDir = root ? resolveStateDir(profile, root) : null;
+  const stateDir = root ? resolveStateDir(profile, root, name) : null;
   const killed: string[] = [];
   const skipped: string[] = [];
   if (!stateDir) {
@@ -364,7 +373,7 @@ function resolveLaunchEntry(root: string): { cmd: string; mode: string } {
   );
 }
 
-/** profile → env 翻译（唯一翻译点，start/_run 共用） */
+/** profile → env 翻译（唯一翻译点，start/_run 共用）；SLOCK_STATE_DIR 恒 pin——CLI 与 daemon 必须认同一棵树 */
 function buildLaunchEnv(profile: ComputerProfile, name: string, root: string): NodeJS.ProcessEnv {
   return {
     ...process.env,
@@ -372,8 +381,8 @@ function buildLaunchEnv(profile: ComputerProfile, name: string, root: string): N
     SLOCK_API_KEY: profile.apiKey,
     SLOCK_SERVER_NAME: name,
     SLOCK_DAEMON_ROOT: root,
+    SLOCK_STATE_DIR: resolveStateDir(profile, root, name),
     ...(profile.machineUuid ? { SLOCK_MACHINE_ID: profile.machineUuid } : {}),
-    ...(profile.stateDir ? { SLOCK_STATE_DIR: profile.stateDir } : {}),
   };
 }
 
@@ -423,7 +432,7 @@ export async function computerStart(argName: string | undefined, opts?: StartOpt
   const profiles = loadComputerProfiles(deps?.registryPath);
   const { name, profile } = resolveComputerTarget(argName, profiles);
   const root = rootFor(profile, deps);
-  const stateDir = resolveStateDir(profile, root);
+  const stateDir = resolveStateDir(profile, root, name);
   const launcherPidPath = join(stateDir, LAUNCHER_PID_FILE);
 
   const running = readPidFile(launcherPidPath);
@@ -535,7 +544,7 @@ export async function computerRun(argName: string, deps?: ComputerDeps) {
   const profiles = loadComputerProfiles(deps?.registryPath);
   const { name, profile } = resolveComputerTarget(argName, profiles);
   const root = rootFor(profile, deps);
-  const stateDir = resolveStateDir(profile, root);
+  const stateDir = resolveStateDir(profile, root, name);
   const plan = resolveLaunchEntry(root);
   const env = buildLaunchEnv(profile, name, root);
   mkdirPrivateSync(stateDir);
@@ -581,10 +590,10 @@ export async function computerRun(argName: string, deps?: ComputerDeps) {
 /* ------------------------------ status / logs ------------------------------ */
 
 /** status/stop 共用的 root+stateDir 解析（root 缺失不 fail——只报 stateDir 未知） */
-function rootAndStateDir(profile: ComputerProfile, deps?: ComputerDeps) {
+function rootAndStateDir(profile: ComputerProfile, name: string, deps?: ComputerDeps) {
   const root =
     deps?.daemonRoot ?? resolveDaemonRoot() ?? (profile.daemonRoot ? normalizeRoot(profile.daemonRoot) : null);
-  return { root, stateDir: root ? resolveStateDir(profile, root) : null };
+  return { root, stateDir: root ? resolveStateDir(profile, root, name) : null };
 }
 
 const pidStat = (stateDir: string | null, file: string) => {
@@ -595,7 +604,7 @@ const pidStat = (stateDir: string | null, file: string) => {
 export function computerStatus(argName: string | undefined, deps?: ComputerDeps) {
   const profiles = loadComputerProfiles(deps?.registryPath);
   const { name, profile } = resolveComputerTarget(argName, profiles);
-  const { stateDir } = rootAndStateDir(profile, deps);
+  const { stateDir } = rootAndStateDir(profile, name, deps);
   const launcher = pidStat(stateDir, LAUNCHER_PID_FILE);
   const daemon = pidStat(stateDir, DAEMON_PID_FILE);
   const log = stateDir ? join(stateDir, "daemon.log") : null;
@@ -616,7 +625,7 @@ export function computerStatus(argName: string | undefined, deps?: ComputerDeps)
 export function computerLogs(argName: string | undefined, opts?: { lines?: number }, deps?: ComputerDeps) {
   const profiles = loadComputerProfiles(deps?.registryPath);
   const { name, profile } = resolveComputerTarget(argName, profiles);
-  const { stateDir } = rootAndStateDir(profile, deps);
+  const { stateDir } = rootAndStateDir(profile, name, deps);
   if (!stateDir)
     fail("state-dir-unknown", "cannot locate state dir — re-run `slock computer setup` or set SLOCK_DAEMON_ROOT");
   const logPath = join(stateDir, "daemon.log");

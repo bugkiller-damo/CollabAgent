@@ -36,3 +36,5 @@ bridges/python/.venv/
 bridges/python/.pytest_cache/
 __pycache__/
 *.pyc
+
+packages/daemon/release/
