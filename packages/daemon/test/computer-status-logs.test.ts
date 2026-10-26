@@ -1,5 +1,5 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { computerLogs, computerStatus } from "../src/cli/computer.js";
@@ -61,5 +61,33 @@ describe("computerStatus", () => {
     expect(r.data.launcher).toEqual({ pid: 99999999, alive: false });
     expect(r.data.daemon).toEqual({ pid: 99999998, alive: false });
     expect(r.data.running).toBe(false);
+  });
+});
+
+describe("stateDir 默认分叉（无 profile.stateDir）", () => {
+  const makeRoot = (dir: string) => {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "@collabagent/daemon" }));
+    return dir;
+  };
+  const statusFor = (daemonRoot: string) => {
+    writeFileSync(registryPath, JSON.stringify({ smoke: { serverUrl: "http://x", apiKey: "sk_machine_t" } }));
+    return computerStatus("smoke", { registryPath, daemonRoot }).data.stateDir;
+  };
+
+  it("dev repo（named package.json，不在 node_modules 下）→ <root>/.slock", () => {
+    const root = makeRoot(join(home, "repo", "packages", "daemon"));
+    expect(statusFor(root)).toBe(join(root, ".slock"));
+  });
+
+  it("npm -g 包目录（root 在 node_modules 内）→ ~/.slock/state/<name>", () => {
+    const root = makeRoot(join(home, "npm", "node_modules", "@collabagent", "daemon"));
+    expect(statusFor(root)).toBe(join(homedir(), ".slock", "state", "smoke"));
+  });
+
+  it("bundle-only 根（无 package.json）→ ~/.slock/state/<name>", () => {
+    const root = join(home, "runtime", "0.1.0");
+    mkdirSync(root, { recursive: true });
+    expect(statusFor(root)).toBe(join(homedir(), ".slock", "state", "smoke"));
   });
 });
