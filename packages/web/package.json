@@ -17,20 +17,20 @@
     "@tanstack/vue-virtual": "^3.13.48",
     "dompurify": "^3.4.17",
     "highlight.js": "^11.12.0",
-    "markdown-it": "^14.3.3",
-    "pinia": "^2.3.1",
+    "markdown-it": "^15.0.3",
+    "pinia": "^4.1.0",
     "vue": "^3.5.44",
-    "vue-router": "^4.6.4"
+    "vue-router": "^5.4.0"
   },
   "devDependencies": {
     "@types/markdown-it": "^14.2.0",
-    "@vitejs/plugin-vue": "^5.2.4",
+    "@vitejs/plugin-vue": "^6.0.10",
     "autoprefixer": "^10.6.1",
     "postcss": "^8.5.31",
-    "tailwindcss": "^3.4.19",
-    "typescript": "~5.7.3",
-    "vite": "^6.4.5",
-    "vitest": "^4.1.12",
-    "vue-tsc": "^2.2.12"
+    "tailwindcss": "^4.3.3",
+    "typescript": "~7.0.2",
+    "vite": "^8.3.5",
+    "vitest": "^5.0.5",
+    "vue-tsc": "^3.3.13"
   }
 }
