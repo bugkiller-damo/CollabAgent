@@ -1038,6 +1038,7 @@ def make_run_turn(
             # §8.3：async 图全程跑在 worker 常驻事件循环上——协程内 emit 的
             # 帧写入有 transport 写锁，跨线程安全；turn.cancel 时
             # future.cancel() 桥成 task.cancel()。
+            assert ensure_loop is not None  # exec_mode="async" 只在握手期 ensure_loop 就绪后可达
             loop = ensure_loop()
             try:
                 return loop.run(_turn_async(init, turn, emit, cancelled, graph, config, started), cancelled)

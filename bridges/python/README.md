@@ -33,10 +33,10 @@ pip install "slock_runtime-0.2.0-py3-none-any.whl[langgraph]"   # 本地 wheel
 
 | 平台 | Python | 状态 |
 |------|--------|------|
-| Windows 11 x64 | 3.10.21 / 3.12.14 / 3.13.15 | 本地已验证（pytest 134/134、模板 probe+单回合、daemon SARP 测试 5/5） |
-| Windows Server 2022 x64 | 3.10–3.13 | CI 已配置（windows-2022 矩阵 + daemon-bridge 集成），远端待首跑 |
-| Ubuntu 22.04 / 24.04 x64 | 3.10–3.13 | CI 已配置（ubuntu-22.04/24.04 矩阵 + daemon-bridge 集成），远端待首跑；Linux x86_64 cp310/cp311/cp313 全部依赖已本地证明有 binary wheel（43 个 wheel、0 sdist，无需编译） |
-| CentOS Stream 9 x64 | AppStream Python 3.11 + Node 20 | CI 已配置（`centos-stream-9` 容器 job），远端待首跑 |
+| Windows 11 x64 | 3.10.21 / 3.12.14 / 3.13.15 | 本地已验证（pytest 218/218、模板 probe+单回合、daemon sarp/bridge vitest 245/245，2026-10-26） |
+| Windows Server 2022 x64 | 3.10–3.13 | 远端 CI run 35602381617（158c8cd，2026-09-21）12/12 通过；之后提交仅本地验证 |
+| Ubuntu 22.04 / 24.04 x64 | 3.10–3.13 | 远端 CI run 35602381617（158c8cd，2026-09-21）12/12 通过；之后提交仅本地验证；Linux x86_64 cp310/cp311/cp313 全部依赖已本地证明有 binary wheel（43 个 wheel、0 sdist，无需编译） |
+| CentOS Stream 9 x64 | AppStream Python 3.11 + Node 20 | 远端 CI run 35602381617（158c8cd，2026-09-21）12/12 通过；之后提交仅本地验证 |
 | CentOS Linux 7 | — | 不支持（EOL 2024-06-30，无受支持的 Python ≥3.10 基线） |
 | macOS | 3.12 | best-effort 冒烟（CI 单 leg），非主要内部目标 |
 

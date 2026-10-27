@@ -1,1 +1,5 @@
+# slock-runtime 尚未发布到 PyPI——执行本文件前先装 SDK（二选一）：
+#   源码：  pip install -e "<repo>/bridges/python[langchain]"
+#   wheel： pip install "<path>/slock_runtime-0.2.0-py3-none-any.whl[langchain]"
+# SDK 已满足时本文件即跳过安装（仅作版本约束校验）。
 slock-runtime[langchain]>=0.2.0,<0.3.0

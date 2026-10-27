@@ -20,8 +20,12 @@ crash 保护由 daemon 和 `slock-runtime` SDK 协作承担，客户只实现 Ag
   pip install "slock_runtime-0.2.0-py3-none-any.whl[langgraph]"
   ```
 
-- CI（`.github/workflows/python-sdk.yml`）已配置但**远端尚未实际跑过**；
-  本 quickstart 的兼容矩阵以本地验证为准，不声称远端 CI 已绿。
+- CI（`.github/workflows/python-sdk.yml`）最近一次远端绿跑是 run
+  `35602381617`（commit `158c8cd`，2026-09-21，12/12；此前 run 35594027408
+  为 7/12）。其后的 SDK 提交（`158c8cd` 以来共 9 个，WP1~WP12 + Batch B/C）
+  只经本地验证（2026-10-26：pytest 218/218 零 skip、daemon sarp/bridge
+  vitest 245/245），需要一次推送触发新一轮远端验证。
+  `python-release.yml` 从未触发，`slock-runtime` 未发布到 PyPI。
 
 ## 安装路径
 
@@ -52,6 +56,8 @@ provider 包（`langchain-openai`、`langchain-anthropic` 等）与密钥由你�
 cp -r bridges/templates/langgraph-agent /path/to/my-agent   # 或 langchain-agent
 cd /path/to/my-agent
 python -m venv .venv && . .venv/bin/activate    # Windows: .venv\Scripts\activate
+# slock-runtime 尚未发布到 PyPI——先装 SDK（二选一），requirements.txt 仅作版本校验
+pip install -e "<repo>/bridges/python[langgraph]"   # 或 pip install "<path>/slock_runtime-0.2.0-py3-none-any.whl[langgraph]"
 pip install -r requirements.txt
 python agent.py --slock-probe    # 单行 probe.result，exit 0
 ```
@@ -274,6 +280,10 @@ worker 是**受信任的任意本地代码**，不是沙箱：
 | LangGraph | `>=1.2.11,<2.0` | `[langgraph]` extra + 模板/示例测试 |
 | langgraph-checkpoint-sqlite | `>=3.1.1,<4.0` | `[langgraph]` extra |
 | 协议 | SARP/1（`slock.agent-runtime` v1） | contract fixtures + daemon 集成测试 |
+
+> 注：上表「远端 CI 已验证」指 run `35602381617`（commit `158c8cd`，2026-09-21，
+> 12/12）；其后 `bridges/python` 的 9 个提交截至 2026-10-27 只经本地验证，
+> 未经远端 CI。
 
 ## 相关文档
 

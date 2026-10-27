@@ -18,6 +18,9 @@ runtime.ready → turn → turn.end 全链路（默认 echo 节点不联网）�
    python -m venv .venv
    # POSIX:   source .venv/bin/activate
    # Windows: .venv\Scripts\activate
+   # slock-runtime 尚未发布到 PyPI——先装 SDK（二选一），requirements.txt 仅作版本校验
+   pip install -e "<repo>/bridges/python[langgraph]"
+   # 或：pip install "<path>/slock_runtime-0.2.0-py3-none-any.whl[langgraph]"
    pip install -r requirements.txt
    ```
 

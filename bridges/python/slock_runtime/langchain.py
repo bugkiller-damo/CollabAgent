@@ -182,11 +182,13 @@ def _run_one_turn(
     try:
         if streaming and hasattr(agent, "astream_events"):
             # 常驻 loop（§8.3）：协程消费 astream_events；cancel → task.cancel()
+            assert ensure_loop is not None
             result, stream_usage_meta = ensure_loop().run(
                 _consume_events(agent, input_value, emit, cancelled, streamed, slock_tool_ops),
                 cancelled,
             )
         elif hasattr(agent, "ainvoke"):
+            assert ensure_loop is not None
             result = ensure_loop().run(agent.ainvoke(input_value), cancelled)
         elif hasattr(agent, "invoke"):
             result = agent.invoke(input_value)

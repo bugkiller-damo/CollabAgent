@@ -109,6 +109,7 @@ pnpm vitest run          # packages/daemon 测试（47 文件 / 497 用例）
 
 | 文档 | 用途 |
 |------|------|
+| `docs/2026-10-27/01-bridge-runtime-内部开发者指南.md` | **bridge runtime（SARP/1）内部开发者指南：架构/协议生命周期/SDK API/manifest/排障全解 + 实机输出** |
 | `docs/2026-10-23/01-daemon-global-install-distribution.md` | **daemon 全局安装与分发设计（raft 式 `irm|iex` + 全局 `slock`；S1 产物化 + S2 npm 全局装已落地，S3~S5 未动工）** |
 | `docs/2026-10-13/01-bridge-runtime统一与自建agent改造方案.md` | **bridge runtime 统一（langchain/langgraph → `bridge`）+ 自建 agent 适配缺口修复（WP1~WP12，已落地）** |
 | `docs/2026-09-20/01-daemon-claude-decoupling-audit.md` | Claude 耦合度审计（Phase 0 依据） |

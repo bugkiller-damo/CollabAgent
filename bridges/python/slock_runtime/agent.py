@@ -108,8 +108,10 @@ def _tool_class() -> type:
                 slock_input_schema: dict = {}
                 call: Callable[[dict], str] | None = None
 
+                # §7 H6：刻意遮蔽基类签名——对外呈现原样 MCP inputSchema dict；
+                # invoke 与 args_schema/get_input_schema 不受影响（见类 docstring）
                 @property
-                def input_schema(self) -> dict:
+                def input_schema(self) -> dict:  # type: ignore[override]
                     """旧 SlockTool 兼容面：MCP inputSchema 原样 dict。"""
                     return self.slock_input_schema
 
