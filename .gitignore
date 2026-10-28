@@ -36,5 +36,6 @@ bridges/python/.venv/
 bridges/python/.pytest_cache/
 __pycache__/
 *.pyc
+*.egg-info/
 
 packages/daemon/release/

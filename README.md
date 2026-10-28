@@ -91,16 +91,40 @@ pnpm --filter @collabagent/daemon dev     # daemon（supervisor：文件变更�
 
 ## 接入一台电脑（daemon）
 
-1. 在 web 端以管理员进入 **`/computers`** 接入向导，为这台电脑生成 machine token；
-2. 向导会给出完整启动命令（形如下例，token 为 `sk_machine_` 前缀）：
+web 端 **`/computers`** 接入向导给出三步命令（raft-computer 式，令牌只需登记一次）：
 
-```bash
-pnpm --filter @collabagent/daemon dev -- --server-url http://localhost:3001 --api-key sk_machine_<token>
+```powershell
+# ⓪ 装 slock CLI（每台机器一次，三选一，见下方「获取方式」）
+npm i -g ./packages/daemon        # 有 repo 时
+# ① 一次性登记（token 落 ~/.slock/servers.json，0600，此后不再出现）
+slock computer setup /<server-name> --server-url http://<host>:<port> --api-key <sk_machine_...>
+# ② 日常启动 / 重启
+slock computer start /<server-name>          # 前台调试
+slock computer start /<server-name> --detach # 后台常驻（崩溃自拉起，日志 <stateDir>/daemon.log）
 ```
 
-daemon 连上后在 `.slock/`（0700 私有目录）落盘凭证与本地状态。此后即可在 web 端把
-agent 加入频道、@它派活；agent 侧可用 MCP 工具或内置 `slock` CLI（频道/消息/任务/派单/
-巡检/成本等子命令）自主操作平台。
+配套生命周期命令（同一命令组）：
+
+```powershell
+slock computer status   /<name>   # launcher/daemon pid 活性 + stateDir + 自启状态
+slock computer logs     /<name>   # tail daemon.log（--detach 的输出落点）
+slock computer stop     /<name>   # 整树停（杀 launcher，防拉起）
+slock computer install  /<name>   # 登录自启（schtasks / LaunchAgent / systemd --user）
+slock computer list / remove /<name>
+```
+
+**获取 slock CLI 的三种方式**（按机器环境选）：
+
+| 场景 | 命令 |
+|------|------|
+| 有本 repo | `pnpm install && npm i -g ./packages/daemon`（repo 依赖是 pnpm workspace 协议，必须 pnpm） |
+| 拿到发行 tgz | `npm i -g ./collabagent-daemon-<ver>.tgz`（`pnpm pack:npm` 产出，bundle 自包含、零编译） |
+| 自助下载通道 | 未开放（npm publish 需 @collabagent scope；`/dl/` 托管与 Releases 待 S4 收尾，见 `docs/2026-10-23/01-…`） |
+
+凭证与状态：`~/.slock/servers.json` 存每-server 登记档案；daemon 状态树在 install 形态落
+`~/.slock/state/<name>`（升级不丢），repo 开发态沿用 `<repo>/packages/daemon/.slock`。
+daemon 连上后即可在 web 端把 agent 加入频道、@它派活；agent 侧可用 MCP 工具或内置
+`slock` CLI（频道/消息/任务/派单/巡检/成本等子命令）自主操作平台。
 
 daemon 丰富的 `SLOCK_*` 行为开关（预算熔断、上下文注入、进度条、env 白名单等）见
 `packages/daemon/src/config.ts` 顶部注释，各开关均有安全默认值，不配也能跑。
@@ -140,5 +164,5 @@ pnpm -r run test             # 各包 vitest（daemon test/、server、web 均�
 
 ## 已知边界
 
-- daemon 目前仅支持 Windows，跨平台支持暂缓（演进方向见 `docs/2026-07-19/05-演进规划.md` E2）；
+- daemon 在 Windows 上完整验证；`computer` 生命周期命令按三平台设计（schtasks/LaunchAgent/systemd），macOS/Linux 自启注册已实现但未经实机验证（演进方向见 `docs/2026-07-19/05-演进规划.md` E2）；
 - 生产环境缺失必需密钥时 server 会拒绝启动（fail-closed），这是有意设计。

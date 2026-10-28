@@ -1,7 +1,7 @@
 # Daemon 全局安装与分发设计（raft-computer 式）
 
 日期：2026-10-23
-状态：**S1 产物化 + S2 npm 全局装 + S3 常驻/install 脚本已落地**（见 §7 落地记录）；S4 发行通道、S5 未动工
+状态：**S1 产物化 + S2 npm 全局装 + S3 常驻/install 脚本已落地；S4-D npm 通道包就绪**（见 §7 落地记录）；S4 registry 发布与 `/dl/` 托管、S5 未动工
 关联：`slock computer` 命令组已落地（本文件 §2 盘点）；web 端 /computers 接入卡已出两步命令。
 
 ---
@@ -166,7 +166,7 @@ web /computers 行已存 `machineUuid`（daemon ready upsert）。若要做 raft
 | **S1 产物化** | §4.1 构建脚本 + §4.2 三处解耦 + bin 注册 + node-pty optional | `node dist-bundle/daemon.cjs --server-url ... --api-key ...` 在无 src 的目录起得来；agent slock/MCP 在 bundle 下可用 | ✅ 2026-10-23（§7） |
 | **S2 npm 全局装** | §4.3 | 本机任意 cwd `slock computer setup/start` 全流程 | ✅ 2026-10-23（§7.2） |
 | **S3 install + 常驻** | §4.4 | 干净 Windows 机 `irm ... \| iex` → setup → start --detach → 重启登录后仍在线 | ✅ 2026-10-26（§7.3 + §7.4）；install.ps1 已本地自测，真机待首次部署验证 |
-| **S4 发行通道** | §4.5-B 自有 server `/dl/` | 内网机器从自部署 server 拉包安装 | 未动工 |
+| **S4 发行通道** | §4.5-D npm registry（先）→ §4.5-B 自有 server `/dl/` | 内网机器从自部署 server 拉包安装 | 🟡 D：`pack:npm` + tgz 实机验证 ✅ 2026-10-26（§7.5）；registry 发布待 npm login；B 未动工 |
 | **S5 体验补齐** | §4.6 + update/uninstall/doctor + 前置体检 | — | 未动工 |
 
 S1+S2 是「全局可用」的最小闭环；S3 之后才配叫「守护进程」。
@@ -307,6 +307,30 @@ slock computer _run <name>              # 内部拉起循环（hidden，不手�
 验收对照：「干净 Windows 机 `irm | iex` → setup → start --detach → 重启登录后仍在线」——前四步已实测等价通过（`-Base` 本地目录代替 https 下载，同一代码路径）；「重启登录后仍在线」依赖 `computer install` 自启注册，spec 已测但真注册未实机跑过（留待首次部署）。
 
 至此 S3 全部落地。剩余 S4（发行通道：server `/dl/` 静态路由或 GitHub Releases——`release/` 目录已是现成内容物）、S5（update/uninstall/doctor + 前置体检）。
+
+### 7.5 S4-D npm 通道（2026-10-26 实现）
+
+| 件 | 内容 |
+|----|------|
+| `scripts/pack-npm.mjs` | `pnpm pack:npm` → `release/npm-pkg/`（发布目录）+ `release/collabagent-daemon-<ver>.tgz`。生成**精简 package.json**：剥离全部 `dependencies`（`workspace:*` 是 pnpm 私有协议 npm 装不了，且 bundle 已内联 shared，运行期不需要）+ 保留 `optionalDependencies.node-pty`（PTY 兜底可选装）+ `engines.node>=20` |
+| npm CLI 调法 | Node≥20 禁直 spawn `.cmd`（EINVAL）且 `shell:true` 引号地狱——直接 `node <nodejs>/node_modules/npm/bin/npm-cli.js pack` |
+
+本机验证（`npm i -g <tgz>`，隔离 USERPROFILE）：
+
+- tgz 5 文件（3 cjs + package.json + schema），`npm i -g` 2s 装完（node-pty 可选依赖跳过重编译负担）→ `slock` 全局 shim 生效 ✅
+- `setup → start --detach` → `mode: "bundle daemon.cjs detached"` → `status` 双活 → `stop` 清场 ✅
+
+**同批修复——stateDir 分叉补洞**：npm-g 包装的 root（`%APPDATA%\npm\node_modules\@collabagent\daemon`）有 named package.json，原判定会误归 repo 布局把 stateDir 钉进全局目录（升级即丢）。修正判定为「dev repo」= named package.json **且** root 路径不含 `node_modules` 段；npm-g/install.ps1 布局一律 `~/.slock/state/<name>`。
+
+发布路径（待执行，需凭据）：
+
+```
+npm login   # 或 npm adduser；需要 @collabagent scope（npm org）
+npm publish packages/daemon/release/npm-pkg --access public   # scoped 默认 private，必须显式 public
+# 之后部署端：DAEMON_INSTALL_CMD="npm i -g @collabagent/daemon"
+```
+
+过渡替代（免 registry）：`collabagent-daemon-<ver>.tgz` 直接传 GitHub Releases 或挂 `/dl/`，装机命令 `npm i -g https://<host>/dl/collabagent-daemon-<ver>.tgz`——`DAEMON_INSTALL_CMD` 同样可下发。
 
 ## 附录：名词
 

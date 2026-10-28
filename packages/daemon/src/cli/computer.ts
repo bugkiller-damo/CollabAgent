@@ -209,15 +209,17 @@ export function resolveComputerTarget(
 }
 
 /**
- * stateDir 默认分叉（§6 拍板）：repo 布局（root 有 package.json）→ `<root>/.slock`
- * 与既有状态树共用；install 布局（bundle-only 根，如 ~/.slock/runtime/<ver>）→
- * `~/.slock/state/<name>`——版本目录随升级轮换，状态树不能钉在会过期的目录下。
+ * stateDir 默认分叉（§6 拍板）：dev repo → `<root>/.slock` 与既有状态树共用；
+ * 一切 install 布局 → `~/.slock/state/<name>`——版本目录/npm 重装轮换，
+ * 状态树不能钉在会过期的目录下。
+ * 「install 布局」判定：bundle-only 根（无 named package.json），或 root 自身
+ * 位于 node_modules 内（npm i -g 的包目录——升级即整目录重写）。
  */
+const rootIsDevRepo = (root: string): boolean =>
+  hasDaemonPackageJson(root) && !root.split(/[\\/]/).includes("node_modules");
 const resolveStateDir = (profile: ComputerProfile, daemonRoot: string, name?: string): string =>
   profile.stateDir ??
-  (hasDaemonPackageJson(daemonRoot)
-    ? join(daemonRoot, ".slock")
-    : join(homedir(), ".slock", "state", name ?? "default"));
+  (rootIsDevRepo(daemonRoot) ? join(daemonRoot, ".slock") : join(homedir(), ".slock", "state", name ?? "default"));
 
 const rootFor = (profile: ComputerProfile, deps?: ComputerDeps): string => {
   const root =

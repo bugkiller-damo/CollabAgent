@@ -18,6 +18,7 @@
     "build": "tsc",
     "build:dist": "node scripts/build-dist.mjs",
     "pack:dist": "node scripts/pack-dist.mjs",
+    "pack:npm": "node scripts/pack-npm.mjs",
     "prepack": "node scripts/build-dist.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
