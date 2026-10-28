@@ -21,6 +21,11 @@ export function hasSidebarDetailPane(pane: SidebarPane): boolean {
   return !PANELESS_SIDEBAR.has(pane);
 }
 
+/** 自带二级导航的路由（设置）：rail 二级 pane 一律不显示，且 rail 不高亮任何 pane 项 */
+export function routeHidesSidebarPane(path: string): boolean {
+  return path === "/settings" || path.startsWith("/settings/");
+}
+
 function getInitialTheme(): Theme {
   const saved = localStorage.getItem("theme");
   if (saved === "light" || saved === "dark") return saved;

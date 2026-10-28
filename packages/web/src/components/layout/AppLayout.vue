@@ -284,7 +284,7 @@ watch([() => uiStore.terminalAgent, () => channelStore.activeChannelName], ([nam
 </script>
 
 <template>
-  <div class="flex h-screen overflow-hidden bg-canvas">
+  <div class="flex h-screen h-dvh overflow-hidden overflow-clip bg-canvas">
     <div
       v-if="uiStore.mobileDrawerOpen"
       class="fixed inset-0 z-30 bg-black/40 lg:hidden"
@@ -293,14 +293,14 @@ watch([() => uiStore.terminalAgent, () => channelStore.activeChannelName], ([nam
 
     <div
       :class="[
-        'fixed lg:static inset-y-0 left-0 z-40 flex transform transition-transform duration-200 ease-in-out',
+        'fixed lg:static inset-y-0 left-0 z-[45] lg:z-auto flex transform transition-transform duration-200 ease-in-out',
         uiStore.mobileDrawerOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0',
       ]"
     >
       <Sidebar />
     </div>
 
-    <main class="flex min-w-0 flex-1 flex-col pb-16 lg:pb-0">
+    <main class="flex min-w-0 flex-1 flex-col pb-[calc(4rem+env(safe-area-inset-bottom))] lg:pb-0">
       <header class="flex h-12 items-center gap-3 border-b border-gray-200 bg-white px-4 dark:border-gray-700 dark:bg-gray-800">
         <IconButton label="打开菜单" tooltip="菜单" class="lg:hidden" @click="uiStore.openMobileDrawer()">
           <Menu class="h-5 w-5" />
@@ -313,10 +313,10 @@ watch([() => uiStore.terminalAgent, () => channelStore.activeChannelName], ([nam
           </div>
         </div>
 
-        <div class="hidden lg:flex lg:flex-1 lg:items-center lg:gap-2">
-          <span v-if="routeTitle.subtitle" class="text-sm text-muted">{{ routeTitle.subtitle }}</span>
-          <span v-if="routeTitle.subtitle && routeTitle.title" class="text-gray-300 dark:text-gray-600">/</span>
-          <span class="text-sm font-semibold text-ink">{{ routeTitle.title }}</span>
+        <div class="hidden lg:flex lg:min-w-0 lg:flex-1 lg:items-center lg:gap-2">
+          <span v-if="routeTitle.subtitle" class="truncate text-sm text-muted">{{ routeTitle.subtitle }}</span>
+          <span v-if="routeTitle.subtitle && routeTitle.title" class="shrink-0 text-gray-300 dark:text-gray-600">/</span>
+          <span class="truncate text-sm font-semibold text-ink">{{ routeTitle.title }}</span>
           <span v-if="isPrivateChannel" class="text-amber-500" aria-label="私有频道">
             <Lock class="h-3.5 w-3.5" />
           </span>

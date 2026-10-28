@@ -126,6 +126,8 @@
 .md-content h1 { font-size: 1.25rem; font-weight: 700; margin: 0.5rem 0 0.3rem; }
 .md-content h2 { font-size: 1.1rem; font-weight: 700; margin: 0.5rem 0 0.3rem; }
 .md-content h3 { font-size: 1rem; font-weight: 600; margin: 0.4rem 0 0.2rem; }
+/* 无空格长串（token/URL/CJK 连排）按任意点断行，防撑破消息列（flex 子项 min-content 外溢） */
+.md-content { overflow-wrap: anywhere; }
 .md-content code:not(pre code) {
   background: rgba(127, 127, 127, 0.18);
   padding: 0.1rem 0.3rem;
@@ -138,11 +140,13 @@
   border-radius: 0.4rem;
   padding: 0.6rem 0.8rem;
   overflow-x: auto;
+  max-width: 100%;
   margin: 0.4rem 0;
   font-size: 0.85em;
 }
 .md-content pre code { background: transparent; padding: 0; }
-.md-content table { border-collapse: collapse; margin: 0.4rem 0; }
+.md-content table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; margin: 0.4rem 0; }
+.md-content img { max-width: 100%; height: auto; }
 .md-content th, .md-content td {
   border: 1px solid var(--border);
   padding: 0.25rem 0.6rem;

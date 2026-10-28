@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { Search } from "@lucide/vue";
 import { computed } from "vue";
-import { useRouter } from "vue-router";
-import { hasSidebarDetailPane, useUiStore } from "../../stores";
+import { useRoute, useRouter } from "vue-router";
+import { hasSidebarDetailPane, routeHidesSidebarPane, useUiStore } from "../../stores";
 import ChatPane from "./panes/ChatPane.vue";
 import ComputersPane from "./panes/ComputersPane.vue";
 import TasksPane from "./panes/TasksPane.vue";
@@ -12,9 +12,13 @@ import UserAvatarButton from "./UserAvatarButton.vue";
 
 const uiStore = useUiStore();
 const router = useRouter();
+const route = useRoute();
 
+// 设置页自带二级导航：隐藏 rail 二级 pane 但不改 sidebarOpen——离开后原样恢复（移动端抽屉不受影响）
 const showPane = computed(
-  () => hasSidebarDetailPane(uiStore.sidebarPane) && (uiStore.sidebarOpen || uiStore.mobileDrawerOpen),
+  () =>
+    hasSidebarDetailPane(uiStore.sidebarPane) &&
+    (uiStore.mobileDrawerOpen || (uiStore.sidebarOpen && !routeHidesSidebarPane(route.path))),
 );
 
 function goSearch() {

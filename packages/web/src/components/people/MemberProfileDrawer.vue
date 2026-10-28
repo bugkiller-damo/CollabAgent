@@ -25,9 +25,9 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
 </script>
 
 <template>
-  <div class="fixed inset-0 z-40 bg-black/40 lg:hidden" @click="close" />
+  <div class="fixed inset-0 z-40 bg-black/40 xl:hidden" @click="close" />
   <aside
-    class="fixed inset-y-0 right-0 z-50 flex w-full flex-col border-l border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800 lg:static lg:z-auto lg:w-[380px] lg:shrink-0"
+    class="fixed inset-y-0 right-0 z-50 flex w-full flex-col border-l border-gray-200 bg-white shadow-xl dark:border-gray-700 dark:bg-gray-800 sm:w-[380px] xl:static xl:z-auto xl:shrink-0 xl:shadow-none"
     role="dialog"
     aria-label="成员档案"
   >

@@ -345,7 +345,7 @@ function fmtTime(t: string): string {
           @input="newTitle = ($event.target as HTMLInputElement).value"
           @keydown.enter="createTask"
           placeholder="新建任务标题…"
-          class="w-56"
+          class="sm:!w-56"
         />
         <Button size="sm" :disabled="!newTitle.trim()" @click="createTask">+ 新建</Button>
       </div>

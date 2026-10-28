@@ -55,7 +55,7 @@ const current = computed(() => items.find((i) => route.path.startsWith(i.to)));
         </button>
       </div>
     </nav>
-    <div class="flex min-h-0 flex-1 flex-col">
+    <div class="flex min-h-0 min-w-0 flex-1 flex-col">
       <div
         v-if="current"
         class="border-b border-gray-200 bg-white px-4 py-3 dark:border-gray-700 dark:bg-gray-800 lg:hidden"

@@ -363,7 +363,7 @@ function goGeneral() {
 <template>
   <div class="flex min-h-0 flex-1">
     <div
-      class="relative flex min-h-0 flex-1 flex-col"
+      class="relative flex min-h-0 min-w-0 flex-1 flex-col"
       @dragover="onDragOver"
       @dragleave="onDragLeave"
       @drop="onDropFiles"

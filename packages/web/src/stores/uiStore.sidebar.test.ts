@@ -1,6 +1,6 @@
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it } from "vitest";
-import { hasSidebarDetailPane, loadSidebarState, useUiStore } from "./uiStore";
+import { hasSidebarDetailPane, loadSidebarState, routeHidesSidebarPane, useUiStore } from "./uiStore";
 
 function stubLocalStorage() {
   const map = new Map<string, string>();
@@ -93,6 +93,18 @@ describe("useUiStore sidebar", () => {
       pane: "chat",
       open: false,
     });
+  });
+});
+
+describe("routeHidesSidebarPane", () => {
+  it("设置路由隐藏 rail 二级 pane，其余路径不隐藏", () => {
+    expect(routeHidesSidebarPane("/settings")).toBe(true);
+    expect(routeHidesSidebarPane("/settings/profile")).toBe(true);
+    expect(routeHidesSidebarPane("/settings/metrics")).toBe(true);
+    expect(routeHidesSidebarPane("/settingsx")).toBe(false);
+    expect(routeHidesSidebarPane("/s/abc/channels/general")).toBe(false);
+    expect(routeHidesSidebarPane("/computers")).toBe(false);
+    expect(routeHidesSidebarPane("/activity")).toBe(false);
   });
 });
 

@@ -196,7 +196,7 @@ function close() {
 </script>
 
 <template>
-  <Modal :open="true" width-class="max-w-xl" class="flex !max-h-[85vh] !p-0 flex-col overflow-hidden" @close="close">
+  <Modal :open="true" width-class="max-w-xl" class="flex !max-h-[85vh] !p-0 !overflow-hidden flex-col" @close="close">
     <!-- 头部：编号 + 状态徽章 + 关闭 -->
     <div
       class="flex shrink-0 items-center justify-between border-b border-gray-100 px-5 py-3.5 dark:border-gray-700/60"

@@ -140,7 +140,7 @@ onBeforeUnmount(() => {
       :aria-label="label"
       tabindex="-1"
       :class="[
-        'mx-4 w-full transform rounded-lg bg-white p-6 shadow-xl outline-none dark:bg-gray-800',
+        'mx-4 max-h-[calc(100vh-2rem)] w-full transform overflow-y-auto rounded-lg bg-white p-6 shadow-xl outline-none dark:bg-gray-800',
         widthClass,
         exiting ? 'animate-scale-out' : 'animate-scale-in',
         $attrs.class,

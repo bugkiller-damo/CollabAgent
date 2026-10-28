@@ -87,7 +87,9 @@ function openProfile(m: ChannelMember) {
 </script>
 
 <template>
-  <aside class="w-60 shrink-0 border-l border-line bg-gray-50 dark:bg-gray-800 flex flex-col">
+  <!-- <lg 为右侧抽屉（遮罩点击关闭），lg+ 恢复内联侧栏；否则 375px 下聊天列只剩 ~135px -->
+  <div class="fixed inset-0 z-40 bg-black/40 lg:hidden" @click="onClose" />
+  <aside class="fixed inset-y-0 right-0 z-50 flex w-72 max-w-[85vw] flex-col border-l border-line bg-gray-50 shadow-xl dark:bg-gray-800 lg:static lg:z-auto lg:w-60 lg:max-w-none lg:shrink-0 lg:shadow-none">
     <div class="flex items-center justify-between p-3 border-b border-line">
       <span class="text-gray-700 dark:text-gray-300 text-sm font-semibold">成员（{{ members.length }}）</span>
       <button @click="onClose" class="text-muted hover:text-gray-700 dark:hover:text-white text-sm">

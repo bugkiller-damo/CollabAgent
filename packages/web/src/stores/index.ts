@@ -14,4 +14,10 @@ export { useInterruptStore } from "./interruptStore";
 export { threadBufferKey, useMessageStore } from "./messageStore";
 export { useNotificationStore } from "./notificationStore";
 export { hasOwnServer, type ServerItem, useServerStore } from "./serverStore";
-export { hasSidebarDetailPane, type ProfileTarget, type SidebarPane, useUiStore } from "./uiStore";
+export {
+  hasSidebarDetailPane,
+  type ProfileTarget,
+  routeHidesSidebarPane,
+  type SidebarPane,
+  useUiStore,
+} from "./uiStore";

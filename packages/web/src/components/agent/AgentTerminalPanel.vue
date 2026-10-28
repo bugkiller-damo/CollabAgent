@@ -2,6 +2,7 @@
 import { X } from "@lucide/vue";
 import { storeToRefs } from "pinia";
 import { computed, nextTick, onMounted, ref, watch } from "vue";
+import { LG_QUERY, useMediaQuery } from "../../composables";
 import { wsSend } from "../../lib/wsManager";
 import { useChannelStore } from "../../stores";
 import { useTerminalStore } from "../../stores/terminalStore";
@@ -68,8 +69,11 @@ watch(obsList, (list) => {
 });
 
 // 面板宽度（可拖拽，localStorage 记忆）
+const isDesktop = useMediaQuery(LG_QUERY);
 const savedW = Number(localStorage.getItem("terminal_panel_w"));
 const width = ref(savedW >= MIN_W && savedW <= MAX_W ? savedW : 420);
+// lg+ 内联宽度钳制：主区至少留 ~640px（含侧栏时也不会被挤破）；<lg 全屏抽屉不用行内宽度
+const panelWidth = computed(() => (isDesktop.value ? `min(${width.value}px, max(300px, 100vw - 640px))` : undefined));
 // 终端字号（localStorage 记忆）
 const savedFs = Number(localStorage.getItem("terminal_panel_fs"));
 const fontSize = ref(savedFs >= MIN_FS && savedFs <= MAX_FS ? savedFs : 12);
@@ -154,13 +158,17 @@ const st = computed(() => STATUS_LABEL[status.value] || STATUS_LABEL.offline);
 
 <template>
   <aside
-    :style="{ width: width + 'px' }"
-    class="relative flex shrink-0 flex-col border-l border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800"
+    :style="panelWidth ? { width: panelWidth } : undefined"
+    :class="[
+      'flex shrink-0 flex-col border-l border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800',
+      // <lg 全屏抽屉（内联宽度会把主区挤没）；lg+ 保持内联右栏
+      isDesktop ? 'relative' : 'fixed inset-0 z-50',
+    ]"
   >
-    <!-- 拖拽调宽把手（左边缘） -->
+    <!-- 拖拽调宽把手（左边缘，仅桌面内联模式） -->
     <div
       @mousedown="onDragStart"
-      class="absolute inset-y-0 -left-1 z-10 w-2 cursor-col-resize hover:bg-blue-400/40 active:bg-blue-500/50"
+      class="absolute inset-y-0 -left-1 z-10 hidden w-2 cursor-col-resize hover:bg-blue-400/40 active:bg-blue-500/50 lg:block"
       title="拖拽调整宽度"
     />
 

@@ -25,7 +25,7 @@ withDefaults(
 <template>
   <div :class="['border-b border-gray-200 bg-white px-4 py-3 dark:border-gray-700 dark:bg-gray-800', className]">
     <div class="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-      <div class="flex min-w-0 items-center gap-2">
+      <div class="flex min-w-0 shrink-0 items-center gap-2 sm:max-w-[50%]">
         <RouterLink
           v-if="backTo"
           :to="backTo"
@@ -40,7 +40,7 @@ withDefaults(
             <Breadcrumb :items="breadcrumb" />
           </div>
           <div class="flex items-center gap-2">
-            <h2 class="shrink-0 text-lg font-bold text-ink">{{ title }}</h2>
+            <h2 class="min-w-0 truncate text-lg font-bold text-ink" :title="title">{{ title }}</h2>
             <span
               v-if="subtitle"
               class="max-w-[10rem] truncate text-xs text-muted sm:max-w-xs md:max-w-sm"
@@ -51,7 +51,7 @@ withDefaults(
           </div>
         </div>
       </div>
-      <div v-if="$slots.default" class="mt-2 flex shrink-0 items-center gap-2 sm:mt-0">
+      <div v-if="$slots.default" class="mt-2 flex min-w-0 flex-1 flex-wrap items-center gap-2 sm:mt-0 sm:justify-end">
         <slot />
       </div>
     </div>

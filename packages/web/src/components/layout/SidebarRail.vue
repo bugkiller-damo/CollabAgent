@@ -4,6 +4,7 @@ import { type Component, computed, markRaw } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { channelPath, parseChannelRoute, parseTasksRoute, tasksPath } from "../../lib/nav";
 import {
+  routeHidesSidebarPane,
   type SidebarPane,
   useChannelStore,
   useComputerStore,
@@ -25,7 +26,7 @@ const router = useRouter();
 const chatUnread = computed(() => Object.values(channelStore.unreadCounts).reduce((sum, n) => sum + (n || 0), 0));
 const activityUnread = computed(() => notificationStore.unreadCount);
 
-const settingsActive = computed(() => route.path.startsWith("/settings"));
+const settingsActive = computed(() => routeHidesSidebarPane(route.path));
 
 // 深色/浅色模式（2026-09-17 IA 收敛：原在头像弹出菜单，现挪到 rail 底部）
 const theme = computed(() => uiStore.theme);
@@ -76,8 +77,12 @@ function pathForPane(id: SidebarPane): string | null {
 }
 
 function onSelect(id: SidebarPane) {
-  const same = uiStore.sidebarPane === id && uiStore.sidebarOpen;
-  uiStore.selectSidebarPane(id);
+  // 设置页下 pane 被路由隐藏（sidebarOpen 未变）：select 的「再点收起」会把藏着的
+  // open 状态吃掉——统一走 open（detail pane 强制开、paneless 强制关），same 恒 false 保证导航
+  const hidesPane = routeHidesSidebarPane(route.path);
+  const same = !hidesPane && uiStore.sidebarPane === id && uiStore.sidebarOpen;
+  if (hidesPane) uiStore.openSidebarPane(id);
+  else uiStore.selectSidebarPane(id);
   if (same) return;
   if (id === "chat") {
     if (!parseChannelRoute(route.path) && !route.path.startsWith("/dm/")) {
@@ -114,10 +119,10 @@ function goSettings() {
         <button
           type="button"
           :aria-label="item.label"
-          :aria-pressed="uiStore.sidebarPane === item.id"
+          :aria-pressed="uiStore.sidebarPane === item.id && !settingsActive"
           :class="[
             'relative flex h-10 w-10 items-center justify-center rounded-lg transition-colors',
-            uiStore.sidebarPane === item.id
+            uiStore.sidebarPane === item.id && !settingsActive
               ? 'bg-gray-200 text-gray-900 dark:bg-gray-700 dark:text-white'
               : 'text-gray-500 hover:bg-gray-200 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-700 dark:hover:text-white',
           ]"
